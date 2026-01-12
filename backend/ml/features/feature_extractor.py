@@ -9,7 +9,7 @@ from PIL import Image as PILImage
 import torch
 from torchvision import transforms
 
-from .dinov3_encoder import DINOv3Encoder
+from .dinov2_encoder import DINOv2Encoder
 
 logger = logging.getLogger(__name__)
 
@@ -18,21 +18,21 @@ BATCH_SIZE = 4  # Conservative for large model memory usage
 TARGET_SIZE = 224  # ViT input size
 
 # Global encoder instance (lazy loaded singleton)
-_encoder: Optional[DINOv3Encoder] = None
+_encoder: Optional[DINOv2Encoder] = None
 
 
-def get_encoder() -> DINOv3Encoder:
-    """Get or create the global DINOv3 encoder instance."""
+def get_encoder() -> DINOv2Encoder:
+    """Get or create the global DINOv2 encoder instance."""
     global _encoder
     if _encoder is None:
-        logger.info("Initializing DINOv3 encoder (first use)...")
-        _encoder = DINOv3Encoder(pooling="cls")
+        logger.info("Initializing DINOv2 encoder (first use)...")
+        _encoder = DINOv2Encoder(pooling="cls")
         _encoder.load_model()
     return _encoder
 
 
 class FeatureExtractor:
-    """Extract DINOv3 features from cell crop images."""
+    """Extract DINOv2 features from cell crop images."""
 
     def __init__(self):
         """Initialize the feature extractor with preprocessing pipeline."""
@@ -69,6 +69,9 @@ class FeatureExtractor:
 
             return self.transform(img)
 
+        except IOError as e:
+            logger.error(f"Failed to read image {image_path}: {e}")
+            return None
         except Exception as e:
             logger.error(f"Failed to preprocess {image_path}: {e}")
             return None
@@ -81,7 +84,7 @@ class FeatureExtractor:
             image_paths: List of paths to crop images.
 
         Returns:
-            List of 1024-dim numpy arrays (or None for failed images).
+            List of embedding arrays (or None for failed images).
         """
         encoder = get_encoder()
 
@@ -127,7 +130,7 @@ class FeatureExtractor:
 
 async def extract_features_for_crops(crop_ids: List[int], db) -> dict:
     """
-    Extract DINOv3 features for cell crops and update database.
+    Extract DINOv2 features for cell crops and update database.
 
     Args:
         crop_ids: List of CellCrop IDs to process.
@@ -160,31 +163,52 @@ async def extract_features_for_crops(crop_ids: List[int], db) -> dict:
     # Process in batches
     for i in range(0, len(crops), BATCH_SIZE):
         batch_crops = crops[i:i + BATCH_SIZE]
-        paths = [c.mip_path for c in batch_crops if c.mip_path]
+
+        # Filter crops with valid paths and track which ones have paths
+        crops_with_paths = []
+        paths = []
+        for crop in batch_crops:
+            if crop.mip_path:
+                crops_with_paths.append(crop)
+                paths.append(crop.mip_path)
+            else:
+                logger.warning(f"Crop {crop.id} has no mip_path, skipping")
+                results["failed"] += 1
 
         if not paths:
-            results["failed"] += len(batch_crops)
             continue
 
         try:
             embeddings = await extractor.extract_batch_async(paths)
 
-            for crop, embedding in zip(batch_crops, embeddings):
+            # Match embeddings to crops that had valid paths
+            for crop, embedding in zip(crops_with_paths, embeddings):
                 if embedding is not None:
                     crop.embedding = embedding.tolist()
-                    crop.embedding_model = "dinov3-large"
+                    crop.embedding_model = "dinov2-large"
                     results["success"] += 1
                 else:
                     results["failed"] += 1
 
+        except RuntimeError as e:
+            logger.error(f"Batch extraction failed (runtime): {e}")
+            results["failed"] += len(crops_with_paths)
         except Exception as e:
-            logger.error(f"Batch extraction failed: {e}")
-            results["failed"] += len(batch_crops)
+            logger.exception(f"Batch extraction failed unexpectedly: {e}")
+            results["failed"] += len(crops_with_paths)
 
+    # Commit partial results - we want to save successfully processed crops
+    # even if some fail
     await db.commit()
-    logger.info(
-        f"Feature extraction complete: {results['success']} success, "
-        f"{results['failed']} failed"
-    )
+
+    if results["failed"] > 0:
+        logger.warning(
+            f"Feature extraction completed with {results['failed']} failures "
+            f"out of {results['total']} crops"
+        )
+    else:
+        logger.info(
+            f"Feature extraction complete: {results['success']} success"
+        )
 
     return results

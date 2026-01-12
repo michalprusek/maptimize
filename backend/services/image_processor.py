@@ -375,12 +375,22 @@ class ImageProcessor:
         try:
             from ml.features import extract_features_for_crops
             result = await extract_features_for_crops(crop_ids, db)
-            logger.info(
-                f"Feature extraction: {result['success']} success, "
-                f"{result['failed']} failed"
-            )
+
+            if result['failed'] > 0:
+                logger.warning(
+                    f"Feature extraction for image {crops[0].image_id}: "
+                    f"{result['success']} success, {result['failed']} failed"
+                )
+            else:
+                logger.info(
+                    f"Feature extraction complete: {result['success']} embeddings created"
+                )
+        except ImportError as e:
+            logger.error(f"Feature extraction module not available: {e}")
+        except RuntimeError as e:
+            logger.error(f"DINOv2 model error during feature extraction: {e}")
         except Exception as e:
-            logger.warning(f"Feature extraction failed (non-fatal): {e}")
+            logger.exception(f"Unexpected feature extraction error: {e}")
 
     async def _save_crop(
         self,

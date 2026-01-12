@@ -92,15 +92,28 @@ async def get_umap_visualization(
             n_neighbors=n_neighbors,
             min_dist=min_dist,
             n_components=2,
-            metric="euclidean",
+            metric="cosine",  # Cosine is better for high-dim embeddings
             random_state=42,
         )
         projection = reducer.fit_transform(embeddings)
+    except ValueError as e:
+        # UMAP parameter validation errors
+        logger.error(f"UMAP parameter error: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid UMAP parameters: {str(e)}"
+        )
+    except MemoryError:
+        logger.error(f"Out of memory computing UMAP for {len(crops)} crops")
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail="Too many data points for UMAP. Try filtering to a single experiment."
+        )
     except Exception as e:
-        logger.error(f"UMAP computation failed: {e}")
+        logger.exception(f"Unexpected UMAP computation error: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"UMAP computation failed: {str(e)}"
+            detail="Failed to compute UMAP projection. Please try again."
         )
 
     # Build response
@@ -133,25 +146,29 @@ async def get_embedding_status(
     db: AsyncSession = Depends(get_db)
 ):
     """Get feature extraction status for user's crops."""
-    # Base query
-    base_query = (
+    # Build base conditions (without the embedding filter)
+    base_conditions = [Experiment.user_id == current_user.id]
+    if experiment_id:
+        base_conditions.append(Image.experiment_id == experiment_id)
+
+    # Total crops query
+    total_query = (
         select(func.count(CellCrop.id))
         .join(Image, CellCrop.image_id == Image.id)
         .join(Experiment, Image.experiment_id == Experiment.id)
-        .where(Experiment.user_id == current_user.id)
+        .where(*base_conditions)
     )
-
-    if experiment_id:
-        base_query = base_query.where(Image.experiment_id == experiment_id)
-
-    # Total crops
-    total_result = await db.execute(base_query)
+    total_result = await db.execute(total_query)
     total = total_result.scalar() or 0
 
-    # Crops with embeddings
-    with_emb_result = await db.execute(
-        base_query.where(CellCrop.embedding.isnot(None))
+    # Crops with embeddings query (separate query, not mutating base)
+    with_emb_query = (
+        select(func.count(CellCrop.id))
+        .join(Image, CellCrop.image_id == Image.id)
+        .join(Experiment, Image.experiment_id == Experiment.id)
+        .where(*base_conditions, CellCrop.embedding.isnot(None))
     )
+    with_emb_result = await db.execute(with_emb_query)
     with_embeddings = with_emb_result.scalar() or 0
 
     without_embeddings = total - with_embeddings
@@ -220,7 +237,8 @@ async def trigger_feature_extraction(
     # Trigger background extraction
     background_tasks.add_task(
         _extract_features_background,
-        crop_ids
+        crop_ids,
+        experiment_id
     )
 
     return FeatureExtractionTriggerResponse(
@@ -229,14 +247,29 @@ async def trigger_feature_extraction(
     )
 
 
-async def _extract_features_background(crop_ids: list):
+async def _extract_features_background(crop_ids: list, experiment_id: int):
     """Background task for feature extraction."""
     from database import get_db_context
     from ml.features import extract_features_for_crops
 
+    logger.info(
+        f"Starting background feature extraction for {len(crop_ids)} crops "
+        f"in experiment {experiment_id}"
+    )
+
     try:
         async with get_db_context() as db:
             result = await extract_features_for_crops(crop_ids, db)
-            logger.info(f"Background feature extraction complete: {result}")
+            logger.info(
+                f"Background feature extraction complete for experiment {experiment_id}: "
+                f"{result['success']} success, {result['failed']} failed"
+            )
+    except RuntimeError as e:
+        logger.error(
+            f"Background feature extraction failed for experiment {experiment_id} "
+            f"(model error): {e}"
+        )
     except Exception as e:
-        logger.exception(f"Background feature extraction failed: {e}")
+        logger.exception(
+            f"Background feature extraction failed for experiment {experiment_id}: {e}"
+        )

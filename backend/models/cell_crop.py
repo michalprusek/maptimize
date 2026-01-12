@@ -47,7 +47,7 @@ class CellCrop(Base):
     skewness: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     kurtosis: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
 
-    # DINOv3 embedding (1024-dim for large variant)
+    # DINOv2 embedding (1024-dim for large variant)
     embedding: Mapped[Optional[list]] = mapped_column(Vector(1024), nullable=True)
     embedding_model: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
 

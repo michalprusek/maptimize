@@ -121,6 +121,11 @@ export function UmapVisualization({
       error instanceof Error ? error.message : "Unknown error";
     const isNotEnoughData = errorMessage.includes("Need at least");
 
+    // Log error for debugging (not for expected "not enough data" cases)
+    if (!isNotEnoughData) {
+      console.error("[UmapVisualization] Failed to fetch UMAP data:", error);
+    }
+
     return (
       <div
         className="glass-card p-8 flex flex-col items-center justify-center text-center"
@@ -159,7 +164,7 @@ export function UmapVisualization({
           No Embeddings Available
         </h3>
         <p className="text-text-secondary max-w-md">
-          Upload and process images to generate DINOv3 feature embeddings for
+          Upload and process images to generate DINOv2 feature embeddings for
           visualization.
         </p>
       </div>
