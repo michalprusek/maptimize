@@ -22,25 +22,20 @@ export default function UploadPage(): JSX.Element {
   const experimentId = Number(params.id);
   const queryClient = useQueryClient();
 
-  const [selectedProtein, setSelectedProtein] = useState<number | undefined>();
   const [detectCells, setDetectCells] = useState(true);
   const [uploadingFiles, setUploadingFiles] = useState<Map<string, number>>(new Map());
   const [uploadedCount, setUploadedCount] = useState(0);
   const [batchImageIds, setBatchImageIds] = useState<number[]>([]);
+  const [failedUploads, setFailedUploads] = useState<{ name: string; error: string }[]>([]);
 
   const { data: experiment, isLoading: expLoading } = useQuery({
     queryKey: ["experiment", experimentId],
     queryFn: () => api.getExperiment(experimentId),
   });
 
-  const { data: proteins } = useQuery({
-    queryKey: ["proteins"],
-    queryFn: () => api.getProteins(),
-  });
-
   const uploadMutation = useMutation({
     mutationFn: async (file: File) => {
-      return api.uploadImage(experimentId, file, selectedProtein, detectCells);
+      return api.uploadImage(experimentId, file, undefined, detectCells);
     },
     onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ["images", experimentId] });
@@ -104,6 +99,8 @@ export default function UploadPage(): JSX.Element {
           await uploadMutation.mutateAsync(file);
         } catch (err) {
           console.error("Upload failed:", err);
+          const errorMessage = err instanceof Error ? err.message : "Unknown error";
+          setFailedUploads((prev) => [...prev, { name: file.name, error: errorMessage }]);
         } finally {
           setUploadingFiles((prev) => {
             const next = new Map(prev);
@@ -113,7 +110,7 @@ export default function UploadPage(): JSX.Element {
         }
       }
     },
-    [uploadMutation, selectedProtein, detectCells]
+    [uploadMutation, detectCells]
   );
 
   const { getRootProps, getInputProps, isDragActive } = useDropzone({
@@ -183,41 +180,6 @@ export default function UploadPage(): JSX.Element {
         animate={{ opacity: 1, y: 0 }}
         className="glass-card p-6"
       >
-        {/* Protein selector */}
-        <div className="mb-6">
-          <label className="block text-sm font-medium text-text-secondary mb-2">
-            Assign MAP Protein (optional)
-          </label>
-          <div className="flex flex-wrap gap-2">
-            <button
-              onClick={() => setSelectedProtein(undefined)}
-              className={`px-4 py-2 rounded-lg text-sm font-medium transition-all ${
-                !selectedProtein
-                  ? "bg-primary-500/20 text-primary-400 border border-primary-500/30"
-                  : "bg-bg-secondary text-text-secondary hover:bg-bg-hover"
-              }`}
-            >
-              None
-            </button>
-            {proteins?.map((p) => (
-              <button
-                key={p.id}
-                onClick={() => setSelectedProtein(p.id)}
-                className={`px-4 py-2 rounded-lg text-sm font-medium transition-all ${
-                  selectedProtein === p.id
-                    ? "bg-primary-500/20 text-primary-400 border border-primary-500/30"
-                    : "bg-bg-secondary text-text-secondary hover:bg-bg-hover"
-                }`}
-                style={{
-                  borderColor: selectedProtein === p.id ? p.color : undefined,
-                }}
-              >
-                {p.name}
-              </button>
-            ))}
-          </div>
-        </div>
-
         {/* Cell detection toggle */}
         <div className="mb-6">
           <button
@@ -356,6 +318,38 @@ export default function UploadPage(): JSX.Element {
             <span className="text-red-400 text-sm">
               {batchStatus.errors} {batchStatus.errors === 1 ? "image" : "images"} failed processing
             </span>
+          </motion.div>
+        )}
+
+        {/* Failed uploads list */}
+        {failedUploads.length > 0 && (
+          <motion.div
+            initial={{ opacity: 0, y: 10 }}
+            animate={{ opacity: 1, y: 0 }}
+            className="mt-6 p-4 bg-accent-red/10 border border-accent-red/20 rounded-lg"
+          >
+            <div className="flex items-center justify-between mb-3">
+              <div className="flex items-center gap-2">
+                <AlertCircle className="w-5 h-5 text-accent-red" />
+                <span className="text-accent-red font-medium">
+                  {failedUploads.length} upload{failedUploads.length !== 1 ? "s" : ""} failed
+                </span>
+              </div>
+              <button
+                onClick={() => setFailedUploads([])}
+                className="text-sm text-text-muted hover:text-text-primary"
+              >
+                Dismiss
+              </button>
+            </div>
+            <div className="space-y-2 max-h-40 overflow-y-auto">
+              {failedUploads.map((failed, i) => (
+                <div key={i} className="text-sm">
+                  <span className="text-text-primary">{failed.name}</span>
+                  <span className="text-text-muted ml-2">— {failed.error}</span>
+                </div>
+              ))}
+            </div>
           </motion.div>
         )}
       </motion.div>

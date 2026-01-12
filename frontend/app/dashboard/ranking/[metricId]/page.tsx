@@ -51,6 +51,7 @@ export default function MetricDetailPage(): JSX.Element {
   const [showImportDialog, setShowImportDialog] = useState(false);
   const [showDeleteMetricModal, setShowDeleteMetricModal] = useState(false);
   const [imageToDelete, setImageToDelete] = useState<{ id: number; name: string } | null>(null);
+  const [mutationError, setMutationError] = useState<string | null>(null);
 
   // Ranking state
   const [startTime, setStartTime] = useState<number>(0);
@@ -138,13 +139,15 @@ export default function MetricDetailPage(): JSX.Element {
     mutationFn: (imageId: number) => api.deleteMetricImage(metricId, imageId),
     onSuccess: () => {
       setImageToDelete(null);
+      setMutationError(null);
       queryClient.invalidateQueries({ queryKey: ["metric-images", metricId] });
       queryClient.invalidateQueries({ queryKey: ["metric", metricId] });
       queryClient.invalidateQueries({ queryKey: ["metric-pair", metricId] });
       queryClient.invalidateQueries({ queryKey: ["metric-leaderboard", metricId] });
     },
-    onError: (error) => {
+    onError: (error: Error) => {
       console.error("Failed to delete image:", error);
+      setMutationError(error.message || "Failed to delete image. Please try again.");
     },
   });
 
@@ -154,8 +157,10 @@ export default function MetricDetailPage(): JSX.Element {
       queryClient.invalidateQueries({ queryKey: ["metrics"] });
       router.push("/dashboard/ranking");
     },
-    onError: (error) => {
+    onError: (error: Error) => {
       console.error("Failed to delete metric:", error);
+      setMutationError(error.message || "Failed to delete metric. Please try again.");
+      setShowDeleteMetricModal(false);
     },
   });
 
@@ -342,6 +347,27 @@ export default function MetricDetailPage(): JSX.Element {
         ))}
       </div>
 
+      {/* Error notification */}
+      {mutationError && (
+        <motion.div
+          initial={{ opacity: 0, y: -10 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="p-4 bg-accent-red/10 border border-accent-red/20 rounded-lg flex items-start gap-3"
+        >
+          <AlertCircle className="w-5 h-5 text-accent-red flex-shrink-0 mt-0.5" />
+          <div className="flex-1">
+            <p className="text-accent-red font-medium">Operation failed</p>
+            <p className="text-sm text-text-secondary">{mutationError}</p>
+          </div>
+          <button
+            onClick={() => setMutationError(null)}
+            className="text-text-muted hover:text-text-primary"
+          >
+            ×
+          </button>
+        </motion.div>
+      )}
+
       {/* Tab Content */}
       {activeTab === "images" && (
         <div className="space-y-6">
@@ -384,7 +410,7 @@ export default function MetricDetailPage(): JSX.Element {
                     <img
                       src={getImageUrl(img)}
                       alt={`Image ${img.id}`}
-                      className="w-full h-full object-cover"
+                      className="w-full h-full object-contain"
                     />
                     <button
                       onClick={() => handleDeleteClick(img.id, `Image #${img.id}`)}
@@ -552,14 +578,13 @@ export default function MetricDetailPage(): JSX.Element {
                         } ${compareMutation.isPending ? "pointer-events-none" : ""}`}
                         onClick={() => handleSelect(img.id)}
                       >
-                        {/* Canvas container - fixed size, image at natural dimensions */}
-                        <div className="min-h-[300px] max-h-[500px] bg-bg-secondary relative group flex items-center justify-center overflow-hidden">
+                        {/* Canvas container - preserve natural image proportions */}
+                        <div className="min-h-[300px] bg-bg-secondary relative group flex items-center justify-center p-4">
                           {getAuthImageUrl(img.image_url) ? (
                             <img
                               src={getAuthImageUrl(img.image_url)!}
                               alt={`Image ${img.id}`}
-                              className="max-w-full max-h-[500px]"
-                              style={{ objectFit: "none" }}
+                              className="max-h-[450px]"
                             />
                           ) : (
                             <div className="flex items-center justify-center p-12">

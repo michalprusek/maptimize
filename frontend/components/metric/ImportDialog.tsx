@@ -4,7 +4,7 @@ import { useState } from "react";
 import { motion } from "framer-motion";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { api } from "@/lib/api";
-import { Loader2, Check, X, Download } from "lucide-react";
+import { Loader2, Check, X, Download, AlertCircle } from "lucide-react";
 
 interface ImportDialogProps {
   metricId: number;
@@ -18,6 +18,7 @@ export function ImportDialog({
   onImported,
 }: ImportDialogProps): JSX.Element {
   const [selectedExperiments, setSelectedExperiments] = useState<number[]>([]);
+  const [error, setError] = useState<string | null>(null);
 
   const { data: experiments, isLoading } = useQuery({
     queryKey: ["experiments-for-import", metricId],
@@ -30,9 +31,14 @@ export function ImportDialog({
       onImported();
       onClose();
     },
+    onError: (err: Error) => {
+      console.error("Import failed:", err);
+      setError(err.message || "Failed to import experiments. Please try again.");
+    },
   });
 
   const toggleExperiment = (id: number) => {
+    setError(null);
     setSelectedExperiments((prev) =>
       prev.includes(id) ? prev.filter((e) => e !== id) : [...prev, id]
     );
@@ -73,6 +79,17 @@ export function ImportDialog({
         <p className="text-text-secondary text-sm mb-4">
           Select experiments to import cell crops from:
         </p>
+
+        {/* Error message */}
+        {error && (
+          <div className="mb-4 p-3 bg-accent-red/10 border border-accent-red/20 rounded-lg flex items-start gap-2">
+            <AlertCircle className="w-5 h-5 text-accent-red flex-shrink-0 mt-0.5" />
+            <div>
+              <p className="text-sm text-accent-red font-medium">Import failed</p>
+              <p className="text-sm text-text-secondary">{error}</p>
+            </div>
+          </div>
+        )}
 
         <div className="flex-1 overflow-y-auto space-y-2 mb-4">
           {isLoading ? (
@@ -118,7 +135,10 @@ export function ImportDialog({
             Cancel
           </button>
           <button
-            onClick={() => importMutation.mutate()}
+            onClick={() => {
+              setError(null);
+              importMutation.mutate();
+            }}
             disabled={selectedExperiments.length === 0 || importMutation.isPending}
             className="btn-primary flex items-center gap-2"
           >

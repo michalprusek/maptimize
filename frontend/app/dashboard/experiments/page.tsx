@@ -14,6 +14,7 @@ import {
   X,
   Loader2,
   Trash2,
+  AlertCircle,
 } from "lucide-react";
 
 export default function ExperimentsPage(): JSX.Element {
@@ -21,6 +22,7 @@ export default function ExperimentsPage(): JSX.Element {
   const [newExpName, setNewExpName] = useState("");
   const [newExpDescription, setNewExpDescription] = useState("");
   const [experimentToDelete, setExperimentToDelete] = useState<{ id: number; name: string } | null>(null);
+  const [error, setError] = useState<string | null>(null);
   const queryClient = useQueryClient();
 
   const { data: experiments, isLoading } = useQuery({
@@ -36,6 +38,11 @@ export default function ExperimentsPage(): JSX.Element {
       setShowCreateModal(false);
       setNewExpName("");
       setNewExpDescription("");
+      setError(null);
+    },
+    onError: (err: Error) => {
+      console.error("Failed to create experiment:", err);
+      setError(err.message || "Failed to create experiment. Please try again.");
     },
   });
 
@@ -44,6 +51,12 @@ export default function ExperimentsPage(): JSX.Element {
     onSuccess: () => {
       setExperimentToDelete(null);
       queryClient.invalidateQueries({ queryKey: ["experiments"] });
+      setError(null);
+    },
+    onError: (err: Error) => {
+      console.error("Failed to delete experiment:", err);
+      setError(err.message || "Failed to delete experiment. Please try again.");
+      setExperimentToDelete(null);
     },
   });
 
@@ -75,6 +88,27 @@ export default function ExperimentsPage(): JSX.Element {
           New Experiment
         </button>
       </div>
+
+      {/* Error notification */}
+      {error && (
+        <motion.div
+          initial={{ opacity: 0, y: -10 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="p-4 bg-accent-red/10 border border-accent-red/20 rounded-lg flex items-start gap-3"
+        >
+          <AlertCircle className="w-5 h-5 text-accent-red flex-shrink-0 mt-0.5" />
+          <div className="flex-1">
+            <p className="text-accent-red font-medium">Operation failed</p>
+            <p className="text-sm text-text-secondary">{error}</p>
+          </div>
+          <button
+            onClick={() => setError(null)}
+            className="text-text-muted hover:text-text-primary"
+          >
+            ×
+          </button>
+        </motion.div>
+      )}
 
       {/* Experiments Grid */}
       {isLoading ? (

@@ -4,8 +4,9 @@ import { useState, useMemo } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
 import { motion } from "framer-motion";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api, CellCropGallery } from "@/lib/api";
+import { ConfirmModal } from "@/components/ui";
 import {
   ImageGalleryFilters,
   SortOrder,
@@ -18,6 +19,7 @@ import {
   Microscope,
   Loader2,
   Search,
+  Trash2,
 } from "lucide-react";
 
 type SortField = "date" | "bundleness" | "parent" | "confidence";
@@ -32,12 +34,16 @@ const SORT_OPTIONS: SortOption<SortField>[] = [
 export default function ExperimentDetailPage(): JSX.Element {
   const params = useParams();
   const experimentId = Number(params.id);
+  const queryClient = useQueryClient();
 
   // Filter state
   const [searchQuery, setSearchQuery] = useState("");
   const [sortField, setSortField] = useState<SortField>("date");
   const [sortOrder, setSortOrder] = useState<SortOrder>("desc");
   const [proteinFilter, setProteinFilter] = useState<string | null>(null);
+
+  // Delete state
+  const [cropToDelete, setCropToDelete] = useState<{ id: number; name: string } | null>(null);
 
   const { data: experiment, isLoading: expLoading } = useQuery({
     queryKey: ["experiment", experimentId],
@@ -53,6 +59,26 @@ export default function ExperimentDetailPage(): JSX.Element {
     queryKey: ["proteins"],
     queryFn: () => api.getProteins(),
   });
+
+  const deleteCropMutation = useMutation({
+    mutationFn: (cropId: number) => api.deleteCellCrop(cropId),
+    onSuccess: () => {
+      setCropToDelete(null);
+      queryClient.invalidateQueries({ queryKey: ["crops", experimentId] });
+    },
+  });
+
+  const updateProteinMutation = useMutation({
+    mutationFn: ({ cropId, proteinId }: { cropId: number; proteinId: number | null }) =>
+      api.updateCellCropProtein(cropId, proteinId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["crops", experimentId] });
+      setProteinDropdownCropId(null);
+    },
+  });
+
+  // State for protein dropdown
+  const [proteinDropdownCropId, setProteinDropdownCropId] = useState<number | null>(null);
 
   // Get unique proteins from crops with color info
   const availableProteins = useMemo((): ProteinInfo[] => {
@@ -225,6 +251,15 @@ export default function ExperimentDetailPage(): JSX.Element {
                     }}
                   />
                   <Microscope className="w-10 h-10 text-text-muted hidden" />
+
+                  {/* Delete button overlay */}
+                  <button
+                    onClick={() => setCropToDelete({ id: crop.id, name: crop.parent_filename })}
+                    className="absolute top-2 right-2 p-1.5 bg-bg-primary/80 hover:bg-accent-red/20 text-text-muted hover:text-accent-red rounded-lg opacity-0 group-hover:opacity-100 transition-all duration-200"
+                    title="Delete cell crop"
+                  >
+                    <Trash2 className="w-4 h-4" />
+                  </button>
                 </div>
 
                 {/* Info */}
@@ -234,26 +269,47 @@ export default function ExperimentDetailPage(): JSX.Element {
                     {crop.parent_filename}
                   </p>
 
-                  {/* Metrics row */}
-                  <div className="flex items-center justify-between">
-                    {/* Bundleness score */}
-                    {crop.bundleness_score !== null && crop.bundleness_score !== undefined && (
-                      <span className="text-sm font-mono text-text-secondary">
-                        B: {crop.bundleness_score.toFixed(2)}
-                      </span>
-                    )}
+                  {/* MAP protein selector */}
+                  <div className="relative">
+                    <button
+                      onClick={() => setProteinDropdownCropId(proteinDropdownCropId === crop.id ? null : crop.id)}
+                      className={`px-2 py-1 rounded text-xs font-medium transition-all w-full text-left ${
+                        crop.map_protein_name
+                          ? ""
+                          : "bg-bg-secondary text-text-muted hover:bg-bg-hover"
+                      }`}
+                      style={crop.map_protein_name ? {
+                        backgroundColor: `${crop.map_protein_color}20`,
+                        color: crop.map_protein_color,
+                      } : undefined}
+                    >
+                      {crop.map_protein_name || "+ Assign MAP"}
+                    </button>
 
-                    {/* MAP protein badge */}
-                    {crop.map_protein_name && (
-                      <span
-                        className="px-1.5 py-0.5 rounded text-xs font-medium"
-                        style={{
-                          backgroundColor: `${crop.map_protein_color}20`,
-                          color: crop.map_protein_color,
-                        }}
-                      >
-                        {crop.map_protein_name}
-                      </span>
+                    {/* Dropdown */}
+                    {proteinDropdownCropId === crop.id && (
+                      <div className="absolute top-full left-0 right-0 mt-1 bg-bg-elevated border border-white/10 rounded-lg shadow-xl z-10 overflow-hidden">
+                        <button
+                          onClick={() => updateProteinMutation.mutate({ cropId: crop.id, proteinId: null })}
+                          className="w-full px-3 py-2 text-left text-xs text-text-muted hover:bg-white/5"
+                        >
+                          None
+                        </button>
+                        {proteins?.map((p) => (
+                          <button
+                            key={p.id}
+                            onClick={() => updateProteinMutation.mutate({ cropId: crop.id, proteinId: p.id })}
+                            className="w-full px-3 py-2 text-left text-xs hover:bg-white/5 flex items-center gap-2"
+                            style={{ color: p.color }}
+                          >
+                            <span
+                              className="w-2 h-2 rounded-full"
+                              style={{ backgroundColor: p.color }}
+                            />
+                            {p.name}
+                          </button>
+                        ))}
+                      </div>
                     )}
                   </div>
 
@@ -300,6 +356,18 @@ export default function ExperimentDetailPage(): JSX.Element {
           </Link>
         </div>
       )}
+
+      {/* Delete confirmation modal */}
+      <ConfirmModal
+        isOpen={!!cropToDelete}
+        onClose={() => setCropToDelete(null)}
+        onConfirm={() => cropToDelete && deleteCropMutation.mutate(cropToDelete.id)}
+        title="Delete Cell Crop"
+        message={`Are you sure you want to delete this cell crop from "${cropToDelete?.name}"? This action cannot be undone.`}
+        confirmText="Delete"
+        isLoading={deleteCropMutation.isPending}
+        variant="danger"
+      />
     </div>
   );
 }

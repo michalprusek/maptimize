@@ -1,13 +1,14 @@
 """Image routes."""
 import os
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Optional
 
 import aiofiles
 from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Form, Query, BackgroundTasks
 from fastapi.responses import FileResponse
-from sqlalchemy import select, func
+from sqlalchemy import select, func, delete, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -17,12 +18,49 @@ from models.user import User
 from models.experiment import Experiment
 from models.image import Image, MapProtein, UploadStatus
 from models.cell_crop import CellCrop
+from models.metric import MetricImage, MetricRating, MetricComparison
 from schemas.image import ImageResponse, ImageDetailResponse, CellCropGalleryResponse
-from utils.security import get_current_user
+from utils.security import get_current_user, decode_token, TokenPayload
 from services.image_processor import process_image_background
 
 router = APIRouter()
 settings = get_settings()
+
+
+def validate_image_token(token: Optional[str]) -> TokenPayload:
+    """
+    Validate JWT token for image requests.
+
+    Args:
+        token: JWT token from query parameter
+
+    Returns:
+        TokenPayload with user info
+
+    Raises:
+        HTTPException: If token is missing, invalid, or expired
+    """
+    if not token:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Token required"
+        )
+
+    payload = decode_token(token)
+    if not payload:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid token"
+        )
+
+    # Explicitly check expiration (defense in depth)
+    if payload.exp < datetime.now(timezone.utc):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Token expired"
+        )
+
+    return payload
 
 
 @router.post("/upload", response_model=ImageResponse, status_code=status.HTTP_201_CREATED)
@@ -188,7 +226,8 @@ async def list_cell_crops(
         select(CellCrop)
         .join(Image, CellCrop.image_id == Image.id)
         .options(
-            selectinload(CellCrop.image).selectinload(Image.map_protein)
+            selectinload(CellCrop.image),
+            selectinload(CellCrop.map_protein)
         )
         .where(Image.experiment_id == experiment_id)
         .order_by(CellCrop.created_at.desc())
@@ -213,8 +252,8 @@ async def list_cell_crops(
             detection_confidence=c.detection_confidence,
             excluded=c.excluded,
             created_at=c.created_at,
-            map_protein_name=c.image.map_protein.name if c.image.map_protein else None,
-            map_protein_color=c.image.map_protein.color if c.image.map_protein else None,
+            map_protein_name=c.map_protein.name if c.map_protein else None,
+            map_protein_color=c.map_protein.color if c.map_protein else None,
         )
         for c in crops
     ]
@@ -228,20 +267,7 @@ async def get_crop_image(
     db: AsyncSession = Depends(get_db)
 ):
     """Get a cell crop image (MIP or SUM projection)."""
-    from utils.security import decode_token
-
-    if not token:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Token required"
-        )
-
-    payload = decode_token(token)
-    if not payload:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid token"
-        )
+    payload = validate_image_token(token)
 
     result = await db.execute(select(User).where(User.id == payload.sub))
     user = result.scalar_one_or_none()
@@ -280,6 +306,119 @@ async def get_crop_image(
         )
 
     return FileResponse(file_path)
+
+
+@router.delete("/crops/{crop_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_cell_crop(
+    crop_id: int,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Delete a cell crop."""
+    result = await db.execute(
+        select(CellCrop)
+        .options(
+            selectinload(CellCrop.image).selectinload(Image.experiment)
+        )
+        .where(CellCrop.id == crop_id)
+    )
+    crop = result.scalar_one_or_none()
+
+    if not crop or crop.image.experiment.user_id != current_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Cell crop not found"
+        )
+
+    # Find all MetricImage records that reference this cell crop
+    metric_images_result = await db.execute(
+        select(MetricImage).where(MetricImage.cell_crop_id == crop_id)
+    )
+    metric_images = metric_images_result.scalars().all()
+
+    # Delete related metric data for each MetricImage
+    for mi in metric_images:
+        # Delete comparisons involving this metric image
+        await db.execute(
+            delete(MetricComparison).where(
+                or_(
+                    MetricComparison.image_a_id == mi.id,
+                    MetricComparison.image_b_id == mi.id,
+                    MetricComparison.winner_id == mi.id
+                )
+            )
+        )
+        # Delete rating for this metric image
+        await db.execute(
+            delete(MetricRating).where(MetricRating.metric_image_id == mi.id)
+        )
+        # Delete the metric image itself
+        await db.delete(mi)
+
+    # Delete MIP crop file
+    if crop.mip_path and os.path.exists(crop.mip_path):
+        os.remove(crop.mip_path)
+
+    # Delete SUM crop file if exists
+    if crop.sum_crop_path and os.path.exists(crop.sum_crop_path):
+        os.remove(crop.sum_crop_path)
+
+    await db.delete(crop)
+    await db.commit()
+
+
+@router.patch("/crops/{crop_id}/protein")
+async def update_cell_crop_protein(
+    crop_id: int,
+    map_protein_id: Optional[int] = None,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Update the MAP protein assignment for a cell crop."""
+    result = await db.execute(
+        select(CellCrop)
+        .options(
+            selectinload(CellCrop.image).selectinload(Image.experiment)
+        )
+        .where(CellCrop.id == crop_id)
+    )
+    crop = result.scalar_one_or_none()
+
+    if not crop or crop.image.experiment.user_id != current_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Cell crop not found"
+        )
+
+    # Verify protein exists if provided
+    if map_protein_id is not None:
+        protein_result = await db.execute(
+            select(MapProtein).where(MapProtein.id == map_protein_id)
+        )
+        if not protein_result.scalar_one_or_none():
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="MAP protein not found"
+            )
+
+    crop.map_protein_id = map_protein_id
+    await db.commit()
+
+    # Reload with protein relationship
+    await db.refresh(crop)
+    result = await db.execute(
+        select(CellCrop)
+        .options(selectinload(CellCrop.map_protein))
+        .where(CellCrop.id == crop_id)
+    )
+    crop = result.scalar_one()
+
+    return {
+        "id": crop.id,
+        "map_protein_id": crop.map_protein_id,
+        "map_protein_name": crop.map_protein.name if crop.map_protein else None,
+        "map_protein_color": crop.map_protein.color if crop.map_protein else None,
+    }
 
 
 @router.get("/{image_id}", response_model=ImageDetailResponse)
@@ -324,20 +463,7 @@ async def get_image_file(
 
     Supports authentication via query parameter 'token' (for <img src=""> tags).
     """
-    from utils.security import decode_token
-
-    if not token:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Token required"
-        )
-
-    payload = decode_token(token)
-    if not payload:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid token"
-        )
+    payload = validate_image_token(token)
 
     result = await db.execute(select(User).where(User.id == payload.sub))
     user = result.scalar_one_or_none()

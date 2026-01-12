@@ -8,7 +8,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from database import Base
 
 if TYPE_CHECKING:
-    from .image import Image
+    from .image import Image, MapProtein
     from .ranking import UserRating
 
 
@@ -20,6 +20,11 @@ class CellCrop(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     image_id: Mapped[int] = mapped_column(
         ForeignKey("images.id", ondelete="CASCADE"),
+        index=True
+    )
+    map_protein_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("map_proteins.id", ondelete="SET NULL"),
+        nullable=True,
         index=True
     )
 
@@ -50,6 +55,7 @@ class CellCrop(Base):
 
     # Relationships
     image: Mapped["Image"] = relationship(back_populates="cell_crops")
+    map_protein: Mapped[Optional["MapProtein"]] = relationship()
     ratings: Mapped[List["UserRating"]] = relationship(
         back_populates="cell_crop",
         cascade="all, delete-orphan"

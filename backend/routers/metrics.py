@@ -4,7 +4,7 @@ import random
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status, Query
-from sqlalchemy import select, func, distinct
+from sqlalchemy import select, func, distinct, or_, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 from openskill.models import PlackettLuce
@@ -453,6 +453,22 @@ async def remove_metric_image(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Image not found in metric"
         )
+
+    # Delete related comparisons first (where this image is involved)
+    await db.execute(
+        delete(MetricComparison).where(
+            or_(
+                MetricComparison.image_a_id == image_id,
+                MetricComparison.image_b_id == image_id,
+                MetricComparison.winner_id == image_id
+            )
+        )
+    )
+
+    # Delete related rating
+    await db.execute(
+        delete(MetricRating).where(MetricRating.metric_image_id == image_id)
+    )
 
     # Delete file if it's a direct upload
     if image.file_path and os.path.exists(image.file_path):

@@ -10,8 +10,6 @@ import {
   LayoutDashboard,
   Upload,
   Scale,
-  BarChart3,
-  Settings,
   LogOut,
   User,
   ChevronRight,
@@ -23,7 +21,6 @@ const navigation = [
   { name: "Dashboard", href: "/dashboard", icon: LayoutDashboard },
   { name: "Experiments", href: "/dashboard/experiments", icon: Upload },
   { name: "Ranking", href: "/dashboard/ranking", icon: Scale },
-  { name: "Metrics", href: "/dashboard/metrics", icon: BarChart3 },
 ];
 
 export default function DashboardLayout({

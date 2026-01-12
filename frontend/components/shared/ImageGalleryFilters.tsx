@@ -60,6 +60,14 @@ export function ImageGalleryFilters<TSortField extends string>({
     onProteinFilterChange !== undefined && availableProteins.length > 0;
   const SortIcon = sortOrder === "asc" ? ArrowUp : ArrowDown;
 
+  const handleSortFieldChange = (value: string) => {
+    // Validate that the value is one of the valid sort options
+    const validOption = sortOptions.find((opt) => opt.value === value);
+    if (validOption) {
+      onSortFieldChange(validOption.value);
+    }
+  };
+
   return (
     <div className="glass-card p-4">
       <div className="flex items-center gap-4">
@@ -79,7 +87,7 @@ export function ImageGalleryFilters<TSortField extends string>({
         <div className="flex items-center gap-2">
           <select
             value={sortField}
-            onChange={(e) => onSortFieldChange(e.target.value as TSortField)}
+            onChange={(e) => handleSortFieldChange(e.target.value)}
             className="input-field text-sm"
           >
             {sortOptions.map((option) => (

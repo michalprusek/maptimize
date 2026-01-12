@@ -265,16 +265,18 @@ NEXT_PUBLIC_API_URL=http://localhost:8000
 6. **ALWAYS use Docker dev with hot reload** - use `docker-compose -f docker-compose.dev.yml up` for development. Since hot reload is enabled, **do NOT restart containers after code changes** - changes are applied automatically
 7. **Run code-simplifier after implementation** - after completing any implementation task, always run the `code-simplifier:code-simplifier` agent to refine code for clarity, consistency, and maintainability
 
-## Default Credentials
+## Default Admin Setup
 
-When database is reset, these are created automatically:
+When the database is reset, an admin user and default experiment are created automatically.
+The credentials are configured via environment variables:
 
-| Type | Value |
-|------|-------|
-| Email | `12bprusek@gym-nymburk.cz` |
-| Password | `82c17878` |
-| Role | Admin |
-| Default Experiment | "MAP9 Analysis" |
+```bash
+# Backend environment variables for initial admin setup
+DEFAULT_ADMIN_EMAIL=your-email@example.com
+DEFAULT_ADMIN_PASSWORD=your-secure-password
+```
+
+The admin user is created with the `admin` role, and a default "MAP9 Analysis" experiment is created.
 
 ## Docker Operations (Claude MUST do this autonomously)
 

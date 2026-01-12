@@ -1,11 +1,11 @@
 """
 Image processing service - handles the full pipeline:
 1. Load Z-stack TIFF or 2D image
-2. Create MIP and SUM projections (for Z-stacks)
+2. Create MIP and SUM projections (for Z-stacks only)
 3. Optionally run YOLO detection
-4. Crop detected cells from both projections
-5. Compute metrics (bundleness, intensity)
-6. Clean up source files
+4. Crop detected cells from projections
+5. Compute basic metrics (intensity)
+6. Clean up original Z-stack file (2D images are kept)
 7. Save to database
 """
 
@@ -17,7 +17,6 @@ from datetime import datetime, timezone
 
 import numpy as np
 from PIL import Image as PILImage
-from scipy import stats
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -199,8 +198,7 @@ class ImageProcessor:
                 sum_crop = self._crop_cell(sum_proj, det)
                 sum_crop_path = await self._save_crop(image, det, sum_crop, "sum")
 
-            # Compute metrics from MIP crop
-            bundleness, skewness, kurtosis = self._compute_bundleness(mip_crop)
+            # Compute basic metrics from MIP crop
             mean_intensity = float(np.mean(mip_crop))
 
             # Create database record
@@ -213,10 +211,10 @@ class ImageProcessor:
                 detection_confidence=det.confidence,
                 mip_path=str(mip_crop_path),
                 sum_crop_path=str(sum_crop_path) if sum_crop_path else None,
-                bundleness_score=bundleness,
+                bundleness_score=None,
                 mean_intensity=mean_intensity,
-                skewness=skewness,
-                kurtosis=kurtosis,
+                skewness=None,
+                kurtosis=None,
             )
             db.add(cell_crop)
 
@@ -322,41 +320,6 @@ class ImageProcessor:
         pil_img.save(crop_path)
 
         return crop_path
-
-    def _compute_bundleness(self, crop: np.ndarray) -> Tuple[float, float, float]:
-        """
-        Compute bundleness score from intensity distribution.
-
-        Bundleness = 0.7071 * z_skewness + 0.7071 * z_kurtosis
-
-        Returns:
-            (bundleness_score, skewness, kurtosis)
-        """
-        # Flatten and remove zeros/background
-        flat = crop.flatten().astype(np.float64)
-        threshold = np.percentile(flat, 10)
-        signal = flat[flat > threshold]
-
-        if len(signal) < 10:
-            return 0.0, 0.0, 0.0
-
-        # Compute statistics
-        skewness = float(stats.skew(signal))
-        kurtosis = float(stats.kurtosis(signal))
-
-        # Z-score normalization (parameters from n=408 dataset)
-        MEAN_SKEW = 1.1327
-        STD_SKEW = 0.4717
-        MEAN_KURT = 1.0071
-        STD_KURT = 1.4920
-
-        z_skew = (skewness - MEAN_SKEW) / STD_SKEW if STD_SKEW > 0 else 0
-        z_kurt = (kurtosis - MEAN_KURT) / STD_KURT if STD_KURT > 0 else 0
-
-        # PCA combined score
-        bundleness = 0.7071 * z_skew + 0.7071 * z_kurt
-
-        return bundleness, skewness, kurtosis
 
 
 async def process_image(image_id: int, detect_cells: bool = True) -> bool:
