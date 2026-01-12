@@ -16,13 +16,13 @@ import {
 import {
   ArrowLeft,
   Upload,
-  Microscope,
   Loader2,
   Search,
   Trash2,
   Check,
   X,
   AlertCircle,
+  Layers,
 } from "lucide-react";
 
 type SortField = "date" | "bundleness" | "parent" | "confidence";
@@ -288,10 +288,13 @@ export default function ExperimentDetailPage(): JSX.Element {
           )}
         </div>
         <div className="flex items-center gap-3">
-          <div className="flex items-center gap-2 px-3 py-1.5 bg-bg-elevated rounded-lg">
-            <Microscope className="w-4 h-4 text-text-muted" />
+          <div className="flex items-center gap-4 px-3 py-1.5 bg-bg-elevated rounded-lg">
             <span className="text-sm text-text-secondary">
-              {crops?.length || 0} cells
+              {experiment.image_count} images
+            </span>
+            <span className="text-text-muted">·</span>
+            <span className="text-sm text-text-secondary">
+              {crops?.length || 0} crops
             </span>
           </div>
           <Link
@@ -452,7 +455,7 @@ export default function ExperimentDetailPage(): JSX.Element {
                       e.currentTarget.nextElementSibling?.classList.remove("hidden");
                     }}
                   />
-                  <Microscope className="w-10 h-10 text-text-muted hidden" />
+                  <Layers className="w-10 h-10 text-text-muted hidden" />
 
                   {/* Selection checkbox */}
                   <button
@@ -559,7 +562,7 @@ export default function ExperimentDetailPage(): JSX.Element {
         </div>
       ) : (
         <div className="glass-card p-12 text-center">
-          <Microscope className="w-12 h-12 text-text-muted mx-auto mb-4" />
+          <Layers className="w-12 h-12 text-text-muted mx-auto mb-4" />
           <h3 className="text-lg font-display font-semibold text-text-primary mb-2">
             No cell crops yet
           </h3>

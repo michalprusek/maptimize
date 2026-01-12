@@ -32,8 +32,12 @@ ml = [
     "torch>=2.1.0",
     "torchvision>=0.16.0",
     "ultralytics>=8.1.0",
-    "transformers>=4.37.0",
+    "transformers>=4.56.0",
     "timm>=0.9.12",
+    "pgvector>=0.3.0",
+    "umap-learn>=0.5.7",
+    "numba>=0.59.0",
+    "scikit-learn>=1.4.0",
 ]
 dev = [
     "pytest>=7.4.0",

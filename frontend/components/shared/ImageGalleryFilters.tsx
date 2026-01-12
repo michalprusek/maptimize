@@ -72,7 +72,7 @@ export function ImageGalleryFilters<TSortField extends string>({
   };
 
   return (
-    <div className="glass-card p-4">
+    <div className="glass-card p-4 relative z-10">
       <div className="flex items-center gap-4">
         {/* Left slot for custom content (select all, bulk actions) */}
         {leftSlot}

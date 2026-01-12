@@ -43,6 +43,100 @@ const IMAGE_SORT_OPTIONS: SortOption<ImageSortField>[] = [
   { value: "comparisons", label: "Comparisons" },
 ];
 
+interface ComparisonCardProps {
+  image: MetricImageForRanking;
+  imageUrl: string | null;
+  isSelected: boolean;
+  isOtherSelected: boolean;
+  isPending: boolean;
+  keyboardHint: string;
+  onSelect: () => void;
+  onDelete: () => void;
+}
+
+function ComparisonCard({
+  image,
+  imageUrl,
+  isSelected,
+  isOtherSelected,
+  isPending,
+  keyboardHint,
+  onSelect,
+  onDelete,
+}: ComparisonCardProps): JSX.Element {
+  return (
+    <div className="flex-1 flex flex-col">
+      <motion.div
+        whileHover={{ scale: isPending ? 1 : 1.01 }}
+        whileTap={{ scale: isPending ? 1 : 0.99 }}
+        animate={{
+          opacity: isOtherSelected ? 0.5 : 1,
+          scale: isSelected ? 1.01 : 1,
+        }}
+        className={`glass-card overflow-hidden cursor-pointer transition-all duration-200 flex-1 ${
+          isSelected
+            ? "ring-2 ring-primary-500 border-primary-500/50"
+            : "hover:border-primary-500/30"
+        } ${isPending ? "pointer-events-none" : ""}`}
+        onClick={onSelect}
+      >
+        <div className="bg-bg-secondary relative group flex items-center justify-center p-4 min-h-[300px]">
+          {imageUrl ? (
+            <img
+              src={imageUrl}
+              alt={`Image ${image.id}`}
+              className="max-h-[280px] object-contain"
+            />
+          ) : (
+            <div className="flex items-center justify-center p-12">
+              <Target className="w-16 h-16 text-text-muted" />
+            </div>
+          )}
+
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              onDelete();
+            }}
+            className="absolute top-2 right-2 p-2 bg-black/50 hover:bg-accent-red/80 rounded-lg opacity-0 group-hover:opacity-100 transition-all z-10"
+            title="Remove from metric"
+          >
+            <Trash2 className="w-4 h-4 text-white" />
+          </button>
+
+          <AnimatePresence>
+            {isSelected && (
+              <motion.div
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                className="absolute inset-0 bg-primary-500/20 flex items-center justify-center"
+              >
+                <div className="p-4 bg-primary-500 rounded-full">
+                  <Check className="w-8 h-8 text-white" />
+                </div>
+              </motion.div>
+            )}
+          </AnimatePresence>
+
+          <div className="absolute bottom-4 left-4">
+            <span className="px-3 py-1.5 bg-black/50 backdrop-blur-sm rounded-lg text-white font-mono text-lg">
+              {keyboardHint}
+            </span>
+          </div>
+        </div>
+
+        <div className="p-3">
+          <p className="text-sm text-text-muted">
+            Image #{image.id}
+            {image.original_filename && ` · ${image.original_filename}`}
+          </p>
+        </div>
+      </motion.div>
+    </div>
+  );
+}
+
 export default function MetricDetailPage(): JSX.Element {
   const params = useParams();
   const metricId = Number(params.metricId);
@@ -219,15 +313,18 @@ export default function MetricDetailPage(): JSX.Element {
       if (activeTab !== "ranking" || !pair || compareMutation.isPending) return;
 
       if (e.key === "ArrowLeft") {
+        e.preventDefault();
         setSelectedWinner(pair.image_a.id);
         setTimeout(() => compareMutation.mutate(pair.image_a.id), 200);
       } else if (e.key === "ArrowRight") {
+        e.preventDefault();
         setSelectedWinner(pair.image_b.id);
         setTimeout(() => compareMutation.mutate(pair.image_b.id), 200);
       } else if (e.key === " " || e.key === "Spacebar") {
-        e.preventDefault(); // Prevent page scroll
+        e.preventDefault();
         handleSkip();
       } else if (e.key === "z" && (e.ctrlKey || e.metaKey)) {
+        e.preventDefault();
         undoMutation.mutate();
       }
     },
@@ -480,15 +577,8 @@ export default function MetricDetailPage(): JSX.Element {
             </div>
           )}
 
-          {/* Comparison Area */}
-          {pairLoading ? (
-            <div className="glass-card p-12 flex justify-center">
-              <div className="text-center">
-                <Loader2 className="w-10 h-10 text-primary-500 animate-spin mx-auto mb-4" />
-                <p className="text-text-secondary">Loading next pair...</p>
-              </div>
-            </div>
-          ) : pairError ? (
+          {/* Comparison Area - fixed height container to prevent layout shift */}
+          {pairError ? (
             <div className="glass-card p-12 text-center">
               <AlertCircle className="w-12 h-12 text-accent-amber mx-auto mb-4" />
               <h3 className="text-lg font-display font-semibold text-text-primary mb-2">
@@ -504,7 +594,7 @@ export default function MetricDetailPage(): JSX.Element {
                 Add Images
               </button>
             </div>
-          ) : pair ? (
+          ) : (
             <>
               {/* Keyboard hint */}
               <AnimatePresence>
@@ -533,86 +623,44 @@ export default function MetricDetailPage(): JSX.Element {
                 )}
               </AnimatePresence>
 
-              {/* Comparison cards with Skip in the middle */}
-              <div className="flex items-stretch gap-4">
-                {[pair.image_a, pair.image_b].map((img, i) => {
-                  const isSelected = selectedWinner === img.id;
-                  const isOther = selectedWinner !== null && !isSelected;
-
-                  return (
-                    <div key={img.id} className="flex-1 flex flex-col">
-                      <motion.div
-                        layout
-                        whileHover={{ scale: compareMutation.isPending ? 1 : 1.01 }}
-                        whileTap={{ scale: compareMutation.isPending ? 1 : 0.99 }}
-                        animate={{
-                          opacity: isOther ? 0.5 : 1,
-                          scale: isSelected ? 1.01 : 1,
-                        }}
-                        className={`glass-card overflow-hidden cursor-pointer transition-all duration-200 flex-1 ${
-                          isSelected
-                            ? "ring-2 ring-primary-500 border-primary-500/50"
-                            : "hover:border-primary-500/30"
-                        } ${compareMutation.isPending ? "pointer-events-none" : ""}`}
-                        onClick={() => handleSelect(img.id)}
-                      >
-                        {/* Canvas container - natural image size, no scaling */}
-                        <div className="bg-bg-secondary relative group flex items-center justify-center p-4">
-                          {getAuthImageUrl(img.image_url) ? (
-                            <img
-                              src={getAuthImageUrl(img.image_url)!}
-                              alt={`Image ${img.id}`}
-                            />
-                          ) : (
-                            <div className="flex items-center justify-center p-12">
-                              <Target className="w-16 h-16 text-text-muted" />
-                            </div>
-                          )}
-
-                          {/* Exclude button */}
-                          <button
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              handleDeleteClick(img.id, img.original_filename || `Image #${img.id}`);
-                            }}
-                            className="absolute top-2 right-2 p-2 bg-black/50 hover:bg-accent-red/80 rounded-lg opacity-0 group-hover:opacity-100 transition-all z-10"
-                            title="Remove from metric"
-                          >
-                            <Trash2 className="w-4 h-4 text-white" />
-                          </button>
-
-                          <AnimatePresence>
-                            {isSelected && (
-                              <motion.div
-                                initial={{ opacity: 0 }}
-                                animate={{ opacity: 1 }}
-                                exit={{ opacity: 0 }}
-                                className="absolute inset-0 bg-primary-500/20 flex items-center justify-center"
-                              >
-                                <div className="p-4 bg-primary-500 rounded-full">
-                                  <Check className="w-8 h-8 text-white" />
-                                </div>
-                              </motion.div>
-                            )}
-                          </AnimatePresence>
-
-                          <div className="absolute bottom-4 left-4">
-                            <span className="px-3 py-1.5 bg-black/50 backdrop-blur-sm rounded-lg text-white font-mono text-lg">
-                              {i === 0 ? "←" : "→"}
-                            </span>
-                          </div>
-                        </div>
-
-                        <div className="p-3">
-                          <p className="text-sm text-text-muted">
-                            Image #{img.id}
-                            {img.original_filename && ` · ${img.original_filename}`}
-                          </p>
-                        </div>
-                      </motion.div>
+              {/* Comparison cards - stable container with min-height */}
+              <div className="relative min-h-[400px]">
+                {/* Loading overlay */}
+                {pairLoading && (
+                  <div className="absolute inset-0 flex items-center justify-center bg-bg-primary/50 backdrop-blur-sm z-10 rounded-xl">
+                    <div className="text-center">
+                      <Loader2 className="w-10 h-10 text-primary-500 animate-spin mx-auto mb-4" />
+                      <p className="text-text-secondary">Loading next pair...</p>
                     </div>
-                  );
-                })}
+                  </div>
+                )}
+
+                {pair && (
+                  <div className="flex items-stretch gap-4">
+                    <ComparisonCard
+                      key="image-left"
+                      image={pair.image_a}
+                      imageUrl={getAuthImageUrl(pair.image_a.image_url)}
+                      isSelected={selectedWinner === pair.image_a.id}
+                      isOtherSelected={selectedWinner !== null && selectedWinner !== pair.image_a.id}
+                      isPending={compareMutation.isPending}
+                      keyboardHint="←"
+                      onSelect={() => handleSelect(pair.image_a.id)}
+                      onDelete={() => handleDeleteClick(pair.image_a.id, pair.image_a.original_filename || `Image #${pair.image_a.id}`)}
+                    />
+                    <ComparisonCard
+                      key="image-right"
+                      image={pair.image_b}
+                      imageUrl={getAuthImageUrl(pair.image_b.image_url)}
+                      isSelected={selectedWinner === pair.image_b.id}
+                      isOtherSelected={selectedWinner !== null && selectedWinner !== pair.image_b.id}
+                      isPending={compareMutation.isPending}
+                      keyboardHint="→"
+                      onSelect={() => handleSelect(pair.image_b.id)}
+                      onDelete={() => handleDeleteClick(pair.image_b.id, pair.image_b.original_filename || `Image #${pair.image_b.id}`)}
+                    />
+                  </div>
+                )}
               </div>
 
               {/* Skip, Undo buttons and comparison counter */}
@@ -634,12 +682,14 @@ export default function MetricDetailPage(): JSX.Element {
                   <SkipForward className="w-4 h-4" />
                   Skip
                 </button>
-                <span className="text-text-muted">
-                  #{pair.comparison_number}
-                </span>
+                {pair && (
+                  <span className="text-text-muted">
+                    #{pair.comparison_number}
+                  </span>
+                )}
               </div>
             </>
-          ) : null}
+          )}
         </div>
       )}
 

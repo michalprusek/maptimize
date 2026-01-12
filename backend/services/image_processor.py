@@ -138,8 +138,9 @@ class ImageProcessor:
                     # Run detection pipeline
                     await self._run_detection(db, image, mip, sum_proj, is_zstack)
                 else:
-                    # No detection - just mark as ready
-                    logger.info("Detection disabled - keeping full projections")
+                    # No detection - treat whole image as a single crop
+                    logger.info("Detection disabled - creating whole-image crop")
+                    await self._create_whole_image_crop(db, image, mip, sum_proj)
                     image.status = UploadStatus.READY
                     image.processed_at = datetime.now(timezone.utc)
 
@@ -187,44 +188,88 @@ class ImageProcessor:
         await db.commit()
 
         # Create cell crops
+        new_crops = []
         for det in detections:
-            # Crop the cell from MIP
             mip_crop = self._crop_cell(mip, det)
             mip_crop_path = await self._save_crop(image, det, mip_crop, "mip")
 
-            # Crop from SUM projection if available
             sum_crop_path = None
             if sum_proj is not None:
                 sum_crop = self._crop_cell(sum_proj, det)
                 sum_crop_path = await self._save_crop(image, det, sum_crop, "sum")
 
-            # Compute basic metrics from MIP crop
-            mean_intensity = float(np.mean(mip_crop))
-
-            # Create database record
-            cell_crop = CellCrop(
-                image_id=image.id,
-                bbox_x=det.bbox_x,
-                bbox_y=det.bbox_y,
-                bbox_w=det.bbox_w,
-                bbox_h=det.bbox_h,
-                detection_confidence=det.confidence,
-                mip_path=str(mip_crop_path),
-                sum_crop_path=str(sum_crop_path) if sum_crop_path else None,
-                bundleness_score=None,
-                mean_intensity=mean_intensity,
-                skewness=None,
-                kurtosis=None,
+            cell_crop = self._create_cell_crop(
+                image=image,
+                mip_crop=mip_crop,
+                mip_path=mip_crop_path,
+                sum_crop_path=sum_crop_path,
+                bbox=(det.bbox_x, det.bbox_y, det.bbox_w, det.bbox_h),
+                confidence=det.confidence,
             )
             db.add(cell_crop)
+            new_crops.append(cell_crop)
 
-        # Keep both MIP and SUM projections for gallery display and future analysis
-        # Only the original Z-stack is deleted (done earlier in process() method)
-        # For 2D images, original is kept as it serves as MIP
+        await db.flush()
+        await self._extract_features_for_crops(new_crops, db)
 
         # Mark as complete
         image.status = UploadStatus.READY
         image.processed_at = datetime.now(timezone.utc)
+
+    async def _create_whole_image_crop(
+        self,
+        db: AsyncSession,
+        image: Image,
+        mip: np.ndarray,
+        sum_proj: Optional[np.ndarray]
+    ):
+        """
+        Create a single CellCrop representing the whole image.
+
+        Used when detect_cells=False - treats the entire image as one "crop"
+        so it appears in the gallery and can be imported into metrics.
+        """
+        height, width = mip.shape[:2]
+
+        mip_crop_path = await self._save_whole_image_crop(image, mip, "mip")
+
+        sum_crop_path = None
+        if sum_proj is not None:
+            sum_crop_path = await self._save_whole_image_crop(image, sum_proj, "sum")
+
+        cell_crop = self._create_cell_crop(
+            image=image,
+            mip_crop=mip,
+            mip_path=mip_crop_path,
+            sum_crop_path=sum_crop_path,
+            bbox=(0, 0, width, height),
+            confidence=1.0,
+        )
+        db.add(cell_crop)
+        await db.flush()
+
+        await self._extract_features_for_crops([cell_crop], db)
+
+    async def _save_whole_image_crop(
+        self,
+        image: Image,
+        projection: np.ndarray,
+        suffix: str
+    ) -> Path:
+        """Save whole image projection as a crop file."""
+        proj_8bit = normalize_image(projection)
+
+        # Create crops directory
+        upload_dir = Path(image.file_path).parent
+        crops_dir = upload_dir / "crops"
+        crops_dir.mkdir(exist_ok=True)
+
+        # Save with "whole" prefix to distinguish from detected crops
+        crop_path = crops_dir / f"whole_image_{suffix}.png"
+        pil_img = PILImage.fromarray(proj_8bit)
+        pil_img.save(crop_path)
+
+        return crop_path
 
     async def _load_image(self, file_path: str) -> Optional[np.ndarray]:
         """Load image from file (supports TIFF Z-stacks)."""
@@ -287,17 +332,55 @@ class ImageProcessor:
         return thumb_path
 
     def _crop_cell(self, projection: np.ndarray, det: Detection) -> np.ndarray:
-        """Crop a cell from a projection based on detection."""
+        """Crop a cell from a projection based on detection bbox (no padding)."""
         x, y, w, h = det.bbox_x, det.bbox_y, det.bbox_w, det.bbox_h
+        return projection[y:y+h, x:x+w]
 
-        # Add padding
-        pad = int(max(w, h) * 0.1)
-        x1 = max(0, x - pad)
-        y1 = max(0, y - pad)
-        x2 = min(projection.shape[1], x + w + pad)
-        y2 = min(projection.shape[0], y + h + pad)
+    def _create_cell_crop(
+        self,
+        image: Image,
+        mip_crop: np.ndarray,
+        mip_path: Path,
+        sum_crop_path: Optional[Path],
+        bbox: Tuple[int, int, int, int],
+        confidence: float,
+    ) -> CellCrop:
+        """Create a CellCrop database record."""
+        return CellCrop(
+            image_id=image.id,
+            map_protein_id=image.map_protein_id,
+            bbox_x=bbox[0],
+            bbox_y=bbox[1],
+            bbox_w=bbox[2],
+            bbox_h=bbox[3],
+            detection_confidence=confidence,
+            mip_path=str(mip_path),
+            sum_crop_path=str(sum_crop_path) if sum_crop_path else None,
+            bundleness_score=None,
+            mean_intensity=float(np.mean(mip_crop)),
+            skewness=None,
+            kurtosis=None,
+        )
 
-        return projection[y1:y2, x1:x2]
+    async def _extract_features_for_crops(
+        self,
+        crops: List[CellCrop],
+        db: AsyncSession
+    ) -> None:
+        """Extract DINOv2 embeddings for cell crops (non-fatal on failure)."""
+        if not crops:
+            return
+
+        crop_ids = [crop.id for crop in crops]
+        try:
+            from ml.features import extract_features_for_crops
+            result = await extract_features_for_crops(crop_ids, db)
+            logger.info(
+                f"Feature extraction: {result['success']} success, "
+                f"{result['failed']} failed"
+            )
+        except Exception as e:
+            logger.warning(f"Feature extraction failed (non-fatal): {e}")
 
     async def _save_crop(
         self,

@@ -6,12 +6,14 @@ import { useQuery } from "@tanstack/react-query";
 import { api } from "@/lib/api";
 import { useAuthStore } from "@/stores/authStore";
 import { StatusBadge } from "@/components/ui";
+import { UmapVisualization } from "@/components/visualization";
 import {
   FolderOpen,
   Image as ImageIcon,
   Plus,
   ArrowRight,
   Sparkles,
+  Dna,
 } from "lucide-react";
 
 const containerVariants = {
@@ -37,10 +39,17 @@ export default function DashboardPage(): JSX.Element {
     queryFn: () => api.getExperiments(),
   });
 
+  // Fetch embedding status for stats
+  const { data: embeddingStatus } = useQuery({
+    queryKey: ["embedding-status"],
+    queryFn: () => api.getEmbeddingStatus(),
+  });
+
   // Calculate stats
   const stats = {
     experiments: experiments?.length || 0,
     images: experiments?.reduce((acc, exp) => acc + exp.image_count, 0) || 0,
+    cellCrops: embeddingStatus?.total || 0,
   };
 
   return (
@@ -63,7 +72,7 @@ export default function DashboardPage(): JSX.Element {
       {/* Stats */}
       <motion.div
         variants={itemVariants}
-        className="grid grid-cols-1 md:grid-cols-2 gap-6"
+        className="grid grid-cols-1 md:grid-cols-3 gap-6"
       >
         {[
           {
@@ -78,6 +87,12 @@ export default function DashboardPage(): JSX.Element {
             icon: ImageIcon,
             color: "amber",
           },
+          {
+            label: "Cell Crops",
+            value: stats.cellCrops,
+            icon: Dna,
+            color: "purple",
+          },
         ].map((stat) => (
           <div
             key={stat.label}
@@ -87,7 +102,9 @@ export default function DashboardPage(): JSX.Element {
               className={`p-3 rounded-xl ${
                 stat.color === "primary"
                   ? "bg-primary-500/20 text-primary-400"
-                  : "bg-accent-amber/20 text-accent-amber"
+                  : stat.color === "amber"
+                    ? "bg-accent-amber/20 text-accent-amber"
+                    : "bg-accent-purple/20 text-accent-purple"
               }`}
             >
               <stat.icon className="w-6 h-6" />
@@ -100,6 +117,14 @@ export default function DashboardPage(): JSX.Element {
             </div>
           </div>
         ))}
+      </motion.div>
+
+      {/* Feature Space Visualization */}
+      <motion.div variants={itemVariants}>
+        <h2 className="text-xl font-display font-semibold text-text-primary mb-4">
+          Feature Space Visualization
+        </h2>
+        <UmapVisualization height={450} />
       </motion.div>
 
       {/* Recent Experiments */}
@@ -138,7 +163,7 @@ export default function DashboardPage(): JSX.Element {
                         {exp.name}
                       </h3>
                       <p className="text-sm text-text-secondary">
-                        {exp.image_count} images
+                        {exp.image_count} images · {exp.cell_count} crops
                       </p>
                     </div>
                   </div>
