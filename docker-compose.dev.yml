@@ -1,0 +1,72 @@
+version: "3.8"
+
+# Development compose file with hot reload
+# Usage: docker-compose -f docker-compose.dev.yml up
+
+services:
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile.dev
+    ports:
+      - "3000:3000"
+    environment:
+      - NEXT_PUBLIC_API_URL=http://localhost:8000
+      - WATCHPACK_POLLING=true
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+      - /app/.next
+    depends_on:
+      - backend
+    stdin_open: true
+    tty: true
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.dev
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_URL=postgresql://maptimize:maptimize_password@db:5432/maptimize
+      - REDIS_URL=redis://redis:6379
+      - JWT_SECRET=dev-secret-key
+      - DEBUG=true
+    volumes:
+      - ./backend:/app
+      - ./data/uploads:/app/data/uploads
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    stdin_open: true
+    tty: true
+
+  db:
+    image: pgvector/pgvector:pg16
+    environment:
+      - POSTGRES_USER=maptimize
+      - POSTGRES_PASSWORD=maptimize_password
+      - POSTGRES_DB=maptimize
+    volumes:
+      - postgres_data_dev:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U maptimize -d maptimize"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data_dev:/data
+
+volumes:
+  postgres_data_dev:
+  redis_data_dev:

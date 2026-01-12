@@ -1,0 +1,247 @@
+"use client";
+
+import { useState } from "react";
+import Link from "next/link";
+import { motion, AnimatePresence } from "framer-motion";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { api, Experiment, MapProtein } from "@/lib/api";
+import {
+  Plus,
+  FolderOpen,
+  Image as ImageIcon,
+  ArrowRight,
+  X,
+  Loader2,
+} from "lucide-react";
+
+export default function ExperimentsPage() {
+  const [showCreateModal, setShowCreateModal] = useState(false);
+  const [newExpName, setNewExpName] = useState("");
+  const [newExpDescription, setNewExpDescription] = useState("");
+  const queryClient = useQueryClient();
+
+  const { data: experiments, isLoading } = useQuery({
+    queryKey: ["experiments"],
+    queryFn: () => api.getExperiments(),
+  });
+
+  const createMutation = useMutation({
+    mutationFn: (data: { name: string; description?: string }) =>
+      api.createExperiment(data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["experiments"] });
+      setShowCreateModal(false);
+      setNewExpName("");
+      setNewExpDescription("");
+    },
+  });
+
+  const deleteMutation = useMutation({
+    mutationFn: (id: number) => api.deleteExperiment(id),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["experiments"] });
+    },
+  });
+
+  const handleCreate = (e: React.FormEvent) => {
+    e.preventDefault();
+    createMutation.mutate({
+      name: newExpName,
+      description: newExpDescription || undefined,
+    });
+  };
+
+  return (
+    <div className="space-y-8">
+      {/* Header */}
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-3xl font-display font-bold text-text-primary">
+            Experiments
+          </h1>
+          <p className="text-text-secondary mt-2">
+            Manage your microscopy image collections
+          </p>
+        </div>
+        <button
+          onClick={() => setShowCreateModal(true)}
+          className="btn-primary flex items-center gap-2"
+        >
+          <Plus className="w-5 h-5" />
+          New Experiment
+        </button>
+      </div>
+
+      {/* Experiments Grid */}
+      {isLoading ? (
+        <div className="flex justify-center py-12">
+          <div className="w-10 h-10 border-2 border-primary-500 border-t-transparent rounded-full animate-spin" />
+        </div>
+      ) : experiments && experiments.length > 0 ? (
+        <motion.div
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6"
+        >
+          {experiments.map((exp, i) => (
+            <motion.div
+              key={exp.id}
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ delay: i * 0.05 }}
+            >
+              <Link href={`/dashboard/experiments/${exp.id}`}>
+                <div className="glass-card p-6 h-full cursor-pointer group hover:border-primary-500/30 transition-all duration-300 card-hover">
+                  <div className="flex items-start justify-between mb-4">
+                    <div className="p-3 bg-primary-500/10 rounded-xl">
+                      <FolderOpen className="w-6 h-6 text-primary-400" />
+                    </div>
+                    <span
+                      className={`px-2 py-1 rounded-full text-xs font-medium ${
+                        exp.status === "active"
+                          ? "bg-primary-500/20 text-primary-400"
+                          : exp.status === "completed"
+                          ? "bg-accent-cyan/20 text-accent-cyan"
+                          : "bg-text-muted/20 text-text-muted"
+                      }`}
+                    >
+                      {exp.status}
+                    </span>
+                  </div>
+
+                  <h3 className="font-display font-semibold text-lg text-text-primary mb-2 group-hover:text-primary-400 transition-colors">
+                    {exp.name}
+                  </h3>
+
+                  {exp.description && (
+                    <p className="text-sm text-text-secondary mb-4 line-clamp-2">
+                      {exp.description}
+                    </p>
+                  )}
+
+                  <div className="flex items-center gap-4 text-sm text-text-muted">
+                    <div className="flex items-center gap-1">
+                      <ImageIcon className="w-4 h-4" />
+                      <span>{exp.image_count} images</span>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center justify-between mt-4 pt-4 border-t border-white/5">
+                    <span className="text-xs text-text-muted">
+                      {new Date(exp.created_at).toLocaleDateString()}
+                    </span>
+                    <ArrowRight className="w-5 h-5 text-text-muted group-hover:text-primary-400 group-hover:translate-x-1 transition-all" />
+                  </div>
+                </div>
+              </Link>
+            </motion.div>
+          ))}
+        </motion.div>
+      ) : (
+        <div className="glass-card p-12 text-center">
+          <div className="w-20 h-20 bg-primary-500/10 rounded-2xl flex items-center justify-center mx-auto mb-6">
+            <FolderOpen className="w-10 h-10 text-primary-400" />
+          </div>
+          <h3 className="text-xl font-display font-semibold text-text-primary mb-2">
+            No experiments yet
+          </h3>
+          <p className="text-text-secondary mb-6 max-w-md mx-auto">
+            Create your first experiment to organize and analyze your microscopy images
+          </p>
+          <button
+            onClick={() => setShowCreateModal(true)}
+            className="btn-primary inline-flex items-center gap-2"
+          >
+            <Plus className="w-5 h-5" />
+            Create Experiment
+          </button>
+        </div>
+      )}
+
+      {/* Create Modal */}
+      <AnimatePresence>
+        {showCreateModal && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4"
+            onClick={() => setShowCreateModal(false)}
+          >
+            <motion.div
+              initial={{ scale: 0.95, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.95, opacity: 0 }}
+              className="glass-card p-6 w-full max-w-md glow-primary"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="flex items-center justify-between mb-6">
+                <h2 className="text-xl font-display font-semibold text-text-primary">
+                  New Experiment
+                </h2>
+                <button
+                  onClick={() => setShowCreateModal(false)}
+                  className="p-2 hover:bg-white/5 rounded-lg transition-colors"
+                >
+                  <X className="w-5 h-5 text-text-muted" />
+                </button>
+              </div>
+
+              <form onSubmit={handleCreate} className="space-y-4">
+                <div>
+                  <label className="block text-sm font-medium text-text-secondary mb-2">
+                    Name
+                  </label>
+                  <input
+                    type="text"
+                    value={newExpName}
+                    onChange={(e) => setNewExpName(e.target.value)}
+                    className="input-field"
+                    placeholder="e.g., PRC1 Analysis March 2024"
+                    required
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-text-secondary mb-2">
+                    Description (optional)
+                  </label>
+                  <textarea
+                    value={newExpDescription}
+                    onChange={(e) => setNewExpDescription(e.target.value)}
+                    className="input-field min-h-[100px] resize-none"
+                    placeholder="Describe the purpose of this experiment..."
+                  />
+                </div>
+
+                <div className="flex gap-3 pt-4">
+                  <button
+                    type="button"
+                    onClick={() => setShowCreateModal(false)}
+                    className="btn-secondary flex-1"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={createMutation.isPending || !newExpName.trim()}
+                    className="btn-primary flex-1 flex items-center justify-center gap-2"
+                  >
+                    {createMutation.isPending ? (
+                      <Loader2 className="w-5 h-5 animate-spin" />
+                    ) : (
+                      <>
+                        <Plus className="w-5 h-5" />
+                        Create
+                      </>
+                    )}
+                  </button>
+                </div>
+              </form>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </div>
+  );
+}

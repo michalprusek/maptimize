@@ -1,0 +1,24 @@
+# Frontend Development Dockerfile with hot reload
+FROM node:20-alpine
+
+WORKDIR /app
+
+# Install dependencies for file watching
+RUN apk add --no-cache libc6-compat
+
+# Copy package files
+COPY package.json package-lock.json* ./
+
+# Install dependencies
+RUN npm ci
+
+# Expose port
+EXPOSE 3000
+
+# Environment for development
+ENV NODE_ENV=development
+ENV NEXT_TELEMETRY_DISABLED=1
+ENV WATCHPACK_POLLING=true
+
+# Run development server with hot reload
+CMD ["npm", "run", "dev"]

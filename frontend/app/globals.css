@@ -1,0 +1,124 @@
+@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&family=Outfit:wght@400;500;600;700;800&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 210 33% 6%;
+    --foreground: 200 30% 93%;
+  }
+
+  * {
+    @apply border-bg-elevated;
+  }
+
+  body {
+    @apply bg-bg-primary text-text-primary font-body antialiased;
+  }
+
+  /* Custom scrollbar */
+  ::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+
+  ::-webkit-scrollbar-track {
+    @apply bg-bg-secondary;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    @apply bg-bg-hover rounded-full;
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    @apply bg-primary-700;
+  }
+}
+
+@layer components {
+  /* Glass card effect */
+  .glass-card {
+    @apply bg-bg-elevated/80 backdrop-blur-xl border border-white/5 rounded-2xl;
+  }
+
+  /* Glow effect for primary elements */
+  .glow-primary {
+    box-shadow: 0 0 30px rgba(0, 212, 170, 0.15),
+                0 0 60px rgba(0, 212, 170, 0.1);
+  }
+
+  /* Cellular background pattern overlay */
+  .cellular-bg {
+    background-image:
+      radial-gradient(ellipse at 20% 30%, rgba(0, 212, 170, 0.08) 0%, transparent 50%),
+      radial-gradient(ellipse at 80% 70%, rgba(233, 30, 140, 0.05) 0%, transparent 50%),
+      url("data:image/svg+xml,%3Csvg width='100' height='100' viewBox='0 0 100 100' xmlns='http://www.w3.org/2000/svg'%3E%3Ccircle cx='50' cy='50' r='40' stroke='%2300d4aa' stroke-width='0.5' fill='none' opacity='0.05'/%3E%3Ccircle cx='50' cy='50' r='30' stroke='%2300d4aa' stroke-width='0.3' fill='none' opacity='0.03'/%3E%3Ccircle cx='50' cy='50' r='20' stroke='%2300d4aa' stroke-width='0.2' fill='none' opacity='0.02'/%3E%3C/svg%3E");
+    background-size: 100% 100%, 100% 100%, 200px 200px;
+  }
+
+  /* Gradient text */
+  .text-gradient {
+    @apply bg-gradient-to-r from-primary-400 via-primary-300 to-accent-cyan bg-clip-text text-transparent;
+  }
+
+  /* Button styles */
+  .btn-primary {
+    @apply px-6 py-3 bg-primary-600 hover:bg-primary-500 text-white font-medium rounded-xl
+           transition-all duration-200 shadow-lg hover:shadow-primary-500/25
+           active:scale-[0.98] disabled:opacity-50 disabled:cursor-not-allowed;
+  }
+
+  .btn-secondary {
+    @apply px-6 py-3 bg-bg-elevated hover:bg-bg-hover text-text-primary font-medium rounded-xl
+           border border-white/10 transition-all duration-200
+           active:scale-[0.98] disabled:opacity-50;
+  }
+
+  .btn-ghost {
+    @apply px-4 py-2 hover:bg-white/5 text-text-secondary hover:text-text-primary
+           font-medium rounded-lg transition-all duration-200;
+  }
+
+  /* Input styles */
+  .input-field {
+    @apply w-full px-4 py-3 bg-bg-secondary border border-white/10 rounded-xl
+           text-text-primary placeholder:text-text-muted
+           focus:outline-none focus:border-primary-500/50 focus:ring-2 focus:ring-primary-500/20
+           transition-all duration-200;
+  }
+
+  /* Card hover effect */
+  .card-hover {
+    @apply transition-all duration-300 hover:scale-[1.02] hover:shadow-xl hover:shadow-primary-500/5;
+  }
+}
+
+@layer utilities {
+  /* Hide scrollbar but keep functionality */
+  .scrollbar-hide {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+  .scrollbar-hide::-webkit-scrollbar {
+    display: none;
+  }
+
+  /* Animated gradient border */
+  .gradient-border {
+    position: relative;
+  }
+  .gradient-border::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    padding: 1px;
+    background: linear-gradient(135deg, rgba(0, 212, 170, 0.5), rgba(233, 30, 140, 0.3));
+    -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+    mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+    -webkit-mask-composite: xor;
+    mask-composite: exclude;
+  }
+}
