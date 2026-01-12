@@ -22,6 +22,7 @@ import {
   Trash2,
   Check,
   X,
+  AlertCircle,
 } from "lucide-react";
 
 type SortField = "date" | "bundleness" | "parent" | "confidence";
@@ -67,19 +68,19 @@ export default function ExperimentDetailPage(): JSX.Element {
     queryFn: () => api.getProteins(),
   });
 
-  // Delete error state
-  const [deleteError, setDeleteError] = useState<string | null>(null);
+  // Mutation error state for user feedback
+  const [mutationError, setMutationError] = useState<string | null>(null);
 
   const deleteCropMutation = useMutation({
     mutationFn: (cropId: number) => api.deleteCellCrop(cropId),
     onSuccess: () => {
       setCropToDelete(null);
-      setDeleteError(null);
+      setMutationError(null);
       queryClient.invalidateQueries({ queryKey: ["crops", experimentId] });
     },
     onError: (err: Error) => {
       console.error("Failed to delete cell crop:", err);
-      setDeleteError(err.message || "Failed to delete cell crop");
+      setMutationError(err.message || "Failed to delete cell crop");
     },
   });
 
@@ -87,30 +88,58 @@ export default function ExperimentDetailPage(): JSX.Element {
     mutationFn: ({ cropId, proteinId }: { cropId: number; proteinId: number | null }) =>
       api.updateCellCropProtein(cropId, proteinId),
     onSuccess: () => {
+      setMutationError(null);
       queryClient.invalidateQueries({ queryKey: ["crops", experimentId] });
       setProteinDropdownCropId(null);
     },
+    onError: (err: Error) => {
+      console.error("Failed to update protein:", err);
+      setMutationError(err.message || "Failed to update protein assignment");
+    },
   });
 
-  // Bulk delete mutation
+  // Bulk delete mutation with partial failure handling
   const bulkDeleteMutation = useMutation({
     mutationFn: async (ids: number[]) => {
-      await Promise.all(ids.map((id) => api.deleteCellCrop(id)));
+      const results = await Promise.allSettled(ids.map((id) => api.deleteCellCrop(id)));
+      const failures = results.filter((r) => r.status === "rejected");
+      if (failures.length > 0) {
+        const successCount = results.length - failures.length;
+        throw new Error(`Deleted ${successCount} of ${ids.length} items. ${failures.length} failed.`);
+      }
     },
     onSuccess: () => {
       setSelectedIds(new Set());
       setShowBulkDeleteConfirm(false);
+      setMutationError(null);
+      queryClient.invalidateQueries({ queryKey: ["crops", experimentId] });
+    },
+    onError: (err: Error) => {
+      console.error("Bulk delete failed:", err);
+      setMutationError(err.message);
+      // Refresh to show current state after partial deletion
       queryClient.invalidateQueries({ queryKey: ["crops", experimentId] });
     },
   });
 
-  // Bulk update protein mutation
+  // Bulk update protein mutation with partial failure handling
   const bulkUpdateProteinMutation = useMutation({
     mutationFn: async ({ ids, proteinId }: { ids: number[]; proteinId: number | null }) => {
-      await Promise.all(ids.map((id) => api.updateCellCropProtein(id, proteinId)));
+      const results = await Promise.allSettled(ids.map((id) => api.updateCellCropProtein(id, proteinId)));
+      const failures = results.filter((r) => r.status === "rejected");
+      if (failures.length > 0) {
+        const successCount = results.length - failures.length;
+        throw new Error(`Updated ${successCount} of ${ids.length} items. ${failures.length} failed.`);
+      }
     },
     onSuccess: () => {
       setBulkProteinDropdownOpen(false);
+      setMutationError(null);
+      queryClient.invalidateQueries({ queryKey: ["crops", experimentId] });
+    },
+    onError: (err: Error) => {
+      console.error("Bulk protein update failed:", err);
+      setMutationError(err.message);
       queryClient.invalidateQueries({ queryKey: ["crops", experimentId] });
     },
   });
@@ -275,6 +304,23 @@ export default function ExperimentDetailPage(): JSX.Element {
         </div>
       </div>
 
+      {/* Error notification */}
+      {mutationError && (
+        <div className="p-4 bg-accent-red/10 border border-accent-red/20 rounded-lg flex items-start gap-3">
+          <AlertCircle className="w-5 h-5 text-accent-red flex-shrink-0 mt-0.5" />
+          <div className="flex-1">
+            <p className="text-accent-red font-medium">Operation failed</p>
+            <p className="text-sm text-text-secondary">{mutationError}</p>
+          </div>
+          <button
+            onClick={() => setMutationError(null)}
+            className="text-text-muted hover:text-text-primary"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+      )}
+
       {/* Search and Filters with Select All and Bulk Actions */}
       <ImageGalleryFilters
         searchQuery={searchQuery}
@@ -317,7 +363,7 @@ export default function ExperimentDetailPage(): JSX.Element {
                 </span>
 
                 {/* Bulk Assign MAP */}
-                <div className="relative">
+                <div className="relative" ref={dropdownRef}>
                   <button
                     onClick={() => setBulkProteinDropdownOpen(!bulkProteinDropdownOpen)}
                     className="btn-secondary text-sm py-1.5"

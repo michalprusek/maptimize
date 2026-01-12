@@ -344,18 +344,28 @@ async def process_image_background(image_id: int, detect_cells: bool = True):
     """
     try:
         await process_image(image_id, detect_cells=detect_cells)
+    except asyncio.CancelledError:
+        logger.info(f"Processing cancelled for image {image_id}")
+        raise  # Always re-raise cancellation
+    except (MemoryError, SystemExit, KeyboardInterrupt):
+        logger.critical(f"System-level error during image {image_id} processing")
+        raise  # Don't catch system-level errors
     except Exception as e:
         logger.exception(f"Background processing failed for image {image_id}: {e}")
-        # Ensure error status is set even for outer exceptions
-        try:
-            async with get_db_context() as db:
-                result = await db.execute(
-                    select(Image).where(Image.id == image_id)
-                )
-                image = result.scalar_one_or_none()
-                if image and image.status != UploadStatus.ERROR:
-                    image.status = UploadStatus.ERROR
-                    image.error_message = f"Unexpected error: {str(e)}"
-                    await db.commit()
-        except Exception as db_err:
-            logger.error(f"Failed to update error status for image {image_id}: {db_err}")
+        await _update_error_status(image_id, str(e))
+
+
+async def _update_error_status(image_id: int, error_message: str):
+    """Update image status to ERROR. Separate function for clarity."""
+    try:
+        async with get_db_context() as db:
+            result = await db.execute(
+                select(Image).where(Image.id == image_id)
+            )
+            image = result.scalar_one_or_none()
+            if image and image.status != UploadStatus.ERROR:
+                image.status = UploadStatus.ERROR
+                image.error_message = f"Unexpected error: {error_message}"
+                await db.commit()
+    except Exception as db_err:
+        logger.error(f"Failed to update error status for image {image_id}: {db_err}")

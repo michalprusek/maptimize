@@ -30,6 +30,25 @@ router = APIRouter()
 settings = get_settings()
 
 
+def safe_remove_file(path: Optional[str]) -> bool:
+    """
+    Safely remove a file, logging warnings on failure.
+
+    Args:
+        path: File path to remove, or None
+
+    Returns:
+        True if file was removed, False otherwise
+    """
+    if path and os.path.exists(path):
+        try:
+            os.remove(path)
+            return True
+        except OSError as e:
+            logger.warning(f"Failed to delete file {path}: {e}")
+    return False
+
+
 def validate_image_token(token: Optional[str]) -> TokenPayload:
     """
     Validate JWT token for image requests.
@@ -358,19 +377,9 @@ async def delete_cell_crop(
         # Delete the metric image itself
         await db.delete(mi)
 
-    # Delete MIP crop file
-    if crop.mip_path and os.path.exists(crop.mip_path):
-        try:
-            os.remove(crop.mip_path)
-        except OSError as e:
-            logger.warning(f"Failed to delete MIP crop file {crop.mip_path}: {e}")
-
-    # Delete SUM crop file if exists
-    if crop.sum_crop_path and os.path.exists(crop.sum_crop_path):
-        try:
-            os.remove(crop.sum_crop_path)
-        except OSError as e:
-            logger.warning(f"Failed to delete SUM crop file {crop.sum_crop_path}: {e}")
+    # Delete crop files
+    safe_remove_file(crop.mip_path)
+    safe_remove_file(crop.sum_crop_path)
 
     await db.delete(crop)
     await db.commit()
@@ -537,11 +546,7 @@ async def delete_image(
 
     # Delete files (including SUM projection)
     for path in [image.file_path, image.mip_path, image.sum_path, image.thumbnail_path]:
-        if path and os.path.exists(path):
-            try:
-                os.remove(path)
-            except OSError as e:
-                logger.warning(f"Failed to delete image file {path}: {e}")
+        safe_remove_file(path)
 
     await db.delete(image)
     await db.commit()

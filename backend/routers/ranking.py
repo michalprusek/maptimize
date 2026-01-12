@@ -27,6 +27,7 @@ from schemas.ranking import (
     ImportResult,
 )
 from utils.security import get_current_user
+from utils.pair_selection import select_pair, InsufficientItemsError
 
 router = APIRouter()
 settings = get_settings()
@@ -162,7 +163,6 @@ async def get_next_pair(
         ratings[crop.id] = rating
 
     # Select pair using adaptive sampling utility
-    from utils.pair_selection import select_pair, InsufficientItemsError
     try:
         crop_a, crop_b = select_pair(
             items=crops,

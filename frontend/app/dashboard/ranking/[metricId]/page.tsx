@@ -176,16 +176,27 @@ export default function MetricDetailPage(): JSX.Element {
     },
     onSuccess: () => {
       setSelectedWinner(null);
+      setMutationError(null);
       queryClient.invalidateQueries({ queryKey: ["metric-progress", metricId] });
       setTimeout(() => refetchPair(), 300);
+    },
+    onError: (err: Error) => {
+      console.error("Failed to submit comparison:", err);
+      setMutationError(err.message || "Failed to submit comparison. Please try again.");
+      setSelectedWinner(null);
     },
   });
 
   const undoMutation = useMutation({
     mutationFn: () => api.undoMetricComparison(metricId),
     onSuccess: () => {
+      setMutationError(null);
       queryClient.invalidateQueries({ queryKey: ["metric-progress", metricId] });
       refetchPair();
+    },
+    onError: (err: Error) => {
+      console.error("Failed to undo comparison:", err);
+      setMutationError(err.message || "Failed to undo last comparison. Please try again.");
     },
   });
 
@@ -530,11 +541,6 @@ export default function MetricDetailPage(): JSX.Element {
 
                   return (
                     <div key={img.id} className="flex-1 flex flex-col">
-                      {i === 1 && (
-                        <div className="hidden md:flex absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 z-10">
-                          {/* Skip button positioned absolutely */}
-                        </div>
-                      )}
                       <motion.div
                         layout
                         whileHover={{ scale: compareMutation.isPending ? 1 : 1.01 }}
