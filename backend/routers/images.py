@@ -17,7 +17,7 @@ from models.user import User
 from models.experiment import Experiment
 from models.image import Image, MapProtein, UploadStatus
 from models.cell_crop import CellCrop
-from schemas.image import ImageResponse, ImageDetailResponse
+from schemas.image import ImageResponse, ImageDetailResponse, CellCropGalleryResponse
 from utils.security import get_current_user
 from services.image_processor import process_image_background
 
@@ -122,7 +122,7 @@ async def list_images(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
-    """List images in an experiment."""
+    """List images in an experiment with cell counts in a single query."""
     # Verify experiment ownership
     result = await db.execute(
         select(Experiment).where(
@@ -136,31 +136,150 @@ async def list_images(
             detail="Experiment not found"
         )
 
-    # Get images with protein info
+    # Get images with protein info and cell counts in a single query
     result = await db.execute(
-        select(Image)
+        select(
+            Image,
+            func.count(CellCrop.id).label("cell_count")
+        )
         .options(selectinload(Image.map_protein))
+        .outerjoin(CellCrop, Image.id == CellCrop.image_id)
         .where(Image.experiment_id == experiment_id)
+        .group_by(Image.id)
         .order_by(Image.created_at.desc())
         .offset(skip)
         .limit(limit)
     )
-    images = result.scalars().all()
+    rows = result.all()
 
-    # Add cell counts
     response = []
-    for img in images:
-        cell_result = await db.execute(
-            select(func.count(CellCrop.id))
-            .where(CellCrop.image_id == img.id)
-        )
-        cell_count = cell_result.scalar() or 0
-
+    for img, cell_count in rows:
         img_response = ImageResponse.model_validate(img)
-        img_response.cell_count = cell_count
+        img_response.cell_count = cell_count or 0
         response.append(img_response)
 
     return response
+
+
+# Cell crop endpoints - MUST be before /{image_id} to avoid route conflict
+@router.get("/crops", response_model=List[CellCropGalleryResponse])
+async def list_cell_crops(
+    experiment_id: int = Query(...),
+    exclude_excluded: bool = Query(True),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """List all cell crops for an experiment."""
+    # Verify experiment ownership
+    result = await db.execute(
+        select(Experiment).where(
+            Experiment.id == experiment_id,
+            Experiment.user_id == current_user.id
+        )
+    )
+    if not result.scalar_one_or_none():
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Experiment not found"
+        )
+
+    # Build query with optional exclusion filter
+    query = (
+        select(CellCrop)
+        .join(Image, CellCrop.image_id == Image.id)
+        .options(
+            selectinload(CellCrop.image).selectinload(Image.map_protein)
+        )
+        .where(Image.experiment_id == experiment_id)
+        .order_by(CellCrop.created_at.desc())
+    )
+
+    if exclude_excluded:
+        query = query.where(CellCrop.excluded == False)
+
+    result = await db.execute(query)
+    crops = result.scalars().all()
+
+    return [
+        CellCropGalleryResponse(
+            id=c.id,
+            image_id=c.image_id,
+            parent_filename=c.image.original_filename,
+            bbox_x=c.bbox_x,
+            bbox_y=c.bbox_y,
+            bbox_w=c.bbox_w,
+            bbox_h=c.bbox_h,
+            bundleness_score=c.bundleness_score,
+            detection_confidence=c.detection_confidence,
+            excluded=c.excluded,
+            created_at=c.created_at,
+            map_protein_name=c.image.map_protein.name if c.image.map_protein else None,
+            map_protein_color=c.image.map_protein.color if c.image.map_protein else None,
+        )
+        for c in crops
+    ]
+
+
+@router.get("/crops/{crop_id}/image")
+async def get_crop_image(
+    crop_id: int,
+    type: str = Query("mip", enum=["mip", "sum"]),
+    token: Optional[str] = Query(None, description="JWT token for image requests"),
+    db: AsyncSession = Depends(get_db)
+):
+    """Get a cell crop image (MIP or SUM projection)."""
+    from utils.security import decode_token
+
+    if not token:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Token required"
+        )
+
+    payload = decode_token(token)
+    if not payload:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid token"
+        )
+
+    result = await db.execute(select(User).where(User.id == payload.sub))
+    user = result.scalar_one_or_none()
+
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="User not found"
+        )
+
+    result = await db.execute(
+        select(CellCrop)
+        .options(
+            selectinload(CellCrop.image).selectinload(Image.experiment)
+        )
+        .where(CellCrop.id == crop_id)
+    )
+    crop = result.scalar_one_or_none()
+
+    if not crop or crop.image.experiment.user_id != user.id:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Cell crop not found"
+        )
+
+    # Select file path based on type
+    if type == "sum" and crop.sum_crop_path:
+        file_path = crop.sum_crop_path
+    else:
+        file_path = crop.mip_path
+
+    if not file_path or not os.path.exists(file_path):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Crop image file not found ({type})"
+        )
+
+    return FileResponse(file_path)
 
 
 @router.get("/{image_id}", response_model=ImageDetailResponse)
@@ -197,10 +316,38 @@ async def get_image(
 async def get_image_file(
     image_id: int,
     type: str = Query("original", enum=["original", "mip", "sum", "thumbnail"]),
-    current_user: User = Depends(get_current_user),
+    token: Optional[str] = Query(None, description="JWT token for image requests from <img> tags"),
     db: AsyncSession = Depends(get_db)
 ):
-    """Get image file (original, MIP, SUM projection, or thumbnail)."""
+    """
+    Get image file (original, MIP, SUM projection, or thumbnail).
+
+    Supports authentication via query parameter 'token' (for <img src=""> tags).
+    """
+    from utils.security import decode_token
+
+    if not token:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Token required"
+        )
+
+    payload = decode_token(token)
+    if not payload:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid token"
+        )
+
+    result = await db.execute(select(User).where(User.id == payload.sub))
+    user = result.scalar_one_or_none()
+
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="User not found"
+        )
+
     result = await db.execute(
         select(Image)
         .options(selectinload(Image.experiment))
@@ -208,7 +355,7 @@ async def get_image_file(
     )
     image = result.scalar_one_or_none()
 
-    if not image or image.experiment.user_id != current_user.id:
+    if not image or image.experiment.user_id != user.id:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Image not found"
@@ -327,42 +474,3 @@ async def reprocess_image(
     )
 
     return ImageResponse.model_validate(image)
-
-
-# Cell crop endpoints
-@router.get("/crops/{crop_id}/image")
-async def get_crop_image(
-    crop_id: int,
-    type: str = Query("mip", enum=["mip", "sum"]),
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
-):
-    """Get a cell crop image (MIP or SUM projection)."""
-    result = await db.execute(
-        select(CellCrop)
-        .options(
-            selectinload(CellCrop.image).selectinload(Image.experiment)
-        )
-        .where(CellCrop.id == crop_id)
-    )
-    crop = result.scalar_one_or_none()
-
-    if not crop or crop.image.experiment.user_id != current_user.id:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Cell crop not found"
-        )
-
-    # Select file path based on type
-    if type == "sum" and crop.sum_crop_path:
-        file_path = crop.sum_crop_path
-    else:
-        file_path = crop.mip_path
-
-    if not file_path or not os.path.exists(file_path):
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Crop image file not found ({type})"
-        )
-
-    return FileResponse(file_path)

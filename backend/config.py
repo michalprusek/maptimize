@@ -32,9 +32,10 @@ class Settings(BaseSettings):
     target_sigma: float = 2.0
     exploration_pairs: int = 50
 
-    class Config:
-        env_file = ".env"
-        env_file_encoding = "utf-8"
+    model_config = {
+        "env_file": ".env",
+        "env_file_encoding": "utf-8"
+    }
 
 
 @lru_cache

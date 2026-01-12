@@ -220,28 +220,9 @@ class ImageProcessor:
             )
             db.add(cell_crop)
 
-        # Delete source projections after cropping (keep only crops)
-        if is_zstack:
-            # Delete MIP and SUM projection files
-            if image.mip_path:
-                mip_file = Path(image.mip_path)
-                if mip_file.exists():
-                    mip_file.unlink()
-                    logger.info(f"Deleted MIP projection: {mip_file}")
-
-            if image.sum_path:
-                sum_file = Path(image.sum_path)
-                if sum_file.exists():
-                    sum_file.unlink()
-                    logger.info(f"Deleted SUM projection: {sum_file}")
-        else:
-            # For 2D images with detection, delete original
-            original_path = Path(image.file_path)
-            if original_path.exists():
-                original_path.unlink()
-                logger.info(f"Deleted original 2D image: {original_path}")
-
-        image.source_discarded = True
+        # Keep both MIP and SUM projections for gallery display and future analysis
+        # Only the original Z-stack is deleted (done earlier in process() method)
+        # For 2D images, original is kept as it serves as MIP
 
         # Mark as complete
         image.status = UploadStatus.READY

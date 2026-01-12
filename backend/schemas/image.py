@@ -42,6 +42,26 @@ class CellCropSummary(BaseModel):
         from_attributes = True
 
 
+class CellCropGalleryResponse(BaseModel):
+    """Cell crop for gallery display with parent image info."""
+    id: int
+    image_id: int
+    parent_filename: str
+    bbox_x: int
+    bbox_y: int
+    bbox_w: int
+    bbox_h: int
+    bundleness_score: Optional[float] = None
+    detection_confidence: Optional[float] = None
+    excluded: bool = False
+    created_at: datetime
+    map_protein_name: Optional[str] = None
+    map_protein_color: Optional[str] = None
+
+    class Config:
+        from_attributes = True
+
+
 class ImageResponse(BaseModel):
     """Schema for image response."""
     id: int

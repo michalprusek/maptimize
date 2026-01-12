@@ -5,6 +5,7 @@ import Link from "next/link";
 import { motion, AnimatePresence } from "framer-motion";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api, Metric } from "@/lib/api";
+import { ConfirmModal } from "@/components/ui";
 import {
   Scale,
   Plus,
@@ -119,80 +120,7 @@ function CreateMetricDialog({
   );
 }
 
-function DeleteMetricDialog({
-  metric,
-  onClose,
-  onConfirm,
-  isDeleting,
-}: {
-  metric: Metric;
-  onClose: () => void;
-  onConfirm: () => void;
-  isDeleting: boolean;
-}) {
-  return (
-    <motion.div
-      initial={{ opacity: 0 }}
-      animate={{ opacity: 1 }}
-      exit={{ opacity: 0 }}
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
-      onClick={onClose}
-    >
-      <motion.div
-        initial={{ scale: 0.95, opacity: 0 }}
-        animate={{ scale: 1, opacity: 1 }}
-        exit={{ scale: 0.95, opacity: 0 }}
-        onClick={(e) => e.stopPropagation()}
-        className="glass-card p-6 w-full max-w-md"
-      >
-        <div className="flex items-center gap-3 mb-4">
-          <div className="p-2 bg-accent-red/20 rounded-lg">
-            <Trash2 className="w-5 h-5 text-accent-red" />
-          </div>
-          <h3 className="text-lg font-display font-semibold text-text-primary">
-            Delete Metric
-          </h3>
-        </div>
-
-        <p className="text-text-secondary mb-2">
-          Are you sure you want to delete this metric? This will remove all images and rankings.
-        </p>
-        <p className="text-sm text-text-muted mb-6 font-mono bg-bg-secondary px-3 py-2 rounded">
-          {metric.name}
-        </p>
-
-        <div className="flex gap-3 justify-end">
-          <button
-            onClick={onClose}
-            disabled={isDeleting}
-            className="px-4 py-2 text-text-secondary hover:text-text-primary transition-colors"
-          >
-            Cancel
-          </button>
-          <button
-            onClick={onConfirm}
-            disabled={isDeleting}
-            className="btn-primary bg-accent-red hover:bg-accent-red/80 flex items-center gap-2"
-          >
-            {isDeleting ? (
-              <>
-                <Loader2 className="w-4 h-4 animate-spin" />
-                Deleting...
-              </>
-            ) : (
-              <>
-                <Trash2 className="w-4 h-4" />
-                Delete
-              </>
-            )}
-          </button>
-        </div>
-      </motion.div>
-    </motion.div>
-  );
-}
-
-export default function RankingPage() {
+export default function RankingPage(): JSX.Element {
   const [showCreateDialog, setShowCreateDialog] = useState(false);
   const [metricToDelete, setMetricToDelete] = useState<Metric | null>(null);
   const queryClient = useQueryClient();
@@ -332,17 +260,19 @@ export default function RankingPage() {
         )}
       </AnimatePresence>
 
-      {/* Delete Dialog */}
-      <AnimatePresence>
-        {metricToDelete && (
-          <DeleteMetricDialog
-            metric={metricToDelete}
-            onClose={() => setMetricToDelete(null)}
-            onConfirm={() => deleteMutation.mutate(metricToDelete.id)}
-            isDeleting={deleteMutation.isPending}
-          />
-        )}
-      </AnimatePresence>
+      {/* Delete Confirmation Modal */}
+      <ConfirmModal
+        isOpen={!!metricToDelete}
+        onClose={() => setMetricToDelete(null)}
+        onConfirm={() => metricToDelete && deleteMutation.mutate(metricToDelete.id)}
+        title="Delete Metric"
+        message="Are you sure you want to delete this metric? This will remove all images and rankings."
+        detail={metricToDelete?.name}
+        confirmLabel="Delete"
+        cancelLabel="Cancel"
+        isLoading={deleteMutation.isPending}
+        variant="danger"
+      />
     </div>
   );
 }

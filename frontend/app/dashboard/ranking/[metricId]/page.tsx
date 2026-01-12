@@ -1,17 +1,19 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
 import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import { motion, AnimatePresence } from "framer-motion";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { api, API_URL, MetricImage, MetricImageForRanking } from "@/lib/api";
+import { ImportDialog } from "@/components/metric/ImportDialog";
+import { ConfirmModal } from "@/components/ui";
 import {
-  api,
-  MetricImage,
-  MetricProgressResponse,
-  MetricPairResponse,
-  ExperimentForImport,
-} from "@/lib/api";
+  ImageGalleryFilters,
+  SortOrder,
+  SortOption,
+  ProteinInfo,
+} from "@/components/shared";
 import {
   ArrowLeft,
   Scale,
@@ -25,145 +27,21 @@ import {
   TrendingUp,
   Target,
   AlertCircle,
-  X,
   Download,
+  SkipForward,
 } from "lucide-react";
 
 type Tab = "images" | "ranking" | "leaderboard";
+type ImageSortField = "date" | "score" | "filename" | "comparisons";
 
-function ImportDialog({
-  metricId,
-  onClose,
-  onImported,
-}: {
-  metricId: number;
-  onClose: () => void;
-  onImported: () => void;
-}) {
-  const [selectedExperiments, setSelectedExperiments] = useState<number[]>([]);
+const IMAGE_SORT_OPTIONS: SortOption<ImageSortField>[] = [
+  { value: "date", label: "Date Added" },
+  { value: "score", label: "Score" },
+  { value: "filename", label: "Filename" },
+  { value: "comparisons", label: "Comparisons" },
+];
 
-  const { data: experiments, isLoading } = useQuery({
-    queryKey: ["experiments-for-import", metricId],
-    queryFn: () => api.getExperimentsForImport(metricId),
-  });
-
-  const importMutation = useMutation({
-    mutationFn: () => api.importCropsToMetric(metricId, selectedExperiments),
-    onSuccess: (result) => {
-      onImported();
-      onClose();
-    },
-  });
-
-  const toggleExperiment = (id: number) => {
-    setSelectedExperiments((prev) =>
-      prev.includes(id) ? prev.filter((e) => e !== id) : [...prev, id]
-    );
-  };
-
-  return (
-    <motion.div
-      initial={{ opacity: 0 }}
-      animate={{ opacity: 1 }}
-      exit={{ opacity: 0 }}
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
-      onClick={onClose}
-    >
-      <motion.div
-        initial={{ scale: 0.95, opacity: 0 }}
-        animate={{ scale: 1, opacity: 1 }}
-        exit={{ scale: 0.95, opacity: 0 }}
-        onClick={(e) => e.stopPropagation()}
-        className="glass-card p-6 w-full max-w-lg max-h-[80vh] flex flex-col"
-      >
-        <div className="flex items-center justify-between mb-4">
-          <div className="flex items-center gap-3">
-            <div className="p-2 bg-primary-500/20 rounded-lg">
-              <Download className="w-5 h-5 text-primary-400" />
-            </div>
-            <h3 className="text-lg font-display font-semibold text-text-primary">
-              Import from Experiments
-            </h3>
-          </div>
-          <button
-            onClick={onClose}
-            className="p-1 hover:bg-white/10 rounded-lg transition-colors"
-          >
-            <X className="w-5 h-5 text-text-muted" />
-          </button>
-        </div>
-
-        <p className="text-text-secondary text-sm mb-4">
-          Select experiments to import cell crops from:
-        </p>
-
-        <div className="flex-1 overflow-y-auto space-y-2 mb-4">
-          {isLoading ? (
-            <div className="flex justify-center py-8">
-              <Loader2 className="w-6 h-6 text-primary-500 animate-spin" />
-            </div>
-          ) : experiments && experiments.length > 0 ? (
-            experiments.map((exp) => (
-              <button
-                key={exp.id}
-                onClick={() => toggleExperiment(exp.id)}
-                className={`w-full p-4 rounded-lg text-left transition-all ${
-                  selectedExperiments.includes(exp.id)
-                    ? "bg-primary-500/20 border border-primary-500/30"
-                    : "bg-bg-secondary hover:bg-bg-hover border border-transparent"
-                }`}
-              >
-                <div className="flex items-center justify-between">
-                  <div>
-                    <p className="font-medium text-text-primary">{exp.name}</p>
-                    <p className="text-sm text-text-muted">
-                      {exp.crop_count} crops · {exp.already_imported} already imported
-                    </p>
-                  </div>
-                  {selectedExperiments.includes(exp.id) && (
-                    <Check className="w-5 h-5 text-primary-400" />
-                  )}
-                </div>
-              </button>
-            ))
-          ) : (
-            <p className="text-text-muted text-center py-8">
-              No experiments with crops available
-            </p>
-          )}
-        </div>
-
-        <div className="flex gap-3 justify-end pt-4 border-t border-white/5">
-          <button
-            onClick={onClose}
-            className="px-4 py-2 text-text-secondary hover:text-text-primary transition-colors"
-          >
-            Cancel
-          </button>
-          <button
-            onClick={() => importMutation.mutate()}
-            disabled={selectedExperiments.length === 0 || importMutation.isPending}
-            className="btn-primary flex items-center gap-2"
-          >
-            {importMutation.isPending ? (
-              <>
-                <Loader2 className="w-4 h-4 animate-spin" />
-                Importing...
-              </>
-            ) : (
-              <>
-                <Download className="w-4 h-4" />
-                Import Selected
-              </>
-            )}
-          </button>
-        </div>
-      </motion.div>
-    </motion.div>
-  );
-}
-
-export default function MetricDetailPage() {
+export default function MetricDetailPage(): JSX.Element {
   const params = useParams();
   const router = useRouter();
   const metricId = Number(params.metricId);
@@ -171,11 +49,18 @@ export default function MetricDetailPage() {
 
   const [activeTab, setActiveTab] = useState<Tab>("images");
   const [showImportDialog, setShowImportDialog] = useState(false);
+  const [showDeleteMetricModal, setShowDeleteMetricModal] = useState(false);
+  const [imageToDelete, setImageToDelete] = useState<{ id: number; name: string } | null>(null);
 
   // Ranking state
   const [startTime, setStartTime] = useState<number>(0);
   const [selectedWinner, setSelectedWinner] = useState<number | null>(null);
   const [showKeyboardHint, setShowKeyboardHint] = useState(true);
+
+  // Image gallery filter state
+  const [searchQuery, setSearchQuery] = useState("");
+  const [sortField, setSortField] = useState<ImageSortField>("date");
+  const [sortOrder, setSortOrder] = useState<SortOrder>("desc");
 
   const { data: metric, isLoading: metricLoading } = useQuery({
     queryKey: ["metric", metricId],
@@ -206,13 +91,83 @@ export default function MetricDetailPage() {
     enabled: activeTab === "leaderboard",
   });
 
+  // Filter and sort images
+  const filteredImages = useMemo(() => {
+    if (!images) return [];
+
+    let result = [...images];
+
+    // Search filter (by filename)
+    if (searchQuery) {
+      const query = searchQuery.toLowerCase();
+      result = result.filter((img) =>
+        img.original_filename?.toLowerCase().includes(query)
+      );
+    }
+
+    // Sort
+    result.sort((a, b) => {
+      let comparison = 0;
+      switch (sortField) {
+        case "date":
+          comparison = new Date(a.created_at).getTime() - new Date(b.created_at).getTime();
+          break;
+        case "score":
+          comparison = (a.ordinal_score ?? -Infinity) - (b.ordinal_score ?? -Infinity);
+          break;
+        case "filename":
+          comparison = (a.original_filename ?? "").localeCompare(b.original_filename ?? "");
+          break;
+        case "comparisons":
+          comparison = a.comparison_count - b.comparison_count;
+          break;
+      }
+      return sortOrder === "asc" ? comparison : -comparison;
+    });
+
+    return result;
+  }, [images, searchQuery, sortField, sortOrder]);
+
+  const clearFilters = () => {
+    setSearchQuery("");
+  };
+
+  const hasActiveFilters = !!searchQuery;
+
   const deleteImageMutation = useMutation({
     mutationFn: (imageId: number) => api.deleteMetricImage(metricId, imageId),
     onSuccess: () => {
+      setImageToDelete(null);
       queryClient.invalidateQueries({ queryKey: ["metric-images", metricId] });
       queryClient.invalidateQueries({ queryKey: ["metric", metricId] });
+      queryClient.invalidateQueries({ queryKey: ["metric-pair", metricId] });
+      queryClient.invalidateQueries({ queryKey: ["metric-leaderboard", metricId] });
+    },
+    onError: (error) => {
+      console.error("Failed to delete image:", error);
     },
   });
+
+  const deleteMetricMutation = useMutation({
+    mutationFn: () => api.deleteMetric(metricId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["metrics"] });
+      router.push("/dashboard/ranking");
+    },
+    onError: (error) => {
+      console.error("Failed to delete metric:", error);
+    },
+  });
+
+  const handleDeleteClick = (id: number, name: string) => {
+    setImageToDelete({ id, name });
+  };
+
+  const handleConfirmDelete = () => {
+    if (imageToDelete) {
+      deleteImageMutation.mutate(imageToDelete.id);
+    }
+  };
 
   const compareMutation = useMutation({
     mutationFn: async (winnerId: number) => {
@@ -247,22 +202,31 @@ export default function MetricDetailPage() {
     }
   }, [pair]);
 
+  // Skip to next pair without voting
+  const handleSkip = useCallback(() => {
+    if (compareMutation.isPending) return;
+    refetchPair();
+  }, [compareMutation.isPending, refetchPair]);
+
   // Keyboard shortcuts for ranking
   const handleKeyPress = useCallback(
     (e: KeyboardEvent) => {
       if (activeTab !== "ranking" || !pair || compareMutation.isPending) return;
 
-      if (e.key === "a" || e.key === "A" || e.key === "ArrowLeft") {
+      if (e.key === "ArrowLeft") {
         setSelectedWinner(pair.image_a.id);
         setTimeout(() => compareMutation.mutate(pair.image_a.id), 200);
-      } else if (e.key === "d" || e.key === "D" || e.key === "ArrowRight") {
+      } else if (e.key === "ArrowRight") {
         setSelectedWinner(pair.image_b.id);
         setTimeout(() => compareMutation.mutate(pair.image_b.id), 200);
+      } else if (e.key === " " || e.key === "Spacebar") {
+        e.preventDefault(); // Prevent page scroll
+        handleSkip();
       } else if (e.key === "z" && (e.ctrlKey || e.metaKey)) {
         undoMutation.mutate();
       }
     },
-    [activeTab, pair, compareMutation, undoMutation]
+    [activeTab, pair, compareMutation, undoMutation, handleSkip]
   );
 
   useEffect(() => {
@@ -281,6 +245,14 @@ export default function MetricDetailPage() {
       return api.getCropImageUrl(img.cell_crop_id);
     }
     return api.getMetricImageUrl(metricId, img.id);
+  };
+
+  // Helper to build authenticated image URL from API-provided relative path
+  const getAuthImageUrl = (imageUrl: string | undefined) => {
+    if (!imageUrl) return null;
+    const token = api.getToken();
+    const separator = imageUrl.includes("?") ? "&" : "?";
+    return `${API_URL}${imageUrl}${separator}token=${token}`;
   };
 
   if (metricLoading) {
@@ -320,20 +292,36 @@ export default function MetricDetailPage() {
             <p className="text-text-secondary mt-1">{metric.description}</p>
           )}
         </div>
-        {activeTab === "ranking" && (
+        <div className="flex items-center gap-3">
+          {activeTab === "ranking" && (
+            <button
+              onClick={() => undoMutation.mutate()}
+              disabled={undoMutation.isPending || !progress?.total_comparisons}
+              className="btn-secondary flex items-center gap-2"
+            >
+              <RotateCcw className="w-5 h-5" />
+              Undo
+            </button>
+          )}
           <button
-            onClick={() => undoMutation.mutate()}
-            disabled={undoMutation.isPending || !progress?.total_comparisons}
-            className="btn-secondary flex items-center gap-2"
+            onClick={() => setShowImportDialog(true)}
+            className="btn-primary flex items-center gap-2"
           >
-            <RotateCcw className="w-5 h-5" />
-            Undo
+            <Download className="w-4 h-4" />
+            Import
           </button>
-        )}
+          <button
+            onClick={() => setShowDeleteMetricModal(true)}
+            className="p-2 hover:bg-accent-red/20 text-text-muted hover:text-accent-red rounded-lg transition-colors"
+            title="Delete metric"
+          >
+            <Trash2 className="w-5 h-5" />
+          </button>
+        </div>
       </div>
 
       {/* Tabs */}
-      <div className="flex gap-2 border-b border-white/5 pb-2">
+      <div className="flex items-center gap-2 border-b border-white/5 pb-2">
         {[
           { id: "images" as Tab, label: "Images", icon: ImageIcon },
           { id: "ranking" as Tab, label: "Ranking", icon: Scale },
@@ -357,51 +345,73 @@ export default function MetricDetailPage() {
       {/* Tab Content */}
       {activeTab === "images" && (
         <div className="space-y-6">
-          {/* Import section */}
-          <div className="flex justify-end">
-            <button
-              onClick={() => setShowImportDialog(true)}
-              className="btn-primary flex items-center gap-2"
-            >
-              <Download className="w-4 h-4" />
-              Import from Experiments
-            </button>
-          </div>
+          {/* Search and Filters */}
+          <ImageGalleryFilters
+            searchQuery={searchQuery}
+            onSearchChange={setSearchQuery}
+            searchPlaceholder="Search by filename..."
+            sortField={sortField}
+            onSortFieldChange={setSortField}
+            sortOrder={sortOrder}
+            onSortOrderChange={setSortOrder}
+            sortOptions={IMAGE_SORT_OPTIONS}
+            onClearFilters={clearFilters}
+            hasActiveFilters={hasActiveFilters}
+          />
 
           {/* Images grid */}
           {imagesLoading ? (
             <div className="flex justify-center py-8">
               <Loader2 className="w-8 h-8 text-primary-500 animate-spin" />
             </div>
-          ) : images && images.length > 0 ? (
-            <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4">
-              {images.map((img) => (
-                <motion.div
-                  key={img.id}
-                  initial={{ opacity: 0, scale: 0.9 }}
-                  animate={{ opacity: 1, scale: 1 }}
-                  className="glass-card overflow-hidden group"
-                >
-                  <div className="aspect-square bg-bg-secondary relative">
+          ) : filteredImages.length > 0 ? (
+            <>
+              {/* Results count */}
+              {hasActiveFilters && (
+                <p className="text-sm text-text-muted">
+                  Showing {filteredImages.length} of {images?.length} images
+                </p>
+              )}
+
+              <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4">
+                {filteredImages.map((img) => (
+                  <motion.div
+                    key={img.id}
+                    initial={{ opacity: 0, scale: 0.9 }}
+                    animate={{ opacity: 1, scale: 1 }}
+                    className="aspect-square rounded-2xl overflow-hidden relative group"
+                  >
                     <img
                       src={getImageUrl(img)}
                       alt={`Image ${img.id}`}
                       className="w-full h-full object-cover"
                     />
                     <button
-                      onClick={() => deleteImageMutation.mutate(img.id)}
+                      onClick={() => handleDeleteClick(img.id, `Image #${img.id}`)}
                       className="absolute top-2 right-2 p-1.5 bg-black/50 hover:bg-accent-red/80 rounded-lg opacity-0 group-hover:opacity-100 transition-all"
+                      title="Remove from metric"
                     >
                       <Trash2 className="w-4 h-4 text-white" />
                     </button>
-                  </div>
-                  {img.mu !== undefined && (
-                    <div className="p-2 text-xs text-text-muted text-center">
-                      Score: {img.ordinal_score?.toFixed(2) || "-"}
-                    </div>
-                  )}
-                </motion.div>
-              ))}
+                  </motion.div>
+                ))}
+              </div>
+            </>
+          ) : images && images.length > 0 ? (
+            <div className="glass-card p-12 text-center">
+              <ImageIcon className="w-12 h-12 text-text-muted mx-auto mb-4" />
+              <h3 className="text-lg font-display font-semibold text-text-primary mb-2">
+                No images match your filters
+              </h3>
+              <p className="text-text-secondary mb-4">
+                Try adjusting your search criteria
+              </p>
+              <button
+                onClick={clearFilters}
+                className="btn-primary"
+              >
+                Clear Filters
+              </button>
             </div>
           ) : (
             <div className="glass-card p-12 text-center">
@@ -499,10 +509,9 @@ export default function MetricDetailPage() {
                     <div className="flex items-center gap-3">
                       <Keyboard className="w-5 h-5 text-primary-400" />
                       <p className="text-text-secondary">
-                        Use <kbd className="px-2 py-1 bg-bg-secondary rounded text-text-primary font-mono text-sm">A</kbd> or{" "}
-                        <kbd className="px-2 py-1 bg-bg-secondary rounded text-text-primary font-mono text-sm">←</kbd> for left,{" "}
-                        <kbd className="px-2 py-1 bg-bg-secondary rounded text-text-primary font-mono text-sm">D</kbd> or{" "}
-                        <kbd className="px-2 py-1 bg-bg-secondary rounded text-text-primary font-mono text-sm">→</kbd> for right
+                        <kbd className="px-2 py-1 bg-bg-secondary rounded text-text-primary font-mono text-sm">←</kbd> left,{" "}
+                        <kbd className="px-2 py-1 bg-bg-secondary rounded text-text-primary font-mono text-sm">→</kbd> right,{" "}
+                        <kbd className="px-2 py-1 bg-bg-secondary rounded text-text-primary font-mono text-sm">Space</kbd> skip
                       </p>
                     </div>
                     <button
@@ -515,77 +524,108 @@ export default function MetricDetailPage() {
                 )}
               </AnimatePresence>
 
-              {/* Comparison cards */}
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+              {/* Comparison cards with Skip in the middle */}
+              <div className="flex items-stretch gap-4">
                 {[pair.image_a, pair.image_b].map((img, i) => {
                   const isSelected = selectedWinner === img.id;
                   const isOther = selectedWinner !== null && !isSelected;
 
                   return (
-                    <motion.div
-                      key={img.id}
-                      layout
-                      whileHover={{ scale: compareMutation.isPending ? 1 : 1.02 }}
-                      whileTap={{ scale: compareMutation.isPending ? 1 : 0.98 }}
-                      animate={{
-                        opacity: isOther ? 0.5 : 1,
-                        scale: isSelected ? 1.02 : 1,
-                      }}
-                      className={`glass-card overflow-hidden cursor-pointer transition-all duration-200 ${
-                        isSelected
-                          ? "ring-2 ring-primary-500 border-primary-500/50"
-                          : "hover:border-primary-500/30"
-                      } ${compareMutation.isPending ? "pointer-events-none" : ""}`}
-                      onClick={() => handleSelect(img.id)}
-                    >
-                      <div className="aspect-square bg-bg-secondary relative">
-                        {img.image_url ? (
-                          <img
-                            src={`http://localhost:8000${img.image_url}`}
-                            alt={`Image ${img.id}`}
-                            className="w-full h-full object-contain"
-                          />
-                        ) : (
-                          <div className="w-full h-full flex items-center justify-center">
-                            <Target className="w-16 h-16 text-text-muted" />
-                          </div>
-                        )}
-
-                        <AnimatePresence>
-                          {isSelected && (
-                            <motion.div
-                              initial={{ opacity: 0 }}
-                              animate={{ opacity: 1 }}
-                              exit={{ opacity: 0 }}
-                              className="absolute inset-0 bg-primary-500/20 flex items-center justify-center"
-                            >
-                              <div className="p-4 bg-primary-500 rounded-full">
-                                <Check className="w-8 h-8 text-white" />
-                              </div>
-                            </motion.div>
-                          )}
-                        </AnimatePresence>
-
-                        <div className="absolute bottom-4 left-4">
-                          <span className="px-3 py-1.5 bg-black/50 backdrop-blur-sm rounded-lg text-white font-mono text-sm">
-                            {i === 0 ? "A / ←" : "D / →"}
-                          </span>
+                    <div key={img.id} className="flex-1 flex flex-col">
+                      {i === 1 && (
+                        <div className="hidden md:flex absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 z-10">
+                          {/* Skip button positioned absolutely */}
                         </div>
-                      </div>
+                      )}
+                      <motion.div
+                        layout
+                        whileHover={{ scale: compareMutation.isPending ? 1 : 1.01 }}
+                        whileTap={{ scale: compareMutation.isPending ? 1 : 0.99 }}
+                        animate={{
+                          opacity: isOther ? 0.5 : 1,
+                          scale: isSelected ? 1.01 : 1,
+                        }}
+                        className={`glass-card overflow-hidden cursor-pointer transition-all duration-200 flex-1 ${
+                          isSelected
+                            ? "ring-2 ring-primary-500 border-primary-500/50"
+                            : "hover:border-primary-500/30"
+                        } ${compareMutation.isPending ? "pointer-events-none" : ""}`}
+                        onClick={() => handleSelect(img.id)}
+                      >
+                        {/* Canvas container - fixed size, image at natural dimensions */}
+                        <div className="min-h-[300px] max-h-[500px] bg-bg-secondary relative group flex items-center justify-center overflow-hidden">
+                          {getAuthImageUrl(img.image_url) ? (
+                            <img
+                              src={getAuthImageUrl(img.image_url)!}
+                              alt={`Image ${img.id}`}
+                              className="max-w-full max-h-[500px]"
+                              style={{ objectFit: "none" }}
+                            />
+                          ) : (
+                            <div className="flex items-center justify-center p-12">
+                              <Target className="w-16 h-16 text-text-muted" />
+                            </div>
+                          )}
 
-                      <div className="p-4">
-                        <p className="text-sm text-text-muted">
-                          Image #{img.id}
-                          {img.original_filename && ` · ${img.original_filename}`}
-                        </p>
-                      </div>
-                    </motion.div>
+                          {/* Exclude button */}
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleDeleteClick(img.id, img.original_filename || `Image #${img.id}`);
+                            }}
+                            className="absolute top-2 right-2 p-2 bg-black/50 hover:bg-accent-red/80 rounded-lg opacity-0 group-hover:opacity-100 transition-all z-10"
+                            title="Remove from metric"
+                          >
+                            <Trash2 className="w-4 h-4 text-white" />
+                          </button>
+
+                          <AnimatePresence>
+                            {isSelected && (
+                              <motion.div
+                                initial={{ opacity: 0 }}
+                                animate={{ opacity: 1 }}
+                                exit={{ opacity: 0 }}
+                                className="absolute inset-0 bg-primary-500/20 flex items-center justify-center"
+                              >
+                                <div className="p-4 bg-primary-500 rounded-full">
+                                  <Check className="w-8 h-8 text-white" />
+                                </div>
+                              </motion.div>
+                            )}
+                          </AnimatePresence>
+
+                          <div className="absolute bottom-4 left-4">
+                            <span className="px-3 py-1.5 bg-black/50 backdrop-blur-sm rounded-lg text-white font-mono text-lg">
+                              {i === 0 ? "←" : "→"}
+                            </span>
+                          </div>
+                        </div>
+
+                        <div className="p-3">
+                          <p className="text-sm text-text-muted">
+                            Image #{img.id}
+                            {img.original_filename && ` · ${img.original_filename}`}
+                          </p>
+                        </div>
+                      </motion.div>
+                    </div>
                   );
                 })}
               </div>
 
-              <div className="text-center text-text-muted">
-                Comparison #{pair.comparison_number}
+              {/* Skip button and comparison counter */}
+              <div className="flex items-center justify-center gap-6">
+                <button
+                  onClick={handleSkip}
+                  disabled={compareMutation.isPending}
+                  className="btn-secondary flex items-center gap-2"
+                >
+                  <SkipForward className="w-4 h-4" />
+                  Skip (Space)
+                </button>
+                <span className="text-text-muted">
+                  Comparison #{pair.comparison_number}
+                </span>
               </div>
             </>
           ) : null}
@@ -619,9 +659,9 @@ export default function MetricDetailPage() {
                       </td>
                       <td className="px-4 py-3">
                         <div className="flex items-center gap-3">
-                          {item.image_url && (
+                          {getAuthImageUrl(item.image_url) && (
                             <img
-                              src={`http://localhost:8000${item.image_url}`}
+                              src={getAuthImageUrl(item.image_url)!}
                               alt={`Rank ${item.rank}`}
                               className="w-10 h-10 rounded object-cover"
                             />
@@ -677,6 +717,34 @@ export default function MetricDetailPage() {
           />
         )}
       </AnimatePresence>
+
+      {/* Delete Image Confirmation Modal */}
+      <ConfirmModal
+        isOpen={!!imageToDelete}
+        onClose={() => setImageToDelete(null)}
+        onConfirm={handleConfirmDelete}
+        title="Remove Image"
+        message="Are you sure you want to remove this image from the metric?"
+        detail={imageToDelete?.name}
+        confirmLabel="Remove"
+        cancelLabel="Cancel"
+        isLoading={deleteImageMutation.isPending}
+        variant="danger"
+      />
+
+      {/* Delete Metric Confirmation Modal */}
+      <ConfirmModal
+        isOpen={showDeleteMetricModal}
+        onClose={() => setShowDeleteMetricModal(false)}
+        onConfirm={() => deleteMetricMutation.mutate()}
+        title="Delete Metric"
+        message="Are you sure you want to delete this metric? All images and comparisons will be permanently removed."
+        detail={metric?.name}
+        confirmLabel="Delete"
+        cancelLabel="Cancel"
+        isLoading={deleteMetricMutation.isPending}
+        variant="danger"
+      />
     </div>
   );
 }

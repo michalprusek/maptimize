@@ -265,6 +265,67 @@ NEXT_PUBLIC_API_URL=http://localhost:8000
 6. **ALWAYS use Docker dev with hot reload** - use `docker-compose -f docker-compose.dev.yml up` for development. Since hot reload is enabled, **do NOT restart containers after code changes** - changes are applied automatically
 7. **Run code-simplifier after implementation** - after completing any implementation task, always run the `code-simplifier:code-simplifier` agent to refine code for clarity, consistency, and maintainability
 
+## Default Credentials
+
+When database is reset, these are created automatically:
+
+| Type | Value |
+|------|-------|
+| Email | `12bprusek@gym-nymburk.cz` |
+| Password | `82c17878` |
+| Role | Admin |
+| Default Experiment | "MAP9 Analysis" |
+
+## Docker Operations (Claude MUST do this autonomously)
+
+**IMPORTANT**: Claude is responsible for managing Docker services. User should NOT have to start services manually.
+
+### Check services status
+```bash
+docker-compose ps
+```
+
+### Start all services (if not running)
+```bash
+docker-compose up -d
+```
+
+### Rebuild after code changes
+```bash
+# Rebuild specific service (e.g., after backend code changes)
+docker-compose up -d --build backend
+
+# Rebuild all
+docker-compose up -d --build
+```
+
+### Health check
+```bash
+# Quick health check
+curl http://localhost:8000/health
+
+# Full health check script
+./scripts/health-check.sh
+```
+
+### View logs
+```bash
+# Backend logs
+docker logs maptimize-backend-1 --tail 100
+
+# All services
+docker-compose logs --tail 50
+```
+
+### When to rebuild
+- After modifying Python files in `backend/`
+- After adding new dependencies to `pyproject.toml`
+- After modifying `Dockerfile`
+
+### When NOT to rebuild (hot reload works)
+- If using `docker-compose.dev.yml` - changes auto-reload
+- Frontend changes (Next.js has its own hot reload)
+
 ## TODO
 
 - [ ] Integrate YOLO detection worker
