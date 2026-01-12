@@ -162,14 +162,20 @@ async def get_next_pair(
         ratings[crop.id] = rating
 
     # Select pair using adaptive sampling utility
-    from utils.pair_selection import select_pair
-    crop_a, crop_b = select_pair(
-        items=crops,
-        ratings=ratings,
-        total_comparisons=total_comparisons,
-        recent_pairs=recent_pairs,
-        randomize_order=True
-    )
+    from utils.pair_selection import select_pair, InsufficientItemsError
+    try:
+        crop_a, crop_b = select_pair(
+            items=crops,
+            ratings=ratings,
+            total_comparisons=total_comparisons,
+            recent_pairs=recent_pairs,
+            randomize_order=True
+        )
+    except InsufficientItemsError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
 
     await db.commit()
 

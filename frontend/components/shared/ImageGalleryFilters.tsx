@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, ReactNode } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { Search, ArrowUp, ArrowDown, Filter, X } from "lucide-react";
 
@@ -30,6 +30,8 @@ export interface ImageGalleryFiltersProps<TSortField extends string> {
   availableProteins?: ProteinInfo[];
   onClearFilters: () => void;
   hasActiveFilters: boolean;
+  /** Content to render at the start of the filter bar (e.g., select all checkbox, bulk actions) */
+  leftSlot?: ReactNode;
 }
 
 function getFilterButtonStyles(isActive: boolean): string {
@@ -53,6 +55,7 @@ export function ImageGalleryFilters<TSortField extends string>({
   availableProteins = [],
   onClearFilters,
   hasActiveFilters,
+  leftSlot,
 }: ImageGalleryFiltersProps<TSortField>): JSX.Element {
   const [showFilters, setShowFilters] = useState(false);
 
@@ -71,8 +74,11 @@ export function ImageGalleryFilters<TSortField extends string>({
   return (
     <div className="glass-card p-4">
       <div className="flex items-center gap-4">
+        {/* Left slot for custom content (select all, bulk actions) */}
+        {leftSlot}
+
         {/* Search */}
-        <div className="flex-1 relative">
+        <div className="flex-1 relative min-w-0">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-text-muted" />
           <input
             type="text"

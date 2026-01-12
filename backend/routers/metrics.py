@@ -95,7 +95,7 @@ def update_ratings(
     loser_mu: float,
     loser_sigma: float
 ) -> tuple:
-    """Update ratings using TrueSkill algorithm."""
+    """Update ratings using Plackett-Luce model (via openskill)."""
     winner = model.rating(mu=winner_mu, sigma=winner_sigma)
     loser = model.rating(mu=loser_mu, sigma=loser_sigma)
 

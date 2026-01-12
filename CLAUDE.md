@@ -63,8 +63,10 @@ Two-phase pair selection:
 1. **Exploration** (first 50 comparisons): Random pairs
 2. **Exploitation**: Uncertainty sampling (highest sigma pairs)
 
-### Bundleness Score
-Measures microtubule bundling from intensity distribution:
+### Bundleness Score (Planned)
+Will measure microtubule bundling from intensity distribution. **Note: Not yet implemented in image processing pipeline.**
+
+Formula (to be implemented):
 ```python
 bundleness = 0.7071 * z_skewness + 0.7071 * z_kurtosis
 
@@ -103,7 +105,7 @@ Experiment → Upload Images → Detection → Cell Crops → Import to Metric �
 ### Why This Architecture?
 - **Consistent data**: All images go through detection pipeline before ranking
 - **MIP/SUM projections**: Z-stack processing happens during upload
-- **Metadata**: Cell crops have bundleness scores, detection confidence
+- **Metadata**: Cell crops have detection confidence, mean intensity (bundleness planned)
 - **Traceability**: Can trace metric images back to source experiments
 
 ## Commands
@@ -221,7 +223,7 @@ Source code at `/Users/michalprusek/Desktop/microtubules/`:
 | Pair Selection | `reranking_app/backend/pair_selection.py` | ✅ Ported |
 | YOLO Detection | `detection/train_yolo.py` | ✅ Integrated |
 | DINOv2 Encoder | `feature_extraction/encoders/dinov2_encoder.py` | ⏳ TODO |
-| Bundleness | `CLAUDE.md` (formula) | ✅ Implemented |
+| Bundleness | `CLAUDE.md` (formula) | ⏳ TODO |
 
 ### YOLO Detection Pipeline
 
@@ -234,7 +236,7 @@ The detection pipeline is located at `backend/ml/detection/` and includes:
 2. Background task triggered
 3. Load Z-stack TIFF → create MIP
 4. Run YOLO detection (conf=0.25, iou=0.7)
-5. Crop detected cells → compute bundleness
+5. Crop detected cells → compute basic metrics (mean intensity)
 6. Save crops and metrics to database
 
 **Key parameters (from training):**

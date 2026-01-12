@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback, useMemo } from "react";
-import { useParams, useRouter } from "next/navigation";
+import { useParams } from "next/navigation";
 import Link from "next/link";
 import { motion, AnimatePresence } from "framer-motion";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
@@ -29,6 +29,8 @@ import {
   AlertCircle,
   Download,
   SkipForward,
+  X,
+  ZoomIn,
 } from "lucide-react";
 
 type Tab = "images" | "ranking" | "leaderboard";
@@ -43,15 +45,14 @@ const IMAGE_SORT_OPTIONS: SortOption<ImageSortField>[] = [
 
 export default function MetricDetailPage(): JSX.Element {
   const params = useParams();
-  const router = useRouter();
   const metricId = Number(params.metricId);
   const queryClient = useQueryClient();
 
   const [activeTab, setActiveTab] = useState<Tab>("images");
   const [showImportDialog, setShowImportDialog] = useState(false);
-  const [showDeleteMetricModal, setShowDeleteMetricModal] = useState(false);
   const [imageToDelete, setImageToDelete] = useState<{ id: number; name: string } | null>(null);
   const [mutationError, setMutationError] = useState<string | null>(null);
+  const [lightboxImage, setLightboxImage] = useState<{ url: string; name: string } | null>(null);
 
   // Ranking state
   const [startTime, setStartTime] = useState<number>(0);
@@ -151,18 +152,6 @@ export default function MetricDetailPage(): JSX.Element {
     },
   });
 
-  const deleteMetricMutation = useMutation({
-    mutationFn: () => api.deleteMetric(metricId),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["metrics"] });
-      router.push("/dashboard/ranking");
-    },
-    onError: (error: Error) => {
-      console.error("Failed to delete metric:", error);
-      setMutationError(error.message || "Failed to delete metric. Please try again.");
-      setShowDeleteMetricModal(false);
-    },
-  });
 
   const handleDeleteClick = (id: number, name: string) => {
     setImageToDelete({ id, name });
@@ -297,54 +286,37 @@ export default function MetricDetailPage(): JSX.Element {
             <p className="text-text-secondary mt-1">{metric.description}</p>
           )}
         </div>
-        <div className="flex items-center gap-3">
-          {activeTab === "ranking" && (
-            <button
-              onClick={() => undoMutation.mutate()}
-              disabled={undoMutation.isPending || !progress?.total_comparisons}
-              className="btn-secondary flex items-center gap-2"
-            >
-              <RotateCcw className="w-5 h-5" />
-              Undo
-            </button>
-          )}
-          <button
-            onClick={() => setShowImportDialog(true)}
-            className="btn-primary flex items-center gap-2"
-          >
-            <Download className="w-4 h-4" />
-            Import
-          </button>
-          <button
-            onClick={() => setShowDeleteMetricModal(true)}
-            className="p-2 hover:bg-accent-red/20 text-text-muted hover:text-accent-red rounded-lg transition-colors"
-            title="Delete metric"
-          >
-            <Trash2 className="w-5 h-5" />
-          </button>
-        </div>
       </div>
 
       {/* Tabs */}
-      <div className="flex items-center gap-2 border-b border-white/5 pb-2">
-        {[
-          { id: "images" as Tab, label: "Images", icon: ImageIcon },
-          { id: "ranking" as Tab, label: "Ranking", icon: Scale },
-          { id: "leaderboard" as Tab, label: "Leaderboard", icon: Trophy },
-        ].map((tab) => (
-          <button
-            key={tab.id}
-            onClick={() => setActiveTab(tab.id)}
-            className={`flex items-center gap-2 px-4 py-2 rounded-lg transition-all ${
-              activeTab === tab.id
-                ? "bg-primary-500/20 text-primary-400"
-                : "text-text-secondary hover:bg-white/5 hover:text-text-primary"
-            }`}
-          >
-            <tab.icon className="w-4 h-4" />
-            {tab.label}
-          </button>
-        ))}
+      <div className="flex items-center justify-between border-b border-white/5 pb-2">
+        <div className="flex items-center gap-2">
+          {[
+            { id: "images" as Tab, label: "Images", icon: ImageIcon },
+            { id: "ranking" as Tab, label: "Metrics", icon: Scale },
+            { id: "leaderboard" as Tab, label: "Leaderboard", icon: Trophy },
+          ].map((tab) => (
+            <button
+              key={tab.id}
+              onClick={() => setActiveTab(tab.id)}
+              className={`flex items-center gap-2 px-4 py-2 rounded-lg transition-all ${
+                activeTab === tab.id
+                  ? "bg-primary-500/20 text-primary-400"
+                  : "text-text-secondary hover:bg-white/5 hover:text-text-primary"
+              }`}
+            >
+              <tab.icon className="w-4 h-4" />
+              {tab.label}
+            </button>
+          ))}
+        </div>
+        <button
+          onClick={() => setShowImportDialog(true)}
+          className="btn-primary flex items-center gap-2"
+        >
+          <Download className="w-4 h-4" />
+          Import
+        </button>
       </div>
 
       {/* Error notification */}
@@ -405,12 +377,12 @@ export default function MetricDetailPage(): JSX.Element {
                     key={img.id}
                     initial={{ opacity: 0, scale: 0.9 }}
                     animate={{ opacity: 1, scale: 1 }}
-                    className="aspect-square rounded-2xl overflow-hidden relative group"
+                    className="aspect-square rounded-2xl overflow-hidden relative group bg-bg-secondary"
                   >
                     <img
                       src={getImageUrl(img)}
                       alt={`Image ${img.id}`}
-                      className="w-full h-full object-contain"
+                      className="w-full h-full object-cover"
                     />
                     <button
                       onClick={() => handleDeleteClick(img.id, `Image #${img.id}`)}
@@ -578,13 +550,12 @@ export default function MetricDetailPage(): JSX.Element {
                         } ${compareMutation.isPending ? "pointer-events-none" : ""}`}
                         onClick={() => handleSelect(img.id)}
                       >
-                        {/* Canvas container - preserve natural image proportions */}
-                        <div className="min-h-[300px] bg-bg-secondary relative group flex items-center justify-center p-4">
+                        {/* Canvas container - natural image size, no scaling */}
+                        <div className="bg-bg-secondary relative group flex items-center justify-center p-4">
                           {getAuthImageUrl(img.image_url) ? (
                             <img
                               src={getAuthImageUrl(img.image_url)!}
                               alt={`Image ${img.id}`}
-                              className="max-h-[450px]"
                             />
                           ) : (
                             <div className="flex items-center justify-center p-12">
@@ -638,18 +609,27 @@ export default function MetricDetailPage(): JSX.Element {
                 })}
               </div>
 
-              {/* Skip button and comparison counter */}
-              <div className="flex items-center justify-center gap-6">
+              {/* Skip, Undo buttons and comparison counter */}
+              <div className="flex items-center justify-center gap-4">
+                <button
+                  onClick={() => undoMutation.mutate()}
+                  disabled={undoMutation.isPending || !progress?.total_comparisons}
+                  className="btn-secondary flex items-center gap-2"
+                  title="Ctrl+Z"
+                >
+                  <RotateCcw className="w-4 h-4" />
+                  Undo
+                </button>
                 <button
                   onClick={handleSkip}
                   disabled={compareMutation.isPending}
                   className="btn-secondary flex items-center gap-2"
                 >
                   <SkipForward className="w-4 h-4" />
-                  Skip (Space)
+                  Skip
                 </button>
                 <span className="text-text-muted">
-                  Comparison #{pair.comparison_number}
+                  #{pair.comparison_number}
                 </span>
               </div>
             </>
@@ -672,40 +652,66 @@ export default function MetricDetailPage(): JSX.Element {
                     <th className="px-4 py-3 text-left text-sm font-medium text-text-secondary">Image</th>
                     <th className="px-4 py-3 text-right text-sm font-medium text-text-secondary">Score</th>
                     <th className="px-4 py-3 text-right text-sm font-medium text-text-secondary">Comparisons</th>
+                    <th className="px-4 py-3 text-right text-sm font-medium text-text-secondary">Actions</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {leaderboard.items.map((item, i) => (
-                    <tr key={item.metric_image_id} className="border-b border-white/5 last:border-0">
-                      <td className="px-4 py-3">
-                        <span className={`font-mono ${i < 3 ? "text-primary-400 font-bold" : "text-text-primary"}`}>
-                          #{item.rank}
-                        </span>
-                      </td>
-                      <td className="px-4 py-3">
-                        <div className="flex items-center gap-3">
-                          {getAuthImageUrl(item.image_url) && (
-                            <img
-                              src={getAuthImageUrl(item.image_url)!}
-                              alt={`Rank ${item.rank}`}
-                              className="w-10 h-10 rounded object-cover"
-                            />
-                          )}
-                          <span className="text-text-primary">
-                            {item.original_filename || `Image #${item.metric_image_id}`}
+                  {leaderboard.items.map((item, i) => {
+                    const imageUrl = getAuthImageUrl(item.image_url);
+                    const imageName = item.original_filename || `Image #${item.metric_image_id}`;
+                    return (
+                      <tr
+                        key={item.metric_image_id}
+                        className="border-b border-white/5 last:border-0 hover:bg-white/5 cursor-pointer transition-colors"
+                        onClick={() => imageUrl && setLightboxImage({ url: imageUrl, name: imageName })}
+                      >
+                        <td className="px-4 py-3">
+                          <span className={`font-mono ${i < 3 ? "text-primary-400 font-bold" : "text-text-primary"}`}>
+                            #{item.rank}
                           </span>
-                        </div>
-                      </td>
-                      <td className="px-4 py-3 text-right">
-                        <span className="font-mono text-text-primary">
-                          {item.ordinal_score.toFixed(2)}
-                        </span>
-                      </td>
-                      <td className="px-4 py-3 text-right text-text-secondary">
-                        {item.comparison_count}
-                      </td>
-                    </tr>
-                  ))}
+                        </td>
+                        <td className="px-4 py-3">
+                          <div className="flex items-center gap-3">
+                            {imageUrl && (
+                              <div className="relative group/img">
+                                <img
+                                  src={imageUrl}
+                                  alt={`Rank ${item.rank}`}
+                                  className="w-10 h-10 rounded object-cover"
+                                />
+                                <div className="absolute inset-0 bg-black/50 rounded opacity-0 group-hover/img:opacity-100 transition-opacity flex items-center justify-center">
+                                  <ZoomIn className="w-4 h-4 text-white" />
+                                </div>
+                              </div>
+                            )}
+                            <span className="text-text-primary">
+                              {imageName}
+                            </span>
+                          </div>
+                        </td>
+                        <td className="px-4 py-3 text-right">
+                          <span className="font-mono text-text-primary">
+                            {item.ordinal_score.toFixed(2)}
+                          </span>
+                        </td>
+                        <td className="px-4 py-3 text-right text-text-secondary">
+                          {item.comparison_count}
+                        </td>
+                        <td className="px-4 py-3 text-right">
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleDeleteClick(item.metric_image_id, imageName);
+                            }}
+                            className="p-1.5 hover:bg-accent-red/20 text-text-muted hover:text-accent-red rounded-lg transition-colors"
+                            title="Remove from metric"
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </button>
+                        </td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
@@ -722,7 +728,7 @@ export default function MetricDetailPage(): JSX.Element {
                 onClick={() => setActiveTab("ranking")}
                 className="btn-primary"
               >
-                Start Ranking
+                Start Comparing
               </button>
             </div>
           )}
@@ -757,19 +763,43 @@ export default function MetricDetailPage(): JSX.Element {
         variant="danger"
       />
 
-      {/* Delete Metric Confirmation Modal */}
-      <ConfirmModal
-        isOpen={showDeleteMetricModal}
-        onClose={() => setShowDeleteMetricModal(false)}
-        onConfirm={() => deleteMetricMutation.mutate()}
-        title="Delete Metric"
-        message="Are you sure you want to delete this metric? All images and comparisons will be permanently removed."
-        detail={metric?.name}
-        confirmLabel="Delete"
-        cancelLabel="Cancel"
-        isLoading={deleteMetricMutation.isPending}
-        variant="danger"
-      />
+      {/* Image Lightbox */}
+      <AnimatePresence>
+        {lightboxImage && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-50 flex items-center justify-center bg-black/90 p-4"
+            onClick={() => setLightboxImage(null)}
+          >
+            <motion.div
+              initial={{ scale: 0.9, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.9, opacity: 0 }}
+              className="relative max-w-[90vw] max-h-[90vh]"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <img
+                src={lightboxImage.url}
+                alt={lightboxImage.name}
+                className="max-w-full max-h-[85vh] object-contain rounded-lg"
+              />
+              <div className="absolute top-0 left-0 right-0 flex items-center justify-between p-4 bg-gradient-to-b from-black/50 to-transparent">
+                <span className="text-white font-medium truncate max-w-[80%]">
+                  {lightboxImage.name}
+                </span>
+                <button
+                  onClick={() => setLightboxImage(null)}
+                  className="p-2 hover:bg-white/20 rounded-lg transition-colors"
+                >
+                  <X className="w-5 h-5 text-white" />
+                </button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }

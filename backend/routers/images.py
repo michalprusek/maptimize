@@ -1,9 +1,12 @@
 """Image routes."""
+import logging
 import os
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Optional
+
+logger = logging.getLogger(__name__)
 
 import aiofiles
 from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Form, Query, BackgroundTasks
@@ -357,11 +360,17 @@ async def delete_cell_crop(
 
     # Delete MIP crop file
     if crop.mip_path and os.path.exists(crop.mip_path):
-        os.remove(crop.mip_path)
+        try:
+            os.remove(crop.mip_path)
+        except OSError as e:
+            logger.warning(f"Failed to delete MIP crop file {crop.mip_path}: {e}")
 
     # Delete SUM crop file if exists
     if crop.sum_crop_path and os.path.exists(crop.sum_crop_path):
-        os.remove(crop.sum_crop_path)
+        try:
+            os.remove(crop.sum_crop_path)
+        except OSError as e:
+            logger.warning(f"Failed to delete SUM crop file {crop.sum_crop_path}: {e}")
 
     await db.delete(crop)
     await db.commit()
@@ -529,7 +538,10 @@ async def delete_image(
     # Delete files (including SUM projection)
     for path in [image.file_path, image.mip_path, image.sum_path, image.thumbnail_path]:
         if path and os.path.exists(path):
-            os.remove(path)
+            try:
+                os.remove(path)
+            except OSError as e:
+                logger.warning(f"Failed to delete image file {path}: {e}")
 
     await db.delete(image)
     await db.commit()

@@ -52,12 +52,13 @@ def select_exploration_pair(
             f"At least 2 items required for pair selection, got {len(items)}"
         )
 
-    # Find available pairs (not recently compared)
+    # Find available pairs (not recently compared in either order)
     available_pairs = [
         (items[i], items[j])
         for i in range(len(items))
         for j in range(i + 1, len(items))
         if (items[i].id, items[j].id) not in recent_pairs
+        and (items[j].id, items[i].id) not in recent_pairs
     ]
 
     if not available_pairs:
