@@ -1,11 +1,11 @@
 "use client";
 
-import { useEffect, useState } from "react";
 import Link from "next/link";
 import { motion } from "framer-motion";
 import { useQuery } from "@tanstack/react-query";
-import { api, Experiment } from "@/lib/api";
+import { api } from "@/lib/api";
 import { useAuthStore } from "@/stores/authStore";
+import { StatusBadge } from "@/components/ui";
 import {
   FolderOpen,
   Image as ImageIcon,
@@ -29,7 +29,7 @@ const itemVariants = {
   show: { opacity: 1, y: 0 },
 };
 
-export default function DashboardPage() {
+export default function DashboardPage(): JSX.Element {
   const { user } = useAuthStore();
 
   const { data: experiments, isLoading } = useQuery({
@@ -143,17 +143,7 @@ export default function DashboardPage() {
                     </div>
                   </div>
                   <div className="flex items-center gap-4">
-                    <span
-                      className={`px-2 py-1 rounded-full text-xs font-medium ${
-                        exp.status === "active"
-                          ? "bg-primary-500/20 text-primary-400"
-                          : exp.status === "completed"
-                          ? "bg-accent-cyan/20 text-accent-cyan"
-                          : "bg-text-muted/20 text-text-muted"
-                      }`}
-                    >
-                      {exp.status}
-                    </span>
+                    <StatusBadge status={exp.status} />
                     <ArrowRight className="w-5 h-5 text-text-muted" />
                   </div>
                 </motion.div>

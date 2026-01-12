@@ -2,7 +2,7 @@
 from typing import List
 
 from fastapi import APIRouter, Depends, HTTPException, status, Query
-from sqlalchemy import select, func
+from sqlalchemy import select, func, distinct
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -29,38 +29,29 @@ async def list_experiments(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
-    """List user's experiments."""
-    # Get experiments with image and cell counts
+    """List user's experiments with image and cell counts in a single query."""
+    # Get experiments with counts using a single query with aggregates
     result = await db.execute(
-        select(Experiment)
+        select(
+            Experiment,
+            func.count(distinct(Image.id)).label("image_count"),
+            func.count(CellCrop.id).label("cell_count")
+        )
+        .outerjoin(Image, Experiment.id == Image.experiment_id)
+        .outerjoin(CellCrop, Image.id == CellCrop.image_id)
         .where(Experiment.user_id == current_user.id)
+        .group_by(Experiment.id)
         .order_by(Experiment.updated_at.desc())
         .offset(skip)
         .limit(limit)
     )
-    experiments = result.scalars().all()
+    rows = result.all()
 
-    # Get counts for each experiment
     response = []
-    for exp in experiments:
-        # Count images
-        img_result = await db.execute(
-            select(func.count(Image.id))
-            .where(Image.experiment_id == exp.id)
-        )
-        image_count = img_result.scalar() or 0
-
-        # Count cells
-        cell_result = await db.execute(
-            select(func.count(CellCrop.id))
-            .join(Image)
-            .where(Image.experiment_id == exp.id)
-        )
-        cell_count = cell_result.scalar() or 0
-
+    for exp, image_count, cell_count in rows:
         exp_response = ExperimentResponse.model_validate(exp)
-        exp_response.image_count = image_count
-        exp_response.cell_count = cell_count
+        exp_response.image_count = image_count or 0
+        exp_response.cell_count = cell_count or 0
         response.append(exp_response)
 
     return response

@@ -4,7 +4,8 @@ import { useState } from "react";
 import Link from "next/link";
 import { motion, AnimatePresence } from "framer-motion";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { api, Experiment, MapProtein } from "@/lib/api";
+import { api } from "@/lib/api";
+import { ConfirmModal, StatusBadge } from "@/components/ui";
 import {
   Plus,
   FolderOpen,
@@ -12,12 +13,16 @@ import {
   ArrowRight,
   X,
   Loader2,
+  Trash2,
+  AlertCircle,
 } from "lucide-react";
 
-export default function ExperimentsPage() {
+export default function ExperimentsPage(): JSX.Element {
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [newExpName, setNewExpName] = useState("");
   const [newExpDescription, setNewExpDescription] = useState("");
+  const [experimentToDelete, setExperimentToDelete] = useState<{ id: number; name: string } | null>(null);
+  const [error, setError] = useState<string | null>(null);
   const queryClient = useQueryClient();
 
   const { data: experiments, isLoading } = useQuery({
@@ -33,13 +38,25 @@ export default function ExperimentsPage() {
       setShowCreateModal(false);
       setNewExpName("");
       setNewExpDescription("");
+      setError(null);
+    },
+    onError: (err: Error) => {
+      console.error("Failed to create experiment:", err);
+      setError(err.message || "Failed to create experiment. Please try again.");
     },
   });
 
   const deleteMutation = useMutation({
     mutationFn: (id: number) => api.deleteExperiment(id),
     onSuccess: () => {
+      setExperimentToDelete(null);
       queryClient.invalidateQueries({ queryKey: ["experiments"] });
+      setError(null);
+    },
+    onError: (err: Error) => {
+      console.error("Failed to delete experiment:", err);
+      setError(err.message || "Failed to delete experiment. Please try again.");
+      setExperimentToDelete(null);
     },
   });
 
@@ -72,6 +89,27 @@ export default function ExperimentsPage() {
         </button>
       </div>
 
+      {/* Error notification */}
+      {error && (
+        <motion.div
+          initial={{ opacity: 0, y: -10 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="p-4 bg-accent-red/10 border border-accent-red/20 rounded-lg flex items-start gap-3"
+        >
+          <AlertCircle className="w-5 h-5 text-accent-red flex-shrink-0 mt-0.5" />
+          <div className="flex-1">
+            <p className="text-accent-red font-medium">Operation failed</p>
+            <p className="text-sm text-text-secondary">{error}</p>
+          </div>
+          <button
+            onClick={() => setError(null)}
+            className="text-text-muted hover:text-text-primary"
+          >
+            ×
+          </button>
+        </motion.div>
+      )}
+
       {/* Experiments Grid */}
       {isLoading ? (
         <div className="flex justify-center py-12">
@@ -96,17 +134,20 @@ export default function ExperimentsPage() {
                     <div className="p-3 bg-primary-500/10 rounded-xl">
                       <FolderOpen className="w-6 h-6 text-primary-400" />
                     </div>
-                    <span
-                      className={`px-2 py-1 rounded-full text-xs font-medium ${
-                        exp.status === "active"
-                          ? "bg-primary-500/20 text-primary-400"
-                          : exp.status === "completed"
-                          ? "bg-accent-cyan/20 text-accent-cyan"
-                          : "bg-text-muted/20 text-text-muted"
-                      }`}
-                    >
-                      {exp.status}
-                    </span>
+                    <div className="flex items-center gap-2">
+                      <StatusBadge status={exp.status} />
+                      <button
+                        onClick={(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          setExperimentToDelete({ id: exp.id, name: exp.name });
+                        }}
+                        className="p-1.5 hover:bg-accent-red/20 text-text-muted hover:text-accent-red rounded-lg transition-colors opacity-0 group-hover:opacity-100"
+                        title="Delete experiment"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    </div>
                   </div>
 
                   <h3 className="font-display font-semibold text-lg text-text-primary mb-2 group-hover:text-primary-400 transition-colors">
@@ -242,6 +283,20 @@ export default function ExperimentsPage() {
           </motion.div>
         )}
       </AnimatePresence>
+
+      {/* Delete Confirmation Modal */}
+      <ConfirmModal
+        isOpen={!!experimentToDelete}
+        onClose={() => setExperimentToDelete(null)}
+        onConfirm={() => experimentToDelete && deleteMutation.mutate(experimentToDelete.id)}
+        title="Delete Experiment"
+        message="Are you sure you want to delete this experiment? All images and cell crops will be permanently removed."
+        detail={experimentToDelete?.name}
+        confirmLabel="Delete"
+        cancelLabel="Cancel"
+        isLoading={deleteMutation.isPending}
+        variant="danger"
+      />
     </div>
   );
 }

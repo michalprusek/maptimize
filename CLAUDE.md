@@ -63,8 +63,10 @@ Two-phase pair selection:
 1. **Exploration** (first 50 comparisons): Random pairs
 2. **Exploitation**: Uncertainty sampling (highest sigma pairs)
 
-### Bundleness Score
-Measures microtubule bundling from intensity distribution:
+### Bundleness Score (Planned)
+Will measure microtubule bundling from intensity distribution. **Note: Not yet implemented in image processing pipeline.**
+
+Formula (to be implemented):
 ```python
 bundleness = 0.7071 * z_skewness + 0.7071 * z_kurtosis
 
@@ -103,7 +105,7 @@ Experiment → Upload Images → Detection → Cell Crops → Import to Metric �
 ### Why This Architecture?
 - **Consistent data**: All images go through detection pipeline before ranking
 - **MIP/SUM projections**: Z-stack processing happens during upload
-- **Metadata**: Cell crops have bundleness scores, detection confidence
+- **Metadata**: Cell crops have detection confidence, mean intensity (bundleness planned)
 - **Traceability**: Can trace metric images back to source experiments
 
 ## Commands
@@ -221,7 +223,7 @@ Source code at `/Users/michalprusek/Desktop/microtubules/`:
 | Pair Selection | `reranking_app/backend/pair_selection.py` | ✅ Ported |
 | YOLO Detection | `detection/train_yolo.py` | ✅ Integrated |
 | DINOv2 Encoder | `feature_extraction/encoders/dinov2_encoder.py` | ⏳ TODO |
-| Bundleness | `CLAUDE.md` (formula) | ✅ Implemented |
+| Bundleness | `CLAUDE.md` (formula) | ⏳ TODO |
 
 ### YOLO Detection Pipeline
 
@@ -234,7 +236,7 @@ The detection pipeline is located at `backend/ml/detection/` and includes:
 2. Background task triggered
 3. Load Z-stack TIFF → create MIP
 4. Run YOLO detection (conf=0.25, iou=0.7)
-5. Crop detected cells → compute bundleness
+5. Crop detected cells → compute basic metrics (mean intensity)
 6. Save crops and metrics to database
 
 **Key parameters (from training):**
@@ -264,6 +266,69 @@ NEXT_PUBLIC_API_URL=http://localhost:8000
 5. **Z-stack support** - images are 3D TIFF files, process as MIP (Maximum Intensity Projection)
 6. **ALWAYS use Docker dev with hot reload** - use `docker-compose -f docker-compose.dev.yml up` for development. Since hot reload is enabled, **do NOT restart containers after code changes** - changes are applied automatically
 7. **Run code-simplifier after implementation** - after completing any implementation task, always run the `code-simplifier:code-simplifier` agent to refine code for clarity, consistency, and maintainability
+
+## Default Admin Setup
+
+When the database is reset, an admin user and default experiment are created automatically.
+The credentials are configured via environment variables:
+
+```bash
+# Backend environment variables for initial admin setup
+DEFAULT_ADMIN_EMAIL=your-email@example.com
+DEFAULT_ADMIN_PASSWORD=your-secure-password
+```
+
+The admin user is created with the `admin` role, and a default "MAP9 Analysis" experiment is created.
+
+## Docker Operations (Claude MUST do this autonomously)
+
+**IMPORTANT**: Claude is responsible for managing Docker services. User should NOT have to start services manually.
+
+### Check services status
+```bash
+docker-compose ps
+```
+
+### Start all services (if not running)
+```bash
+docker-compose up -d
+```
+
+### Rebuild after code changes
+```bash
+# Rebuild specific service (e.g., after backend code changes)
+docker-compose up -d --build backend
+
+# Rebuild all
+docker-compose up -d --build
+```
+
+### Health check
+```bash
+# Quick health check
+curl http://localhost:8000/health
+
+# Full health check script
+./scripts/health-check.sh
+```
+
+### View logs
+```bash
+# Backend logs
+docker logs maptimize-backend-1 --tail 100
+
+# All services
+docker-compose logs --tail 50
+```
+
+### When to rebuild
+- After modifying Python files in `backend/`
+- After adding new dependencies to `pyproject.toml`
+- After modifying `Dockerfile`
+
+### When NOT to rebuild (hot reload works)
+- If using `docker-compose.dev.yml` - changes auto-reload
+- Frontend changes (Next.js has its own hot reload)
 
 ## TODO
 

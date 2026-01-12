@@ -39,8 +39,9 @@ app.add_middleware(
         "http://127.0.0.1:3001",
     ],
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
     allow_headers=["*"],
+    expose_headers=["*"],
 )
 
 # Mount static files for uploads
@@ -62,5 +63,36 @@ async def root():
 
 @app.get("/health")
 async def health():
-    """Health check endpoint."""
-    return {"status": "healthy"}
+    """Health check endpoint - checks all service dependencies."""
+    from sqlalchemy import text
+    from database import async_session_maker
+    import redis.asyncio as redis
+
+    checks = {
+        "api": "ok",
+        "database": "unknown",
+        "redis": "unknown",
+    }
+
+    # Check database
+    try:
+        async with async_session_maker() as session:
+            await session.execute(text("SELECT 1"))
+        checks["database"] = "ok"
+    except Exception as e:
+        checks["database"] = f"error: {str(e)[:50]}"
+
+    # Check Redis
+    try:
+        r = redis.from_url(settings.redis_url)
+        await r.ping()
+        await r.close()
+        checks["redis"] = "ok"
+    except Exception as e:
+        checks["redis"] = f"error: {str(e)[:50]}"
+
+    all_ok = all(v == "ok" for v in checks.values())
+    return {
+        "status": "healthy" if all_ok else "degraded",
+        "checks": checks,
+    }

@@ -1,11 +1,13 @@
 """Security utilities - password hashing and JWT."""
+import logging
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 import bcrypt
 from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
-from jose import JWTError, jwt
+from jose import jwt
+from jose.exceptions import ExpiredSignatureError, JWTClaimsError, JWTError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -14,6 +16,7 @@ from database import get_db
 from models.user import User
 from schemas.user import TokenPayload
 
+logger = logging.getLogger(__name__)
 settings = get_settings()
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/login")
 
@@ -70,7 +73,14 @@ def decode_token(token: str) -> Optional[TokenPayload]:
             exp=datetime.fromtimestamp(payload["exp"], tz=timezone.utc),
             role=payload["role"]
         )
-    except JWTError:
+    except ExpiredSignatureError:
+        logger.debug("Token expired")
+        return None
+    except JWTClaimsError as e:
+        logger.warning(f"Invalid token claims: {e}")
+        return None
+    except JWTError as e:
+        logger.debug(f"JWT decode error: {type(e).__name__}: {e}")
         return None
 
 

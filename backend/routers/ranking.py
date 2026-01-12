@@ -1,6 +1,5 @@
 """Ranking routes - TrueSkill-based pairwise comparison."""
 from typing import List, Optional
-import random
 
 from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy import select, func, and_, distinct, delete
@@ -28,6 +27,7 @@ from schemas.ranking import (
     ImportResult,
 )
 from utils.security import get_current_user
+from utils.pair_selection import select_pair, InsufficientItemsError
 
 router = APIRouter()
 settings = get_settings()
@@ -162,66 +162,20 @@ async def get_next_pair(
         rating = await get_or_create_rating(db, current_user.id, crop.id)
         ratings[crop.id] = rating
 
-    # Select pair based on phase
-    if total_comparisons < settings.exploration_pairs:
-        # Exploration phase: random selection
-        available_pairs = [
-            (crops[i], crops[j])
-            for i in range(len(crops))
-            for j in range(i + 1, len(crops))
-            if (crops[i].id, crops[j].id) not in recent_pairs
-        ]
-
-        if not available_pairs:
-            # If all pairs recently compared, allow any pair
-            available_pairs = [
-                (crops[i], crops[j])
-                for i in range(len(crops))
-                for j in range(i + 1, len(crops))
-            ]
-
-        crop_a, crop_b = random.choice(available_pairs)
-    else:
-        # Exploitation phase: uncertainty sampling
-        # Select cells with highest sigma (most uncertain)
-        sorted_by_sigma = sorted(
-            crops,
-            key=lambda c: ratings[c.id].sigma,
-            reverse=True
+    # Select pair using adaptive sampling utility
+    try:
+        crop_a, crop_b = select_pair(
+            items=crops,
+            ratings=ratings,
+            total_comparisons=total_comparisons,
+            recent_pairs=recent_pairs,
+            randomize_order=True
         )
-
-        # Take top uncertain cells
-        candidates = sorted_by_sigma[:min(10, len(sorted_by_sigma))]
-
-        # Find pair with similar mu among uncertain cells
-        best_pair = None
-        best_score = float('-inf')
-
-        for i, crop_a in enumerate(candidates):
-            for crop_b in candidates[i + 1:]:
-                if (crop_a.id, crop_b.id) in recent_pairs:
-                    continue
-
-                rating_a = ratings[crop_a.id]
-                rating_b = ratings[crop_b.id]
-
-                combined_sigma = rating_a.sigma + rating_b.sigma
-                mu_diff = abs(rating_a.mu - rating_b.mu)
-                score = combined_sigma - mu_diff
-
-                if score > best_score:
-                    best_score = score
-                    best_pair = (crop_a, crop_b)
-
-        if best_pair:
-            crop_a, crop_b = best_pair
-        else:
-            # Fallback to random
-            crop_a, crop_b = random.sample(crops, 2)
-
-    # Randomize order
-    if random.random() > 0.5:
-        crop_a, crop_b = crop_b, crop_a
+    except InsufficientItemsError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
 
     await db.commit()
 
@@ -571,13 +525,6 @@ async def add_import_sources(
     for exp_id in data.experiment_ids:
         if exp_id in existing_ids:
             # Update existing to included=True
-            await db.execute(
-                select(RankingSource)
-                .where(
-                    RankingSource.user_id == current_user.id,
-                    RankingSource.experiment_id == exp_id
-                )
-            )
             result = await db.execute(
                 select(RankingSource)
                 .where(

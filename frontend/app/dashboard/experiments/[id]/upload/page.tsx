@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect } from "react";
 import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import { motion } from "framer-motion";
@@ -13,39 +13,81 @@ import {
   Loader2,
   Scan,
   CheckCircle,
+  AlertCircle,
 } from "lucide-react";
 
-export default function UploadPage() {
+export default function UploadPage(): JSX.Element {
   const params = useParams();
   const router = useRouter();
   const experimentId = Number(params.id);
   const queryClient = useQueryClient();
 
-  const [selectedProtein, setSelectedProtein] = useState<number | undefined>();
   const [detectCells, setDetectCells] = useState(true);
   const [uploadingFiles, setUploadingFiles] = useState<Map<string, number>>(new Map());
   const [uploadedCount, setUploadedCount] = useState(0);
+  const [batchImageIds, setBatchImageIds] = useState<number[]>([]);
+  const [failedUploads, setFailedUploads] = useState<{ name: string; error: string }[]>([]);
 
   const { data: experiment, isLoading: expLoading } = useQuery({
     queryKey: ["experiment", experimentId],
     queryFn: () => api.getExperiment(experimentId),
   });
 
-  const { data: proteins } = useQuery({
-    queryKey: ["proteins"],
-    queryFn: () => api.getProteins(),
-  });
-
   const uploadMutation = useMutation({
     mutationFn: async (file: File) => {
-      return api.uploadImage(experimentId, file, selectedProtein, detectCells);
+      return api.uploadImage(experimentId, file, undefined, detectCells);
     },
-    onSuccess: () => {
+    onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ["images", experimentId] });
       queryClient.invalidateQueries({ queryKey: ["experiment", experimentId] });
       setUploadedCount((prev) => prev + 1);
+      // Track image ID for batch status monitoring
+      setBatchImageIds((prev) => [...prev, data.id]);
     },
   });
+
+  // Poll for batch processing status
+  const { data: batchStatus } = useQuery({
+    queryKey: ["batch-status", batchImageIds],
+    queryFn: async () => {
+      const images = await Promise.all(
+        batchImageIds.map((id) => api.getImage(id))
+      );
+      const readyOrError = images.filter(
+        (img) => img.status === "ready" || img.status === "error"
+      );
+      const errors = images.filter((img) => img.status === "error");
+      return {
+        allReady: readyOrError.length === images.length,
+        processing: images.length - readyOrError.length,
+        errors: errors.length,
+        total: images.length,
+      };
+    },
+    enabled: batchImageIds.length > 0 && uploadingFiles.size === 0,
+    refetchInterval: (query) => {
+      // Stop polling when all images are ready
+      if (query.state.data?.allReady) return false;
+      return 2000; // Poll every 2 seconds
+    },
+  });
+
+  // Prevent navigation while batch is processing
+  useEffect(() => {
+    const isProcessing =
+      uploadingFiles.size > 0 ||
+      (batchImageIds.length > 0 && !batchStatus?.allReady);
+
+    const handleBeforeUnload = (e: BeforeUnloadEvent) => {
+      if (isProcessing) {
+        e.preventDefault();
+        e.returnValue = "";
+      }
+    };
+
+    window.addEventListener("beforeunload", handleBeforeUnload);
+    return () => window.removeEventListener("beforeunload", handleBeforeUnload);
+  }, [uploadingFiles.size, batchImageIds.length, batchStatus?.allReady]);
 
   const onDrop = useCallback(
     async (acceptedFiles: File[]) => {
@@ -57,6 +99,8 @@ export default function UploadPage() {
           await uploadMutation.mutateAsync(file);
         } catch (err) {
           console.error("Upload failed:", err);
+          const errorMessage = err instanceof Error ? err.message : "Unknown error";
+          setFailedUploads((prev) => [...prev, { name: file.name, error: errorMessage }]);
         } finally {
           setUploadingFiles((prev) => {
             const next = new Map(prev);
@@ -66,7 +110,7 @@ export default function UploadPage() {
         }
       }
     },
-    [uploadMutation, selectedProtein, detectCells]
+    [uploadMutation, detectCells]
   );
 
   const { getRootProps, getInputProps, isDragActive } = useDropzone({
@@ -98,13 +142,25 @@ export default function UploadPage() {
     );
   }
 
+  // Computed state for navigation blocking
+  const isProcessing =
+    uploadingFiles.size > 0 ||
+    (batchImageIds.length > 0 && !batchStatus?.allReady);
+
   return (
     <div className="space-y-8 max-w-3xl mx-auto">
       {/* Header */}
       <div className="flex items-center gap-4">
         <Link
-          href={`/dashboard/experiments/${experimentId}`}
-          className="p-2 hover:bg-white/5 rounded-lg transition-colors"
+          href={isProcessing ? "#" : `/dashboard/experiments/${experimentId}`}
+          className={`p-2 rounded-lg transition-colors ${
+            isProcessing
+              ? "cursor-not-allowed opacity-50"
+              : "hover:bg-white/5"
+          }`}
+          onClick={(e) => {
+            if (isProcessing) e.preventDefault();
+          }}
         >
           <ArrowLeft className="w-5 h-5 text-text-secondary" />
         </Link>
@@ -124,41 +180,6 @@ export default function UploadPage() {
         animate={{ opacity: 1, y: 0 }}
         className="glass-card p-6"
       >
-        {/* Protein selector */}
-        <div className="mb-6">
-          <label className="block text-sm font-medium text-text-secondary mb-2">
-            Assign MAP Protein (optional)
-          </label>
-          <div className="flex flex-wrap gap-2">
-            <button
-              onClick={() => setSelectedProtein(undefined)}
-              className={`px-4 py-2 rounded-lg text-sm font-medium transition-all ${
-                !selectedProtein
-                  ? "bg-primary-500/20 text-primary-400 border border-primary-500/30"
-                  : "bg-bg-secondary text-text-secondary hover:bg-bg-hover"
-              }`}
-            >
-              None
-            </button>
-            {proteins?.map((p) => (
-              <button
-                key={p.id}
-                onClick={() => setSelectedProtein(p.id)}
-                className={`px-4 py-2 rounded-lg text-sm font-medium transition-all ${
-                  selectedProtein === p.id
-                    ? "bg-primary-500/20 text-primary-400 border border-primary-500/30"
-                    : "bg-bg-secondary text-text-secondary hover:bg-bg-hover"
-                }`}
-                style={{
-                  borderColor: selectedProtein === p.id ? p.color : undefined,
-                }}
-              >
-                {p.name}
-              </button>
-            ))}
-          </div>
-        </div>
-
         {/* Cell detection toggle */}
         <div className="mb-6">
           <button
@@ -183,7 +204,7 @@ export default function UploadPage() {
             <Scan className={`w-5 h-5 ${detectCells ? "text-primary-400" : "text-text-muted"}`} />
             <div className="text-left flex-1">
               <p className={`text-sm font-medium ${detectCells ? "text-primary-400" : "text-text-secondary"}`}>
-                Detect cells
+                Detect and crop cells
               </p>
               <p className="text-xs text-text-muted">
                 {detectCells ? "YOLO detection will run after upload" : "Upload without detection"}
@@ -244,17 +265,91 @@ export default function UploadPage() {
           </div>
         )}
 
-        {/* Success message */}
-        {uploadedCount > 0 && uploadingFiles.size === 0 && (
+        {/* Processing status */}
+        {batchImageIds.length > 0 && !batchStatus?.allReady && uploadingFiles.size === 0 && (
           <motion.div
             initial={{ opacity: 0, y: 10 }}
             animate={{ opacity: 1, y: 0 }}
-            className="mt-6 p-4 bg-primary-500/10 border border-primary-500/20 rounded-lg flex items-center gap-3"
+            className="mt-6 p-4 bg-accent-amber/10 border border-accent-amber/20 rounded-lg"
           >
-            <CheckCircle className="w-5 h-5 text-primary-400" />
-            <span className="text-primary-400">
-              {uploadedCount} {uploadedCount === 1 ? "image" : "images"} uploaded successfully
+            <div className="flex items-center gap-3">
+              <Loader2 className="w-5 h-5 text-accent-amber animate-spin" />
+              <div className="flex-1">
+                <span className="text-accent-amber font-medium">
+                  Processing {batchStatus?.processing ?? batchImageIds.length} of {batchStatus?.total ?? batchImageIds.length} images...
+                </span>
+                <p className="text-xs text-text-muted mt-1">
+                  Please wait. Do not close this page.
+                </p>
+              </div>
+            </div>
+          </motion.div>
+        )}
+
+        {/* Success message - all done */}
+        {uploadedCount > 0 && uploadingFiles.size === 0 && batchStatus?.allReady && (
+          <motion.div
+            initial={{ opacity: 0, y: 10 }}
+            animate={{ opacity: 1, y: 0 }}
+            className="mt-6 p-4 bg-primary-500/10 border border-primary-500/20 rounded-lg"
+          >
+            <div className="flex items-center gap-3">
+              <CheckCircle className="w-5 h-5 text-primary-400" />
+              <span className="text-primary-400">
+                {uploadedCount} {uploadedCount === 1 ? "image" : "images"} processed successfully
+                {batchStatus.errors > 0 && (
+                  <span className="text-red-400 ml-2">
+                    ({batchStatus.errors} {batchStatus.errors === 1 ? "error" : "errors"})
+                  </span>
+                )}
+              </span>
+            </div>
+          </motion.div>
+        )}
+
+        {/* Error indicator during processing */}
+        {batchStatus && batchStatus.errors > 0 && !batchStatus.allReady && (
+          <motion.div
+            initial={{ opacity: 0, y: 10 }}
+            animate={{ opacity: 1, y: 0 }}
+            className="mt-3 p-3 bg-red-500/10 border border-red-500/20 rounded-lg flex items-center gap-3"
+          >
+            <AlertCircle className="w-4 h-4 text-red-400" />
+            <span className="text-red-400 text-sm">
+              {batchStatus.errors} {batchStatus.errors === 1 ? "image" : "images"} failed processing
             </span>
+          </motion.div>
+        )}
+
+        {/* Failed uploads list */}
+        {failedUploads.length > 0 && (
+          <motion.div
+            initial={{ opacity: 0, y: 10 }}
+            animate={{ opacity: 1, y: 0 }}
+            className="mt-6 p-4 bg-accent-red/10 border border-accent-red/20 rounded-lg"
+          >
+            <div className="flex items-center justify-between mb-3">
+              <div className="flex items-center gap-2">
+                <AlertCircle className="w-5 h-5 text-accent-red" />
+                <span className="text-accent-red font-medium">
+                  {failedUploads.length} upload{failedUploads.length !== 1 ? "s" : ""} failed
+                </span>
+              </div>
+              <button
+                onClick={() => setFailedUploads([])}
+                className="text-sm text-text-muted hover:text-text-primary"
+              >
+                Dismiss
+              </button>
+            </div>
+            <div className="space-y-2 max-h-40 overflow-y-auto">
+              {failedUploads.map((failed, i) => (
+                <div key={i} className="text-sm">
+                  <span className="text-text-primary">{failed.name}</span>
+                  <span className="text-text-muted ml-2">— {failed.error}</span>
+                </div>
+              ))}
+            </div>
           </motion.div>
         )}
       </motion.div>
@@ -262,12 +357,19 @@ export default function UploadPage() {
       {/* Actions */}
       <div className="flex justify-between items-center">
         <Link
-          href={`/dashboard/experiments/${experimentId}`}
-          className="text-text-secondary hover:text-text-primary transition-colors"
+          href={isProcessing ? "#" : `/dashboard/experiments/${experimentId}`}
+          className={`transition-colors ${
+            isProcessing
+              ? "text-text-muted cursor-not-allowed"
+              : "text-text-secondary hover:text-text-primary"
+          }`}
+          onClick={(e) => {
+            if (isProcessing) e.preventDefault();
+          }}
         >
           Back to gallery
         </Link>
-        {uploadedCount > 0 && (
+        {uploadedCount > 0 && batchStatus?.allReady && (
           <Link
             href={`/dashboard/experiments/${experimentId}`}
             className="btn-primary"
