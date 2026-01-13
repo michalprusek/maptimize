@@ -13,8 +13,8 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 
-# Weights path
-WEIGHTS_PATH = Path(__file__).parent / "weights" / "best.pt"
+# Weights path - mounted from ./weights in docker-compose
+WEIGHTS_PATH = Path("/app/weights/best.pt")
 
 
 @dataclass

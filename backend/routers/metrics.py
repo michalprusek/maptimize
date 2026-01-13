@@ -593,8 +593,8 @@ async def get_metric_pair(
 
     def get_image_url(img: MetricImage) -> Optional[str]:
         if img.cell_crop:
-            return f"/api/images/crops/{img.cell_crop_id}/image"
-        return f"/api/metrics/{metric_id}/images/{img.id}/file"
+            return f"/images/crops/{img.cell_crop_id}/image"
+        return f"/metrics/{metric_id}/images/{img.id}/file"
 
     return MetricPairResponse(
         image_a=MetricImageForRanking(
@@ -765,8 +765,8 @@ async def get_metric_leaderboard(
 
         def get_url() -> Optional[str]:
             if img.cell_crop:
-                return f"/api/images/crops/{img.cell_crop_id}/image"
-            return f"/api/metrics/{metric_id}/images/{img.id}/file"
+                return f"/images/crops/{img.cell_crop_id}/image"
+            return f"/metrics/{metric_id}/images/{img.id}/file"
 
         items.append(MetricRankingItem(
             rank=(page - 1) * per_page + i + 1,

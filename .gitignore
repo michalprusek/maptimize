@@ -64,3 +64,5 @@ backend/ml/detection/weights/*.pt
 # Database
 *.db
 *.sqlite3
+
+sudo_password.txt

@@ -248,7 +248,7 @@ export default function ExperimentDetailPage(): JSX.Element {
     setProteinFilter(null);
   };
 
-  const hasActiveFilters = searchQuery || proteinFilter !== null;
+  const hasActiveFilters = Boolean(searchQuery) || proteinFilter !== null;
 
   if (expLoading) {
     return (

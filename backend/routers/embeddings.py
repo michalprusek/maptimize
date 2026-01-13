@@ -152,7 +152,7 @@ async def get_umap_visualization(
             y=float(projection[i, 1]),
             protein_name=protein.name if protein else None,
             protein_color=protein.color if protein else "#888888",
-            thumbnail_url=f"/api/images/crops/{crop.id}/image?type=mip",
+            thumbnail_url=f"/images/crops/{crop.id}/image?type=mip",
             bundleness_score=crop.bundleness_score,
         ))
 

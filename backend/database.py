@@ -104,17 +104,4 @@ async def seed_default_data():
                 db.add(p)
             print("Created default MAP proteins")
 
-        # Check if default experiment exists
-        result = await db.execute(
-            select(Experiment).where(Experiment.user_id == user.id).limit(1)
-        )
-        if not result.scalar_one_or_none():
-            exp = Experiment(
-                name="MAP9 Analysis",
-                description="Microtubule bundling analysis with MAP9 protein",
-                user_id=user.id
-            )
-            db.add(exp)
-            print("Created default experiment: MAP9 Analysis")
-
         await db.commit()

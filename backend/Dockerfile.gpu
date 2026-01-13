@@ -1,0 +1,151 @@
+# GPU-enabled Backend Dockerfile for Maptimize
+# Uses python:3.11-slim + CUDA PyTorch with nvidia runtime
+
+# Stage 1: Build wheels
+FROM python:3.11-slim AS wheel-builder
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    cmake \
+    gcc \
+    g++ \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /wheels
+
+COPY pyproject.toml ./
+
+# Build PyTorch with CUDA support
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip wheel --no-cache-dir --wheel-dir /wheels \
+    torch==2.1.0+cu118 torchvision==0.16.0+cu118 -f https://download.pytorch.org/whl/torch_stable.html
+
+# Build other ML dependencies
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install uv && \
+    pip wheel --no-cache-dir --wheel-dir /wheels \
+    ultralytics>=8.1.0 \
+    transformers>=4.37.0 \
+    timm>=0.9.12 \
+    pgvector>=0.3.0 \
+    umap-learn>=0.5.7 \
+    numba>=0.59.0 \
+    scikit-learn>=1.4.0
+
+# Stage 2: Runtime base
+FROM python:3.11-slim AS runtime-base
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libgomp1 \
+    libglib2.0-0 \
+    libsm6 \
+    libxext6 \
+    libxrender-dev \
+    libgl1 \
+    curl \
+    && rm -rf /var/lib/apt/lists/* \
+    && apt-get clean
+
+# Stage 3: Production
+FROM runtime-base AS production
+
+WORKDIR /app
+
+# Create non-root user
+RUN useradd --create-home --shell /bin/bash app
+
+# Copy pyproject.toml for dependency reference
+COPY pyproject.toml ./
+
+# Install uv and base dependencies
+RUN pip install uv
+
+# Install wheels from builder
+COPY --from=wheel-builder /wheels /wheels
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install --no-cache-dir --no-index --find-links /wheels \
+    torch torchvision && \
+    pip install --no-cache-dir --find-links /wheels \
+    ultralytics transformers timm pgvector umap-learn numba scikit-learn && \
+    rm -rf /wheels
+
+# Install remaining dependencies
+RUN uv pip install --system -e "."
+
+# Copy application code
+COPY --chown=app:app . .
+
+# Create directories
+RUN mkdir -p data/uploads /app/weights /app/.cache/huggingface && \
+    chown -R app:app /app
+
+# Entrypoint script
+COPY --chown=app:app <<'EOF' /app/docker-entrypoint.sh
+#!/bin/bash
+set -e
+
+echo "=== Maptimize Backend Initialization ==="
+
+# Check GPU availability
+echo "Checking compute devices..."
+python -c "
+import torch
+cuda = torch.cuda.is_available()
+print(f'CUDA available: {cuda}')
+if cuda:
+    print(f'GPU: {torch.cuda.get_device_name(0)}')
+    mem = torch.cuda.get_device_properties(0).total_memory / 1024**3
+    print(f'Memory: {mem:.1f} GB')
+else:
+    print('Running in CPU mode')
+" || echo "Warning: Device check failed"
+
+# Check YOLOv8 weights
+YOLO_PATH="${YOLO_MODEL_PATH:-/app/weights/best.pt}"
+if [ -f "$YOLO_PATH" ]; then
+    SIZE=$(du -h "$YOLO_PATH" | cut -f1)
+    echo "✓ YOLOv8 weights found: $YOLO_PATH ($SIZE)"
+else
+    echo "⚠️  YOLOv8 custom weights not found at $YOLO_PATH"
+    echo "   Will use fallback pretrained model (yolov8n.pt)"
+fi
+
+echo ""
+echo "✅ Initialization complete"
+echo "=== Starting Maptimize Backend ==="
+echo ""
+
+exec "$@"
+EOF
+
+RUN chmod +x /app/docker-entrypoint.sh
+
+# Labels
+LABEL maintainer="Maptimize"
+LABEL service="maptimize-backend"
+
+# Cleanup
+RUN find /usr/local/lib/python3.11 -name "*.pyc" -delete 2>/dev/null || true && \
+    find /usr/local/lib/python3.11 -name "__pycache__" -type d -delete 2>/dev/null || true && \
+    rm -rf /root/.cache/pip
+
+# Switch to non-root user
+USER app
+
+# Environment
+ENV PYTHONPATH=/app
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
+ENV PORT=8000
+ENV OMP_NUM_THREADS=4
+ENV MKL_NUM_THREADS=4
+ENV HF_HOME=/app/.cache/huggingface
+
+EXPOSE 8000
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=30s --start-period=60s --retries=3 \
+    CMD curl -f http://localhost:8000/health || exit 1
+
+ENTRYPOINT ["/app/docker-entrypoint.sh"]
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]

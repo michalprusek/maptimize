@@ -1,0 +1,151 @@
+# Maptimize Production Docker Compose with GPU Support
+# Ports: 7xxx range (frontend: 7000, backend: 7001, db: 7432, redis: 7379)
+# POZOR: Porty 4xxx a 5xxx jsou rezervované pro Spheroseg!
+
+services:
+  # Frontend (Next.js)
+  maptimize-frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        - NEXT_PUBLIC_API_URL=/api
+    container_name: maptimize-frontend
+    ports:
+      - "7000:3000"
+    environment:
+      - NODE_ENV=production
+      - NEXT_PUBLIC_API_URL=/api
+    depends_on:
+      - maptimize-backend
+    networks:
+      - maptimize-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:3000"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Backend (FastAPI with GPU)
+  maptimize-backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.gpu
+    container_name: maptimize-backend
+    ports:
+      - "7001:8000"
+    environment:
+      - DATABASE_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@maptimize-db:5432/${POSTGRES_DB}
+      - REDIS_URL=redis://maptimize-redis:6379
+      - JWT_SECRET=${JWT_SECRET}
+      - JWT_ALGORITHM=${JWT_ALGORITHM:-HS256}
+      - JWT_EXPIRE_MINUTES=${JWT_EXPIRE_MINUTES:-1440}
+      - DEBUG=${DEBUG:-false}
+      # GPU Configuration
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+      - CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0}
+      - ML_MEMORY_LIMIT_GB=${ML_MEMORY_LIMIT_GB:-16}
+      - GPU_MEMORY_FRACTION=${GPU_MEMORY_FRACTION:-0.65}
+      - PYTORCH_CUDA_ALLOC_CONF=${PYTORCH_CUDA_ALLOC_CONF:-max_split_size_mb:512}
+      # YOLOv8 Configuration
+      - YOLO_MODEL_PATH=/app/weights/best.pt
+      - YOLO_CONFIDENCE_THRESHOLD=${YOLO_CONFIDENCE_THRESHOLD:-0.25}
+      - YOLO_IOU_THRESHOLD=${YOLO_IOU_THRESHOLD:-0.7}
+      # HuggingFace
+      - HF_TOKEN=${HF_TOKEN:-}
+      - HF_HOME=/app/.cache/huggingface
+      # Admin
+      - DEFAULT_ADMIN_EMAIL=${DEFAULT_ADMIN_EMAIL:-admin@utia.cas.cz}
+      - DEFAULT_ADMIN_PASSWORD=${DEFAULT_ADMIN_PASSWORD:-changeme}
+    volumes:
+      - ./data/uploads:/app/data/uploads
+      - ./weights:/app/weights:ro
+      - ./logs:/app/logs
+      - huggingface_cache:/app/.cache/huggingface
+    depends_on:
+      maptimize-db:
+        condition: service_healthy
+      maptimize-redis:
+        condition: service_started
+    networks:
+      - maptimize-network
+    restart: unless-stopped
+    runtime: nvidia
+
+  # PostgreSQL with pgvector
+  maptimize-db:
+    image: pgvector/pgvector:pg16
+    container_name: maptimize-db
+    ports:
+      - "7432:5432"
+    environment:
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_DB=${POSTGRES_DB}
+    volumes:
+      - maptimize_postgres:/var/lib/postgresql/data
+    networks:
+      - maptimize-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # Redis
+  maptimize-redis:
+    image: redis:7-alpine
+    container_name: maptimize-redis
+    ports:
+      - "7379:6379"
+    volumes:
+      - maptimize_redis:/data
+    command: redis-server --maxmemory 512mb --maxmemory-policy allkeys-lru
+    networks:
+      - maptimize-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # Nginx Reverse Proxy
+  maptimize-nginx:
+    image: nginx:alpine
+    container_name: maptimize-nginx
+    ports:
+      - "7080:80"
+      - "7443:443"
+    volumes:
+      - ./docker/nginx/nginx.maptimize.conf:/etc/nginx/conf.d/default.conf:ro
+      - /etc/letsencrypt:/etc/letsencrypt:ro
+      - ./data/uploads:/app/uploads:ro
+      - ./logs/nginx:/var/log/nginx
+    depends_on:
+      - maptimize-frontend
+      - maptimize-backend
+    networks:
+      - maptimize-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "nginx", "-t"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+networks:
+  maptimize-network:
+    driver: bridge
+    name: maptimize-network
+
+volumes:
+  maptimize_postgres:
+    name: maptimize_postgres
+  maptimize_redis:
+    name: maptimize_redis
+  huggingface_cache:
+    name: maptimize_huggingface_cache
