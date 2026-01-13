@@ -70,6 +70,13 @@ class CellDetector:
                 # Move to device
                 self._model.to(self.device)
 
+                # Mark model as already fused to skip fusion during inference
+                # Our trained weights may have Conv layers without bn (version mismatch)
+                # This prevents ultralytics from trying to fuse and failing
+                if hasattr(self._model, 'model'):
+                    self._model.model.fused = True
+                    logger.info("Model marked as fused (skipping fusion)")
+
             except ImportError:
                 raise ImportError(
                     "ultralytics package required for detection. "
@@ -162,6 +169,13 @@ def get_detector() -> CellDetector:
     if _detector is None:
         _detector = CellDetector()
     return _detector
+
+
+def reset_detector() -> None:
+    """Reset the global detector instance (forces reload on next use)."""
+    global _detector
+    _detector = None
+    logger.info("Detector reset - will reload on next use")
 
 
 async def detect_cells_in_image(

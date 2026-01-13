@@ -10,7 +10,7 @@ MAPtimize is a web application for biologists to analyze microscopic images of m
 - **Framework**: FastAPI with async SQLAlchemy
 - **Database**: PostgreSQL with pgvector extension
 - **Auth**: JWT tokens with bcrypt password hashing
-- **ML**: PyTorch, Ultralytics (YOLO), transformers (DINOv2)
+- **ML**: PyTorch, Ultralytics (YOLO), transformers (DINOv3)
 - **Package Manager**: `uv` (NOT pip)
 
 ### Frontend (TypeScript)
@@ -33,7 +33,7 @@ maptimize/
 │   ├── services/            # Business logic (TODO)
 │   ├── ml/                  # ML modules
 │   │   ├── detection/       # YOLO cell detection
-│   │   └── features/        # DINOv2, bundleness
+│   │   └── features/        # DINOv3 embeddings, bundleness
 │   ├── workers/             # Background tasks (TODO)
 │   └── utils/               # Security, helpers
 │
@@ -222,7 +222,7 @@ Source code at `/Users/michalprusek/Desktop/microtubules/`:
 | Ranking | `reranking_app/backend/` | ✅ Ported |
 | Pair Selection | `reranking_app/backend/pair_selection.py` | ✅ Ported |
 | YOLO Detection | `detection/train_yolo.py` | ✅ Integrated |
-| DINOv2 Encoder | `feature_extraction/encoders/dinov2_encoder.py` | ⏳ TODO |
+| DINOv3 Encoder | `feature_extraction/encoders/dinov2_encoder.py` | ✅ Integrated |
 | Bundleness | `CLAUDE.md` (formula) | ⏳ TODO |
 
 ### YOLO Detection Pipeline
@@ -244,6 +244,39 @@ The detection pipeline is located at `backend/ml/detection/` and includes:
 - Max detections: 100 per image
 - Image size: 640px (YOLO input)
 
+### DINOv3 Feature Extraction
+
+The feature extraction pipeline is located at `backend/ml/features/` and includes:
+- `dinov3_encoder.py` - DINOv3 Vision Transformer encoder
+- `dinov2_encoder.py` - DINOv2 encoder (alternative)
+- `feature_extractor.py` - Service for batch processing cell crops
+- `base_encoder.py` - Abstract base class with pooling strategies
+
+**Configuration (default):**
+- Model: `facebook/dinov3-vitl16-pretrain-lvd1689m` (large variant)
+- Embedding dimension: 1024
+- Pooling: CLS token
+- Batch size: 4 (conservative for large model memory)
+
+**Processing flow:**
+1. Cell crops detected → saved to disk
+2. Feature extraction triggered (automatic or manual via API)
+3. Load MIP images → resize to 224x224
+4. Apply ImageNet normalization (mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+5. Extract features via DINOv3 → 1024-dim embeddings
+6. Store in database (pgvector) for UMAP visualization
+
+**Requirements:**
+- HuggingFace authentication: `huggingface-cli login`
+- Accept model terms at: https://huggingface.co/facebook/dinov3-vits16-pretrain-lvd1689m
+- transformers >= 4.56 required
+- Set `HF_TOKEN` environment variable for Docker
+
+**API endpoints:**
+- `GET /api/embeddings/umap` - Get UMAP 2D projection of embeddings
+- `GET /api/embeddings/status` - Check extraction progress
+- `POST /api/embeddings/extract` - Trigger feature extraction
+
 ## Environment Variables
 
 ```bash
@@ -252,6 +285,7 @@ DATABASE_URL=postgresql://maptimize:password@localhost:5432/maptimize
 REDIS_URL=redis://localhost:6379
 JWT_SECRET=your-secret-key
 DEBUG=true
+HF_TOKEN=your-huggingface-token  # Required for DINOv3
 
 # Frontend (.env.local)
 NEXT_PUBLIC_API_URL=http://localhost:8000
@@ -332,10 +366,10 @@ docker-compose logs --tail 50
 
 ## TODO
 
-- [ ] Integrate YOLO detection worker
-- [ ] Add DINOv2 feature extraction
+- [x] Integrate YOLO detection worker
+- [x] Add DINOv3 feature extraction
+- [x] Add UMAP visualization (Recharts)
 - [ ] Implement background job queue (Redis)
-- [ ] Add UMAP visualization (D3.js)
 - [ ] WebSocket for real-time progress updates
 - [ ] Export functionality (CSV, images)
 - [ ] Admin panel for user management
