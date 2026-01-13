@@ -297,11 +297,11 @@ async def undo_last_comparison(
 async def get_leaderboard(
     experiment_id: Optional[int] = Query(None),
     page: int = Query(1, ge=1),
-    per_page: int = Query(20, ge=1, le=100),
+    per_page: int = Query(500, ge=1, le=1000),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
-    """Get ranking leaderboard."""
+    """Get ranking leaderboard (all images by default)."""
     query = (
         select(UserRating)
         .join(CellCrop)

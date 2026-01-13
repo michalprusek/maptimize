@@ -731,11 +731,11 @@ async def undo_metric_comparison(
 async def get_metric_leaderboard(
     metric_id: int,
     page: int = Query(1, ge=1),
-    per_page: int = Query(20, ge=1, le=100),
+    per_page: int = Query(500, ge=1, le=1000),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
-    """Get ranking leaderboard for this metric."""
+    """Get ranking leaderboard for this metric (all images by default)."""
     metric = await get_metric_for_user(db, metric_id, current_user.id)
 
     # Get total count
