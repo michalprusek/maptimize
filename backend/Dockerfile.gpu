@@ -1,5 +1,6 @@
 # GPU-enabled Backend Dockerfile for Maptimize
-# Uses python:3.11-slim + CUDA PyTorch with nvidia runtime
+# Uses python:3.11-slim base with PyTorch CUDA wheels (cu118)
+# Requires nvidia runtime at container start: docker run --runtime=nvidia
 
 # Stage 1: Build wheels
 FROM python:3.11-slim AS wheel-builder
@@ -86,9 +87,9 @@ set -e
 
 echo "=== Maptimize Backend Initialization ==="
 
-# Check GPU availability
+# Check GPU availability (warn but don't fail - CPU fallback is acceptable)
 echo "Checking compute devices..."
-python -c "
+GPU_STATUS=$(python -c "
 import torch
 cuda = torch.cuda.is_available()
 print(f'CUDA available: {cuda}')
@@ -97,17 +98,26 @@ if cuda:
     mem = torch.cuda.get_device_properties(0).total_memory / 1024**3
     print(f'Memory: {mem:.1f} GB')
 else:
-    print('Running in CPU mode')
-" || echo "Warning: Device check failed"
+    print('WARNING: Running in CPU mode - ML inference will be slow')
+" 2>&1) || {
+    echo "ERROR: GPU check failed with error:"
+    echo "$GPU_STATUS"
+    echo "WARNING: Continuing with potentially degraded performance"
+}
+echo "$GPU_STATUS"
 
-# Check YOLOv8 weights
+# Check YOLOv8 weights - these are REQUIRED for cell detection
 YOLO_PATH="${YOLO_MODEL_PATH:-/app/weights/best.pt}"
 if [ -f "$YOLO_PATH" ]; then
     SIZE=$(du -h "$YOLO_PATH" | cut -f1)
     echo "✓ YOLOv8 weights found: $YOLO_PATH ($SIZE)"
 else
-    echo "⚠️  YOLOv8 custom weights not found at $YOLO_PATH"
-    echo "   Will use fallback pretrained model (yolov8n.pt)"
+    echo ""
+    echo "❌ ERROR: YOLOv8 custom weights not found at $YOLO_PATH"
+    echo "   Cell detection will FAIL without trained weights."
+    echo "   Mount weights directory: -v ./weights:/app/weights:ro"
+    echo ""
+    exit 1
 fi
 
 echo ""

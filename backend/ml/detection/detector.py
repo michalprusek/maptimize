@@ -61,11 +61,18 @@ class CellDetector:
                 from ultralytics import YOLO
 
                 if not self.weights_path.exists():
-                    logger.warning(f"Weights not found at {self.weights_path}, using pretrained")
-                    self._model = YOLO("yolov8n.pt")
-                else:
-                    logger.info(f"Loading YOLO weights from {self.weights_path}")
-                    self._model = YOLO(str(self.weights_path))
+                    logger.error(
+                        f"CRITICAL: Custom YOLO weights not found at {self.weights_path}. "
+                        "Cell detection requires trained weights - generic model is NOT suitable "
+                        "for microscopy images."
+                    )
+                    raise FileNotFoundError(
+                        f"Required YOLO weights file not found: {self.weights_path}. "
+                        "Ensure weights/best.pt is mounted in the container via docker-compose."
+                    )
+
+                logger.info(f"Loading YOLO weights from {self.weights_path}")
+                self._model = YOLO(str(self.weights_path))
 
                 # Move to device
                 self._model.to(self.device)
@@ -82,6 +89,14 @@ class CellDetector:
                     "ultralytics package required for detection. "
                     "Install with: pip install ultralytics"
                 )
+            except Exception as e:
+                if isinstance(e, (ImportError, FileNotFoundError)):
+                    raise
+                logger.error(f"Failed to load YOLO model from {self.weights_path}: {e}")
+                raise RuntimeError(
+                    f"Failed to initialize cell detector: {e}. "
+                    "Check weights file integrity and GPU availability."
+                ) from e
 
         return self._model
 

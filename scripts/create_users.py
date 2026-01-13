@@ -1,21 +1,59 @@
 #!/usr/bin/env python3
-"""One-time script to create users in Maptimize database."""
+"""
+Create users in Maptimize database.
 
+SECURITY NOTE: This script requires credentials via environment variables.
+Never hardcode credentials in this file.
+
+Usage (from host):
+    export DB_HOST=localhost
+    export DB_PORT=7432
+    export DB_PASSWORD=your_password
+    export NEW_USER_PASSWORD=password_for_new_users
+    python scripts/create_users.py
+
+Usage (from inside container):
+    docker exec -it maptimize-backend python -c "
+    import os
+    os.environ['DB_HOST'] = 'maptimize-db'
+    os.environ['DB_PORT'] = '5432'
+    os.environ['DB_PASSWORD'] = 'your_password'
+    os.environ['NEW_USER_PASSWORD'] = 'password_for_new_users'
+    exec(open('/app/scripts/create_users.py').read())
+    "
+"""
+
+import os
+import sys
 import bcrypt
 import psycopg2
 from datetime import datetime
 
-# Database connection (from inside Docker container)
-DB_CONFIG = {
-    "host": "maptimize-db",
-    "port": 5432,
-    "database": "maptimize",
-    "user": "maptimize",
-    "password": "maptimize_secure_2024"
-}
 
-# Password for all new users
-PASSWORD = "MAPtimize2026"
+def get_db_config():
+    """Get database configuration from environment variables."""
+    password = os.environ.get("DB_PASSWORD")
+    if not password:
+        print("ERROR: DB_PASSWORD environment variable is required")
+        sys.exit(1)
+
+    return {
+        "host": os.environ.get("DB_HOST", "maptimize-db"),
+        "port": int(os.environ.get("DB_PORT", "5432")),
+        "database": os.environ.get("DB_NAME", "maptimize"),
+        "user": os.environ.get("DB_USER", "maptimize"),
+        "password": password,
+    }
+
+
+def get_user_password():
+    """Get password for new users from environment variable."""
+    password = os.environ.get("NEW_USER_PASSWORD")
+    if not password:
+        print("ERROR: NEW_USER_PASSWORD environment variable is required")
+        sys.exit(1)
+    return password
+
 
 # Users to create (email, name)
 USERS = [
@@ -35,46 +73,75 @@ def hash_password(password: str) -> str:
 
 
 def create_users():
-    """Create users in the database."""
-    conn = psycopg2.connect(**DB_CONFIG)
-    cur = conn.cursor()
+    """Create users in the database with proper error handling."""
+    db_config = get_db_config()
+    user_password = get_user_password()
 
-    password_hash = hash_password(PASSWORD)
+    conn = None
+    cur = None
     created = []
     skipped = []
+    failed = []
+
+    try:
+        conn = psycopg2.connect(**db_config)
+        cur = conn.cursor()
+    except psycopg2.Error as e:
+        print(f"ERROR: Failed to connect to database: {e}")
+        print(f"Config: host={db_config['host']}, port={db_config['port']}")
+        return [], [], [("connection", str(e))]
+
+    password_hash = hash_password(user_password)
 
     for email, name in USERS:
-        # Check if user exists
-        cur.execute("SELECT id FROM users WHERE email = %s", (email,))
-        if cur.fetchone():
-            skipped.append(email)
+        try:
+            # Check if user exists
+            cur.execute("SELECT id FROM users WHERE email = %s", (email,))
+            if cur.fetchone():
+                skipped.append(email)
+                continue
+
+            # Create user with 'RESEARCHER' role
+            cur.execute(
+                """
+                INSERT INTO users (email, name, password_hash, role, created_at)
+                VALUES (%s, %s, %s, 'RESEARCHER', %s)
+                RETURNING id
+                """,
+                (email, name, password_hash, datetime.utcnow())
+            )
+            user_id = cur.fetchone()[0]
+            created.append((email, user_id))
+
+        except psycopg2.Error as e:
+            print(f"ERROR: Failed to create user {email}: {e}")
+            failed.append((email, str(e)))
+            conn.rollback()
             continue
 
-        # Create user with 'RESEARCHER' role
-        cur.execute(
-            """
-            INSERT INTO users (email, name, password_hash, role, created_at)
-            VALUES (%s, %s, %s, 'RESEARCHER', %s)
-            RETURNING id
-            """,
-            (email, name, password_hash, datetime.utcnow())
-        )
-        user_id = cur.fetchone()[0]
-        created.append((email, user_id))
+    # Commit all successful inserts
+    try:
+        conn.commit()
+    except psycopg2.Error as e:
+        print(f"ERROR: Failed to commit transaction: {e}")
+        conn.rollback()
+        # Mark all as failed since commit failed
+        failed.extend([(email, "commit failed") for email, _ in created])
+        created = []
+    finally:
+        if cur:
+            cur.close()
+        if conn:
+            conn.close()
 
-    conn.commit()
-    cur.close()
-    conn.close()
-
-    return created, skipped
+    return created, skipped, failed
 
 
 if __name__ == "__main__":
     print("Creating users in Maptimize database...")
-    print(f"Password: {PASSWORD}")
     print("-" * 50)
 
-    created, skipped = create_users()
+    created, skipped, failed = create_users()
 
     if created:
         print("\n✅ Created users:")
@@ -85,5 +152,11 @@ if __name__ == "__main__":
         print("\n⚠️  Skipped (already exist):")
         for email in skipped:
             print(f"  - {email}")
+
+    if failed:
+        print("\n❌ Failed:")
+        for email, error in failed:
+            print(f"  - {email}: {error}")
+        sys.exit(1)
 
     print("\nDone!")

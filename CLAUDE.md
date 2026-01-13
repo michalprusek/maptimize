@@ -2,8 +2,6 @@
 
 ## ⚠️ KRITICKÉ UPOZORNĚNÍ - PRODUKCE
 
-sudo password: @sudo_password.txt
-
 **Toto je produkční prostředí!**
 
 - 🔴 **NIKDY nemazat databázi** - obsahuje reálná data uživatelů
@@ -66,7 +64,7 @@ Hlavní nginx-main na portech 80/443 routuje traffic podle domény:
 ## Model weights
 
 ⚠️ **YOLOv8 váhy (`weights/best.pt`)** nejsou součástí repozitáře.
-Fallback: `yolov8n.pt` (základní model)
+Backend NEPŮJDE spustit bez těchto vah - detekce buněk vyžaduje natrénovaný model.
 
 ## 🔧 Deploy & Rebuild
 
