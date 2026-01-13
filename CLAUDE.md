@@ -300,6 +300,7 @@ NEXT_PUBLIC_API_URL=http://localhost:8000
 5. **Z-stack support** - images are 3D TIFF files, process as MIP (Maximum Intensity Projection)
 6. **ALWAYS use Docker dev with hot reload** - use `docker-compose -f docker-compose.dev.yml up` for development. Since hot reload is enabled, **do NOT restart containers after code changes** - changes are applied automatically
 7. **Run code-simplifier after implementation** - after completing any implementation task, always run the `code-simplifier:code-simplifier` agent to refine code for clarity, consistency, and maintainability
+8. **Latent space distances** - always use **cosine distance on L2-normalized embeddings** for any similarity/distance computations in latent spaces (UMAP, silhouette score, k-NN, clustering). L2 normalization ensures numerical stability and makes vectors lie on a unit hypersphere.
 
 ## Default Admin Setup
 

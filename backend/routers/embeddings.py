@@ -83,8 +83,12 @@ async def get_umap_visualization(
             detail=f"Need at least {MIN_CROPS_FOR_UMAP} crops with embeddings for UMAP. Found: {len(crops)}"
         )
 
-    # Extract embeddings and compute UMAP
+    # Extract embeddings and L2-normalize for cosine distance
+    # Normalization ensures numerical stability and consistency
     embeddings = np.array([c.embedding for c in crops])
+    norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
+    norms = np.where(norms == 0, 1, norms)  # Avoid division by zero
+    embeddings = embeddings / norms
 
     try:
         import umap
