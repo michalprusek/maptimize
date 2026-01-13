@@ -164,7 +164,7 @@ export function UmapVisualization({
           No Embeddings Available
         </h3>
         <p className="text-text-secondary max-w-md">
-          Upload and process images to generate DINOv2 feature embeddings for
+          Upload and process images to generate DINOv3 feature embeddings for
           visualization.
         </p>
       </div>
@@ -179,9 +179,23 @@ export function UmapVisualization({
           <h3 className="font-display font-semibold text-text-primary">
             Feature Space (UMAP)
           </h3>
-          <p className="text-sm text-text-secondary">
-            {data.total_crops.toLocaleString()} cell crops visualized
-          </p>
+          <div className="flex items-center gap-3 text-sm text-text-secondary">
+            <span>{data.total_crops.toLocaleString()} cell crops</span>
+            {data.silhouette_score !== null && (
+              <span
+                className={`px-2 py-0.5 rounded text-xs font-mono ${
+                  data.silhouette_score > 0.5
+                    ? "bg-green-500/20 text-green-400"
+                    : data.silhouette_score > 0.25
+                      ? "bg-accent-amber/20 text-accent-amber"
+                      : "bg-accent-red/20 text-accent-red"
+                }`}
+                title="Silhouette score measures cluster separation quality (-1 to 1, higher is better)"
+              >
+                Silhouette: {data.silhouette_score.toFixed(3)}
+              </span>
+            )}
+          </div>
         </div>
 
         <button

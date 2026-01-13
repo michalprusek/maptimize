@@ -116,6 +116,22 @@ async def get_umap_visualization(
             detail="Failed to compute UMAP projection. Please try again."
         )
 
+    # Calculate silhouette score (cluster quality metric)
+    silhouette = None
+    protein_labels = [c.map_protein.id if c.map_protein else -1 for c in crops]
+    unique_labels = set(protein_labels)
+
+    # Need at least 2 different labels for silhouette score
+    if len(unique_labels) >= 2 and -1 not in unique_labels:
+        try:
+            from sklearn.metrics import silhouette_score
+            silhouette = float(silhouette_score(embeddings, protein_labels, metric="cosine"))
+            logger.info(f"Silhouette score: {silhouette:.3f}")
+        except ValueError as e:
+            logger.warning(f"Could not compute silhouette score: {e}")
+        except ImportError:
+            logger.warning("sklearn not available for silhouette score")
+
     # Build response
     points = []
     for i, crop in enumerate(crops):
@@ -136,6 +152,7 @@ async def get_umap_visualization(
         total_crops=len(crops),
         n_neighbors=n_neighbors,
         min_dist=min_dist,
+        silhouette_score=silhouette,
     )
 
 

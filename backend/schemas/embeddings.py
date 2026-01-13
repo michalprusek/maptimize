@@ -24,6 +24,10 @@ class UmapDataResponse(BaseModel):
     total_crops: int = Field(..., description="Total number of crops")
     n_neighbors: int = Field(..., description="UMAP n_neighbors parameter")
     min_dist: float = Field(..., description="UMAP min_dist parameter")
+    silhouette_score: Optional[float] = Field(
+        None,
+        description="Silhouette score measuring cluster separation (-1 to 1)"
+    )
 
 
 class FeatureExtractionTriggerResponse(BaseModel):
