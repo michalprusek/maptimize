@@ -60,6 +60,7 @@ data/uploads/
 # ML weights (large files)
 backend/ml/detection/weights/*.pt
 !backend/ml/detection/weights/.gitkeep
+weights/
 
 # Database
 *.db
