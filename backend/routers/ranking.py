@@ -1,4 +1,5 @@
 """Ranking routes - TrueSkill-based pairwise comparison."""
+import logging
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status, Query
@@ -9,6 +10,8 @@ from openskill.models import PlackettLuce
 
 from database import get_db
 from config import get_settings
+
+logger = logging.getLogger(__name__)
 from models.user import User
 from models.cell_crop import CellCrop
 from models.image import Image
@@ -220,6 +223,12 @@ async def submit_comparison(
     winner_rating = await get_or_create_rating(db, current_user.id, winner_id)
     loser_rating = await get_or_create_rating(db, current_user.id, loser_id)
 
+    # Save previous values for undo support
+    prev_winner_mu = winner_rating.mu
+    prev_winner_sigma = winner_rating.sigma
+    prev_loser_mu = loser_rating.mu
+    prev_loser_sigma = loser_rating.sigma
+
     # Update ratings using TrueSkill
     (new_winner_mu, new_winner_sigma), (new_loser_mu, new_loser_sigma) = update_ratings(
         winner_rating.mu, winner_rating.sigma,
@@ -234,12 +243,16 @@ async def submit_comparison(
     loser_rating.sigma = new_loser_sigma
     loser_rating.comparison_count += 1
 
-    # Create comparison record
+    # Create comparison record with previous values for undo
     comparison = Comparison(
         user_id=current_user.id,
         crop_a_id=data.crop_a_id,
         crop_b_id=data.crop_b_id,
         winner_id=data.winner_id,
+        prev_winner_mu=prev_winner_mu,
+        prev_winner_sigma=prev_winner_sigma,
+        prev_loser_mu=prev_loser_mu,
+        prev_loser_sigma=prev_loser_sigma,
         response_time_ms=data.response_time_ms,
     )
     db.add(comparison)
@@ -254,7 +267,11 @@ async def undo_last_comparison(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
-    """Undo the last comparison."""
+    """Undo the last comparison and restore previous rating values.
+
+    For comparisons created before migration 001_add_comparison_prev_ratings,
+    only comparison_count is decremented (mu/sigma restoration not available).
+    """
     result = await db.execute(
         select(Comparison)
         .where(
@@ -272,23 +289,94 @@ async def undo_last_comparison(
             detail="No comparison to undo"
         )
 
-    # Mark as undone
+    # Determine winner and loser
+    winner_id = comparison.winner_id
+    loser_id = comparison.crop_a_id if comparison.winner_id == comparison.crop_b_id else comparison.crop_b_id
+
+    logger.info(
+        f"Attempting undo: user_id={current_user.id}, comparison_id={comparison.id}, "
+        f"winner_id={winner_id}, loser_id={loser_id}"
+    )
+
+    # Fetch both ratings BEFORE making any changes (transaction atomicity)
+    winner_result = await db.execute(
+        select(UserRating).where(
+            UserRating.user_id == current_user.id,
+            UserRating.cell_crop_id == winner_id
+        )
+    )
+    winner_rating = winner_result.scalar_one_or_none()
+
+    loser_result = await db.execute(
+        select(UserRating).where(
+            UserRating.user_id == current_user.id,
+            UserRating.cell_crop_id == loser_id
+        )
+    )
+    loser_rating = loser_result.scalar_one_or_none()
+
+    # Validate both ratings exist before making any changes
+    if winner_rating is None or loser_rating is None:
+        missing = []
+        if winner_rating is None:
+            missing.append(f"winner (crop_id={winner_id})")
+        if loser_rating is None:
+            missing.append(f"loser (crop_id={loser_id})")
+
+        logger.error(
+            f"Undo failed - missing ratings: user_id={current_user.id}, "
+            f"comparison_id={comparison.id}, missing={missing}"
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Cannot undo comparison: rating records missing for {', '.join(missing)}. "
+                   "This may indicate the cells were deleted."
+        )
+
+    # Check if previous values are available (backward compatibility)
+    # prev_* values may be NULL for comparisons created before migration 001
+    winner_has_prev = (
+        comparison.prev_winner_mu is not None and
+        comparison.prev_winner_sigma is not None
+    )
+    loser_has_prev = (
+        comparison.prev_loser_mu is not None and
+        comparison.prev_loser_sigma is not None
+    )
+
+    if not winner_has_prev or not loser_has_prev:
+        logger.warning(
+            f"Undo with incomplete previous values (legacy comparison): "
+            f"comparison_id={comparison.id}, winner_has_prev={winner_has_prev}, "
+            f"loser_has_prev={loser_has_prev}"
+        )
+
+    # Now make all changes atomically
     comparison.undone = True
 
-    # Revert ratings (simplified - in production would need to recalculate from history)
-    # For now, just reduce comparison count
-    for crop_id in [comparison.crop_a_id, comparison.crop_b_id]:
-        result = await db.execute(
-            select(UserRating).where(
-                UserRating.user_id == current_user.id,
-                UserRating.cell_crop_id == crop_id
-            )
-        )
-        rating = result.scalar_one_or_none()
-        if rating and rating.comparison_count > 0:
-            rating.comparison_count -= 1
+    # Restore winner's previous rating
+    if winner_has_prev:
+        winner_rating.mu = comparison.prev_winner_mu
+        winner_rating.sigma = comparison.prev_winner_sigma
+
+    if winner_rating.comparison_count > 0:
+        winner_rating.comparison_count -= 1
+
+    # Restore loser's previous rating
+    if loser_has_prev:
+        loser_rating.mu = comparison.prev_loser_mu
+        loser_rating.sigma = comparison.prev_loser_sigma
+
+    if loser_rating.comparison_count > 0:
+        loser_rating.comparison_count -= 1
 
     await db.commit()
+
+    logger.info(
+        f"Undo successful: comparison_id={comparison.id}, "
+        f"winner mu={winner_rating.mu:.3f} sigma={winner_rating.sigma:.3f}, "
+        f"loser mu={loser_rating.mu:.3f} sigma={loser_rating.sigma:.3f}"
+    )
 
     return ComparisonResponse.model_validate(comparison)
 
