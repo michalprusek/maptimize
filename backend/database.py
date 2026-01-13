@@ -2,6 +2,7 @@
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator
 
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
 from sqlalchemy.orm import DeclarativeBase
 
@@ -53,8 +54,10 @@ get_db_context = asynccontextmanager(get_db)
 
 
 async def init_db():
-    """Initialize database tables and seed default data."""
+    """Initialize database tables, enable extensions, and seed default data."""
     async with engine.begin() as conn:
+        # Enable pgvector extension for embedding storage
+        await conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
         await conn.run_sync(Base.metadata.create_all)
 
     # Seed default user and data

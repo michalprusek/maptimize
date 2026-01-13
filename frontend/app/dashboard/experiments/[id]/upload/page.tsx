@@ -14,6 +14,8 @@ import {
   Scan,
   CheckCircle,
   AlertCircle,
+  ChevronDown,
+  Dna,
 } from "lucide-react";
 
 export default function UploadPage(): JSX.Element {
@@ -23,6 +25,8 @@ export default function UploadPage(): JSX.Element {
   const queryClient = useQueryClient();
 
   const [detectCells, setDetectCells] = useState(true);
+  const [selectedProteinId, setSelectedProteinId] = useState<number | undefined>(undefined);
+  const [proteinDropdownOpen, setProteinDropdownOpen] = useState(false);
   const [uploadingFiles, setUploadingFiles] = useState<Map<string, number>>(new Map());
   const [uploadedCount, setUploadedCount] = useState(0);
   const [batchImageIds, setBatchImageIds] = useState<number[]>([]);
@@ -33,9 +37,16 @@ export default function UploadPage(): JSX.Element {
     queryFn: () => api.getExperiment(experimentId),
   });
 
+  const { data: proteins } = useQuery({
+    queryKey: ["proteins"],
+    queryFn: () => api.getProteins(),
+  });
+
+  const selectedProtein = proteins?.find((p) => p.id === selectedProteinId);
+
   const uploadMutation = useMutation({
     mutationFn: async (file: File) => {
-      return api.uploadImage(experimentId, file, undefined, detectCells);
+      return api.uploadImage(experimentId, file, selectedProteinId, detectCells);
     },
     onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ["images", experimentId] });
@@ -110,7 +121,7 @@ export default function UploadPage(): JSX.Element {
         }
       }
     },
-    [uploadMutation, detectCells]
+    [uploadMutation, detectCells, selectedProteinId]
   );
 
   const { getRootProps, getInputProps, isDragActive } = useDropzone({
@@ -180,8 +191,83 @@ export default function UploadPage(): JSX.Element {
         animate={{ opacity: 1, y: 0 }}
         className="glass-card p-6"
       >
-        {/* Cell detection toggle */}
-        <div className="mb-6">
+        {/* Upload settings */}
+        <div className="space-y-4 mb-6">
+          {/* MAP Protein selector */}
+          <div className="relative">
+            <label className="block text-sm text-text-secondary mb-2">
+              MAP Protein (applied to all uploaded images)
+            </label>
+            <button
+              onClick={() => setProteinDropdownOpen(!proteinDropdownOpen)}
+              className="flex items-center justify-between w-full px-4 py-3 bg-bg-secondary border border-white/10 rounded-lg hover:bg-bg-hover transition-colors"
+            >
+              <div className="flex items-center gap-3">
+                <Dna className="w-5 h-5 text-text-muted" />
+                {selectedProtein ? (
+                  <div className="flex items-center gap-2">
+                    <span
+                      className="w-3 h-3 rounded-full"
+                      style={{ backgroundColor: selectedProtein.color || "#888" }}
+                    />
+                    <span className="text-text-primary">{selectedProtein.name}</span>
+                  </div>
+                ) : (
+                  <span className="text-text-muted">No protein selected</span>
+                )}
+              </div>
+              <ChevronDown
+                className={`w-4 h-4 text-text-muted transition-transform ${
+                  proteinDropdownOpen ? "rotate-180" : ""
+                }`}
+              />
+            </button>
+
+            {proteinDropdownOpen && (
+              <motion.div
+                initial={{ opacity: 0, y: -10 }}
+                animate={{ opacity: 1, y: 0 }}
+                className="absolute z-10 mt-1 w-full bg-bg-elevated border border-white/10 rounded-lg shadow-xl overflow-hidden"
+              >
+                <button
+                  onClick={() => {
+                    setSelectedProteinId(undefined);
+                    setProteinDropdownOpen(false);
+                  }}
+                  className={`w-full px-4 py-2 text-left hover:bg-white/5 transition-colors ${
+                    !selectedProteinId ? "bg-primary-500/10" : ""
+                  }`}
+                >
+                  <span className="text-text-muted">No protein</span>
+                </button>
+                {proteins?.map((protein) => (
+                  <button
+                    key={protein.id}
+                    onClick={() => {
+                      setSelectedProteinId(protein.id);
+                      setProteinDropdownOpen(false);
+                    }}
+                    className={`w-full px-4 py-2 text-left hover:bg-white/5 transition-colors flex items-center gap-2 ${
+                      selectedProteinId === protein.id ? "bg-primary-500/10" : ""
+                    }`}
+                  >
+                    <span
+                      className="w-3 h-3 rounded-full"
+                      style={{ backgroundColor: protein.color || "#888" }}
+                    />
+                    <span className="text-text-primary">{protein.name}</span>
+                    {protein.full_name && (
+                      <span className="text-text-muted text-xs ml-auto">
+                        {protein.full_name}
+                      </span>
+                    )}
+                  </button>
+                ))}
+              </motion.div>
+            )}
+          </div>
+
+          {/* Cell detection toggle */}
           <button
             onClick={() => setDetectCells(!detectCells)}
             className={`flex items-center gap-3 px-4 py-3 rounded-lg transition-all w-full ${
@@ -370,12 +456,20 @@ export default function UploadPage(): JSX.Element {
           Back to gallery
         </Link>
         {uploadedCount > 0 && batchStatus?.allReady && (
-          <Link
-            href={`/dashboard/experiments/${experimentId}`}
+          <button
+            onClick={() => {
+              // Invalidate all related queries to ensure fresh data
+              queryClient.invalidateQueries({ queryKey: ["crops", experimentId] });
+              queryClient.invalidateQueries({ queryKey: ["images", experimentId] });
+              queryClient.invalidateQueries({ queryKey: ["experiment", experimentId] });
+              queryClient.invalidateQueries({ queryKey: ["embedding-status"] });
+              queryClient.invalidateQueries({ queryKey: ["umap"] });
+              router.push(`/dashboard/experiments/${experimentId}`);
+            }}
             className="btn-primary"
           >
             View Images
-          </Link>
+          </button>
         )}
       </div>
     </div>

@@ -4,6 +4,7 @@ from typing import TYPE_CHECKING, List, Optional
 
 from sqlalchemy import String, Integer, Float, Boolean, DateTime, ForeignKey, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
+from pgvector.sqlalchemy import Vector
 
 from database import Base
 
@@ -45,6 +46,10 @@ class CellCrop(Base):
     mean_intensity: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     skewness: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     kurtosis: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+
+    # DINOv2 embedding (1024-dim for large variant)
+    embedding: Mapped[Optional[list]] = mapped_column(Vector(1024), nullable=True)
+    embedding_model: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
 
     # Status
     excluded: Mapped[bool] = mapped_column(Boolean, default=False)

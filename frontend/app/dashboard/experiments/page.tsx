@@ -15,6 +15,7 @@ import {
   Loader2,
   Trash2,
   AlertCircle,
+  Layers,
 } from "lucide-react";
 
 export default function ExperimentsPage(): JSX.Element {
@@ -164,6 +165,10 @@ export default function ExperimentsPage(): JSX.Element {
                     <div className="flex items-center gap-1">
                       <ImageIcon className="w-4 h-4" />
                       <span>{exp.image_count} images</span>
+                    </div>
+                    <div className="flex items-center gap-1">
+                      <Layers className="w-4 h-4" />
+                      <span>{exp.cell_count} crops</span>
                     </div>
                   </div>
 
