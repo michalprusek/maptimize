@@ -117,20 +117,25 @@ async def get_umap_visualization(
         )
 
     # Calculate silhouette score (cluster quality metric)
+    # Only use crops with assigned proteins for silhouette calculation
     silhouette = None
-    protein_labels = [c.map_protein.id if c.map_protein else -1 for c in crops]
-    unique_labels = set(protein_labels)
+    labeled_indices = [i for i, c in enumerate(crops) if c.map_protein is not None]
 
-    # Need at least 2 different labels for silhouette score
-    if len(unique_labels) >= 2 and -1 not in unique_labels:
-        try:
-            from sklearn.metrics import silhouette_score
-            silhouette = float(silhouette_score(embeddings, protein_labels, metric="cosine"))
-            logger.info(f"Silhouette score: {silhouette:.3f}")
-        except ValueError as e:
-            logger.warning(f"Could not compute silhouette score: {e}")
-        except ImportError:
-            logger.warning("sklearn not available for silhouette score")
+    if len(labeled_indices) >= 10:
+        labeled_embeddings = embeddings[labeled_indices]
+        protein_labels = [crops[i].map_protein.id for i in labeled_indices]
+        unique_labels = set(protein_labels)
+
+        # Need at least 2 different labels for silhouette score
+        if len(unique_labels) >= 2:
+            try:
+                from sklearn.metrics import silhouette_score
+                silhouette = float(silhouette_score(labeled_embeddings, protein_labels, metric="cosine"))
+                logger.info(f"Silhouette score: {silhouette:.3f} (from {len(labeled_indices)} labeled crops)")
+            except ValueError as e:
+                logger.warning(f"Could not compute silhouette score: {e}")
+            except ImportError:
+                logger.warning("sklearn not available for silhouette score")
 
     # Build response
     points = []
