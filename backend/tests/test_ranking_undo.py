@@ -1,7 +1,14 @@
 """Tests for ranking undo functionality.
 
-These are integration tests that run against the live backend.
-Make sure the backend is running before running these tests.
+Integration tests that verify the undo feature restores previous
+mu/sigma values correctly after comparisons.
+
+These tests run against a live backend server.
+Make sure the backend is running: docker-compose up -d
+
+Test credentials are loaded from environment variables:
+- TEST_USER_EMAIL: Test user email
+- TEST_USER_PASSWORD: Test user password
 """
 import pytest
 from config import get_settings
@@ -254,3 +261,147 @@ def test_multiple_undo_operations(client, auth_headers):
             f"Crop A mu not restored after undo"
         assert abs(mu_b_restored - comp["mu_b_before"]) < 0.001, \
             f"Crop B mu not restored after undo"
+
+
+def test_undo_does_not_create_negative_comparison_count(client, auth_headers):
+    """Test that undo handles edge case where comparison_count could go negative.
+
+    This guards against bugs that could cause negative comparison counts
+    if data was manually modified or through other edge cases.
+    """
+    # Get a pair
+    response = client.get("/api/ranking/pair", headers=auth_headers)
+    if response.status_code == 400:
+        pytest.skip("No cells available for comparison")
+
+    pair = response.json()
+    crop_a_id = pair["crop_a"]["id"]
+    crop_b_id = pair["crop_b"]["id"]
+
+    # Submit comparison
+    response = client.post(
+        "/api/ranking/compare",
+        headers=auth_headers,
+        json={
+            "crop_a_id": crop_a_id,
+            "crop_b_id": crop_b_id,
+            "winner_id": crop_a_id
+        }
+    )
+    assert response.status_code == 200
+
+    # Undo
+    response = client.post("/api/ranking/undo", headers=auth_headers)
+    assert response.status_code == 200
+
+    # Verify comparison counts are not negative
+    response = client.get("/api/ranking/leaderboard", headers=auth_headers)
+    leaderboard = {item["cell_crop_id"]: item for item in response.json()["items"]}
+
+    count_a = leaderboard[crop_a_id]["comparison_count"]
+    count_b = leaderboard[crop_b_id]["comparison_count"]
+
+    assert count_a >= 0, f"Winner comparison_count should not be negative: {count_a}"
+    assert count_b >= 0, f"Loser comparison_count should not be negative: {count_b}"
+
+
+def test_cannot_undo_already_undone_comparison(client, auth_headers):
+    """Test that an already undone comparison cannot be undone again.
+
+    After undoing a comparison, attempting to undo again should only
+    find earlier comparisons, not the already-undone one.
+    """
+    # Get a pair
+    response = client.get("/api/ranking/pair", headers=auth_headers)
+    if response.status_code == 400:
+        pytest.skip("No cells available for comparison")
+
+    pair = response.json()
+
+    # Submit comparison
+    response = client.post(
+        "/api/ranking/compare",
+        headers=auth_headers,
+        json={
+            "crop_a_id": pair["crop_a"]["id"],
+            "crop_b_id": pair["crop_b"]["id"],
+            "winner_id": pair["crop_a"]["id"]
+        }
+    )
+    assert response.status_code == 200
+    first_comparison_id = response.json()["id"]
+
+    # Undo it
+    response = client.post("/api/ranking/undo", headers=auth_headers)
+    assert response.status_code == 200
+    undone_id = response.json()["id"]
+    assert undone_id == first_comparison_id
+
+    # Submit another comparison
+    response = client.get("/api/ranking/pair", headers=auth_headers)
+    if response.status_code == 400:
+        pytest.skip("No cells available for second comparison")
+
+    pair = response.json()
+    response = client.post(
+        "/api/ranking/compare",
+        headers=auth_headers,
+        json={
+            "crop_a_id": pair["crop_a"]["id"],
+            "crop_b_id": pair["crop_b"]["id"],
+            "winner_id": pair["crop_a"]["id"]
+        }
+    )
+    assert response.status_code == 200
+    second_comparison_id = response.json()["id"]
+
+    # Undo - should get the second comparison, not the first (already undone)
+    response = client.post("/api/ranking/undo", headers=auth_headers)
+    assert response.status_code == 200
+    assert response.json()["id"] == second_comparison_id, \
+        "Undo should return the second comparison, not re-undo the first"
+
+
+def test_undo_user_isolation(client, auth_headers):
+    """Test that undo only affects current user's comparisons.
+
+    This test verifies that the user_id filter is correctly applied,
+    ensuring users cannot accidentally undo other users' comparisons.
+
+    Note: This test only verifies the filter works by checking that
+    a user's undo only returns their own comparisons. Full multi-user
+    testing would require a second authenticated user.
+    """
+    # First, clear any existing comparisons for this user
+    while True:
+        response = client.post("/api/ranking/undo", headers=auth_headers)
+        if response.status_code == 404:
+            break
+
+    # Submit a comparison
+    response = client.get("/api/ranking/pair", headers=auth_headers)
+    if response.status_code == 400:
+        pytest.skip("No cells available for comparison")
+
+    pair = response.json()
+    response = client.post(
+        "/api/ranking/compare",
+        headers=auth_headers,
+        json={
+            "crop_a_id": pair["crop_a"]["id"],
+            "crop_b_id": pair["crop_b"]["id"],
+            "winner_id": pair["crop_a"]["id"]
+        }
+    )
+    assert response.status_code == 200
+    comparison_id = response.json()["id"]
+
+    # Undo should return our comparison
+    response = client.post("/api/ranking/undo", headers=auth_headers)
+    assert response.status_code == 200
+    assert response.json()["id"] == comparison_id
+
+    # Now there should be no more comparisons to undo for this user
+    response = client.post("/api/ranking/undo", headers=auth_headers)
+    assert response.status_code == 404, \
+        "After undoing our only comparison, there should be none left"

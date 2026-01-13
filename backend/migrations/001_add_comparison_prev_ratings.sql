@@ -1,5 +1,5 @@
 -- Migration: Add previous rating columns to comparisons table for undo support
--- Date: 2025-01-13
+-- Date: 2026-01-13
 -- Description: Stores previous mu/sigma values before comparison update,
 --              enabling proper rating restoration on undo.
 
