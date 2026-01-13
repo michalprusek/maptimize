@@ -264,8 +264,8 @@ class ImageProcessor:
         crops_dir = upload_dir / "crops"
         crops_dir.mkdir(exist_ok=True)
 
-        # Save with "whole" prefix to distinguish from detected crops
-        crop_path = crops_dir / f"whole_image_{suffix}.png"
+        # Save with "whole" prefix and image ID to ensure unique filenames
+        crop_path = crops_dir / f"whole_{image.id}_{suffix}.png"
         pil_img = PILImage.fromarray(proj_8bit)
         pil_img.save(crop_path)
 
