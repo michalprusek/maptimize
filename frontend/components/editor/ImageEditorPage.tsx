@@ -164,14 +164,14 @@ export function ImageEditorPage({
 
       try {
         const result = await api.getSegmentationMasksBatch(cropIds);
-        if (result.masks) {
-          setSavedPolygons(
-            result.masks.map(m => ({
-              cropId: m.crop_id,
-              points: m.polygon as [number, number][],
-              iouScore: m.iou_score,
-            }))
-          );
+        if (result.masks && typeof result.masks === 'object') {
+          // Backend returns masks as an object keyed by crop_id
+          const polygons = Object.entries(result.masks).map(([cropIdStr, maskData]) => ({
+            cropId: parseInt(cropIdStr, 10),
+            points: maskData.polygon as [number, number][],
+            iouScore: maskData.iou_score,
+          }));
+          setSavedPolygons(polygons);
         }
       } catch (err) {
         console.error("[Editor] Failed to load segmentation masks:", err);
