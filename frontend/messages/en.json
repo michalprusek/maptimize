@@ -230,6 +230,9 @@
     "clickToAdd": "Click \"Add Cell\" to create one",
     "back": "Back",
     "previousImage": "Previous image",
-    "nextImage": "Next image"
+    "nextImage": "Next image",
+    "dragToReposition": "Drag to reposition",
+    "resetFilters": "Reset",
+    "cellCount": "{count, plural, =1 {# cell} other {# cells}}"
   }
 }

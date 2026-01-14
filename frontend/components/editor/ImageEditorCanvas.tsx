@@ -17,6 +17,7 @@ import {
   HANDLE_SIZE,
   CANVAS_SETTINGS,
 } from "@/lib/editor/constants";
+import { getDisplayModeFilter } from "@/lib/editor/display";
 import type { DisplayMode } from "@/lib/api";
 
 interface ImageEditorCanvasProps {
@@ -39,22 +40,6 @@ interface ImageEditorCanvasProps {
   onImageCanvasReady?: (canvas: HTMLCanvasElement) => void;
   /** Callback when image is loaded (for direct crop extraction) */
   onImageLoaded?: (image: HTMLImageElement) => void;
-}
-
-/**
- * Get CSS filter string for display mode.
- */
-function getDisplayModeFilter(mode: DisplayMode): string {
-  switch (mode) {
-    case "inverted":
-      return "invert(1)";
-    case "green":
-      return "sepia(1) saturate(5) hue-rotate(70deg) brightness(0.9)";
-    case "fire":
-      return "sepia(1) saturate(10) hue-rotate(-10deg) brightness(1.1) contrast(1.1)";
-    default:
-      return "none";
-  }
 }
 
 /**
@@ -244,7 +229,7 @@ export function ImageEditorCanvas({
 
       // Draw circular handles for hovered or selected bbox
       if (isHovered || isSelected) {
-        drawHandles(ctx, bbox, zoom, isSelected);
+        drawHandles(ctx, bbox, zoom);
       }
     });
 
@@ -264,7 +249,7 @@ export function ImageEditorCanvas({
   }, [bboxes, zoom, panOffset, selectedBboxId, hoveredBboxId, drawingBbox, imageWidth, imageHeight]);
 
   // Draw circular resize handles (corners only)
-  const drawHandles = (ctx: CanvasRenderingContext2D, bbox: EditorBbox, scale: number, isSelected: boolean) => {
+  function drawHandles(ctx: CanvasRenderingContext2D, bbox: EditorBbox, scale: number): void {
     const handleRadius = (HANDLE_SIZE / 2) / scale;
 
     const handles = getHandlePositions(bbox, 1);

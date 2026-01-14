@@ -12,32 +12,10 @@ import { useMemo, useState, useEffect, type RefObject } from "react";
 import { useTranslations } from "next-intl";
 import { motion } from "framer-motion";
 import { Sparkles, Edit2 } from "lucide-react";
-import type { EditorBbox } from "@/lib/editor/types";
+import type { EditorBbox, Rect } from "@/lib/editor/types";
+import { getDisplayModeFilter } from "@/lib/editor/display";
 import { api, type DisplayMode } from "@/lib/api";
 import { extractCropFromImage } from "@/lib/editor/canvasUtils";
-
-/**
- * Get CSS filter string for display mode.
- */
-function getDisplayModeFilter(mode: DisplayMode): string {
-  switch (mode) {
-    case "inverted":
-      return "invert(1)";
-    case "green":
-      return "sepia(1) saturate(5) hue-rotate(70deg) brightness(0.9)";
-    case "fire":
-      return "sepia(1) saturate(10) hue-rotate(-10deg) brightness(1.1) contrast(1.1)";
-    default:
-      return "none";
-  }
-}
-
-interface Rect {
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-}
 
 interface ImageEditorCropPreviewProps {
   bboxes: EditorBbox[];
@@ -150,7 +128,7 @@ export function ImageEditorCropPreview({
       <div className="p-6 border-b border-white/5">
         <h2 className="text-sm font-medium text-text-primary">{t("cropPreviews")}</h2>
         <p className="text-xs text-text-secondary mt-1">
-          {bboxes.length} {bboxes.length === 1 ? "cell" : "cells"}
+          {t("cellCount", { count: bboxes.length })}
         </p>
       </div>
 

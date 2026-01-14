@@ -82,9 +82,9 @@ export interface EditorState {
  * Image filter settings.
  */
 export interface ImageFilters {
-  /** Brightness (0-200, default 100) */
+  /** Brightness (0-400, default 100) */
   brightness: number;
-  /** Contrast (0-200, default 100) */
+  /** Contrast (0-400, default 100) */
   contrast: number;
 }
 

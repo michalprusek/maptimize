@@ -7,3 +7,5 @@
 export * from "./types";
 export * from "./constants";
 export * from "./geometry";
+export * from "./display";
+export * from "./canvasUtils";

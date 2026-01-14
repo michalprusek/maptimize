@@ -97,7 +97,7 @@ export function ImageEditorContextMenu({
               className="w-full px-3 py-2 text-left text-sm text-text-secondary hover:bg-white/5 flex items-center gap-2 transition-colors"
             >
               <RotateCcw className="w-4 h-4" />
-              Reset to Original
+              {t("resetBbox")}
             </button>
           )}
         </motion.div>

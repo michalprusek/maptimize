@@ -332,7 +332,7 @@ export function ImageEditorToolbar({
       className={`cursor-grab active:cursor-grabbing p-1 rounded hover:bg-white/10 transition-colors ${
         isDragging ? "bg-primary-500/20" : ""
       }`}
-      title="Drag to reposition"
+      title={t("dragToReposition")}
     >
       {isVertical ? (
         <GripVertical className="w-4 h-4 text-text-muted" />
@@ -452,7 +452,7 @@ export function ImageEditorToolbar({
           onClick={resetFilters}
           className="text-[10px] text-text-muted hover:text-text-secondary transition-colors"
         >
-          Reset
+          {t("resetFilters")}
         </button>
       )}
 
