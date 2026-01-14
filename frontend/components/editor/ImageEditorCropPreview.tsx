@@ -18,6 +18,48 @@ import { api, type DisplayMode } from "@/lib/api";
 import { extractCropFromImage } from "@/lib/editor/canvasUtils";
 import { CropPolygonOverlay } from "./SegmentationOverlay";
 
+/**
+ * Overlay for clipped FOV mask on crop thumbnails.
+ * Takes pre-clipped polygon in crop-relative coordinates.
+ */
+function ClippedFOVPolygonOverlay({
+  polygon,
+  bboxSize,
+  thumbnailSize,
+}: {
+  polygon: [number, number][];
+  bboxSize: { width: number; height: number };
+  thumbnailSize: number;
+}) {
+  if (polygon.length < 3) return null;
+
+  // Calculate scale factor (thumbnail maintains aspect ratio)
+  const scale = thumbnailSize / Math.max(bboxSize.width, bboxSize.height);
+
+  // Scale polygon points to thumbnail coordinates
+  const scaledPoints = polygon.map(([x, y]) => [x * scale, y * scale] as [number, number]);
+
+  // Build SVG path
+  const pathD = scaledPoints.reduce((d, [x, y], i) => {
+    return d + (i === 0 ? `M ${x} ${y}` : ` L ${x} ${y}`);
+  }, "") + " Z";
+
+  return (
+    <svg
+      className="absolute inset-0 w-full h-full pointer-events-none"
+      preserveAspectRatio="xMidYMid meet"
+    >
+      <path
+        d={pathD}
+        fill="rgba(251, 191, 36, 0.2)"
+        stroke="rgba(251, 191, 36, 0.7)"
+        strokeWidth={1.5}
+        strokeDasharray="4 2"
+      />
+    </svg>
+  );
+}
+
 interface ImageEditorCropPreviewProps {
   bboxes: EditorBbox[];
   selectedBboxId: string | number | null;
@@ -36,10 +78,101 @@ interface ImageEditorCropPreviewProps {
   displayMode: DisplayMode;
   /** Saved segmentation polygons for crops */
   savedPolygons?: CellPolygon[];
+  /** FOV-level segmentation mask polygon (in FOV coordinates) */
+  fovMaskPolygon?: [number, number][] | null;
 }
 
 // Thumbnail size for polygon overlay calculation
 const THUMBNAIL_SIZE = 256; // w-64 = 16rem = 256px
+
+/**
+ * Clip a polygon to a bounding box using Sutherland-Hodgman algorithm.
+ * Returns polygon points relative to the bbox origin (for thumbnail display).
+ */
+function clipPolygonToBbox(
+  polygon: [number, number][],
+  bbox: { x: number; y: number; width: number; height: number }
+): [number, number][] {
+  if (!polygon || polygon.length < 3) return [];
+
+  const { x, y, width, height } = bbox;
+  const minX = x, maxX = x + width;
+  const minY = y, maxY = y + height;
+
+  // Sutherland-Hodgman clipping against each edge
+  let output = [...polygon];
+
+  // Clip against left edge
+  output = clipAgainstEdge(output, minX, null, true);
+  if (output.length === 0) return [];
+
+  // Clip against right edge
+  output = clipAgainstEdge(output, maxX, null, false);
+  if (output.length === 0) return [];
+
+  // Clip against top edge
+  output = clipAgainstEdge(output, null, minY, true);
+  if (output.length === 0) return [];
+
+  // Clip against bottom edge
+  output = clipAgainstEdge(output, null, maxY, false);
+  if (output.length === 0) return [];
+
+  // Convert to bbox-relative coordinates
+  return output.map(([px, py]) => [px - x, py - y] as [number, number]);
+}
+
+/**
+ * Clip polygon against a single edge (Sutherland-Hodgman helper).
+ */
+function clipAgainstEdge(
+  polygon: [number, number][],
+  xEdge: number | null,
+  yEdge: number | null,
+  keepGreater: boolean
+): [number, number][] {
+  if (polygon.length === 0) return [];
+
+  const result: [number, number][] = [];
+  const isVertical = xEdge !== null;
+  const edge = isVertical ? xEdge! : yEdge!;
+
+  const isInside = (p: [number, number]): boolean => {
+    const val = isVertical ? p[0] : p[1];
+    return keepGreater ? val >= edge : val <= edge;
+  };
+
+  const getIntersection = (p1: [number, number], p2: [number, number]): [number, number] => {
+    const [x1, y1] = p1;
+    const [x2, y2] = p2;
+
+    if (isVertical) {
+      const t = (edge - x1) / (x2 - x1);
+      return [edge, y1 + t * (y2 - y1)];
+    } else {
+      const t = (edge - y1) / (y2 - y1);
+      return [x1 + t * (x2 - x1), edge];
+    }
+  };
+
+  for (let i = 0; i < polygon.length; i++) {
+    const current = polygon[i];
+    const next = polygon[(i + 1) % polygon.length];
+    const currentInside = isInside(current);
+    const nextInside = isInside(next);
+
+    if (currentInside) {
+      result.push(current);
+      if (!nextInside) {
+        result.push(getIntersection(current, next));
+      }
+    } else if (nextInside) {
+      result.push(getIntersection(current, next));
+    }
+  }
+
+  return result;
+}
 
 export function ImageEditorCropPreview({
   bboxes,
@@ -53,6 +186,7 @@ export function ImageEditorCropPreview({
   onBboxHover,
   displayMode,
   savedPolygons = [],
+  fovMaskPolygon,
 }: ImageEditorCropPreviewProps) {
   const t = useTranslations("editor");
 
@@ -186,16 +320,37 @@ export function ImageEditorCropPreview({
                 )}
                 {/* Polygon overlay for crops with segmentation */}
                 {(() => {
-                  const polygon = savedPolygons.find(p => p.cropId === bbox.cropId);
-                  if (polygon && polygon.points.length >= 3) {
+                  // First check for crop-specific segmentation mask
+                  const cropPolygon = savedPolygons.find(p => p.cropId === bbox.cropId);
+                  if (cropPolygon && cropPolygon.points.length >= 3) {
                     return (
                       <CropPolygonOverlay
-                        polygon={polygon.points}
+                        polygon={cropPolygon.points}
                         bbox={{ x: bbox.x, y: bbox.y, width: bbox.width, height: bbox.height }}
                         thumbnailSize={THUMBNAIL_SIZE}
                       />
                     );
                   }
+
+                  // Fall back to FOV mask clipped to this crop's bbox
+                  if (fovMaskPolygon && fovMaskPolygon.length >= 3) {
+                    const clippedPolygon = clipPolygonToBbox(fovMaskPolygon, {
+                      x: bbox.x,
+                      y: bbox.y,
+                      width: bbox.width,
+                      height: bbox.height,
+                    });
+                    if (clippedPolygon.length >= 3) {
+                      return (
+                        <ClippedFOVPolygonOverlay
+                          polygon={clippedPolygon}
+                          bboxSize={{ width: bbox.width, height: bbox.height }}
+                          thumbnailSize={THUMBNAIL_SIZE}
+                        />
+                      );
+                    }
+                  }
+
                   return null;
                 })()}
               </div>
@@ -219,11 +374,27 @@ export function ImageEditorCropPreview({
                     </span>
                   )}
                   {/* Segmentation indicator */}
-                  {savedPolygons.some(p => p.cropId === bbox.cropId) && (
-                    <span className="flex items-center gap-0.5 px-1.5 py-0.5 text-[10px] bg-emerald-500/20 text-emerald-400 rounded-md font-medium" title="Has segmentation mask">
-                      <Hexagon className="w-2.5 h-2.5" />
-                    </span>
-                  )}
+                  {(() => {
+                    const hasCropMask = savedPolygons.some(p => p.cropId === bbox.cropId);
+                    const hasFOVMask = fovMaskPolygon && fovMaskPolygon.length >= 3 &&
+                      clipPolygonToBbox(fovMaskPolygon, { x: bbox.x, y: bbox.y, width: bbox.width, height: bbox.height }).length >= 3;
+
+                    if (hasCropMask) {
+                      return (
+                        <span className="flex items-center gap-0.5 px-1.5 py-0.5 text-[10px] bg-emerald-500/20 text-emerald-400 rounded-md font-medium" title="Has crop segmentation mask">
+                          <Hexagon className="w-2.5 h-2.5" />
+                        </span>
+                      );
+                    }
+                    if (hasFOVMask) {
+                      return (
+                        <span className="flex items-center gap-0.5 px-1.5 py-0.5 text-[10px] bg-amber-500/20 text-amber-400 rounded-md font-medium" title="Has FOV segmentation mask">
+                          <Hexagon className="w-2.5 h-2.5" />
+                        </span>
+                      );
+                    }
+                    return null;
+                  })()}
                 </div>
               </div>
             </motion.button>

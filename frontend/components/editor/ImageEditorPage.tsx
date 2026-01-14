@@ -363,6 +363,9 @@ export function ImageEditorPage({
   // Saved polygons for all crops
   const [savedPolygons, setSavedPolygons] = useState<CellPolygon[]>([]);
 
+  // FOV-level segmentation mask (covers entire image)
+  const [fovMaskPolygon, setFovMaskPolygon] = useState<[number, number][] | null>(null);
+
   // Container dimensions for segmentation overlay
   const [containerDimensions, setContainerDimensions] = useState({ width: 0, height: 0 });
 
@@ -376,11 +379,27 @@ export function ImageEditorPage({
   // Segmentation hook
   const segmentation = useSegmentation({
     imageId: fovImage.id,
-    onFOVMaskSaved: useCallback((_imageId: number, _polygon: [number, number][], _iouScore: number) => {
-      // FOV mask saved - notify parent component
+    onFOVMaskSaved: useCallback((_imageId: number, polygon: [number, number][], _iouScore: number) => {
+      // Update local FOV mask state and notify parent component
+      setFovMaskPolygon(polygon);
       onDataChanged?.();
     }, [onDataChanged]),
   });
+
+  // Load FOV mask on mount
+  useEffect(() => {
+    const loadFOVMask = async () => {
+      try {
+        const result = await api.getFOVSegmentationMask(fovImage.id);
+        if (result.has_mask && result.polygon && result.polygon.length >= 3) {
+          setFovMaskPolygon(result.polygon);
+        }
+      } catch (err) {
+        console.error("[Editor] Failed to load FOV mask:", err);
+      }
+    };
+    loadFOVMask();
+  }, [fovImage.id]);
 
   // Load saved polygons when crops change
   useEffect(() => {
@@ -1292,6 +1311,7 @@ export function ImageEditorPage({
             liveBboxRect={liveBboxRect}
             displayMode={displayMode}
             savedPolygons={savedPolygons}
+            fovMaskPolygon={fovMaskPolygon}
           />
         )}
       </div>
