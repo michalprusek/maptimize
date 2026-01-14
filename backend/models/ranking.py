@@ -72,9 +72,9 @@ class Comparison(Base):
         ForeignKey("users.id", ondelete="CASCADE"),
         index=True
     )
-    crop_a_id: Mapped[int] = mapped_column(ForeignKey("cell_crops.id"))
-    crop_b_id: Mapped[int] = mapped_column(ForeignKey("cell_crops.id"))
-    winner_id: Mapped[int] = mapped_column(ForeignKey("cell_crops.id"))
+    crop_a_id: Mapped[int] = mapped_column(ForeignKey("cell_crops.id", ondelete="CASCADE"))
+    crop_b_id: Mapped[int] = mapped_column(ForeignKey("cell_crops.id", ondelete="CASCADE"))
+    winner_id: Mapped[int] = mapped_column(ForeignKey("cell_crops.id", ondelete="CASCADE"))
 
     # Previous rating values (for undo support)
     prev_winner_mu: Mapped[Optional[float]] = mapped_column(Float, nullable=True)

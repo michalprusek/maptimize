@@ -84,3 +84,21 @@ docker compose -f docker-compose.prod.yml restart maptimize-backend
 ```
 
 **Poznámka:** Kód NENÍ mountován jako volume - je zkopírován do image při buildu.
+
+## ⚠️ Známé problémy a řešení
+
+### 404 chyby na API endpointech
+
+**Symptom:** Frontend dostává 404 chyby při volání API (např. `/auth/login`, `/experiments`).
+
+**Příčina:** Frontend API klient (`frontend/lib/api.ts`) volá endpointy bez `/api` prefixu, ale backend má všechny routery registrované pod `/api/...`.
+
+**Řešení:**
+1. Zkontrolovat `frontend/lib/api.ts`
+2. Všechny endpoint cesty musí začínat `/api/`:
+   - ❌ `"/auth/login"` → 404
+   - ✅ `"/api/auth/login"` → OK
+3. Platí pro všechny endpointy: `/api/auth/`, `/api/experiments/`, `/api/images/`, `/api/metrics/`, `/api/ranking/`, `/api/proteins/`, `/api/embeddings/`
+4. Pozor i na přímé URL konstrukce (`${API_URL}/images/...` → `${API_URL}/api/images/...`)
+
+**Prevence:** Při přidávání nových endpointů vždy používat `/api/` prefix v frontend klientu.
