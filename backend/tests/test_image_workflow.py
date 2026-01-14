@@ -6,7 +6,65 @@ functionality including authorization and status validation.
 These tests run against a live backend server.
 Make sure the backend is running: docker-compose up -d
 """
+import io
 import pytest
+
+
+class TestUploadEndpoint:
+    """Tests for /api/images/upload endpoint (Phase 1)."""
+
+    def test_upload_requires_authentication(self, client):
+        """Test that upload endpoint requires authentication."""
+        # Create a minimal fake image file
+        fake_image = io.BytesIO(b"fake image content")
+        response = client.post(
+            "/api/images/upload",
+            data={"experiment_id": "1"},
+            files={"file": ("test.png", fake_image, "image/png")}
+        )
+        assert response.status_code == 401
+
+    def test_upload_requires_experiment_id(self, client, auth_headers):
+        """Test that upload requires experiment_id parameter."""
+        fake_image = io.BytesIO(b"fake image content")
+        response = client.post(
+            "/api/images/upload",
+            headers=auth_headers,
+            files={"file": ("test.png", fake_image, "image/png")}
+        )
+        # Should return 422 for missing required field
+        assert response.status_code == 422
+
+    def test_upload_rejects_nonexistent_experiment(self, client, auth_headers):
+        """Test that upload to non-existent experiment returns 404."""
+        fake_image = io.BytesIO(b"fake image content")
+        response = client.post(
+            "/api/images/upload",
+            headers=auth_headers,
+            data={"experiment_id": "999999"},
+            files={"file": ("test.png", fake_image, "image/png")}
+        )
+        assert response.status_code == 404
+
+    def test_upload_rejects_invalid_file_extension(self, client, auth_headers):
+        """Test that upload rejects files with invalid extensions."""
+        # Get an existing experiment
+        response = client.get("/api/experiments/", headers=auth_headers)
+        if response.status_code != 200 or len(response.json()) == 0:
+            pytest.skip("No experiments available for testing")
+
+        experiment_id = response.json()[0]["id"]
+
+        # Try to upload a file with invalid extension
+        fake_file = io.BytesIO(b"not a real image")
+        response = client.post(
+            "/api/images/upload",
+            headers=auth_headers,
+            data={"experiment_id": str(experiment_id)},
+            files={"file": ("malware.exe", fake_file, "application/octet-stream")}
+        )
+        # Should return 400 for invalid file type
+        assert response.status_code == 400
 
 
 class TestBatchProcessEndpoint:
@@ -255,3 +313,126 @@ class TestBatchProcessSchemaValidation:
         # Will fail with 404 (not found), not 422 (validation error)
         # This confirms detect_cells is optional and defaults properly
         assert response.status_code == 404
+
+
+class TestBatchProcessStatusValidation:
+    """Tests for batch process status validation."""
+
+    def test_batch_process_accepts_uploaded_status(self, client, auth_headers):
+        """Test that batch process accepts images in UPLOADED status."""
+        # Get an existing experiment with images
+        response = client.get("/api/experiments/", headers=auth_headers)
+        if response.status_code != 200 or len(response.json()) == 0:
+            pytest.skip("No experiments available for testing")
+
+        experiment_id = response.json()[0]["id"]
+        response = client.get(
+            f"/api/images/fovs?experiment_id={experiment_id}",
+            headers=auth_headers
+        )
+        if response.status_code != 200 or len(response.json()) == 0:
+            pytest.skip("No images available for testing")
+
+        fovs = response.json()
+        # Find an image in UPLOADED status
+        uploaded_image = next(
+            (fov for fov in fovs if fov["status"] == "UPLOADED"),
+            None
+        )
+        if not uploaded_image:
+            pytest.skip("No images in UPLOADED status")
+
+        # Should accept the request (200 or 202)
+        response = client.post(
+            "/api/images/batch-process",
+            headers=auth_headers,
+            json={
+                "image_ids": [uploaded_image["id"]],
+                "detect_cells": False  # Quick processing
+            }
+        )
+        # 200 means accepted, actual processing happens in background
+        assert response.status_code == 200
+        data = response.json()
+        assert "processing_count" in data
+        assert data["processing_count"] >= 0
+
+    def test_batch_process_accepts_ready_status_for_reprocessing(self, client, auth_headers):
+        """Test that batch process accepts images in READY status (reprocessing)."""
+        # Get an existing experiment with images
+        response = client.get("/api/experiments/", headers=auth_headers)
+        if response.status_code != 200 or len(response.json()) == 0:
+            pytest.skip("No experiments available for testing")
+
+        experiment_id = response.json()[0]["id"]
+        response = client.get(
+            f"/api/images/fovs?experiment_id={experiment_id}",
+            headers=auth_headers
+        )
+        if response.status_code != 200 or len(response.json()) == 0:
+            pytest.skip("No images available for testing")
+
+        fovs = response.json()
+        # Find an image in READY status
+        ready_image = next(
+            (fov for fov in fovs if fov["status"] == "READY"),
+            None
+        )
+        if not ready_image:
+            pytest.skip("No images in READY status")
+
+        # Should accept the request for reprocessing
+        response = client.post(
+            "/api/images/batch-process",
+            headers=auth_headers,
+            json={
+                "image_ids": [ready_image["id"]],
+                "detect_cells": False
+            }
+        )
+        assert response.status_code == 200
+
+
+class TestFOVResponseValidation:
+    """Tests for FOV response field validation."""
+
+    def test_fov_cell_count_is_non_negative(self, client, auth_headers):
+        """Test that cell_count is always non-negative."""
+        response = client.get("/api/experiments/", headers=auth_headers)
+        if response.status_code != 200 or len(response.json()) == 0:
+            pytest.skip("No experiments available for testing")
+
+        experiment_id = response.json()[0]["id"]
+        response = client.get(
+            f"/api/images/fovs?experiment_id={experiment_id}",
+            headers=auth_headers
+        )
+        if response.status_code != 200:
+            pytest.skip("Failed to get FOVs")
+
+        fovs = response.json()
+        for fov in fovs:
+            assert fov["cell_count"] >= 0, f"Invalid cell_count: {fov['cell_count']}"
+
+    def test_fov_dimensions_are_positive_when_present(self, client, auth_headers):
+        """Test that width/height are positive when present."""
+        response = client.get("/api/experiments/", headers=auth_headers)
+        if response.status_code != 200 or len(response.json()) == 0:
+            pytest.skip("No experiments available for testing")
+
+        experiment_id = response.json()[0]["id"]
+        response = client.get(
+            f"/api/images/fovs?experiment_id={experiment_id}",
+            headers=auth_headers
+        )
+        if response.status_code != 200:
+            pytest.skip("Failed to get FOVs")
+
+        fovs = response.json()
+        for fov in fovs:
+            if fov.get("width") is not None:
+                assert fov["width"] > 0, f"Invalid width: {fov['width']}"
+            if fov.get("height") is not None:
+                assert fov["height"] > 0, f"Invalid height: {fov['height']}"
+            if fov.get("z_slices") is not None:
+                assert fov["z_slices"] > 0, f"Invalid z_slices: {fov['z_slices']}"

@@ -126,16 +126,14 @@ class ImageProcessor:
                     sum_path = await self._save_projection(image, sum_proj, "sum")
                     image.sum_path = str(sum_path)
 
-                    # Delete original Z-stack file (keep only projections)
-                    original_path = Path(image.file_path)
-                    if original_path.exists():
-                        original_path.unlink()
-                        logger.info(f"Deleted original Z-stack: {original_path}")
+                    # Mark source as discarded (will delete after commit succeeds)
                     image.source_discarded = True
+                    original_path = Path(image.file_path)
                 else:
                     logger.info("Processing 2D image...")
                     # For 2D images, use as-is (no projections needed)
                     mip = data
+                    original_path = None
 
                 # Save thumbnail (always from MIP)
                 thumb_path = await self._save_thumbnail(image, mip)
@@ -144,6 +142,11 @@ class ImageProcessor:
                 # Set status to UPLOADED (Phase 1 complete)
                 image.status = UploadStatus.UPLOADED
                 await db.commit()
+
+                # Delete original Z-stack file AFTER successful commit (prevents data loss on rollback)
+                if original_path and original_path.exists():
+                    original_path.unlink()
+                    logger.info(f"Deleted original Z-stack: {original_path}")
 
                 logger.info(f"Phase 1 complete for image {image.id}")
                 return True
@@ -165,18 +168,18 @@ class ImageProcessor:
 
     async def process_batch(self, detect_cells: bool, map_protein_id: Optional[int] = None) -> bool:
         """
-        Phase 2: Run detection and feature extraction on an already-uploaded image.
+        Phase 2: Run detection and optional feature extraction on an already-uploaded image.
 
         This method:
-        - Loads existing MIP projection
-        - Optionally runs YOLO detection
-        - Creates cell crops (if detection enabled)
-        - Extracts DINOv2 embeddings
+        - Loads existing MIP projection from Phase 1
+        - If detect_cells=True: runs YOLO detection, creates cell crops, extracts DINOv2 embeddings
+        - If detect_cells=False: marks image as READY without creating crops (FOV only mode)
+        - Always extracts FOV-level embedding regardless of detect_cells setting
         - Sets status to READY
 
         Args:
-            detect_cells: Whether to run YOLO detection
-            map_protein_id: Optional MAP protein to assign
+            detect_cells: Whether to run YOLO detection and create cell crops
+            map_protein_id: Optional MAP protein to assign to the image
 
         Returns:
             True if successful, False otherwise
@@ -207,16 +210,28 @@ class ImageProcessor:
                 await db.commit()
 
                 # Load MIP projection (should already exist from Phase 1)
+                mip_fallback_used = False
                 if image.mip_path and Path(image.mip_path).exists():
                     mip = await self._load_image(image.mip_path)
+                elif not image.mip_path and Path(image.file_path).exists():
+                    # For 2D images, mip_path is not set - use original file directly
+                    logger.info(f"2D image {image.id}: using original file as MIP")
+                    mip = await self._load_image(image.file_path)
                 else:
-                    # Fallback: load from original file if still exists
+                    # Fallback: try to load from original file if MIP is missing
+                    mip_fallback_used = True
                     logger.warning(
                         f"MIP projection missing for image {image.id} (mip_path={image.mip_path}), "
                         f"falling back to original file: {image.file_path}. "
                         f"This may indicate Phase 1 did not complete properly."
                     )
                     mip = await self._load_image(image.file_path)
+                    if mip is not None:
+                        # Record that fallback was used (visible in error_message field)
+                        existing_msg = image.error_message or ""
+                        warning_msg = "Warning: Phase 1 may be incomplete (MIP fallback used). "
+                        if warning_msg not in existing_msg:
+                            image.error_message = warning_msg + existing_msg
 
                 if mip is None:
                     raise ValueError(f"Cannot load MIP for image {image.id}")
@@ -234,6 +249,9 @@ class ImageProcessor:
                     logger.info("Detection disabled - FOV will be shown without crops")
                     image.status = UploadStatus.READY
                     image.processed_at = datetime.now(timezone.utc)
+
+                # Extract FOV embedding (always, regardless of detect_cells)
+                await self._extract_fov_embedding(db, image)
 
                 await db.commit()
                 logger.info(f"Phase 2 complete for image {image.id}")
@@ -313,23 +331,26 @@ class ImageProcessor:
                     sum_path = await self._save_projection(image, sum_proj, "sum")
                     image.sum_path = str(sum_path)
 
-                    # Delete original Z-stack file (keep only projections)
-                    original_path = Path(image.file_path)
-                    if original_path.exists():
-                        original_path.unlink()
-                        logger.info(f"Deleted original Z-stack: {original_path}")
+                    # Mark source as discarded (will delete after commit succeeds)
                     image.source_discarded = True
+                    original_path = Path(image.file_path)
                 else:
                     logger.info("Processing 2D image...")
                     # For 2D images, use as-is (no projections needed)
                     mip = data
                     sum_proj = None
+                    original_path = None
 
                 # Save thumbnail (always from MIP)
                 thumb_path = await self._save_thumbnail(image, mip)
                 image.thumbnail_path = str(thumb_path)
 
                 await db.commit()
+
+                # Delete original Z-stack file AFTER successful commit (prevents data loss on rollback)
+                if original_path and original_path.exists():
+                    original_path.unlink()
+                    logger.info(f"Deleted original Z-stack: {original_path}")
 
                 if self.detect_cells:
                     # Run detection pipeline
@@ -532,6 +553,27 @@ class ImageProcessor:
             logger.error(f"DINOv2 model error during feature extraction: {e}")
         except Exception as e:
             logger.exception(f"Unexpected feature extraction error: {e}")
+
+    async def _extract_fov_embedding(
+        self,
+        db: AsyncSession,
+        image: Image
+    ) -> None:
+        """Extract DINOv3 embedding for FOV MIP projection (non-fatal on failure)."""
+        try:
+            from ml.features import extract_features_for_images
+            result = await extract_features_for_images([image.id], db)
+
+            if result['success'] > 0:
+                logger.info(f"FOV embedding created for image {image.id}")
+            elif result['failed'] > 0:
+                logger.warning(f"FOV embedding extraction failed for image {image.id}")
+        except ImportError as e:
+            logger.error(f"Feature extraction module not available: {e}")
+        except RuntimeError as e:
+            logger.error(f"DINOv3 model error during FOV feature extraction: {e}")
+        except Exception as e:
+            logger.exception(f"Unexpected FOV feature extraction error: {e}")
 
     async def _save_crop(
         self,

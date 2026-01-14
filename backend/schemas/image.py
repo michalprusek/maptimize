@@ -68,17 +68,17 @@ class ImageResponse(BaseModel):
     experiment_id: int
     original_filename: str
     status: UploadStatus
-    width: Optional[int] = None
-    height: Optional[int] = None
-    z_slices: Optional[int] = None
-    file_size: Optional[int] = None
+    width: Optional[int] = Field(None, gt=0)
+    height: Optional[int] = Field(None, gt=0)
+    z_slices: Optional[int] = Field(None, gt=0)
+    file_size: Optional[int] = Field(None, gt=0)
     error_message: Optional[str] = None
     detect_cells: bool = True  # Whether detection was requested
     source_discarded: bool = False  # Original file was deleted
     created_at: datetime
     processed_at: Optional[datetime] = None
     map_protein: Optional[MapProteinResponse] = None
-    cell_count: int = 0
+    cell_count: int = Field(default=0, ge=0)
 
     class Config:
         from_attributes = True

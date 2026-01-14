@@ -63,7 +63,7 @@ export default function ExperimentDetailPage(): JSX.Element {
 
   // Delete state
   const [cropToDelete, setCropToDelete] = useState<{ id: number; name: string } | null>(null);
-  const [fovToDelete, setFovToDelete] = useState<{ id: number; name: string } | null>(null);
+  // Note: FOV deletion is handled within the FOVGallery component
 
   // Selection state (separate for each view)
   const [selectedCropIds, setSelectedCropIds] = useState<Set<number>>(new Set());

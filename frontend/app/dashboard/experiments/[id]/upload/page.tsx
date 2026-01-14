@@ -22,7 +22,18 @@ import {
   Plus,
 } from "lucide-react";
 
+/**
+ * Workflow phase states for the two-phase upload process:
+ * - idle: Initial state, no uploads started
+ * - uploading: Files being uploaded, Phase 1 processing (projections/thumbnails)
+ * - uploaded: All files uploaded and Phase 1 complete, awaiting user configuration
+ * - processing: Phase 2 processing (detection/feature extraction) in progress
+ * - done: All processing complete, ready to view results
+ */
 type WorkflowPhase = "idle" | "uploading" | "uploaded" | "processing" | "done";
+
+/** Polling interval for status updates (ms) - balances responsiveness with server load */
+const STATUS_POLLING_INTERVAL_MS = 2000;
 
 export default function UploadPage(): JSX.Element {
   const params = useParams();
@@ -72,9 +83,17 @@ export default function UploadPage(): JSX.Element {
     queryKey: ["uploaded-images", uploadedImageIds],
     queryFn: async () => {
       if (uploadedImageIds.length === 0) return [];
-      const images = await Promise.all(
+      // Use allSettled to handle partial failures gracefully
+      const results = await Promise.allSettled(
         uploadedImageIds.map((id) => api.getImage(id))
       );
+      const images = results
+        .filter((r): r is PromiseFulfilledResult<ApiImage> => r.status === "fulfilled")
+        .map((r) => r.value);
+      const failed = results.filter((r) => r.status === "rejected").length;
+      if (failed > 0) {
+        console.warn(`[Upload] Failed to fetch ${failed} of ${uploadedImageIds.length} images`);
+      }
       return images;
     },
     enabled: uploadedImageIds.length > 0,
@@ -83,7 +102,7 @@ export default function UploadPage(): JSX.Element {
     refetchInterval: (query) => {
       // Poll while any image is still processing Phase 1
       const images = query.state.data;
-      if (!images) return 2000;
+      if (!images) return STATUS_POLLING_INTERVAL_MS;
       const stillProcessing = images.some(
         (img) => img.status === "UPLOADING" || img.status === "PROCESSING"
       );
@@ -116,23 +135,31 @@ export default function UploadPage(): JSX.Element {
   const { data: processingStatus } = useQuery({
     queryKey: ["processing-status", uploadedImageIds],
     queryFn: async () => {
-      const images = await Promise.all(
+      // Use allSettled to handle partial failures gracefully
+      const results = await Promise.allSettled(
         uploadedImageIds.map((id) => api.getImage(id))
       );
+      const images = results
+        .filter((r): r is PromiseFulfilledResult<ApiImage> => r.status === "fulfilled")
+        .map((r) => r.value);
+      const fetchFailed = results.filter((r) => r.status === "rejected").length;
+      if (fetchFailed > 0) {
+        console.warn(`[ProcessingStatus] Failed to fetch ${fetchFailed} of ${uploadedImageIds.length} images`);
+      }
       const readyOrError = images.filter(
         (img) => img.status === "READY" || img.status === "ERROR"
       );
       return {
-        allDone: readyOrError.length === images.length,
+        allDone: readyOrError.length === images.length && fetchFailed === 0,
         processing: images.length - readyOrError.length,
         errors: images.filter((img) => img.status === "ERROR").length,
-        total: images.length,
+        total: uploadedImageIds.length, // Use original count for accurate tracking
       };
     },
     enabled: phase === "processing",
     refetchInterval: (query) => {
       if (query.state.data?.allDone) return false;
-      return 2000;
+      return STATUS_POLLING_INTERVAL_MS;
     },
   });
 
@@ -705,8 +732,14 @@ export default function UploadPage(): JSX.Element {
                     <Loader2 className="w-6 h-6 text-primary-500 animate-spin" />
                   </div>
                 ) : img.status === "ERROR" ? (
-                  <div className="absolute inset-0 flex items-center justify-center bg-accent-red/10">
+                  <div
+                    className="absolute inset-0 flex flex-col items-center justify-center bg-accent-red/10 cursor-help"
+                    title={img.error_message || "Processing failed"}
+                  >
                     <AlertCircle className="w-6 h-6 text-accent-red" />
+                    <span className="text-xs text-accent-red mt-1 px-1 text-center truncate max-w-full">
+                      {img.error_message ? (img.error_message.length > 30 ? img.error_message.slice(0, 30) + "..." : img.error_message) : "Error"}
+                    </span>
                   </div>
                 ) : (
                   <img
@@ -715,6 +748,7 @@ export default function UploadPage(): JSX.Element {
                     className="w-full h-full object-cover"
                     loading="lazy"
                     onError={(e) => {
+                      console.warn(`[Upload] Thumbnail load failed for image: ${img.original_filename}`, e.type);
                       e.currentTarget.style.display = "none";
                       e.currentTarget.nextElementSibling?.classList.remove("hidden");
                     }}

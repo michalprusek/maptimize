@@ -155,6 +155,7 @@ export function FOVGallery({
                     className="w-full h-full object-cover"
                     loading="lazy"
                     onError={(e) => {
+                      console.warn(`[FOVGallery] Thumbnail load failed for image: ${fov.original_filename}`, e.type);
                       e.currentTarget.style.display = "none";
                       e.currentTarget.nextElementSibling?.classList.remove("hidden");
                     }}
