@@ -11,9 +11,6 @@ import {
   Search,
   ImageIcon,
   Layers,
-  CheckCircle,
-  Clock,
-  AlertCircle,
   Check,
 } from "lucide-react";
 
@@ -65,44 +62,6 @@ export function FOVGallery({
       setDeleteError(err.message || "Failed to delete FOV. Please try again.");
     },
   });
-
-  const getStatusIcon = (status: FOVImage["status"]) => {
-    switch (status) {
-      case "READY":
-        return <CheckCircle className="w-4 h-4 text-primary-400" />;
-      case "ERROR":
-        return <AlertCircle className="w-4 h-4 text-accent-red" />;
-      case "UPLOADING":
-      case "UPLOADED":
-      case "PROCESSING":
-      case "DETECTING":
-      case "EXTRACTING_FEATURES":
-        return <Clock className="w-4 h-4 text-accent-amber animate-pulse" />;
-      default:
-        return null;
-    }
-  };
-
-  const getStatusText = (status: FOVImage["status"]) => {
-    switch (status) {
-      case "READY":
-        return "Ready";
-      case "ERROR":
-        return "Error";
-      case "UPLOADING":
-        return "Uploading";
-      case "UPLOADED":
-        return "Awaiting processing";
-      case "PROCESSING":
-        return "Processing";
-      case "DETECTING":
-        return "Detecting cells";
-      case "EXTRACTING_FEATURES":
-        return "Extracting features";
-      default:
-        return status;
-    }
-  };
 
   if (isLoading) {
     return (
@@ -212,26 +171,13 @@ export function FOVGallery({
                   {fov.original_filename}
                 </p>
 
-                {/* Status and info row */}
-                <div className="flex items-center justify-between text-xs">
-                  <div className="flex items-center gap-1.5">
-                    {getStatusIcon(fov.status)}
-                    <span className="text-text-muted">{getStatusText(fov.status)}</span>
-                  </div>
-
-                  {fov.width && fov.height && (
-                    <span className="text-text-muted">
-                      {fov.width}×{fov.height}
-                    </span>
-                  )}
-                </div>
-
-                {/* Z-stack info */}
-                {fov.z_slices && fov.z_slices > 1 && (
+                {/* Dimensions */}
+                {fov.width && fov.height && (
                   <div className="text-xs text-text-muted">
-                    Z-stack: {fov.z_slices} slices
+                    {fov.width}×{fov.height}
                   </div>
                 )}
+
 
                 {/* MAP Protein */}
                 {fov.map_protein && (
