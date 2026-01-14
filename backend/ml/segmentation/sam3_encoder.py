@@ -371,10 +371,12 @@ class SAM3Encoder:
             }
 
         except Exception as e:
-            logger.warning(f"Point refinement failed, using initial mask: {e}")
-            # Fallback: return initial text result
+            logger.exception(f"Point refinement failed, returning unrefined result")
+            # Return initial result with warning flag so UI can inform user
             return {
                 "success": True,
+                "refinement_failed": True,
+                "warning": f"Point refinement failed ({e}), showing initial text result",
                 "mask": initial_mask,
                 "polygon": text_results["polygons"][instance_index],
                 "score": text_results["scores"][instance_index],

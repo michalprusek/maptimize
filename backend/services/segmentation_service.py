@@ -11,6 +11,7 @@ import asyncio
 import logging
 from typing import List, Optional, Tuple, Dict, Any
 
+import numpy as np
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -20,6 +21,7 @@ from models.segmentation import SegmentationMask, UserSegmentationPrompt, FOVSeg
 from models.cell_crop import CellCrop
 from ml.segmentation.sam_encoder import get_sam_encoder
 from ml.segmentation.sam_decoder import get_sam_decoder
+from ml.segmentation.utils import mask_to_polygon, calculate_polygon_area
 
 logger = logging.getLogger(__name__)
 
@@ -62,7 +64,7 @@ async def compute_sam_embedding(
         encoder = get_sam_encoder()
 
         # Run encoding in thread pool to avoid blocking event loop
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         embedding, width, height = await loop.run_in_executor(
             None,
             lambda: encoder.encode_image(source_path)
@@ -189,7 +191,7 @@ async def segment_from_prompts(
     shape = tuple(map(int, sam_embedding.embedding_shape.split(",")))
 
     # Run decompression in thread pool
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     embedding = await loop.run_in_executor(
         None,
         lambda: encoder.decompress_embedding(sam_embedding.embedding_data, shape)
@@ -209,13 +211,14 @@ async def segment_from_prompts(
 
     mask, iou_score, _ = await loop.run_in_executor(None, run_inference)
 
-    # Convert mask to polygon
+    # Convert mask to polygon using utility function
     polygon = await loop.run_in_executor(
         None,
-        lambda: decoder.mask_to_polygon(mask)
+        lambda: mask_to_polygon(mask)
     )
 
-    area = decoder.calculate_mask_area(mask)
+    # Calculate area from mask (count True pixels)
+    area = int(np.sum(mask))
 
     return {
         "success": True,
@@ -253,11 +256,11 @@ async def save_segmentation_mask(
     crop = result.scalar_one_or_none()
 
     if not crop:
+        logger.warning(f"Crop not found: crop_id={crop_id}")
         return {"success": False, "error": "Crop not found"}
 
     # Calculate area using shoelace formula
-    decoder = get_sam_decoder()
-    area = decoder.calculate_polygon_area(polygon)
+    area = calculate_polygon_area(polygon)
 
     # Create or update mask
     existing = await db.execute(
@@ -436,17 +439,30 @@ async def queue_sam_embedding(image_id: int) -> None:
     """
     from database import get_db_context
 
-    async with get_db_context() as db:
-        # Update status to pending
-        result = await db.execute(select(Image).where(Image.id == image_id))
-        image = result.scalar_one_or_none()
+    try:
+        async with get_db_context() as db:
+            # Update status to pending
+            result = await db.execute(select(Image).where(Image.id == image_id))
+            image = result.scalar_one_or_none()
 
-        if image and image.sam_embedding_status is None:
-            image.sam_embedding_status = "pending"
-            await db.commit()
+            if image and image.sam_embedding_status is None:
+                image.sam_embedding_status = "pending"
+                await db.commit()
 
-        # Compute embedding
-        await compute_sam_embedding(image_id, db)
+            # Compute embedding
+            await compute_sam_embedding(image_id, db)
+    except Exception as e:
+        logger.exception(f"Background SAM embedding task failed for image {image_id}")
+        # Try to update status to error
+        try:
+            async with get_db_context() as db:
+                result = await db.execute(select(Image).where(Image.id == image_id))
+                image = result.scalar_one_or_none()
+                if image:
+                    image.sam_embedding_status = "error"
+                    await db.commit()
+        except Exception:
+            logger.exception(f"Failed to update error status for image {image_id}")
 
 
 # ============================================================================
@@ -480,11 +496,11 @@ async def save_fov_segmentation_mask(
     image = result.scalar_one_or_none()
 
     if not image:
+        logger.warning(f"Image not found for FOV mask: image_id={image_id}")
         return {"success": False, "error": "Image not found"}
 
     # Calculate area using shoelace formula
-    decoder = get_sam_decoder()
-    area = decoder.calculate_polygon_area(polygon)
+    area = calculate_polygon_area(polygon)
 
     # Create or update mask
     existing = await db.execute(
@@ -638,12 +654,11 @@ async def segment_from_text(
 
     try:
         from ml.segmentation.sam3_encoder import get_sam3_encoder
-        import asyncio
 
         encoder = get_sam3_encoder()
 
         # Run inference in thread pool
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         result = await loop.run_in_executor(
             None,
             lambda: encoder.predict_with_text(
@@ -722,12 +737,11 @@ async def refine_text_segmentation(
 
     try:
         from ml.segmentation.sam3_encoder import get_sam3_encoder
-        import asyncio
 
         encoder = get_sam3_encoder()
 
         # Run refinement in thread pool
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         result = await loop.run_in_executor(
             None,
             lambda: encoder.refine_with_points(

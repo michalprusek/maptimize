@@ -11,7 +11,6 @@ import numpy as np
 import torch
 
 from .sam_encoder import get_mobilesam_encoder
-from .utils import mask_to_polygon, polygon_to_mask, calculate_polygon_area
 
 logger = logging.getLogger(__name__)
 
@@ -141,9 +140,12 @@ class SAMDecoder:
 
             return mask.astype(bool), iou_score, low_res
 
-        except Exception as e:
+        except (RuntimeError, ValueError, TypeError) as e:
             logger.exception("Mask prediction failed")
             raise RuntimeError(f"Mask prediction failed: {e}") from e
+        except torch.cuda.OutOfMemoryError as e:
+            logger.error(f"GPU out of memory during mask prediction: {e}")
+            raise RuntimeError(f"GPU out of memory: {e}") from e
 
     def _sam_predict_with_embedding(
         self,
