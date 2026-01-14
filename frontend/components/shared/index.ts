@@ -5,3 +5,5 @@ export {
   type ProteinInfo,
   type ImageGalleryFiltersProps,
 } from "./ImageGalleryFilters";
+export { SelectionCheckbox } from "./SelectionCheckbox";
+export { DeleteOverlayButton } from "./DeleteOverlayButton";

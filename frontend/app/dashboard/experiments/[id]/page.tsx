@@ -14,6 +14,8 @@ import {
   SortOrder,
   SortOption,
   ProteinInfo,
+  SelectionCheckbox,
+  DeleteOverlayButton,
 } from "@/components/shared";
 import {
   ArrowLeft,
@@ -629,31 +631,14 @@ export default function ExperimentDetailPage(): JSX.Element {
                       />
                       <Layers className="w-10 h-10 text-text-muted hidden" />
 
-                      {/* Selection checkbox */}
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          toggleSelect(crop.id);
-                        }}
-                        className={`absolute top-2 left-2 w-5 h-5 rounded border-2 flex items-center justify-center transition-all ${
-                          selectedIds.has(crop.id)
-                            ? "bg-primary-500 border-primary-500"
-                            : "border-white/40 bg-black/30 opacity-0 group-hover:opacity-100"
-                        }`}
-                      >
-                        {selectedIds.has(crop.id) && (
-                          <Check className="w-3 h-3 text-white" />
-                        )}
-                      </button>
-
-                      {/* Delete button overlay */}
-                      <button
+                      <SelectionCheckbox
+                        isSelected={selectedIds.has(crop.id)}
+                        onClick={() => toggleSelect(crop.id)}
+                      />
+                      <DeleteOverlayButton
                         onClick={() => setCropToDelete({ id: crop.id, name: crop.parent_filename })}
-                        className="absolute top-2 right-2 p-1.5 bg-bg-primary/80 hover:bg-accent-red/20 text-text-muted hover:text-accent-red rounded-lg opacity-0 group-hover:opacity-100 transition-all duration-200"
                         title="Delete cell crop"
-                      >
-                        <Trash2 className="w-4 h-4" />
-                      </button>
+                      />
                     </div>
 
                     {/* Info */}

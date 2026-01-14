@@ -34,6 +34,18 @@ interface UmapVisualizationProps {
 
 const DEFAULT_COLOR = "#888888";
 
+/** Build authenticated URL by appending token as query parameter */
+function buildAuthenticatedUrl(thumbnailUrl: string): string {
+  const token = api.getToken();
+  const separator = thumbnailUrl.includes("?") ? "&" : "?";
+  return `${API_URL}${thumbnailUrl}${separator}token=${token}`;
+}
+
+/** Hide element on image load error */
+function hideOnError(e: React.SyntheticEvent<HTMLImageElement>): void {
+  e.currentTarget.style.display = "none";
+}
+
 // Tooltip for cropped cell view
 function CroppedTooltip({
   active,
@@ -42,20 +54,14 @@ function CroppedTooltip({
   if (!active || !payload || !payload.length) return null;
 
   const point = payload[0].payload as UmapPoint;
-  const token = api.getToken();
-  // URL may already have query params, so use & if ? exists
-  const separator = point.thumbnail_url.includes("?") ? "&" : "?";
-  const imageUrl = `${API_URL}${point.thumbnail_url}${separator}token=${token}`;
 
   return (
     <div className="bg-bg-elevated border border-white/10 rounded-lg shadow-xl p-3 max-w-[200px]">
       <MicroscopyImage
-        src={imageUrl}
+        src={buildAuthenticatedUrl(point.thumbnail_url)}
         alt="Cell crop"
         className="w-full h-32 object-contain rounded mb-2 bg-black/50"
-        onError={(e) => {
-          (e.target as HTMLImageElement).style.display = "none";
-        }}
+        onError={hideOnError}
       />
       <div className="space-y-1">
         <div
@@ -87,20 +93,14 @@ function FovTooltip({
   if (!active || !payload || !payload.length) return null;
 
   const point = payload[0].payload as UmapFovPoint;
-  const token = api.getToken();
-  // URL may already have query params, so use & if ? exists
-  const separator = point.thumbnail_url.includes("?") ? "&" : "?";
-  const imageUrl = `${API_URL}${point.thumbnail_url}${separator}token=${token}`;
 
   return (
     <div className="bg-bg-elevated border border-white/10 rounded-lg shadow-xl p-3 max-w-[250px]">
       <MicroscopyImage
-        src={imageUrl}
+        src={buildAuthenticatedUrl(point.thumbnail_url)}
         alt="FOV thumbnail"
         className="w-full h-40 object-contain rounded mb-2 bg-black/50"
-        onError={(e) => {
-          (e.target as HTMLImageElement).style.display = "none";
-        }}
+        onError={hideOnError}
       />
       <div className="space-y-1">
         <div className="font-medium text-text-primary truncate text-sm">

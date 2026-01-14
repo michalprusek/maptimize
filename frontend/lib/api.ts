@@ -518,6 +518,15 @@ class ApiClient {
       method: "DELETE",
     });
   }
+
+  /**
+   * Get the full URL for a user's avatar.
+   * Returns undefined if the user has no avatar.
+   */
+  getAvatarUrl(avatarPath: string | undefined): string | undefined {
+    if (!avatarPath) return undefined;
+    return `${API_URL}${avatarPath}`;
+  }
 }
 
 // Types
@@ -825,7 +834,7 @@ export interface PasswordChangeRequest {
 
 export interface AvatarUploadResponse {
   avatar_url: string;
-  message: string;
+  message?: string;
 }
 
 export const api = new ApiClient();

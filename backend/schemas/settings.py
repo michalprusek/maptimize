@@ -1,29 +1,9 @@
 """User settings and profile schemas."""
 from typing import Optional
+
 from pydantic import BaseModel, EmailStr, Field, field_validator
-from enum import Enum
 
-
-class DisplayMode(str, Enum):
-    """Image display modes (LUT)."""
-    GRAYSCALE = "grayscale"
-    INVERTED = "inverted"
-    GREEN = "green"
-    FIRE = "fire"
-    HILO = "hilo"
-
-
-class Theme(str, Enum):
-    """UI themes."""
-    DARK = "dark"
-    LIGHT = "light"
-
-
-class Language(str, Enum):
-    """Supported languages."""
-    EN = "en"
-    FR = "fr"
-
+from models.user_settings import DisplayMode, Language, Theme
 
 # =============================================================================
 # Settings Schemas
@@ -48,15 +28,15 @@ class UserSettingsResponse(BaseModel):
     @classmethod
     def convert_string_to_enum(cls, v, info):
         """Convert string values from DB to enum."""
-        if isinstance(v, str):
-            field_name = info.field_name
-            if field_name == "display_mode":
-                return DisplayMode(v)
-            elif field_name == "theme":
-                return Theme(v)
-            elif field_name == "language":
-                return Language(v)
-        return v
+        if not isinstance(v, str):
+            return v
+        enum_map = {
+            "display_mode": DisplayMode,
+            "theme": Theme,
+            "language": Language,
+        }
+        enum_class = enum_map.get(info.field_name)
+        return enum_class(v) if enum_class else v
 
 
 # =============================================================================

@@ -48,6 +48,14 @@ const languageOptions: { value: Language; flag: string }[] = [
   { value: "fr", flag: "FR" },
 ];
 
+/** Get toggle button classes based on selection state */
+function getToggleButtonClass(isSelected: boolean): string {
+  const base = "flex items-center gap-3 px-4 py-3 rounded-xl border-2 transition-all";
+  return isSelected
+    ? `${base} border-primary-500 bg-primary-500/10`
+    : `${base} border-white/10 hover:border-white/20`;
+}
+
 export default function SettingsPage(): JSX.Element {
   const queryClient = useQueryClient();
   const { user } = useAuthStore();
@@ -203,7 +211,7 @@ export default function SettingsPage(): JSX.Element {
             <div className="w-24 h-24 rounded-full bg-primary-500/20 flex items-center justify-center overflow-hidden">
               {user?.avatar_url ? (
                 <img
-                  src={`${process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000"}${user.avatar_url}`}
+                  src={api.getAvatarUrl(user.avatar_url)}
                   alt="Avatar"
                   className="w-full h-full object-cover"
                 />
@@ -422,11 +430,7 @@ export default function SettingsPage(): JSX.Element {
           <div className="flex gap-4">
             <button
               onClick={() => setTheme("dark")}
-              className={`flex items-center gap-3 px-4 py-3 rounded-xl border-2 transition-all ${
-                theme === "dark"
-                  ? "border-primary-500 bg-primary-500/10"
-                  : "border-white/10 hover:border-white/20"
-              }`}
+              className={getToggleButtonClass(theme === "dark")}
             >
               <Moon className="w-5 h-5" />
               <span>{t("appearance.darkMode")}</span>
@@ -435,11 +439,7 @@ export default function SettingsPage(): JSX.Element {
 
             <button
               onClick={() => setTheme("light")}
-              className={`flex items-center gap-3 px-4 py-3 rounded-xl border-2 transition-all ${
-                theme === "light"
-                  ? "border-primary-500 bg-primary-500/10"
-                  : "border-white/10 hover:border-white/20"
-              }`}
+              className={getToggleButtonClass(theme === "light")}
             >
               <Sun className="w-5 h-5" />
               <span>{t("appearance.lightMode")}</span>
@@ -454,35 +454,34 @@ export default function SettingsPage(): JSX.Element {
             {t("display.mode")}
           </label>
           <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3">
-            {displayModeKeys.map((mode) => (
-              <button
-                key={mode}
-                onClick={() => setDisplayMode(mode)}
-                className={`p-4 rounded-xl border-2 transition-all text-left ${
-                  displayMode === mode
-                    ? "border-primary-500 bg-primary-500/10"
-                    : "border-white/10 hover:border-white/20"
-                }`}
-              >
-                {/* Preview */}
-                <div
-                  className="w-full aspect-square rounded-lg mb-3 flex items-center justify-center"
-                  style={{ backgroundColor: displayModeConfig[mode].bgColor }}
+            {displayModeKeys.map((mode) => {
+              const isSelected = displayMode === mode;
+              const config = displayModeConfig[mode];
+              return (
+                <button
+                  key={mode}
+                  onClick={() => setDisplayMode(mode)}
+                  className={`p-4 rounded-xl border-2 transition-all text-left ${
+                    isSelected
+                      ? "border-primary-500 bg-primary-500/10"
+                      : "border-white/10 hover:border-white/20"
+                  }`}
                 >
                   <div
-                    className="w-8 h-8 rounded-full"
-                    style={{
-                      background: displayModeConfig[mode].fgColor,
-                    }}
-                  />
-                </div>
-                <p className="font-medium text-text-primary text-sm">{t(`display.${mode}`)}</p>
-                <p className="text-xs text-text-muted">{t(`display.${mode}Desc`)}</p>
-                {displayMode === mode && (
-                  <Check className="w-4 h-4 text-primary-400 mt-2" />
-                )}
-              </button>
-            ))}
+                    className="w-full aspect-square rounded-lg mb-3 flex items-center justify-center"
+                    style={{ backgroundColor: config.bgColor }}
+                  >
+                    <div
+                      className="w-8 h-8 rounded-full"
+                      style={{ background: config.fgColor }}
+                    />
+                  </div>
+                  <p className="font-medium text-text-primary text-sm">{t(`display.${mode}`)}</p>
+                  <p className="text-xs text-text-muted">{t(`display.${mode}Desc`)}</p>
+                  {isSelected && <Check className="w-4 h-4 text-primary-400 mt-2" />}
+                </button>
+              );
+            })}
           </div>
         </div>
       </motion.section>
@@ -504,11 +503,7 @@ export default function SettingsPage(): JSX.Element {
             <button
               key={lang.value}
               onClick={() => setLanguage(lang.value)}
-              className={`flex items-center gap-3 px-4 py-3 rounded-xl border-2 transition-all ${
-                language === lang.value
-                  ? "border-primary-500 bg-primary-500/10"
-                  : "border-white/10 hover:border-white/20"
-              }`}
+              className={getToggleButtonClass(language === lang.value)}
             >
               <span className="font-mono font-bold text-primary-400">{lang.flag}</span>
               <span>{t(`language.${lang.value}`)}</span>

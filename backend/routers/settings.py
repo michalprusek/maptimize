@@ -1,29 +1,25 @@
 """User settings and profile routes."""
 import logging
-import os
 import uuid
+from io import BytesIO
 from pathlib import Path
-from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, status, Request
+from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile, status
+from PIL import Image as PILImage
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from PIL import Image as PILImage
 
-from database import get_db
 from config import get_settings
+from database import get_db
 from models.user import User
-from models.user_settings import UserSettings
+from models.user_settings import DisplayMode, Language, Theme, UserSettings
 from schemas.settings import (
-    UserSettingsUpdate,
-    UserSettingsResponse,
-    ProfileUpdate,
-    PasswordChange,
-    AvatarUploadResponse,
     AvatarDeleteResponse,
-    DisplayMode,
-    Theme,
-    Language,
+    AvatarUploadResponse,
+    PasswordChange,
+    ProfileUpdate,
+    UserSettingsResponse,
+    UserSettingsUpdate,
 )
 from schemas.user import UserResponse
 from utils.security import get_current_user, hash_password, verify_password
@@ -162,10 +158,27 @@ async def change_password(
 # Avatar Endpoints
 # =============================================================================
 
+@router.get("/avatar")
+async def get_avatar(
+    current_user: User = Depends(get_current_user),
+):
+    """Get current user's avatar URL.
+
+    Returns the avatar URL if set, otherwise returns 404.
+    This endpoint handles stray GET requests to /avatar gracefully.
+    """
+    if not current_user.avatar_url:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="No avatar set"
+        )
+    return {"avatar_url": current_user.avatar_url}
+
+
 @router.post("/avatar", response_model=AvatarUploadResponse)
 async def upload_avatar(
     request: Request,
-    file: Optional[UploadFile] = File(None),
+    file: UploadFile = File(..., description="Avatar image file (required)"),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
@@ -175,15 +188,6 @@ async def upload_avatar(
     Images are resized to 256x256 for consistency.
     """
     logger.info(f"Avatar upload endpoint called for user {current_user.id}")
-    logger.info(f"Request content-type: {request.headers.get('content-type')}")
-
-    if file is None:
-        logger.error("No file provided in request")
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="No file provided"
-        )
-
     logger.info(f"File details: filename={file.filename}, content_type={file.content_type}, size={file.size}")
 
     # Validate file type by extension and/or content type
@@ -220,8 +224,6 @@ async def upload_avatar(
 
     # Process and save new avatar
     try:
-        # Open and resize image
-        from io import BytesIO
         img = PILImage.open(BytesIO(content))
 
         # Convert to RGB if necessary (handles RGBA, etc.)

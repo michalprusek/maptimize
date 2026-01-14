@@ -132,5 +132,5 @@ export const useSettingsStore = create<SettingsState>()(
   )
 );
 
-// Export types for convenience
-export type { DisplayMode, Theme, Language };
+// Types re-exported from api.ts for convenience
+export type { DisplayMode, Theme, Language } from "@/lib/api";

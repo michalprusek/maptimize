@@ -105,8 +105,9 @@ export function MicroscopyImage({
   // Determine if we need canvas-based rendering
   const useCanvas = displayMode === "hilo";
 
-  // Handle image load for HiLo mode
+  // Handle image load and canvas rendering for HiLo mode
   useEffect(() => {
+    // Reset canvas state when not in HiLo mode or when dependencies change
     if (!useCanvas || !imageLoaded || !canvasRef.current || !imageRef.current) {
       setCanvasReady(false);
       return;
@@ -121,25 +122,15 @@ export function MicroscopyImage({
     setCanvasReady(true);
   }, [useCanvas, imageLoaded, src, hiloLowThreshold, hiloHighThreshold]);
 
-  // Reset canvas ready state when switching away from HiLo
-  useEffect(() => {
-    if (!useCanvas) {
-      setCanvasReady(false);
-    }
-  }, [useCanvas]);
-
-  const handleImageLoad = () => {
+  function handleImageLoad(): void {
     setImageLoaded(true);
-  };
+  }
 
-  const handleImageError = (e: React.SyntheticEvent<HTMLImageElement>) => {
+  function handleImageError(e: React.SyntheticEvent<HTMLImageElement>): void {
     setImageLoaded(false);
     setCanvasReady(false);
-    // Call original onError if provided
-    if (props.onError) {
-      props.onError(e);
-    }
-  };
+    props.onError?.(e);
+  }
 
   // Memoize class computation
   const imageClass = useMemo(() => {

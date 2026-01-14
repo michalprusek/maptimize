@@ -22,19 +22,19 @@
     --color-border: rgba(255, 255, 255, 0.1);
   }
 
-  /* Light theme */
+  /* Light theme - softer, less bright */
   .light {
-    --background: 210 33% 98%;
-    --foreground: 210 33% 6%;
+    --background: 210 20% 92%;
+    --foreground: 210 33% 15%;
 
-    --color-bg-primary: #f8fafc;
-    --color-bg-secondary: #f1f5f9;
-    --color-bg-elevated: #ffffff;
-    --color-bg-hover: #e2e8f0;
-    --color-text-primary: #0f172a;
+    --color-bg-primary: #e8ecf0;
+    --color-bg-secondary: #dfe4e9;
+    --color-bg-elevated: #eef2f6;
+    --color-bg-hover: #d0d7de;
+    --color-text-primary: #1e293b;
     --color-text-secondary: #475569;
-    --color-text-muted: #94a3b8;
-    --color-border: rgba(0, 0, 0, 0.1);
+    --color-text-muted: #64748b;
+    --color-border: rgba(0, 0, 0, 0.12);
   }
 
   * {
@@ -67,7 +67,8 @@
 @layer components {
   /* Glass card effect */
   .glass-card {
-    @apply bg-bg-elevated/80 backdrop-blur-xl border border-white/5 rounded-2xl;
+    background-color: color-mix(in srgb, var(--color-bg-elevated) 80%, transparent);
+    @apply backdrop-blur-xl border border-white/5 rounded-2xl;
   }
 
   /* Glow effect for primary elements */

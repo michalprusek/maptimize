@@ -8,6 +8,7 @@ import { usePathname } from "next/navigation";
 import { motion } from "framer-motion";
 import { useTranslations } from "next-intl";
 import { useAuthStore } from "@/stores/authStore";
+import { api } from "@/lib/api";
 import {
   LayoutDashboard,
   FolderOpen,
@@ -110,7 +111,7 @@ export default function DashboardLayout({
             <div className="w-10 h-10 rounded-full bg-primary-500/20 flex items-center justify-center overflow-hidden">
               {user?.avatar_url ? (
                 <img
-                  src={`${process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000"}${user.avatar_url}`}
+                  src={api.getAvatarUrl(user.avatar_url)}
                   alt="Avatar"
                   className="w-full h-full object-cover"
                 />
