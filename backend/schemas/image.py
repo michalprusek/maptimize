@@ -222,7 +222,8 @@ class CropRegenerateResponse(BaseModel):
     mean_intensity: Optional[float] = None
     embedding_model: Optional[str] = None
     has_embedding: bool = False
-    processing_status: str  # "completed", "processing", "failed"
+    processing_status: str  # "completed", "partial", "failed"
+    warnings: Optional[List[str]] = None  # Warnings for partial success
 
     class Config:
         from_attributes = True

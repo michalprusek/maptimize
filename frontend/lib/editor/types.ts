@@ -37,7 +37,7 @@ export interface EditorBbox {
 
 /**
  * Handle positions for bbox resize handles.
- * 8 handles: 4 corners + 4 midpoints
+ * Type defines 8 positions but only 4 corner handles (nw, ne, sw, se) are currently rendered.
  */
 export type HandlePosition =
   | "nw"
@@ -94,16 +94,13 @@ export interface ImageFilters {
 export type UndoActionType = "create" | "update" | "delete";
 
 /**
- * Single undo action.
+ * Single undo action using discriminated union.
+ * Each action type has specific required fields.
  */
-export interface UndoAction {
-  type: UndoActionType;
-  bboxId: string | number;
-  /** Previous state (for update/delete) */
-  previousState?: EditorBbox;
-  /** New state (for create/update) */
-  newState?: EditorBbox;
-}
+export type UndoAction =
+  | { type: "create"; bboxId: string | number; newState: EditorBbox }
+  | { type: "update"; bboxId: string | number; previousState: EditorBbox; newState: EditorBbox }
+  | { type: "delete"; bboxId: string | number; previousState: EditorBbox };
 
 /**
  * Props for the main ImageEditor component.

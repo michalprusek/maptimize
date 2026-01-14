@@ -9,8 +9,8 @@
 
 import { useState, useCallback, useEffect, useRef } from "react";
 import { useTranslations } from "next-intl";
-import { AnimatePresence } from "framer-motion";
-import { ChevronRight, ChevronLeft, ArrowLeft } from "lucide-react";
+import { AnimatePresence, motion } from "framer-motion";
+import { ChevronRight, ChevronLeft, ArrowLeft, AlertCircle, X } from "lucide-react";
 import { useSettingsStore } from "@/stores/settingsStore";
 import { api, type CellCropGallery, type FOVImage } from "@/lib/api";
 import { AppSidebar } from "@/components/layout";
@@ -121,6 +121,16 @@ export function ImageEditorPage({
     targetBbox: null,
   });
 
+  // Error state for user feedback
+  const [error, setError] = useState<string | null>(null);
+
+  // Show error toast
+  const showError = useCallback((message: string) => {
+    setError(message);
+    // Auto-dismiss after 5 seconds
+    setTimeout(() => setError(null), 5000);
+  }, []);
+
   // Toolbar position state - persisted in localStorage
   const [toolbarPosition, setToolbarPosition] = useState<ToolbarPosition>(() => {
     if (typeof window === "undefined") return DEFAULT_TOOLBAR_POSITION;
@@ -132,8 +142,8 @@ export function ImageEditorPage({
           return parsed as ToolbarPosition;
         }
       }
-    } catch {
-      // Ignore parse errors
+    } catch (e) {
+      console.warn("[ImageEditor] Failed to load toolbar position from localStorage:", e);
     }
     return DEFAULT_TOOLBAR_POSITION;
   });
@@ -143,8 +153,8 @@ export function ImageEditorPage({
     setToolbarPosition(newPosition);
     try {
       localStorage.setItem(TOOLBAR_POSITION_KEY, JSON.stringify(newPosition));
-    } catch {
-      // Ignore storage errors
+    } catch (e) {
+      console.warn("[ImageEditor] Failed to save toolbar position to localStorage:", e);
     }
   }, []);
 
@@ -229,6 +239,9 @@ export function ImageEditorPage({
       setBboxes((prev) => prev.filter((b) => b.cropId !== id));
       onDataChanged?.();
     },
+    onError: (message) => {
+      showError(t("undoError"));
+    },
   });
 
   // Initialize view to fit image
@@ -307,9 +320,10 @@ export function ImageEditorPage({
         setBboxes((prev) =>
           prev.map((b) => (b.id === id ? previousState : b))
         );
+        showError(t("updateError"));
       }
     },
-    [bboxes, handleBboxUpdate, handleRegenerateFeatures, onDataChanged, undoHistory]
+    [bboxes, handleBboxUpdate, handleRegenerateFeatures, onDataChanged, undoHistory, showError, t]
   );
 
   // Handle bbox create
@@ -364,9 +378,10 @@ export function ImageEditorPage({
         console.error("Failed to create bbox:", error);
         // Remove from local state on error
         setBboxes((prev) => prev.filter((b) => b.id !== tempId));
+        showError(t("createError"));
       }
     },
-    [handleBboxCreate, onDataChanged, undoHistory]
+    [handleBboxCreate, onDataChanged, undoHistory, showError, t]
   );
 
   // Handle bbox select
@@ -415,10 +430,11 @@ export function ImageEditorPage({
           console.error("Failed to delete bbox:", error);
           // Restore on error
           setBboxes((prev) => [...prev, previousState]);
+          showError(t("deleteError"));
         }
       }
     },
-    [handleBboxDelete, onDataChanged, undoHistory]
+    [handleBboxDelete, onDataChanged, undoHistory, showError, t]
   );
 
   // Handle bbox reset (restore original coordinates)
@@ -740,6 +756,27 @@ export function ImageEditorPage({
           setContextMenu({ isOpen: false, position: null, targetBbox: null })
         }
       />
+
+      {/* Error toast */}
+      <AnimatePresence>
+        {error && (
+          <motion.div
+            initial={{ opacity: 0, y: 50 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: 50 }}
+            className="fixed bottom-6 left-1/2 -translate-x-1/2 z-[200] flex items-center gap-3 px-4 py-3 bg-red-500/90 backdrop-blur-sm rounded-xl shadow-xl"
+          >
+            <AlertCircle className="w-5 h-5 text-white" />
+            <span className="text-white text-sm">{error}</span>
+            <button
+              onClick={() => setError(null)}
+              className="p-1 hover:bg-white/20 rounded-lg transition-colors"
+            >
+              <X className="w-4 h-4 text-white" />
+            </button>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }

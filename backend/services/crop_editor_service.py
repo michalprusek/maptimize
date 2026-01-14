@@ -247,21 +247,38 @@ async def regenerate_crop_features(
 
     # Extract new DINOv3 embedding
     embedding_extracted = False
+    embedding_error = None
     try:
         result = await extract_features_for_crops([crop.id], db)
         embedding_extracted = result.get("success", 0) > 0
+        if not embedding_extracted:
+            embedding_error = result.get("error", "Unknown embedding error")
     except Exception as e:
         logger.error(f"Failed to extract embedding for crop {crop.id}: {e}")
+        embedding_error = str(e)
 
     # Invalidate UMAP for all crops in this experiment
+    umap_invalidated = False
     try:
         await invalidate_crop_umap(db, image_id=image.id)
+        umap_invalidated = True
     except Exception as e:
         logger.warning(f"Failed to invalidate UMAP: {e}")
 
+    # Determine overall success status
+    # Partial success = crop regenerated but embedding failed
+    warnings = []
+    if not embedding_extracted:
+        warnings.append(f"Embedding extraction failed: {embedding_error}")
+    if not umap_invalidated:
+        warnings.append("UMAP invalidation failed")
+
     return {
-        "success": True,
+        "success": True,  # Crop itself was regenerated
+        "partial_success": len(warnings) > 0,
         "embedding_extracted": embedding_extracted,
+        "umap_invalidated": umap_invalidated,
+        "warnings": warnings if warnings else None,
         "mip_path": crop.mip_path,
         "sum_crop_path": crop.sum_crop_path,
         "mean_intensity": crop.mean_intensity,

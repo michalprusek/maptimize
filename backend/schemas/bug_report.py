@@ -1,8 +1,9 @@
 """Pydantic schemas for bug reports."""
+import html
 from datetime import datetime
 from typing import Optional, List
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from models.bug_report import BugReportStatus, BugReportCategory
 
@@ -17,6 +18,12 @@ class BugReportCreate(BaseModel):
     page_url: Optional[str] = Field(None, max_length=500)
     screen_resolution: Optional[str] = Field(None, max_length=50)
     user_settings_json: Optional[str] = Field(None, max_length=1000)
+
+    @field_validator("description")
+    @classmethod
+    def sanitize_description(cls, v: str) -> str:
+        """Escape HTML entities to prevent XSS attacks."""
+        return html.escape(v)
 
 
 class BugReportResponse(BaseModel):

@@ -18,6 +18,8 @@ export interface UseUndoHistoryOptions {
   onBboxUpdate?: (id: number, bbox: Partial<EditorBbox>) => Promise<void>;
   /** Callback to delete a bbox via API */
   onBboxDelete?: (id: number) => Promise<void>;
+  /** Callback when an error occurs during undo */
+  onError?: (message: string, error: unknown) => void;
 }
 
 export interface UseUndoHistoryReturn {
@@ -102,6 +104,8 @@ export function useUndoHistory(
     } catch (error) {
       console.error("Undo failed:", error);
       // Don't remove from stack if undo failed
+      const message = error instanceof Error ? error.message : "Undo operation failed";
+      options.onError?.(`Failed to undo: ${message}`, error);
     } finally {
       setIsUndoing(false);
     }

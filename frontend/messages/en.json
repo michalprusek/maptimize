@@ -233,6 +233,16 @@
     "nextImage": "Next image",
     "dragToReposition": "Drag to reposition",
     "resetFilters": "Reset",
-    "cellCount": "{count, plural, =1 {# cell} other {# cells}}"
+    "cellCount": "{count, plural, =1 {# cell} other {# cells}}",
+    "zoomIn": "Zoom in",
+    "zoomOut": "Zoom out",
+    "fitToView": "Fit to view",
+    "imageNotFound": "Image not found",
+    "loadError": "Failed to load image",
+    "saveError": "Failed to save changes",
+    "undoError": "Failed to undo",
+    "createError": "Failed to create cell",
+    "deleteError": "Failed to delete cell",
+    "updateError": "Failed to update cell"
   }
 }

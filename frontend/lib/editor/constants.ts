@@ -28,7 +28,7 @@ export const MAX_BBOX_SIZE = 2048;
  * Zoom limits.
  */
 export const MIN_ZOOM = 0.1;
-export const MAX_ZOOM = 4; // 400%
+export const MAX_ZOOM = 10; // 1000%
 export const ZOOM_STEP = 0.1;
 
 /**

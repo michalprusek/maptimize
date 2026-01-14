@@ -233,6 +233,16 @@
     "nextImage": "Image suivante",
     "dragToReposition": "Glisser pour repositionner",
     "resetFilters": "Reinitialiser",
-    "cellCount": "{count, plural, =1 {# cellule} other {# cellules}}"
+    "cellCount": "{count, plural, =1 {# cellule} other {# cellules}}",
+    "zoomIn": "Zoom avant",
+    "zoomOut": "Zoom arriere",
+    "fitToView": "Ajuster a la vue",
+    "imageNotFound": "Image non trouvee",
+    "loadError": "Echec du chargement de l'image",
+    "saveError": "Echec de l'enregistrement",
+    "undoError": "Echec de l'annulation",
+    "createError": "Echec de la creation de la cellule",
+    "deleteError": "Echec de la suppression de la cellule",
+    "updateError": "Echec de la mise a jour de la cellule"
   }
 }

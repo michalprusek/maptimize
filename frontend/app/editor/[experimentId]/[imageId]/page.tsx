@@ -10,6 +10,8 @@
 import { useRouter } from "next/navigation";
 import { useQuery } from "@tanstack/react-query";
 import { useEffect, useMemo, useCallback } from "react";
+import { useTranslations } from "next-intl";
+import { AlertCircle } from "lucide-react";
 import { api } from "@/lib/api";
 import { useAuthStore } from "@/stores/authStore";
 import { ImageEditorPage } from "@/components/editor/ImageEditorPage";
@@ -24,6 +26,7 @@ interface EditorPageProps {
 export default function EditorPage({ params }: EditorPageProps) {
   const { experimentId: expId, imageId } = params;
   const router = useRouter();
+  const t = useTranslations("editor");
   const experimentId = parseInt(expId, 10);
   const fovId = parseInt(imageId, 10);
 
@@ -48,14 +51,14 @@ export default function EditorPage({ params }: EditorPageProps) {
   });
 
   // Fetch FOV image data
-  const { data: fovImage, isLoading: isLoadingFov } = useQuery({
+  const { data: fovImage, isLoading: isLoadingFov, error: fovError } = useQuery({
     queryKey: ["fov-image", fovId],
     queryFn: () => api.getFovImage(fovId),
     enabled: !isNaN(fovId) && isAuthenticated,
   });
 
   // Fetch crops for this FOV
-  const { data: crops = [], isLoading: isLoadingCrops, refetch: refetchCrops } = useQuery({
+  const { data: crops = [], isLoading: isLoadingCrops, refetch: refetchCrops, error: cropsError } = useQuery({
     queryKey: ["fov-crops", fovId],
     queryFn: () => api.getFovCrops(fovId),
     enabled: !isNaN(fovId) && isAuthenticated,
@@ -109,10 +112,30 @@ export default function EditorPage({ params }: EditorPageProps) {
     return null;
   }
 
+  // Handle API errors
+  if (fovError || cropsError) {
+    const errorMessage = fovError instanceof Error ? fovError.message : cropsError instanceof Error ? cropsError.message : t("loadError");
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-bg-primary">
+        <div className="text-center">
+          <AlertCircle className="w-12 h-12 text-red-400 mx-auto mb-4" />
+          <p className="text-red-400 mb-2">{t("loadError")}</p>
+          <p className="text-text-secondary text-sm mb-4">{errorMessage}</p>
+          <button
+            onClick={() => router.back()}
+            className="px-4 py-2 bg-bg-secondary border border-white/10 rounded-lg text-text-primary hover:bg-white/10 transition-colors"
+          >
+            {t("back")}
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   if (!fovImage) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-bg-primary">
-        <p className="text-text-secondary">Image not found</p>
+        <p className="text-text-secondary">{t("imageNotFound")}</p>
       </div>
     );
   }

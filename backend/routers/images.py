@@ -93,8 +93,13 @@ def serve_image_file(file_path: str) -> Response | FileResponse:
                 if img.mode in ('I', 'I;16', 'I;16B', 'F'):
                     # 16-bit grayscale or float - normalize to 8-bit
                     arr = np.array(img, dtype=np.float64)
-                    arr = (arr - arr.min()) / (arr.max() - arr.min() + 1e-10) * 255
-                    img = PILImage.fromarray(arr.astype(np.uint8))
+                    arr_min, arr_max = arr.min(), arr.max()
+                    # Handle uniform images (avoid division by zero)
+                    if arr_max - arr_min < 1e-10:
+                        arr = np.full_like(arr, 127, dtype=np.uint8)
+                    else:
+                        arr = ((arr - arr_min) / (arr_max - arr_min) * 255).astype(np.uint8)
+                    img = PILImage.fromarray(arr)
                 elif img.mode == 'RGBA':
                     pass  # Keep RGBA
                 elif img.mode != 'RGB':
@@ -855,6 +860,9 @@ async def regenerate_crop_features(
 
     await db.commit()
 
+    # Determine processing status (completed vs partial)
+    processing_status = "partial" if result.get("partial_success") else "completed"
+
     return CropRegenerateResponse(
         id=crop.id,
         bbox_x=crop.bbox_x,
@@ -866,7 +874,8 @@ async def regenerate_crop_features(
         mean_intensity=crop.mean_intensity,
         embedding_model=crop.embedding_model,
         has_embedding=crop.embedding is not None,
-        processing_status="completed",
+        processing_status=processing_status,
+        warnings=result.get("warnings"),
     )
 
 

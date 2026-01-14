@@ -40,6 +40,8 @@ interface ImageEditorCanvasProps {
   onImageCanvasReady?: (canvas: HTMLCanvasElement) => void;
   /** Callback when image is loaded (for direct crop extraction) */
   onImageLoaded?: (image: HTMLImageElement) => void;
+  /** Callback when image fails to load */
+  onImageError?: (error: string) => void;
 }
 
 /**
@@ -85,6 +87,7 @@ export function ImageEditorCanvas({
   containerRef,
   onImageCanvasReady,
   onImageLoaded,
+  onImageError,
 }: ImageEditorCanvasProps) {
   const imageCanvasRef = useRef<HTMLCanvasElement>(null);
   const overlayCanvasRef = useRef<HTMLCanvasElement>(null);
@@ -93,32 +96,40 @@ export function ImageEditorCanvas({
 
   const { zoom, panOffset, selectedBboxId, hoveredBboxId } = editorState;
 
-  // Track if image is loaded
+  // Track if image is loaded or has error
   const [imageLoaded, setImageLoaded] = useState(false);
+  const [imageError, setImageError] = useState<string | null>(null);
 
   // Store callbacks in refs to avoid re-triggering image load
   const onImageLoadedRef = useRef(onImageLoaded);
   const onImageCanvasReadyRef = useRef(onImageCanvasReady);
+  const onImageErrorRef = useRef(onImageError);
 
   useEffect(() => {
     onImageLoadedRef.current = onImageLoaded;
     onImageCanvasReadyRef.current = onImageCanvasReady;
-  }, [onImageLoaded, onImageCanvasReady]);
+    onImageErrorRef.current = onImageError;
+  }, [onImageLoaded, onImageCanvasReady, onImageError]);
 
   // Load image
   useEffect(() => {
     setImageLoaded(false);
+    setImageError(null);
     const img = new Image();
     // Enable CORS to allow canvas extraction for live preview
     img.crossOrigin = "anonymous";
     img.onload = () => {
       imageRef.current = img;
       setImageLoaded(true);
+      setImageError(null);
       // Notify parent that image is ready for crop extraction
       onImageLoadedRef.current?.(img);
     };
-    img.onerror = (e) => {
-      console.error("[ImageEditor] Failed to load image:", imageUrl, e);
+    img.onerror = () => {
+      console.error("[ImageEditor] Failed to load image:", imageUrl);
+      const errorMessage = "Failed to load image";
+      setImageError(errorMessage);
+      onImageErrorRef.current?.(errorMessage);
     };
     img.src = imageUrl;
   }, [imageUrl]);
@@ -384,6 +395,21 @@ export function ImageEditorCanvas({
         onMouseLeave={onMouseLeave}
         onContextMenu={onContextMenu}
       />
+
+      {/* Error overlay */}
+      {imageError && (
+        <div className="absolute inset-0 flex items-center justify-center bg-black/80">
+          <div className="text-center p-6">
+            <div className="w-12 h-12 mx-auto mb-4 text-red-400">
+              <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m9-.75a9 9 0 11-18 0 9 9 0 0118 0zm-9 3.75h.008v.008H12v-.008z" />
+              </svg>
+            </div>
+            <p className="text-red-400 font-medium">{imageError}</p>
+            <p className="text-gray-500 text-sm mt-2 max-w-xs">{imageUrl}</p>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

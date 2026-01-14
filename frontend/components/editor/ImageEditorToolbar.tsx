@@ -25,7 +25,7 @@ import {
 } from "lucide-react";
 import type { ImageFilters, EditorMode } from "@/lib/editor/types";
 import type { DisplayMode } from "@/lib/api";
-import { DEFAULT_FILTERS, FILTER_LIMITS } from "@/lib/editor/constants";
+import { DEFAULT_FILTERS, FILTER_LIMITS, MIN_ZOOM, MAX_ZOOM } from "@/lib/editor/constants";
 
 export interface ToolbarPosition {
   edge: "top" | "bottom" | "left" | "right";
@@ -477,24 +477,24 @@ export function ImageEditorToolbar({
       {/* Zoom controls */}
       <div className={`flex ${isVertical ? "flex-col" : "flex-row"} items-center gap-0.5`}>
         <button
-          onClick={() => onZoomChange(Math.max(0.1, zoom - 0.25))}
+          onClick={() => onZoomChange(Math.max(MIN_ZOOM, zoom - 0.25))}
           className="p-1 rounded hover:bg-white/10 transition-colors"
-          title="Zoom out"
+          title={t("zoomOut")}
         >
           <ZoomOut className="w-3.5 h-3.5 text-text-secondary" />
         </button>
         <span className="text-[10px] text-text-muted w-8 text-center">{Math.round(zoom * 100)}%</span>
         <button
-          onClick={() => onZoomChange(Math.min(10, zoom + 0.25))}
+          onClick={() => onZoomChange(Math.min(MAX_ZOOM, zoom + 0.25))}
           className="p-1 rounded hover:bg-white/10 transition-colors"
-          title="Zoom in"
+          title={t("zoomIn")}
         >
           <ZoomIn className="w-3.5 h-3.5 text-text-secondary" />
         </button>
         <button
           onClick={onResetView}
           className="p-1 rounded hover:bg-white/10 transition-colors"
-          title="Fit to view"
+          title={t("fitToView")}
         >
           <Maximize2 className="w-3.5 h-3.5 text-text-secondary" />
         </button>
@@ -524,7 +524,7 @@ export function ImageEditorToolbar({
             ? "bg-bg-tertiary text-text-secondary hover:bg-white/10"
             : "bg-bg-tertiary/50 text-text-muted cursor-not-allowed"
         }`}
-        title="Undo (Ctrl+Z)"
+        title={t("shortcuts.undo")}
       >
         <Undo2 className="w-4 h-4" />
       </button>
