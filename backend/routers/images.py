@@ -22,6 +22,7 @@ from models.experiment import Experiment
 from models.image import Image, MapProtein, UploadStatus
 from models.cell_crop import CellCrop
 from models.metric import MetricImage, MetricRating, MetricComparison
+from models.ranking import Comparison
 from schemas.image import ImageResponse, ImageDetailResponse, CellCropGalleryResponse
 from utils.security import get_current_user, decode_token, TokenPayload
 from services.image_processor import process_image_background
@@ -333,10 +334,18 @@ async def get_crop_image(
 @router.delete("/crops/{crop_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_cell_crop(
     crop_id: int,
+    confirm_delete_comparisons: bool = Query(
+        False,
+        description="Confirm deletion of ranking comparison history"
+    ),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
-    """Delete a cell crop."""
+    """Delete a cell crop.
+
+    If the crop has ranking comparisons, you must pass confirm_delete_comparisons=true
+    to acknowledge that comparison history will be permanently deleted.
+    """
     result = await db.execute(
         select(CellCrop)
         .options(
@@ -350,6 +359,26 @@ async def delete_cell_crop(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Cell crop not found"
+        )
+
+    # Check for ranking comparisons that will be deleted (CASCADE)
+    comparison_count_result = await db.execute(
+        select(func.count(Comparison.id)).where(
+            or_(
+                Comparison.crop_a_id == crop_id,
+                Comparison.crop_b_id == crop_id,
+                Comparison.winner_id == crop_id
+            ),
+            Comparison.undone == False
+        )
+    )
+    comparison_count = comparison_count_result.scalar() or 0
+
+    if comparison_count > 0 and not confirm_delete_comparisons:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Deleting this crop will permanently remove {comparison_count} ranking comparison(s). "
+                   f"Add ?confirm_delete_comparisons=true to proceed."
         )
 
     # Find all MetricImage records that reference this cell crop

@@ -593,8 +593,8 @@ async def get_metric_pair(
 
     def get_image_url(img: MetricImage) -> Optional[str]:
         if img.cell_crop:
-            return f"/images/crops/{img.cell_crop_id}/image"
-        return f"/metrics/{metric_id}/images/{img.id}/file"
+            return f"/api/images/crops/{img.cell_crop_id}/image"
+        return f"/api/metrics/{metric_id}/images/{img.id}/file"
 
     return MetricPairResponse(
         image_a=MetricImageForRanking(

@@ -52,10 +52,19 @@ class ApiClient {
       headers["Content-Type"] = "application/json";
     }
 
-    const response = await fetch(url, {
-      ...options,
-      headers,
-    });
+    let response: Response;
+    try {
+      response = await fetch(url, {
+        ...options,
+        headers,
+      });
+    } catch (networkError) {
+      console.error(`[API] Network error calling ${endpoint}:`, networkError);
+      if (networkError instanceof TypeError && networkError.message.includes("fetch")) {
+        throw new Error("Unable to connect to the server. Please check your internet connection.");
+      }
+      throw new Error(`Network error: ${networkError instanceof Error ? networkError.message : "Unknown error"}`);
+    }
 
     if (!response.ok) {
       let errorDetail: string;
@@ -63,8 +72,27 @@ class ApiClient {
         const error: ApiError = await response.json();
         errorDetail = error.detail;
       } catch {
-        // Response wasn't JSON (e.g., HTML error page, empty response)
-        errorDetail = `Request failed: ${response.status} ${response.statusText}`;
+        // Response wasn't JSON - log for debugging
+        let rawBody = "";
+        try {
+          rawBody = await response.text();
+        } catch {
+          rawBody = "<unable to read response>";
+        }
+        console.error(
+          `[API] Non-JSON error from ${endpoint}:`,
+          `Status: ${response.status}`,
+          `Body: ${rawBody.substring(0, 500)}`
+        );
+
+        // Provide user-friendly messages for common errors
+        if (response.status === 502 || response.status === 503 || response.status === 504) {
+          errorDetail = "Server is temporarily unavailable. Please try again.";
+        } else if (response.status === 401) {
+          errorDetail = "Your session has expired. Please log in again.";
+        } else {
+          errorDetail = `Request failed: ${response.status} ${response.statusText}`;
+        }
       }
       throw new Error(errorDetail);
     }
@@ -78,7 +106,7 @@ class ApiClient {
 
   // Auth endpoints
   async register(data: { email: string; name: string; password: string }) {
-    return this.request<{ access_token: string; user: User }>("/auth/register", {
+    return this.request<{ access_token: string; user: User }>("/api/auth/register", {
       method: "POST",
       body: JSON.stringify(data),
     });
@@ -89,7 +117,7 @@ class ApiClient {
     formData.append("username", email);
     formData.append("password", password);
 
-    return this.request<{ access_token: string; user: User }>("/auth/login", {
+    return this.request<{ access_token: string; user: User }>("/api/auth/login", {
       method: "POST",
       headers: {
         "Content-Type": "application/x-www-form-urlencoded",
@@ -99,27 +127,27 @@ class ApiClient {
   }
 
   async getMe() {
-    return this.request<User>("/auth/me");
+    return this.request<User>("/api/auth/me");
   }
 
   // Experiments
   async getExperiments() {
-    return this.request<Experiment[]>("/experiments");
+    return this.request<Experiment[]>("/api/experiments");
   }
 
   async createExperiment(data: { name: string; description?: string }) {
-    return this.request<Experiment>("/experiments", {
+    return this.request<Experiment>("/api/experiments", {
       method: "POST",
       body: JSON.stringify(data),
     });
   }
 
   async getExperiment(id: number) {
-    return this.request<Experiment>(`/experiments/${id}`);
+    return this.request<Experiment>(`/api/experiments/${id}`);
   }
 
   async deleteExperiment(id: number) {
-    return this.request<void>(`/experiments/${id}`, {
+    return this.request<void>(`/api/experiments/${id}`, {
       method: "DELETE",
     });
   }
@@ -139,38 +167,41 @@ class ApiClient {
     }
     formData.append("detect_cells", detectCells.toString());
 
-    return this.request<Image>("/images/upload", {
+    return this.request<Image>("/api/images/upload", {
       method: "POST",
       body: formData,
     });
   }
 
   async getImages(experimentId: number) {
-    return this.request<Image[]>(`/images?experiment_id=${experimentId}`);
+    return this.request<Image[]>(`/api/images?experiment_id=${experimentId}`);
   }
 
   async getImage(id: number) {
-    return this.request<Image>(`/images/${id}`);
+    return this.request<Image>(`/api/images/${id}`);
   }
 
   getImageUrl(imageId: number, type: "original" | "mip" | "thumbnail" = "mip") {
     const token = this.getToken();
-    return `${API_URL}/images/${imageId}/file?type=${type}&token=${token}`;
+    if (!token) {
+      console.warn(`[API] No token available for image ${imageId}`);
+    }
+    return `${API_URL}/api/images/${imageId}/file?type=${type}&token=${token}`;
   }
 
   async deleteImage(id: number) {
-    return this.request<void>(`/images/${id}`, {
+    return this.request<void>(`/api/images/${id}`, {
       method: "DELETE",
     });
   }
 
   // Proteins
   async getProteins() {
-    return this.request<MapProtein[]>("/proteins");
+    return this.request<MapProtein[]>("/api/proteins");
   }
 
   async createProtein(data: { name: string; full_name?: string; color?: string }) {
-    return this.request<MapProtein>("/proteins", {
+    return this.request<MapProtein>("/api/proteins", {
       method: "POST",
       body: JSON.stringify(data),
     });
@@ -179,7 +210,7 @@ class ApiClient {
   // Ranking
   async getRankingPair(experimentId?: number) {
     const params = experimentId ? `?experiment_id=${experimentId}` : "";
-    return this.request<PairResponse>(`/ranking/pair${params}`);
+    return this.request<PairResponse>(`/api/ranking/pair${params}`);
   }
 
   async submitComparison(data: {
@@ -188,14 +219,14 @@ class ApiClient {
     winner_id: number;
     response_time_ms?: number;
   }) {
-    return this.request<Comparison>("/ranking/compare", {
+    return this.request<Comparison>("/api/ranking/compare", {
       method: "POST",
       body: JSON.stringify(data),
     });
   }
 
   async undoComparison() {
-    return this.request<Comparison>("/ranking/undo", {
+    return this.request<Comparison>("/api/ranking/undo", {
       method: "POST",
     });
   }
@@ -206,43 +237,43 @@ class ApiClient {
       per_page: perPage.toString(),
     });
     if (experimentId) params.append("experiment_id", experimentId.toString());
-    return this.request<RankingResponse>(`/ranking/leaderboard?${params}`);
+    return this.request<RankingResponse>(`/api/ranking/leaderboard?${params}`);
   }
 
   async getRankingProgress(experimentId?: number) {
     const params = experimentId ? `?experiment_id=${experimentId}` : "";
-    return this.request<ProgressResponse>(`/ranking/progress${params}`);
+    return this.request<ProgressResponse>(`/api/ranking/progress${params}`);
   }
 
   // Metrics
   async getMetrics() {
-    return this.request<MetricListResponse>("/metrics");
+    return this.request<MetricListResponse>("/api/metrics");
   }
 
   async createMetric(data: { name: string; description?: string }) {
-    return this.request<Metric>("/metrics", {
+    return this.request<Metric>("/api/metrics", {
       method: "POST",
       body: JSON.stringify(data),
     });
   }
 
   async getMetric(id: number) {
-    return this.request<Metric>(`/metrics/${id}`);
+    return this.request<Metric>(`/api/metrics/${id}`);
   }
 
   async deleteMetric(id: number) {
-    return this.request<void>(`/metrics/${id}`, {
+    return this.request<void>(`/api/metrics/${id}`, {
       method: "DELETE",
     });
   }
 
   async getMetricImages(metricId: number) {
-    return this.request<MetricImage[]>(`/metrics/${metricId}/images`);
+    return this.request<MetricImage[]>(`/api/metrics/${metricId}/images`);
   }
 
   async importCropsToMetric(metricId: number, experimentIds: number[]) {
     return this.request<{ imported_count: number; skipped_count: number }>(
-      `/metrics/${metricId}/images/import`,
+      `/api/metrics/${metricId}/images/import`,
       {
         method: "POST",
         body: JSON.stringify({ experiment_ids: experimentIds }),
@@ -251,17 +282,17 @@ class ApiClient {
   }
 
   async getExperimentsForImport(metricId: number) {
-    return this.request<ExperimentForImport[]>(`/metrics/${metricId}/experiments`);
+    return this.request<ExperimentForImport[]>(`/api/metrics/${metricId}/experiments`);
   }
 
   async deleteMetricImage(metricId: number, imageId: number) {
-    return this.request<void>(`/metrics/${metricId}/images/${imageId}`, {
+    return this.request<void>(`/api/metrics/${metricId}/images/${imageId}`, {
       method: "DELETE",
     });
   }
 
   async getMetricPair(metricId: number) {
-    return this.request<MetricPairResponse>(`/metrics/${metricId}/pair`);
+    return this.request<MetricPairResponse>(`/api/metrics/${metricId}/pair`);
   }
 
   async submitMetricComparison(
@@ -273,14 +304,14 @@ class ApiClient {
       response_time_ms?: number;
     }
   ) {
-    return this.request<MetricComparison>(`/metrics/${metricId}/compare`, {
+    return this.request<MetricComparison>(`/api/metrics/${metricId}/compare`, {
       method: "POST",
       body: JSON.stringify(data),
     });
   }
 
   async undoMetricComparison(metricId: number) {
-    return this.request<MetricComparison>(`/metrics/${metricId}/undo`, {
+    return this.request<MetricComparison>(`/api/metrics/${metricId}/undo`, {
       method: "POST",
     });
   }
@@ -290,31 +321,37 @@ class ApiClient {
       page: page.toString(),
       per_page: perPage.toString(),
     });
-    return this.request<MetricRankingResponse>(`/metrics/${metricId}/leaderboard?${params}`);
+    return this.request<MetricRankingResponse>(`/api/metrics/${metricId}/leaderboard?${params}`);
   }
 
   async getMetricProgress(metricId: number) {
-    return this.request<MetricProgressResponse>(`/metrics/${metricId}/progress`);
+    return this.request<MetricProgressResponse>(`/api/metrics/${metricId}/progress`);
   }
 
   getMetricImageUrl(metricId: number, imageId: number) {
     const token = this.getToken();
-    return `${API_URL}/metrics/${metricId}/images/${imageId}/file?token=${token}`;
+    if (!token) {
+      console.warn(`[API] No token available for metric image ${metricId}/${imageId}`);
+    }
+    return `${API_URL}/api/metrics/${metricId}/images/${imageId}/file?token=${token}`;
   }
 
   getCropImageUrl(cropId: number, type: "mip" | "sum" = "mip") {
     const token = this.getToken();
-    return `${API_URL}/images/crops/${cropId}/image?type=${type}&token=${token}`;
+    if (!token) {
+      console.warn(`[API] No token available for crop ${cropId}`);
+    }
+    return `${API_URL}/api/images/crops/${cropId}/image?type=${type}&token=${token}`;
   }
 
   async getCellCrops(experimentId: number, excludeExcluded = true) {
     return this.request<CellCropGallery[]>(
-      `/images/crops?experiment_id=${experimentId}&exclude_excluded=${excludeExcluded}`
+      `/api/images/crops?experiment_id=${experimentId}&exclude_excluded=${excludeExcluded}`
     );
   }
 
   async deleteCellCrop(cropId: number) {
-    return this.request<void>(`/images/crops/${cropId}`, {
+    return this.request<void>(`/api/images/crops/${cropId}`, {
       method: "DELETE",
     });
   }
@@ -329,7 +366,7 @@ class ApiClient {
       map_protein_id: number | null;
       map_protein_name: string | null;
       map_protein_color: string | null;
-    }>(`/images/crops/${cropId}/protein?${params.toString()}`, {
+    }>(`/api/images/crops/${cropId}/protein?${params.toString()}`, {
       method: "PATCH",
     });
   }
@@ -343,17 +380,17 @@ class ApiClient {
     if (experimentId) {
       params.append("experiment_id", experimentId.toString());
     }
-    return this.request<UmapDataResponse>(`/embeddings/umap?${params}`);
+    return this.request<UmapDataResponse>(`/api/embeddings/umap?${params}`);
   }
 
   async getEmbeddingStatus(experimentId?: number) {
     const params = experimentId ? `?experiment_id=${experimentId}` : "";
-    return this.request<EmbeddingStatus>(`/embeddings/status${params}`);
+    return this.request<EmbeddingStatus>(`/api/embeddings/status${params}`);
   }
 
   async triggerFeatureExtraction(experimentId: number) {
     return this.request<{ message: string; pending: number }>(
-      `/embeddings/extract?experiment_id=${experimentId}`,
+      `/api/embeddings/extract?experiment_id=${experimentId}`,
       { method: "POST" }
     );
   }
