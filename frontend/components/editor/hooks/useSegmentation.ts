@@ -5,18 +5,23 @@
  *
  * Manages interactive SAM segmentation state and API calls.
  * Handles click points, API inference with debouncing, and mask saving.
+ *
+ * SAM 3 Text Prompting:
+ * - When CUDA GPU is available, SAM 3 provides text-based segmentation
+ * - Users can type descriptions like "cell" or "nucleus" to find objects
+ * - Text queries can be refined with additional point clicks
  */
 
 import { useState, useCallback, useRef, useEffect } from "react";
-import { api, type SegmentClickPoint, type SAMEmbeddingStatus } from "@/lib/api";
-import type { SegmentationState, CellPolygon } from "@/lib/editor/types";
-import { INITIAL_SEGMENTATION_STATE } from "@/lib/editor/types";
+import { api, type SegmentClickPoint, type SAMEmbeddingStatus, type SegmentationCapabilitiesResponse, type TextSegmentInstance } from "@/lib/api";
+import type { SegmentationState, TextSegmentationState, DetectedInstance, SegmentPromptMode, SegmentationCapabilities } from "@/lib/editor/types";
+import { INITIAL_SEGMENTATION_STATE, INITIAL_TEXT_SEGMENTATION_STATE } from "@/lib/editor/types";
 
 interface UseSegmentationOptions {
   /** Image ID for segmentation */
   imageId: number;
-  /** Callback when mask is saved successfully */
-  onMaskSaved?: (cropId: number, polygon: [number, number][], iouScore: number) => void;
+  /** Callback when FOV mask is saved successfully */
+  onFOVMaskSaved?: (imageId: number, polygon: [number, number][], iouScore: number) => void;
   /** Debounce delay for API calls (ms) */
   debounceMs?: number;
 }
@@ -34,26 +39,69 @@ interface UseSegmentationReturn {
   undoLastClick: () => void;
   /** Clear all click points and preview */
   clearSegmentation: () => void;
-  /** Save the current mask to a crop */
-  saveMask: (cropId: number) => Promise<{ success: boolean; error?: string }>;
-  /** Set target crop ID for saving */
-  setTargetCropId: (id: number | null) => void;
+  /** Save the current mask to the FOV image */
+  saveFOVMask: () => Promise<{ success: boolean; error?: string }>;
   /** Trigger embedding computation */
   computeEmbedding: () => Promise<void>;
   /** Refresh embedding status */
   refreshStatus: () => Promise<void>;
+
+  // SAM 3 Text Prompting
+  /** Segmentation capabilities (device, text support) */
+  capabilities: SegmentationCapabilities | null;
+  /** Whether text prompting is available (SAM 3 on CUDA) */
+  supportsTextPrompts: boolean;
+  /** Current prompt mode */
+  promptMode: SegmentPromptMode;
+  /** Set prompt mode */
+  setPromptMode: (mode: SegmentPromptMode) => void;
+  /** Text segmentation state */
+  textState: TextSegmentationState;
+  /** Set text prompt value */
+  setTextPrompt: (prompt: string) => void;
+  /** Run text-based segmentation query */
+  queryTextSegmentation: (confidenceThreshold?: number) => Promise<void>;
+  /** Select a detected instance */
+  selectInstance: (index: number | null) => void;
+  /** Clear text segmentation results */
+  clearTextSegmentation: () => void;
+  /** Save a specific instance from text segmentation to FOV */
+  saveTextInstanceToFOV: (instanceIndex: number) => Promise<{ success: boolean; error?: string }>;
 }
 
 export function useSegmentation({
   imageId,
-  onMaskSaved,
+  onFOVMaskSaved,
   debounceMs = 50,
 }: UseSegmentationOptions): UseSegmentationReturn {
   const [state, setState] = useState<SegmentationState>(INITIAL_SEGMENTATION_STATE);
   const [embeddingStatus, setEmbeddingStatus] = useState<SAMEmbeddingStatus>("not_started");
 
+  // SAM 3 Text Prompting State
+  const [capabilities, setCapabilities] = useState<SegmentationCapabilities | null>(null);
+  const [promptMode, setPromptMode] = useState<SegmentPromptMode>("point");
+  const [textState, setTextState] = useState<TextSegmentationState>(INITIAL_TEXT_SEGMENTATION_STATE);
+
   const debounceTimerRef = useRef<NodeJS.Timeout | null>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
+
+  // Fetch capabilities on mount
+  useEffect(() => {
+    const fetchCapabilities = async () => {
+      try {
+        const caps = await api.getSegmentationCapabilities();
+        setCapabilities({
+          device: caps.device,
+          variant: caps.variant,
+          supportsTextPrompts: caps.supports_text_prompts,
+          modelName: caps.model_name,
+        });
+      } catch (error) {
+        console.error("[useSegmentation] Failed to get capabilities:", error);
+      }
+    };
+    fetchCapabilities();
+  }, []);
 
   // Check embedding status on mount
   useEffect(() => {
@@ -215,22 +263,22 @@ export function useSegmentation({
     setState(INITIAL_SEGMENTATION_STATE);
   }, []);
 
-  const saveMask = useCallback(
-    async (cropId: number): Promise<{ success: boolean; error?: string }> => {
+  const saveFOVMask = useCallback(
+    async (): Promise<{ success: boolean; error?: string }> => {
       if (!state.previewPolygon || state.previewIoU === null) {
         return { success: false, error: "No mask to save" };
       }
 
       try {
-        const result = await api.saveSegmentationMask({
-          crop_id: cropId,
+        const result = await api.saveFOVSegmentationMask({
+          image_id: imageId,
           polygon: state.previewPolygon,
           iou_score: state.previewIoU,
           prompt_count: state.clickPoints.length,
         });
 
         if (result.success) {
-          onMaskSaved?.(cropId, state.previewPolygon, state.previewIoU);
+          onFOVMaskSaved?.(imageId, state.previewPolygon, state.previewIoU);
           clearSegmentation();
           return { success: true };
         }
@@ -243,12 +291,135 @@ export function useSegmentation({
         };
       }
     },
-    [state, onMaskSaved, clearSegmentation]
+    [state, imageId, onFOVMaskSaved, clearSegmentation]
   );
 
-  const setTargetCropId = useCallback((id: number | null) => {
-    setState((prev) => ({ ...prev, targetCropId: id }));
+  // ============================================================================
+  // SAM 3 Text Prompting Methods
+  // ============================================================================
+
+  const setTextPrompt = useCallback((prompt: string) => {
+    setTextState((prev) => ({ ...prev, textPrompt: prompt }));
   }, []);
+
+  const queryTextSegmentation = useCallback(
+    async (confidenceThreshold: number = 0.5) => {
+      const prompt = textState.textPrompt.trim();
+      if (!prompt) {
+        setTextState((prev) => ({
+          ...prev,
+          error: "Please enter a search term",
+        }));
+        return;
+      }
+
+      setTextState((prev) => ({
+        ...prev,
+        isQuerying: true,
+        error: null,
+        detectedInstances: [],
+        selectedInstanceIndex: null,
+      }));
+
+      try {
+        const result = await api.segmentWithText(imageId, prompt, confidenceThreshold);
+
+        if (result.success && result.instances) {
+          // Convert API response to DetectedInstance format
+          const instances: DetectedInstance[] = result.instances.map((inst) => ({
+            index: inst.index,
+            polygon: inst.polygon,
+            bbox: inst.bbox,
+            score: inst.score,
+            areaPixels: inst.area_pixels,
+          }));
+
+          setTextState((prev) => ({
+            ...prev,
+            isQuerying: false,
+            detectedInstances: instances,
+            error: null,
+          }));
+        } else {
+          setTextState((prev) => ({
+            ...prev,
+            isQuerying: false,
+            error: result.error || "No instances found",
+          }));
+        }
+      } catch (error) {
+        setTextState((prev) => ({
+          ...prev,
+          isQuerying: false,
+          error: error instanceof Error ? error.message : "Query failed",
+        }));
+      }
+    },
+    [imageId, textState.textPrompt]
+  );
+
+  const selectInstance = useCallback((index: number | null) => {
+    setTextState((prev) => ({ ...prev, selectedInstanceIndex: index }));
+
+    // When selecting an instance, show its polygon as preview
+    if (index !== null && textState.detectedInstances[index]) {
+      const instance = textState.detectedInstances[index];
+      setState((prev) => ({
+        ...prev,
+        previewPolygon: instance.polygon,
+        previewIoU: instance.score,
+      }));
+    } else {
+      // Clear preview when deselecting
+      setState((prev) => ({
+        ...prev,
+        previewPolygon: null,
+        previewIoU: null,
+      }));
+    }
+  }, [textState.detectedInstances]);
+
+  const clearTextSegmentation = useCallback(() => {
+    setTextState(INITIAL_TEXT_SEGMENTATION_STATE);
+    // Also clear the preview
+    setState((prev) => ({
+      ...prev,
+      previewPolygon: null,
+      previewIoU: null,
+    }));
+  }, []);
+
+  const saveTextInstanceToFOV = useCallback(
+    async (instanceIndex: number): Promise<{ success: boolean; error?: string }> => {
+      const instance = textState.detectedInstances[instanceIndex];
+      if (!instance) {
+        return { success: false, error: "Instance not found" };
+      }
+
+      try {
+        const result = await api.saveFOVSegmentationMask({
+          image_id: imageId,
+          polygon: instance.polygon,
+          iou_score: instance.score,
+          prompt_count: 1, // Text prompt counts as 1
+        });
+
+        if (result.success) {
+          onFOVMaskSaved?.(imageId, instance.polygon, instance.score);
+          clearTextSegmentation();
+          return { success: true };
+        }
+
+        return { success: false, error: "Failed to save mask" };
+      } catch (error) {
+        return {
+          success: false,
+          error: error instanceof Error ? error.message : "Save failed",
+        };
+      }
+    },
+    [textState.detectedInstances, imageId, onFOVMaskSaved, clearTextSegmentation]
+  );
 
   // Cleanup on unmount
   useEffect(() => {
@@ -269,9 +440,20 @@ export function useSegmentation({
     addClickPoint,
     undoLastClick,
     clearSegmentation,
-    saveMask,
-    setTargetCropId,
+    saveFOVMask,
     computeEmbedding,
     refreshStatus,
+
+    // SAM 3 Text Prompting
+    capabilities,
+    supportsTextPrompts: capabilities?.supportsTextPrompts ?? false,
+    promptMode,
+    setPromptMode,
+    textState,
+    setTextPrompt,
+    queryTextSegmentation,
+    selectInstance,
+    clearTextSegmentation,
+    saveTextInstanceToFOV,
   };
 }

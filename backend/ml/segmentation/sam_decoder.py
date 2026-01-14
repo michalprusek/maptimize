@@ -9,9 +9,8 @@ import logging
 from typing import List, Tuple, Optional
 import numpy as np
 import torch
-import cv2
 
-from .sam_encoder import get_sam_encoder
+from .sam_encoder import get_mobilesam_encoder
 
 logger = logging.getLogger(__name__)
 
@@ -35,7 +34,7 @@ class SAMDecoder:
     def encoder(self):
         """Get the shared encoder (which also contains the decoder)."""
         if self._encoder is None:
-            self._encoder = get_sam_encoder()
+            self._encoder = get_mobilesam_encoder()
         return self._encoder
 
     def predict_mask(
@@ -48,7 +47,7 @@ class SAMDecoder:
         box: Optional[Tuple[int, int, int, int]] = None,
     ) -> Tuple[np.ndarray, float, np.ndarray]:
         """
-        Predict segmentation mask from click prompts.
+        Predict segmentation mask from click prompts using cached embedding.
 
         Args:
             embedding: Pre-computed image embedding from SAMEncoder
@@ -66,74 +65,172 @@ class SAMDecoder:
         """
         self.encoder.ensure_loaded()
 
-        # Validate model and predictor are available
-        if self.encoder.model is None:
+        model = self.encoder.model
+        if model is None:
             raise RuntimeError("SAM model not loaded. Check model weights.")
 
-        predictor = self.encoder.model.predictor
+        predictor = model.predictor
         if predictor is None:
-            raise RuntimeError("SAM predictor not initialized. Model may have failed to load.")
-
-        # Set the cached embedding
-        # Convert embedding to tensor and set in predictor
-        embedding_tensor = torch.from_numpy(embedding)
-        if predictor.device.type == "cuda":
-            embedding_tensor = embedding_tensor.cuda()
-
-        # Set features directly in predictor
-        predictor.features = embedding_tensor
-
-        # Set original image size for coordinate mapping
-        predictor.orig_size = image_shape
-        predictor.input_size = image_shape  # Assuming embedding was computed at original size
-
-        # Convert points to numpy arrays
-        coords = np.array(point_coords, dtype=np.float32)
-        labels = np.array(point_labels, dtype=np.int32)
-
-        # Add batch dimension if needed
-        if len(coords.shape) == 2:
-            coords = coords[None, :]  # (1, N, 2)
-            labels = labels[None, :]  # (1, N)
+            raise RuntimeError("SAM predictor not initialized.")
 
         try:
-            # Run prediction
-            if box is not None:
-                box_array = np.array(box, dtype=np.float32)[None, :]  # (1, 4)
-                masks, iou_scores, low_res_logits = predictor.predict(
-                    point_coords=coords,
-                    point_labels=labels,
-                    box=box_array,
-                    multimask_output=multimask_output,
+            # Restore embedding to predictor
+            embedding_tensor = torch.from_numpy(embedding)
+            device = predictor.device if hasattr(predictor, 'device') else self.encoder.device
+            if device == "cuda" or (hasattr(device, 'type') and device.type == "cuda"):
+                embedding_tensor = embedding_tensor.cuda()
+
+            # Set the cached features in predictor
+            predictor.features = embedding_tensor
+
+            # Set image size info for coordinate transformation
+            height, width = image_shape
+            predictor.orig_size = (height, width)
+            predictor.input_size = (height, width)
+
+            # Prepare point prompts - SAM expects [[x, y], [x, y], ...]
+            points_array = np.array(point_coords, dtype=np.float32)
+            labels_array = np.array(point_labels, dtype=np.int32)
+
+            # Try direct SAM architecture access first (works with cached embeddings)
+            sam_model = getattr(predictor, 'model', None)
+            if sam_model and hasattr(sam_model, 'prompt_encoder') and hasattr(sam_model, 'mask_decoder'):
+                # Direct SAM architecture access
+                masks, iou_scores, low_res_logits = self._sam_predict_with_embedding(
+                    predictor, embedding_tensor, points_array, labels_array,
+                    image_shape, box, multimask_output
                 )
             else:
-                masks, iou_scores, low_res_logits = predictor.predict(
-                    point_coords=coords,
-                    point_labels=labels,
-                    multimask_output=multimask_output,
+                # Fallback: Create dummy image and use model predict
+                logger.warning("Using fallback prediction method")
+                dummy_img = np.zeros((height, width, 3), dtype=np.uint8)
+                results = model.predict(
+                    dummy_img,
+                    points=[point_coords],
+                    labels=[point_labels],
+                    verbose=False,
                 )
+                if results and len(results) > 0 and results[0].masks is not None:
+                    mask_data = results[0].masks.data[0].cpu().numpy()
+                    return mask_data.astype(bool), 0.9, mask_data
+                raise RuntimeError("Fallback prediction returned no masks")
+
+            # Process results
+            if isinstance(masks, torch.Tensor):
+                masks = masks.cpu().numpy()
+            if isinstance(iou_scores, torch.Tensor):
+                iou_scores = iou_scores.cpu().numpy()
+            if isinstance(low_res_logits, torch.Tensor):
+                low_res_logits = low_res_logits.cpu().numpy()
 
             # Select best mask
-            if multimask_output and len(masks.shape) == 4:
-                # masks shape: (batch, num_masks, H, W)
-                best_idx = np.argmax(iou_scores[0])
-                mask = masks[0, best_idx]
-                iou_score = float(iou_scores[0, best_idx])
-                low_res = low_res_logits[0, best_idx]
-            elif len(masks.shape) == 4:
-                mask = masks[0, 0]
-                iou_score = float(iou_scores[0, 0])
-                low_res = low_res_logits[0, 0]
+            masks = np.atleast_3d(masks)
+            if masks.ndim == 4:
+                masks = masks[0]  # Remove batch dim
+
+            if multimask_output and masks.shape[0] > 1:
+                best_idx = np.argmax(iou_scores.flatten()[:masks.shape[0]])
+                mask = masks[best_idx]
+                iou_score = float(iou_scores.flatten()[best_idx])
+                low_res = low_res_logits[best_idx] if low_res_logits.ndim > 2 else low_res_logits
             else:
-                mask = masks[0] if len(masks.shape) == 3 else masks
-                iou_score = float(iou_scores.flatten()[0])
-                low_res = low_res_logits[0] if len(low_res_logits.shape) > 2 else low_res_logits
+                mask = masks[0] if masks.shape[0] > 0 else masks
+                iou_score = float(iou_scores.flatten()[0]) if iou_scores.size > 0 else 0.9
+                low_res = low_res_logits[0] if low_res_logits.ndim > 2 else low_res_logits
 
             return mask.astype(bool), iou_score, low_res
 
-        except Exception as e:
+        except (RuntimeError, ValueError, TypeError) as e:
             logger.exception("Mask prediction failed")
             raise RuntimeError(f"Mask prediction failed: {e}") from e
+        except torch.cuda.OutOfMemoryError as e:
+            logger.error(f"GPU out of memory during mask prediction: {e}")
+            raise RuntimeError(f"GPU out of memory: {e}") from e
+
+    def _sam_predict_with_embedding(
+        self,
+        predictor,
+        embedding: torch.Tensor,
+        points: np.ndarray,
+        labels: np.ndarray,
+        image_shape: Tuple[int, int],
+        box: Optional[Tuple[int, int, int, int]],
+        multimask_output: bool,
+    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Direct SAM inference using pre-computed embedding."""
+        device = embedding.device
+        height, width = image_shape
+
+        # Get SAM model components
+        sam_model = predictor.model
+
+        # SAM encodes images with longest side = 1024
+        # Coordinates must be transformed from original space to 1024-space
+        scale = 1024.0 / max(height, width)
+
+        # Scale point coordinates from original image space to SAM's internal space
+        scaled_points = points.copy().astype(np.float32)
+        scaled_points[:, 0] = points[:, 0] * scale  # x
+        scaled_points[:, 1] = points[:, 1] * scale  # y
+
+        logger.debug(
+            f"Coordinate transform: scale={scale:.4f}, "
+            f"orig=({points[0, 0]:.0f},{points[0, 1]:.0f}) -> "
+            f"scaled=({scaled_points[0, 0]:.1f},{scaled_points[0, 1]:.1f})"
+        )
+
+        point_coords = torch.from_numpy(scaled_points).float().to(device)
+        point_labels = torch.from_numpy(labels).int().to(device)
+
+        # Add batch dimension
+        if point_coords.dim() == 2:
+            point_coords = point_coords.unsqueeze(0)
+            point_labels = point_labels.unsqueeze(0)
+
+        # Run inference without gradients
+        with torch.no_grad():
+            # Encode prompts
+            box_tensor = None
+            if box is not None:
+                # Scale box coordinates from original to 1024-space
+                scaled_box = [
+                    box[0] * scale,  # x1
+                    box[1] * scale,  # y1
+                    box[2] * scale,  # x2
+                    box[3] * scale,  # y2
+                ]
+                box_tensor = torch.tensor([scaled_box], device=device).float()
+
+            sparse_embeddings, dense_embeddings = sam_model.prompt_encoder(
+                points=(point_coords, point_labels),
+                boxes=box_tensor,
+                masks=None,
+            )
+
+            # Run mask decoder
+            low_res_masks, iou_predictions = sam_model.mask_decoder(
+                image_embeddings=embedding,
+                image_pe=sam_model.prompt_encoder.get_dense_pe(),
+                sparse_prompt_embeddings=sparse_embeddings,
+                dense_prompt_embeddings=dense_embeddings,
+                multimask_output=multimask_output,
+            )
+
+            # Upscale masks to original size
+            masks = torch.nn.functional.interpolate(
+                low_res_masks,
+                size=(height, width),
+                mode="bilinear",
+                align_corners=False,
+            )
+            masks = masks > 0.0  # Threshold to binary
+
+        # Return as numpy arrays (detach from computation graph)
+        return (
+            masks.squeeze(0).cpu().numpy(),
+            iou_predictions.squeeze(0).cpu().numpy(),
+            low_res_masks.squeeze(0).detach().cpu().numpy(),
+        )
 
     def predict_from_image(
         self,
@@ -168,121 +265,6 @@ class SAMDecoder:
             point_labels=point_labels,
             multimask_output=multimask_output,
         )
-
-    def mask_to_polygon(
-        self,
-        mask: np.ndarray,
-        simplify_tolerance: float = 1.5,
-        min_points: int = 4,
-    ) -> List[Tuple[int, int]]:
-        """
-        Convert binary mask to polygon points.
-
-        Uses OpenCV contour detection and Douglas-Peucker simplification.
-
-        Args:
-            mask: Binary mask array (H, W)
-            simplify_tolerance: Douglas-Peucker simplification tolerance in pixels.
-                               Higher = fewer points, smoother polygon.
-            min_points: Minimum number of points to return.
-
-        Returns:
-            List of (x, y) polygon points, or empty list if no contours found.
-        """
-        # Ensure mask is binary uint8
-        if mask.dtype == bool:
-            mask_uint8 = mask.astype(np.uint8) * 255
-        elif mask.dtype == np.float32 or mask.dtype == np.float64:
-            mask_uint8 = (mask > 0.5).astype(np.uint8) * 255
-        else:
-            mask_uint8 = mask.astype(np.uint8)
-            if mask_uint8.max() == 1:
-                mask_uint8 = mask_uint8 * 255
-
-        # Find contours
-        contours, _ = cv2.findContours(
-            mask_uint8,
-            cv2.RETR_EXTERNAL,
-            cv2.CHAIN_APPROX_SIMPLE
-        )
-
-        if not contours:
-            logger.warning("No contours found in mask")
-            return []
-
-        # Get largest contour
-        largest = max(contours, key=cv2.contourArea)
-
-        # Simplify polygon using Douglas-Peucker algorithm
-        epsilon = simplify_tolerance
-        simplified = cv2.approxPolyDP(largest, epsilon, closed=True)
-
-        # Ensure minimum points
-        while len(simplified) < min_points and epsilon > 0.5:
-            epsilon /= 2
-            simplified = cv2.approxPolyDP(largest, epsilon, closed=True)
-
-        # Convert to list of (x, y) tuples
-        points = [(int(p[0][0]), int(p[0][1])) for p in simplified]
-
-        logger.debug(f"Polygon: {len(largest)} -> {len(points)} points (epsilon={epsilon})")
-
-        return points
-
-    def polygon_to_mask(
-        self,
-        polygon: List[Tuple[int, int]],
-        image_shape: Tuple[int, int],  # (height, width)
-    ) -> np.ndarray:
-        """
-        Convert polygon back to binary mask.
-
-        Args:
-            polygon: List of (x, y) points
-            image_shape: Output mask shape (height, width)
-
-        Returns:
-            Binary mask array (H, W)
-        """
-        mask = np.zeros(image_shape, dtype=np.uint8)
-
-        if len(polygon) < 3:
-            return mask
-
-        # Convert to numpy array for OpenCV
-        pts = np.array(polygon, dtype=np.int32)
-
-        # Fill polygon
-        cv2.fillPoly(mask, [pts], 1)
-
-        return mask.astype(bool)
-
-    def calculate_mask_area(self, mask: np.ndarray) -> int:
-        """Calculate mask area in pixels."""
-        return int(np.sum(mask))
-
-    def calculate_polygon_area(self, polygon: List[Tuple[int, int]]) -> int:
-        """
-        Calculate polygon area using shoelace formula.
-
-        Args:
-            polygon: List of (x, y) points
-
-        Returns:
-            Area in pixels (integer)
-        """
-        n = len(polygon)
-        if n < 3:
-            return 0
-
-        area = 0.0
-        for i in range(n):
-            j = (i + 1) % n
-            area += polygon[i][0] * polygon[j][1]
-            area -= polygon[j][0] * polygon[i][1]
-
-        return abs(int(area)) // 2
-
 
 # Global decoder instance
 _decoder: Optional[SAMDecoder] = None

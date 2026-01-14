@@ -228,13 +228,25 @@ class SAMEncoder:
 
         Returns:
             Decompressed embedding array (float32)
+
+        Raises:
+            ValueError: If data is corrupted or shape doesn't match
         """
-        # Decompress
-        decompressed = zlib.decompress(data)
-        # Reconstruct array as float16
-        embedding = np.frombuffer(decompressed, dtype=np.float16)
-        # Reshape and convert back to float32 for inference
-        return embedding.reshape(shape).astype(np.float32)
+        try:
+            # Decompress
+            decompressed = zlib.decompress(data)
+        except zlib.error as e:
+            logger.error(f"Failed to decompress embedding data: {e}")
+            raise ValueError(f"Embedding data is corrupted: {e}") from e
+
+        try:
+            # Reconstruct array as float16
+            embedding = np.frombuffer(decompressed, dtype=np.float16)
+            # Reshape and convert back to float32 for inference
+            return embedding.reshape(shape).astype(np.float32)
+        except ValueError as e:
+            logger.error(f"Failed to reshape embedding: expected shape {shape}, got {embedding.size} elements")
+            raise ValueError(f"Embedding shape mismatch: {e}") from e
 
     def ensure_loaded(self) -> None:
         """Ensure the model is loaded. Public alias for _load_model()."""
@@ -264,8 +276,8 @@ class SAMEncoder:
 _encoder: Optional[SAMEncoder] = None
 
 
-def get_sam_encoder() -> SAMEncoder:
-    """Get or create the global SAM encoder instance."""
+def get_mobilesam_encoder() -> SAMEncoder:
+    """Get or create the global MobileSAM encoder instance."""
     global _encoder
     if _encoder is None:
         logger.info("Initializing MobileSAM encoder (first use)...")
@@ -273,10 +285,18 @@ def get_sam_encoder() -> SAMEncoder:
     return _encoder
 
 
-def reset_sam_encoder() -> None:
+# Alias for backward compatibility
+get_sam_encoder = get_mobilesam_encoder
+
+
+def reset_mobilesam_encoder() -> None:
     """Reset the global encoder instance. Forces model reload on next use."""
     global _encoder
     if _encoder is not None:
         _encoder.reset()
         _encoder = None
-        logger.info("SAM encoder reset - will reload on next use")
+        logger.info("MobileSAM encoder reset - will reload on next use")
+
+
+# Alias for backward compatibility
+reset_sam_encoder = reset_mobilesam_encoder

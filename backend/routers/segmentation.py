@@ -51,6 +51,14 @@ class SaveMaskRequest(BaseModel):
     prompt_count: int = Field(..., ge=0, description="Number of click prompts used")
 
 
+class SaveFOVMaskRequest(BaseModel):
+    """Request to save a FOV-level segmentation mask."""
+    image_id: int = Field(..., description="ID of the FOV image")
+    polygon: List[List[float]] = Field(..., min_length=3, description="Polygon points [[x, y], ...]")
+    iou_score: float = Field(..., ge=0, le=1, description="SAM IoU prediction score")
+    prompt_count: int = Field(..., ge=0, description="Number of click prompts used")
+
+
 class EmbeddingStatusResponse(BaseModel):
     """SAM embedding status for an image."""
     image_id: int
@@ -64,6 +72,16 @@ class MaskResponse(BaseModel):
     """Segmentation mask for a cell crop."""
     has_mask: bool
     polygon: Optional[List[List[int]]] = None
+    iou_score: Optional[float] = None
+    area_pixels: Optional[int] = None
+    creation_method: Optional[str] = None
+    prompt_count: Optional[int] = None
+
+
+class FOVMaskResponse(BaseModel):
+    """FOV-level segmentation mask."""
+    has_mask: bool
+    polygon: Optional[List[List[float]]] = None
     iou_score: Optional[float] = None
     area_pixels: Optional[int] = None
     creation_method: Optional[str] = None
@@ -283,3 +301,223 @@ async def delete_mask(
         )
 
     return result
+
+
+# ============================================================================
+# FOV-Level Segmentation Endpoints
+# ============================================================================
+
+@router.post("/save-fov-mask")
+async def save_fov_mask(
+    request: SaveFOVMaskRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Save FOV-level segmentation mask.
+
+    The polygon covers the entire field of view. Individual cell masks
+    are then extracted as clips from this FOV mask based on their bounding boxes.
+    """
+    result = await segmentation_service.save_fov_segmentation_mask(
+        image_id=request.image_id,
+        polygon=[tuple(p) for p in request.polygon],
+        iou_score=request.iou_score,
+        prompt_count=request.prompt_count,
+        db=db,
+    )
+
+    if not result["success"]:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=result.get("error")
+        )
+
+    return result
+
+
+@router.get("/fov-mask/{image_id}", response_model=FOVMaskResponse)
+async def get_fov_mask(
+    image_id: int,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Get FOV-level segmentation mask for an image.
+
+    Returns has_mask=false if no mask has been saved for this image.
+    """
+    result = await segmentation_service.get_fov_segmentation_mask(image_id, db)
+    return FOVMaskResponse(**result)
+
+
+@router.delete("/fov-mask/{image_id}")
+async def delete_fov_mask(
+    image_id: int,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Delete FOV-level segmentation mask.
+    """
+    result = await segmentation_service.delete_fov_segmentation_mask(image_id, db)
+
+    if not result["success"]:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=result.get("error")
+        )
+
+    return result
+
+
+# ============================================================================
+# SAM 3 Text Segmentation Endpoints
+# ============================================================================
+
+class TextSegmentRequest(BaseModel):
+    """Request for text-based segmentation."""
+    image_id: int = Field(..., description="ID of the image to segment")
+    text_prompt: str = Field(..., min_length=1, max_length=200, description="Natural language description")
+    confidence_threshold: float = Field(default=0.5, ge=0.1, le=1.0, description="Minimum confidence")
+
+
+class TextSegmentInstance(BaseModel):
+    """A single detected instance from text segmentation."""
+    index: int
+    polygon: List[List[float]]
+    bbox: List[float]  # [x1, y1, x2, y2]
+    score: float
+    area_pixels: int
+
+
+class TextSegmentResponse(BaseModel):
+    """Response from text-based segmentation."""
+    success: bool
+    instances: Optional[List[TextSegmentInstance]] = None
+    prompt: Optional[str] = None
+    error: Optional[str] = None
+
+
+class TextRefineRequest(BaseModel):
+    """Request to refine a text-detected instance with point prompts."""
+    image_id: int = Field(..., description="ID of the image")
+    text_prompt: str = Field(..., min_length=1, max_length=200, description="Original text prompt")
+    instance_index: int = Field(..., ge=0, description="Index of instance to refine")
+    points: List[ClickPoint] = Field(..., min_length=1, description="Refinement click points")
+
+
+class CapabilitiesResponse(BaseModel):
+    """SAM capabilities response."""
+    device: str  # "cuda", "mps", "cpu"
+    variant: str  # "mobilesam", "sam3"
+    supports_text_prompts: bool
+    model_name: str
+
+
+@router.get("/capabilities", response_model=CapabilitiesResponse)
+async def get_capabilities(
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Get segmentation capabilities.
+
+    Returns information about the current SAM setup:
+    - device: Current compute device (cuda, mps, cpu)
+    - variant: SAM variant in use (mobilesam, sam3)
+    - supports_text_prompts: Whether text prompting is available
+    - model_name: Human-readable model name
+
+    Text prompting requires SAM 3, which requires CUDA GPU.
+    """
+    caps = segmentation_service.get_segmentation_capabilities()
+    return CapabilitiesResponse(
+        device=caps["device"],
+        variant=caps["variant"],
+        supports_text_prompts=caps["supports_text_prompts"],
+        model_name=caps["model_name"],
+    )
+
+
+@router.post("/segment-text", response_model=TextSegmentResponse)
+async def segment_text(
+    request: TextSegmentRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Run text-based segmentation using SAM 3.
+
+    Finds all instances matching the text description (e.g., "cell", "nucleus").
+    Returns a list of detected instances with polygons, bounding boxes, and scores.
+
+    Requires:
+    - CUDA GPU (SAM 3 text prompts not supported on MPS/CPU)
+    - Valid image that exists in the database
+
+    Note: This is slower than point-based segmentation (~200-500ms vs ~10-50ms).
+    """
+    result = await segmentation_service.segment_from_text(
+        image_id=request.image_id,
+        text_prompt=request.text_prompt,
+        confidence_threshold=request.confidence_threshold,
+        db=db,
+    )
+
+    if not result["success"]:
+        return TextSegmentResponse(success=False, error=result.get("error"))
+
+    instances = [
+        TextSegmentInstance(
+            index=inst["index"],
+            polygon=inst["polygon"],
+            bbox=inst["bbox"],
+            score=inst["score"],
+            area_pixels=inst["area_pixels"],
+        )
+        for inst in result.get("instances", [])
+    ]
+
+    return TextSegmentResponse(
+        success=True,
+        instances=instances,
+        prompt=result.get("prompt"),
+    )
+
+
+@router.post("/segment-text-refine", response_model=SegmentResponse)
+async def segment_text_refine(
+    request: TextRefineRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Refine a text-detected instance using point prompts.
+
+    After running text segmentation, use this endpoint to refine a specific
+    instance with additional point clicks. Left-click adds to mask,
+    right-click removes from mask.
+
+    This combines the initial text detection with interactive refinement.
+    """
+    point_coords = [(int(round(p.x)), int(round(p.y))) for p in request.points]
+    point_labels = [p.label for p in request.points]
+
+    result = await segmentation_service.refine_text_segmentation(
+        image_id=request.image_id,
+        text_prompt=request.text_prompt,
+        instance_index=request.instance_index,
+        point_coords=point_coords,
+        point_labels=point_labels,
+        db=db,
+    )
+
+    if not result["success"]:
+        return SegmentResponse(success=False, error=result.get("error"))
+
+    return SegmentResponse(
+        success=True,
+        polygon=result["polygon"],
+        iou_score=result["iou_score"],
+        area_pixels=result["area_pixels"],
+    )

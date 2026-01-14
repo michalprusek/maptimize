@@ -260,6 +260,23 @@
     "noTargetCrop": "Select a cell to save the mask",
     "loadMasksError": "Failed to load saved segmentation masks",
     "embeddingStatusError": "Failed to check segmentation status",
-    "embeddingComputeError": "Failed to start segmentation computation"
+    "embeddingComputeError": "Failed to start segmentation computation",
+    "addForeground": "Add foreground",
+    "addBackground": "Add background",
+    "panImage": "Pan image",
+    "undoPoint": "Undo point",
+    "saveHint": "Save mask before segmenting another cell",
+    "maskSaved": "Mask saved! Click on next cell to continue",
+    "selectCropFirst": "Select a cell from preview panel first",
+    "pointPrompt": "Point Prompt",
+    "textPrompt": "Text Prompt",
+    "searchPlaceholder": "Describe what to segment...",
+    "suggestions": "Suggestions",
+    "foundInstances": "Found {count} instance(s)",
+    "noInstancesFound": "No instances found",
+    "saveInstance": "Save",
+    "clear": "Clear",
+    "search": "Search",
+    "fovMaskSaved": "FOV mask saved successfully"
   }
 }

@@ -8,7 +8,7 @@ from .ranking import UserRating, Comparison, RankingSource
 from .metric import Metric, MetricImage, MetricRating, MetricComparison
 from .bug_report import BugReport, BugReportStatus, BugReportCategory
 from .sam_embedding import SAMEmbedding
-from .segmentation import SegmentationMask, UserSegmentationPrompt
+from .segmentation import SegmentationMask, UserSegmentationPrompt, FOVSegmentationMask
 
 __all__ = [
     "User",
@@ -33,4 +33,5 @@ __all__ = [
     "SAMEmbedding",
     "SegmentationMask",
     "UserSegmentationPrompt",
+    "FOVSegmentationMask",
 ]

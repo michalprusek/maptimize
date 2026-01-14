@@ -10,7 +10,7 @@
 import { useState, useCallback, useEffect, useRef } from "react";
 import { useTranslations } from "next-intl";
 import { AnimatePresence, motion } from "framer-motion";
-import { ChevronRight, ChevronLeft, ArrowLeft, AlertCircle, X, ScanSearch, Wand2, Loader2 } from "lucide-react";
+import { ChevronRight, ChevronLeft, ArrowLeft, AlertCircle, X, ScanSearch, Wand2, Loader2, Type, MousePointer2 } from "lucide-react";
 import { useSettingsStore } from "@/stores/settingsStore";
 import { api, type CellCropGallery, type FOVImage } from "@/lib/api";
 import { AppSidebar } from "@/components/layout";
@@ -22,6 +22,8 @@ import type {
   Rect,
   CellPolygon,
   SAMEmbeddingStatus,
+  SegmentPromptMode,
+  DetectedInstance,
 } from "@/lib/editor/types";
 import {
   cropToEditorBbox,
@@ -42,6 +44,7 @@ import { ImageEditorToolbar, type ToolbarPosition } from "./ImageEditorToolbar";
 import { ImageEditorCropPreview } from "./ImageEditorCropPreview";
 import { ImageEditorContextMenu } from "./ImageEditorContextMenu";
 import { SegmentationOverlay } from "./SegmentationOverlay";
+import { TextPromptSearch } from "./TextPromptSearch";
 import { useBboxInteraction } from "./hooks/useBboxInteraction";
 import { useUndoHistory } from "./hooks/useUndoHistory";
 import { useSegmentation } from "./hooks/useSegmentation";
@@ -49,6 +52,148 @@ import { useSegmentation } from "./hooks/useSegmentation";
 // localStorage key for persisting toolbar position
 const TOOLBAR_POSITION_KEY = "maptimize:editor:toolbarPosition";
 const DEFAULT_TOOLBAR_POSITION: ToolbarPosition = { edge: "bottom", offset: 0.5 };
+
+/** Mouse icon with highlighted button (left or right) */
+interface MouseIconProps {
+  className?: string;
+  button: "left" | "right";
+}
+
+function MouseIcon({ className = "", button }: MouseIconProps): React.ReactElement {
+  const path = button === "left"
+    ? "M1.5 6 Q1.5 1.5 7 1.5 L7 7.5 L1.5 7.5 Z"
+    : "M12.5 6 Q12.5 1.5 7 1.5 L7 7.5 L12.5 7.5 Z";
+
+  return (
+    <svg width="14" height="18" viewBox="0 0 14 18" fill="none" className={className}>
+      <rect x="1" y="1" width="12" height="16" rx="6" stroke="currentColor" strokeWidth="1.5" fill="none" />
+      <line x1="7" y1="1" x2="7" y2="8" stroke="currentColor" strokeWidth="1" />
+      <path d={path} fill="currentColor" />
+    </svg>
+  );
+}
+
+/** Point prompt help panel showing mouse controls */
+function PointPromptHelpPanel(): React.ReactElement {
+  const t = useTranslations("editor");
+
+  return (
+    <div className="bg-black/60 backdrop-blur-sm rounded-lg px-3 py-2 text-xs text-white/80 space-y-1">
+      <div className="flex items-center gap-2">
+        <MouseIcon button="left" className="text-emerald-400" />
+        <span>{t("addForeground")}</span>
+      </div>
+      <div className="flex items-center gap-2">
+        <MouseIcon button="right" className="text-red-400" />
+        <span>{t("addBackground")}</span>
+      </div>
+      <div className="border-t border-white/20 my-1" />
+      <div className="flex items-center gap-2">
+        <span className="text-yellow-400 font-medium text-[10px]">Shift+</span>
+        <MouseIcon button="left" className="text-yellow-400" />
+        <span>{t("panImage")}</span>
+      </div>
+      <div className="flex items-center gap-2">
+        <span className="text-yellow-400 font-medium text-[10px]">Shift+</span>
+        <MouseIcon button="right" className="text-yellow-400" />
+        <span>{t("undoPoint")}</span>
+      </div>
+    </div>
+  );
+}
+
+/** Segmentation panel with mode toggle (point/text) */
+interface SegmentationPanelProps {
+  promptMode: SegmentPromptMode;
+  setPromptMode: (mode: SegmentPromptMode) => void;
+  supportsTextPrompts: boolean;
+  // Text prompt props
+  textPrompt: string;
+  setTextPrompt: (prompt: string) => void;
+  onTextQuery: () => void;
+  isQuerying: boolean;
+  detectedInstances: DetectedInstance[];
+  selectedInstanceIndex: number | null;
+  onSelectInstance: (index: number) => void;
+  onSaveInstance: (index: number) => void;
+  onClearText: () => void;
+  textError: string | null;
+}
+
+function SegmentationPanel({
+  promptMode,
+  setPromptMode,
+  supportsTextPrompts,
+  textPrompt,
+  setTextPrompt,
+  onTextQuery,
+  isQuerying,
+  detectedInstances,
+  selectedInstanceIndex,
+  onSelectInstance,
+  onSaveInstance,
+  onClearText,
+  textError,
+}: SegmentationPanelProps): React.ReactElement {
+  const t = useTranslations("editor");
+
+  return (
+    <div className="bg-black/60 backdrop-blur-sm rounded-lg overflow-hidden min-w-[220px]">
+      {/* Mode toggle - only show if text prompts are supported */}
+      {supportsTextPrompts && (
+        <div className="flex border-b border-white/10">
+          <button
+            onClick={() => setPromptMode("point")}
+            className={`flex-1 flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-medium transition-colors ${
+              promptMode === "point"
+                ? "bg-primary-500/20 text-primary-400"
+                : "text-white/60 hover:text-white/80 hover:bg-white/5"
+            }`}
+          >
+            <MousePointer2 className="w-3.5 h-3.5" />
+            <span>{t("pointPrompt")}</span>
+          </button>
+          <button
+            onClick={() => setPromptMode("text")}
+            className={`flex-1 flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-medium transition-colors ${
+              promptMode === "text"
+                ? "bg-primary-500/20 text-primary-400"
+                : "text-white/60 hover:text-white/80 hover:bg-white/5"
+            }`}
+          >
+            <Type className="w-3.5 h-3.5" />
+            <span>{t("textPrompt")}</span>
+          </button>
+        </div>
+      )}
+
+      {/* Content based on mode */}
+      <div className="p-2">
+        {promptMode === "point" ? (
+          <PointPromptHelpPanel />
+        ) : (
+          <TextPromptSearch
+            value={textPrompt}
+            onChange={setTextPrompt}
+            onSubmit={onTextQuery}
+            isLoading={isQuerying}
+            detectedInstances={detectedInstances}
+            selectedInstanceIndex={selectedInstanceIndex}
+            onSelectInstance={onSelectInstance}
+            onSaveInstance={onSaveInstance}
+            onClear={onClearText}
+            error={textError}
+          />
+        )}
+      </div>
+    </div>
+  );
+}
+
+/** Simple help panel for legacy mode (no text support) */
+function SegmentationHelpPanel(): React.ReactElement {
+  return <PointPromptHelpPanel />;
+}
 
 interface SegmentationModeButtonProps {
   isActive: boolean;
@@ -104,7 +249,7 @@ function SegmentationModeButton({
   function getButtonClassName(): string {
     const base = "flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm font-medium transition-all relative";
     if (isActive) {
-      return `${base} bg-emerald-500 text-white`;
+      return `${base} bg-red-500 text-white`;
     }
     if (isComputing) {
       return `${base} text-text-muted cursor-not-allowed`;
@@ -127,7 +272,7 @@ function SegmentationModeButton({
       <span className="hidden sm:inline">{label}</span>
       {/* Ready indicator dot */}
       {embeddingStatus === "ready" && !isActive && (
-        <span className="absolute -top-0.5 -right-0.5 w-2 h-2 bg-emerald-400 rounded-full" />
+        <span className="absolute -top-0.5 -right-0.5 w-2 h-2 bg-red-400 rounded-full" />
       )}
       {/* Error indicator dot */}
       {embeddingStatus === "error" && (
@@ -197,6 +342,7 @@ export function ImageEditorPage({
     isDragging: false,
     dragStart: null,
     isSpacePressed: false,
+    isShiftPressed: false,
     zoom: 1,
     panOffset: { x: 0, y: 0 },
   }));
@@ -230,8 +376,8 @@ export function ImageEditorPage({
   // Segmentation hook
   const segmentation = useSegmentation({
     imageId: fovImage.id,
-    onMaskSaved: useCallback((cropId: number, polygon: [number, number][], iouScore: number) => {
-      setSavedPolygons(prev => updateSavedPolygon(prev, cropId, polygon, iouScore));
+    onFOVMaskSaved: useCallback((_imageId: number, _polygon: [number, number][], _iouScore: number) => {
+      // FOV mask saved - notify parent component
       onDataChanged?.();
     }, [onDataChanged]),
   });
@@ -719,6 +865,14 @@ export function ImageEditorPage({
           isSpacePressed: true,
         }));
       }
+
+      // Shift = enable pan/undo mode in segmentation
+      if (e.key === "Shift" && !editorState.isShiftPressed) {
+        setEditorState((prev) => ({
+          ...prev,
+          isShiftPressed: true,
+        }));
+      }
     };
 
     const handleKeyUp = (e: KeyboardEvent) => {
@@ -726,6 +880,12 @@ export function ImageEditorPage({
         setEditorState((prev) => ({
           ...prev,
           isSpacePressed: false,
+        }));
+      }
+      if (e.key === "Shift") {
+        setEditorState((prev) => ({
+          ...prev,
+          isShiftPressed: false,
         }));
       }
     };
@@ -737,7 +897,7 @@ export function ImageEditorPage({
       window.removeEventListener("keydown", handleKeyDown);
       window.removeEventListener("keyup", handleKeyUp);
     };
-  }, [bboxes, editorState.selectedBboxId, editorState.isSpacePressed, editorState.mode, handleBboxDeleteLocal, undoHistory, segmentation]);
+  }, [bboxes, editorState.selectedBboxId, editorState.isSpacePressed, editorState.isShiftPressed, editorState.mode, handleBboxDeleteLocal, undoHistory, segmentation]);
 
   // Bbox interaction hook
   const {
@@ -791,39 +951,105 @@ export function ImageEditorPage({
     [editorState.mode, editorState.zoom, editorState.panOffset, segmentation, fovImage.width, fovImage.height]
   );
 
-  // Handle save mask (requires selected crop)
+  // Handle save FOV mask
   const handleSaveMask = useCallback(async () => {
-    const selectedCropId = typeof editorState.selectedBboxId === "number"
-      ? editorState.selectedBboxId
-      : null;
-
-    if (!selectedCropId) {
-      showError(t("noTargetCrop"));
-      return;
-    }
-
-    const result = await segmentation.saveMask(selectedCropId);
+    const result = await segmentation.saveFOVMask();
     if (!result.success && result.error) {
       showError(result.error);
     }
-  }, [editorState.selectedBboxId, segmentation, showError, t]);
+  }, [segmentation, showError]);
+
+  // Save a text-detected instance to FOV
+  const handleSaveTextInstance = useCallback(async (instanceIndex: number) => {
+    const result = await segmentation.saveTextInstanceToFOV(instanceIndex);
+    if (!result.success && result.error) {
+      showError(result.error);
+    }
+  }, [segmentation, showError]);
+
+  // Track panning state for segment mode Shift+drag
+  const [segmentPanning, setSegmentPanning] = useState<{ startX: number; startY: number; startPanX: number; startPanY: number } | null>(null);
 
   // Wrap mouse down handler to support segmentation mode
   const handleMouseDownWithSegmentation = useCallback(
     (e: React.MouseEvent<HTMLElement>) => {
       // In segment mode, handle segmentation clicks
-      if (editorState.mode === "segment" && segmentation.isReady) {
-        // Prevent context menu on right click
-        if (e.button === 2) {
-          e.preventDefault();
+      if (editorState.mode === "segment") {
+        // Shift modifier: left click = pan (bypass bbox detection), right click = undo
+        if (e.shiftKey) {
+          if (e.button === 0) {
+            // Left click with Shift = start panning directly (bypass bbox detection)
+            const container = containerRef.current;
+            if (container) {
+              const rect = container.getBoundingClientRect();
+              setSegmentPanning({
+                startX: e.clientX - rect.left,
+                startY: e.clientY - rect.top,
+                startPanX: editorState.panOffset.x,
+                startPanY: editorState.panOffset.y,
+              });
+            }
+            return;
+          }
+          if (e.button === 2) {
+            // Right click with Shift = undo last click point
+            e.preventDefault();
+            segmentation.undoLastClick();
+            return;
+          }
         }
-        handleSegmentationClick(e as React.MouseEvent<HTMLCanvasElement | HTMLDivElement>);
-        return;
+        // Normal segmentation behavior (no Shift) - only if embedding is ready
+        if (segmentation.isReady) {
+          // Prevent context menu on right click
+          if (e.button === 2) {
+            e.preventDefault();
+          }
+          handleSegmentationClick(e as React.MouseEvent<HTMLCanvasElement | HTMLDivElement>);
+          return;
+        }
       }
       // Otherwise, delegate to bbox interaction
       handleMouseDown(e);
     },
-    [editorState.mode, segmentation.isReady, handleSegmentationClick, handleMouseDown]
+    [editorState.mode, editorState.panOffset, segmentation.isReady, segmentation.undoLastClick, handleSegmentationClick, handleMouseDown]
+  );
+
+  // Handle mouse move for segment mode panning
+  const handleMouseMoveWithSegmentation = useCallback(
+    (e: React.MouseEvent<HTMLElement>) => {
+      if (segmentPanning) {
+        const container = containerRef.current;
+        if (container) {
+          const rect = container.getBoundingClientRect();
+          const currentX = e.clientX - rect.left;
+          const currentY = e.clientY - rect.top;
+          const dx = currentX - segmentPanning.startX;
+          const dy = currentY - segmentPanning.startY;
+          setEditorState(prev => ({
+            ...prev,
+            panOffset: {
+              x: segmentPanning.startPanX + dx,
+              y: segmentPanning.startPanY + dy,
+            },
+          }));
+        }
+        return;
+      }
+      handleMouseMove(e);
+    },
+    [segmentPanning, handleMouseMove]
+  );
+
+  // Handle mouse up for segment mode panning
+  const handleMouseUpWithSegmentation = useCallback(
+    (e: React.MouseEvent<HTMLElement>) => {
+      if (segmentPanning) {
+        setSegmentPanning(null);
+        return;
+      }
+      handleMouseUp(e);
+    },
+    [segmentPanning, handleMouseUp]
   );
 
   // Wrap context menu handler to allow right-click in segment mode
@@ -911,38 +1137,80 @@ export function ImageEditorPage({
 
         {/* Image navigation - top right, adjusts position based on segment mode */}
         {totalImages > 1 && (
-          <div className={`absolute top-4 z-50 flex items-center gap-2 transition-all duration-300 ${
+          <div className={`absolute top-4 z-50 flex flex-col items-end gap-2 transition-all duration-300 ${
             editorState.mode === "segment" ? "right-4" : "right-[17rem]"
           }`}>
-            {/* Previous button */}
-            <button
-              onClick={onNavigatePrev}
-              disabled={!hasPrevImage}
-              className={getNavButtonClassName(hasPrevImage)}
-              title={t("previousImage")}
-            >
-              <ChevronLeft className="w-4 h-4 text-text-secondary" />
-            </button>
+            <div className="flex items-center gap-2">
+              {/* Previous button */}
+              <button
+                onClick={onNavigatePrev}
+                disabled={!hasPrevImage}
+                className={getNavButtonClassName(hasPrevImage)}
+                title={t("previousImage")}
+              >
+                <ChevronLeft className="w-4 h-4 text-text-secondary" />
+              </button>
 
-            {/* Image info */}
-            <div className="bg-bg-secondary/80 backdrop-blur-sm px-3 py-1.5 rounded-lg border border-white/10">
-              <div className="text-xs text-text-secondary text-center">
-                {currentImageIndex + 1} / {totalImages}
+              {/* Image info */}
+              <div className="bg-bg-secondary/80 backdrop-blur-sm px-3 py-1.5 rounded-lg border border-white/10">
+                <div className="text-xs text-text-secondary text-center">
+                  {currentImageIndex + 1} / {totalImages}
+                </div>
+                <div className="text-sm text-text-primary truncate max-w-[200px]" title={fovImage.original_filename}>
+                  {fovImage.original_filename}
+                </div>
               </div>
-              <div className="text-sm text-text-primary truncate max-w-[200px]" title={fovImage.original_filename}>
-                {fovImage.original_filename}
-              </div>
+
+              {/* Next button */}
+              <button
+                onClick={onNavigateNext}
+                disabled={!hasNextImage}
+                className={getNavButtonClassName(hasNextImage)}
+                title={t("nextImage")}
+              >
+                <ChevronRight className="w-4 h-4 text-text-secondary" />
+              </button>
             </div>
 
-            {/* Next button */}
-            <button
-              onClick={onNavigateNext}
-              disabled={!hasNextImage}
-              className={getNavButtonClassName(hasNextImage)}
-              title={t("nextImage")}
-            >
-              <ChevronRight className="w-4 h-4 text-text-secondary" />
-            </button>
+            {/* Segmentation panel - under navigation */}
+            {editorState.mode === "segment" && (
+              <SegmentationPanel
+                promptMode={segmentation.promptMode}
+                setPromptMode={segmentation.setPromptMode}
+                supportsTextPrompts={segmentation.supportsTextPrompts}
+                textPrompt={segmentation.textState.textPrompt}
+                setTextPrompt={segmentation.setTextPrompt}
+                onTextQuery={segmentation.queryTextSegmentation}
+                isQuerying={segmentation.textState.isQuerying}
+                detectedInstances={segmentation.textState.detectedInstances}
+                selectedInstanceIndex={segmentation.textState.selectedInstanceIndex}
+                onSelectInstance={segmentation.selectInstance}
+                onSaveInstance={handleSaveTextInstance}
+                onClearText={segmentation.clearTextSegmentation}
+                textError={segmentation.textState.error}
+              />
+            )}
+          </div>
+        )}
+
+        {/* Segmentation panel when no image navigation - top right */}
+        {totalImages <= 1 && editorState.mode === "segment" && (
+          <div className="absolute top-4 right-4 z-50">
+            <SegmentationPanel
+              promptMode={segmentation.promptMode}
+              setPromptMode={segmentation.setPromptMode}
+              supportsTextPrompts={segmentation.supportsTextPrompts}
+              textPrompt={segmentation.textState.textPrompt}
+              setTextPrompt={segmentation.setTextPrompt}
+              onTextQuery={segmentation.queryTextSegmentation}
+              isQuerying={segmentation.textState.isQuerying}
+              detectedInstances={segmentation.textState.detectedInstances}
+              selectedInstanceIndex={segmentation.textState.selectedInstanceIndex}
+              onSelectInstance={segmentation.selectInstance}
+              onSaveInstance={handleSaveTextInstance}
+              onClearText={segmentation.clearTextSegmentation}
+              textError={segmentation.textState.error}
+            />
           </div>
         )}
 
@@ -980,11 +1248,11 @@ export function ImageEditorPage({
             displayMode={displayMode}
             drawingBbox={drawingBbox}
             onMouseDown={handleMouseDownWithSegmentation}
-            onMouseMove={handleMouseMove}
-            onMouseUp={handleMouseUp}
-            onMouseLeave={handleMouseLeave}
+            onMouseMove={handleMouseMoveWithSegmentation}
+            onMouseUp={handleMouseUpWithSegmentation}
+            onMouseLeave={() => { setSegmentPanning(null); handleMouseLeave(); }}
             onContextMenu={handleContextMenuWithSegmentation}
-            cursor={editorState.mode === "segment" ? "crosshair" : cursor}
+            cursor={editorState.mode === "segment" ? (segmentPanning ? "grabbing" : editorState.isShiftPressed ? "grab" : "crosshair") : cursor}
             containerRef={containerRef}
             onImageCanvasReady={(canvas) => {
               imageCanvasRef.current = canvas;
@@ -993,6 +1261,7 @@ export function ImageEditorPage({
               sourceImageRef.current = img;
             }}
             isSegmentMode={editorState.mode === "segment"}
+            backgroundColor={editorState.mode === "segment" ? "#1a0a0a" : "#0a1a0a"}
           />
 
           {/* Segmentation overlay - renders click points and polygons */}
