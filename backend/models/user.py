@@ -13,6 +13,7 @@ if TYPE_CHECKING:
     from .ranking import UserRating, Comparison
     from .metric import Metric
     from .user_settings import UserSettings
+    from .bug_report import BugReport
 
 
 class UserRole(str, PyEnum):
@@ -66,6 +67,10 @@ class User(Base):
         back_populates="user",
         cascade="all, delete-orphan",
         uselist=False
+    )
+    bug_reports: Mapped[List["BugReport"]] = relationship(
+        back_populates="user",
+        cascade="all, delete-orphan"
     )
 
     def __repr__(self) -> str:

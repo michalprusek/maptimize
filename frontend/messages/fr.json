@@ -127,9 +127,7 @@
       "green": "Vert (GFP)",
       "greenDesc": "Vert sur noir, style fluorescence",
       "fire": "Feu",
-      "fireDesc": "Style carte thermique (noir-rouge-jaune-blanc)",
-      "hilo": "HiLo",
-      "hiloDesc": "Met en evidence les pixels sous/surexposes"
+      "fireDesc": "Style carte thermique (noir-rouge-jaune-blanc)"
     },
     "language": {
       "title": "Langue",
@@ -159,6 +157,26 @@
     "prc1": "PRC1",
     "unassigned": "Non assigne"
   },
+  "bugReport": {
+    "title": "Signaler un bug",
+    "description": "Description",
+    "descriptionPlaceholder": "Decrivez le probleme rencontre...",
+    "category": "Categorie",
+    "bug": "Bug",
+    "feature": "Demande de fonctionnalite",
+    "other": "Autre",
+    "submit": "Envoyer le rapport",
+    "submitting": "Envoi en cours...",
+    "success": "Rapport de bug envoye avec succes !",
+    "error": "Echec de l'envoi du rapport",
+    "debugInfo": "Informations de debogage",
+    "debugInfoDesc": "Ces informations nous aident a diagnostiquer le probleme",
+    "browser": "Navigateur",
+    "screenSize": "Taille de l'ecran",
+    "currentPage": "Page actuelle",
+    "userSettings": "Parametres utilisateur",
+    "reportBug": "Signaler un bug"
+  },
   "umap": {
     "title": "Espace des caracteristiques (UMAP)",
     "fovImages": "images FOV",
@@ -183,5 +201,48 @@
     "bundleness": "Groupement",
     "cropId": "Decoupe #{id}",
     "imageId": "Image #{id}"
+  },
+  "editor": {
+    "title": "Editeur d'image",
+    "cropPreviews": "Apercu des cellules",
+    "newCrop": "Nouveau",
+    "modifiedCrop": "Modifie",
+    "deleteBbox": "Supprimer la cellule",
+    "resetBbox": "Reinitialiser a l'original",
+    "brightness": "Luminosite",
+    "contrast": "Contraste",
+    "displayMode": "Mode d'affichage",
+    "zoom": "Zoom",
+    "resetView": "Reinitialiser la vue",
+    "undo": "Annuler",
+    "addCell": "Ajouter une cellule",
+    "addBbox": "Ajouter une cellule",
+    "viewMode": "Vue",
+    "drawMode": "Dessiner",
+    "shortcuts": {
+      "escape": "ECHAP pour fermer",
+      "delete": "Suppr pour supprimer",
+      "undo": "Ctrl+Z pour annuler",
+      "draw": "N pour basculer le mode dessin",
+      "pan": "Espace+glisser pour deplacer"
+    },
+    "noCells": "Aucune cellule detectee",
+    "clickToAdd": "Cliquez sur \"Ajouter une cellule\" pour en creer une",
+    "back": "Retour",
+    "previousImage": "Image precedente",
+    "nextImage": "Image suivante",
+    "dragToReposition": "Glisser pour repositionner",
+    "resetFilters": "Reinitialiser",
+    "cellCount": "{count, plural, =1 {# cellule} other {# cellules}}",
+    "zoomIn": "Zoom avant",
+    "zoomOut": "Zoom arriere",
+    "fitToView": "Ajuster a la vue",
+    "imageNotFound": "Image non trouvee",
+    "loadError": "Echec du chargement de l'image",
+    "saveError": "Echec de l'enregistrement",
+    "undoError": "Echec de l'annulation",
+    "createError": "Echec de la creation de la cellule",
+    "deleteError": "Echec de la suppression de la cellule",
+    "updateError": "Echec de la mise a jour de la cellule"
   }
 }

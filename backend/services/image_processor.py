@@ -131,9 +131,20 @@ class ImageProcessor:
                     original_path = Path(image.file_path)
                 else:
                     logger.info("Processing 2D image...")
-                    # For 2D images, use as-is (no projections needed)
                     mip = data
-                    original_path = None
+
+                    # For 2D images in non-web-compatible formats (TIFF), convert to PNG
+                    # Browsers can't display TIFF, so we need a web-friendly version
+                    file_ext = Path(image.file_path).suffix.lower()
+                    if file_ext in ['.tif', '.tiff']:
+                        logger.info("Converting 2D TIFF to PNG for web display")
+                        mip_path = await self._save_projection(image, mip, "mip")
+                        image.mip_path = str(mip_path)
+                        # Keep the original TIFF for scientific accuracy
+                        original_path = None
+                    else:
+                        # For web-compatible formats (PNG, JPEG), use original directly
+                        original_path = None
 
                 # Save thumbnail (always from MIP)
                 thumb_path = await self._save_thumbnail(image, mip)
@@ -336,10 +347,21 @@ class ImageProcessor:
                     original_path = Path(image.file_path)
                 else:
                     logger.info("Processing 2D image...")
-                    # For 2D images, use as-is (no projections needed)
                     mip = data
                     sum_proj = None
-                    original_path = None
+
+                    # For 2D images in non-web-compatible formats (TIFF), convert to PNG
+                    # Browsers can't display TIFF, so we need a web-friendly version
+                    file_ext = Path(image.file_path).suffix.lower()
+                    if file_ext in ['.tif', '.tiff']:
+                        logger.info("Converting 2D TIFF to PNG for web display")
+                        mip_path = await self._save_projection(image, mip, "mip")
+                        image.mip_path = str(mip_path)
+                        # Keep the original TIFF for scientific accuracy
+                        original_path = None
+                    else:
+                        # For web-compatible formats (PNG, JPEG), use original directly
+                        original_path = None
 
                 # Save thumbnail (always from MIP)
                 thumb_path = await self._save_thumbnail(image, mip)

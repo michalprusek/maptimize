@@ -1,7 +1,7 @@
 "use client";
 
-import { useState, useMemo, useEffect, useRef } from "react";
-import { useParams } from "next/navigation";
+import { useState, useMemo, useEffect, useRef, useCallback } from "react";
+import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import { motion } from "framer-motion";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
@@ -49,6 +49,7 @@ const FOV_SORT_OPTIONS: SortOption<FOVSortField>[] = [
 
 export default function ExperimentDetailPage(): JSX.Element {
   const params = useParams();
+  const router = useRouter();
   const experimentId = Number(params.id);
   const queryClient = useQueryClient();
   const t = useTranslations("experiments");
@@ -214,6 +215,16 @@ export default function ExperimentDetailPage(): JSX.Element {
       queryClient.invalidateQueries({ queryKey: ["crops", experimentId] });
     },
   });
+
+  // Navigation handlers for editor page
+  const handleOpenEditorFromFov = useCallback((fov: FOVImage) => {
+    router.push(`/editor/${experimentId}/${fov.id}`);
+  }, [router, experimentId]);
+
+  const handleOpenEditorFromCrop = useCallback((crop: CellCropGallery) => {
+    // Navigate to editor with the parent FOV image
+    router.push(`/editor/${experimentId}/${crop.image_id}`);
+  }, [router, experimentId]);
 
   // State for protein dropdown
   const [proteinDropdownCropId, setProteinDropdownCropId] = useState<number | null>(null);
@@ -590,6 +601,7 @@ export default function ExperimentDetailPage(): JSX.Element {
           onClearFilters={clearFilters}
           selectedIds={selectedFovIds}
           onToggleSelect={toggleSelect}
+          onFovClick={handleOpenEditorFromFov}
         />
       ) : (
         <>
@@ -618,7 +630,10 @@ export default function ExperimentDetailPage(): JSX.Element {
                     className="glass-card group"
                   >
                     {/* Cell crop preview */}
-                    <div className="aspect-square bg-bg-secondary flex items-center justify-center relative overflow-hidden rounded-t-xl">
+                    <div
+                      className="aspect-square bg-bg-secondary flex items-center justify-center relative overflow-hidden rounded-t-xl cursor-pointer"
+                      onClick={() => handleOpenEditorFromCrop(crop)}
+                    >
                       <MicroscopyImage
                         src={api.getCropImageUrl(crop.id, "mip")}
                         alt={`Cell from ${crop.parent_filename}`}
@@ -633,10 +648,16 @@ export default function ExperimentDetailPage(): JSX.Element {
 
                       <SelectionCheckbox
                         isSelected={selectedIds.has(crop.id)}
-                        onClick={() => toggleSelect(crop.id)}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          toggleSelect(crop.id);
+                        }}
                       />
                       <DeleteOverlayButton
-                        onClick={() => setCropToDelete({ id: crop.id, name: crop.parent_filename })}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setCropToDelete({ id: crop.id, name: crop.parent_filename });
+                        }}
                         title="Delete cell crop"
                       />
                     </div>
@@ -771,6 +792,7 @@ export default function ExperimentDetailPage(): JSX.Element {
         isLoading={effectiveViewMode === "fovs" ? bulkDeleteFovsMutation.isPending : bulkDeleteCropsMutation.isPending}
         variant="danger"
       />
+
     </div>
   );
 }

@@ -24,6 +24,8 @@ interface FOVGalleryProps {
   onClearFilters: () => void;
   selectedIds: Set<number>;
   onToggleSelect: (id: number) => void;
+  /** Callback when clicking on FOV image to open editor */
+  onFovClick?: (fov: FOVImage) => void;
 }
 
 export function FOVGallery({
@@ -34,6 +36,7 @@ export function FOVGallery({
   onClearFilters,
   selectedIds,
   onToggleSelect,
+  onFovClick,
 }: FOVGalleryProps): JSX.Element {
   // Derive hasActiveFilters from props for consistency
   const hasActiveFilters = fovs !== undefined &&
@@ -106,7 +109,12 @@ export function FOVGallery({
               className="glass-card group"
             >
               {/* Image preview */}
-              <div className="aspect-square bg-bg-secondary flex items-center justify-center relative overflow-hidden rounded-t-xl">
+              <div
+                className={`aspect-square bg-bg-secondary flex items-center justify-center relative overflow-hidden rounded-t-xl ${
+                  onFovClick ? "cursor-pointer" : ""
+                }`}
+                onClick={() => onFovClick?.(fov)}
+              >
                 {fov.thumbnail_url ? (
                   <MicroscopyImage
                     src={api.getImageUrl(fov.id, "thumbnail")}
@@ -125,10 +133,16 @@ export function FOVGallery({
 
                 <SelectionCheckbox
                   isSelected={selectedIds.has(fov.id)}
-                  onClick={() => onToggleSelect(fov.id)}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onToggleSelect(fov.id);
+                  }}
                 />
                 <DeleteOverlayButton
-                  onClick={() => setFovToDelete({ id: fov.id, name: fov.original_filename })}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setFovToDelete({ id: fov.id, name: fov.original_filename });
+                  }}
                   title="Delete FOV"
                 />
 

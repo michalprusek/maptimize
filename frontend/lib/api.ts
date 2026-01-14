@@ -214,6 +214,22 @@ class ApiClient {
     return this.request<Image>(`/api/images/${id}`);
   }
 
+  /**
+   * Get a single FOV image by ID.
+   */
+  async getFovImage(fovId: number) {
+    return this.request<FOVImage>(`/api/images/${fovId}`);
+  }
+
+  /**
+   * Get all cell crops for a specific FOV image.
+   */
+  async getFovCrops(fovId: number, excludeExcluded = false) {
+    return this.request<CellCropGallery[]>(
+      `/api/images/${fovId}/crops?exclude_excluded=${excludeExcluded}`
+    );
+  }
+
   getImageUrl(imageId: number, type: "original" | "mip" | "thumbnail" = "mip") {
     const token = this.getToken();
     if (!token) {
@@ -404,6 +420,73 @@ class ApiClient {
     });
   }
 
+  // Crop Editor API methods
+
+  /**
+   * Update bounding box coordinates for a cell crop.
+   * Use regenerateCropFeatures after to regenerate crop images and features.
+   */
+  async updateCropBbox(cropId: number, bbox: { x: number; y: number; width: number; height: number }) {
+    return this.request<CropBboxUpdateResponse>(`/api/images/crops/${cropId}/bbox`, {
+      method: "PATCH",
+      body: JSON.stringify({
+        bbox_x: bbox.x,
+        bbox_y: bbox.y,
+        bbox_w: bbox.width,
+        bbox_h: bbox.height,
+      }),
+    });
+  }
+
+  /**
+   * Regenerate crop images and features from current bbox coordinates.
+   */
+  async regenerateCropFeatures(cropId: number) {
+    return this.request<CropRegenerateResponse>(`/api/images/crops/${cropId}/regenerate`, {
+      method: "POST",
+      body: JSON.stringify({ async_processing: false }),
+    });
+  }
+
+  /**
+   * Create a new manual crop on an FOV image.
+   */
+  async createManualCrop(
+    fovId: number,
+    bbox: { x: number; y: number; width: number; height: number },
+    mapProteinId?: number
+  ) {
+    return this.request<ManualCropCreateResponse>(`/api/images/${fovId}/crops`, {
+      method: "POST",
+      body: JSON.stringify({
+        bbox_x: bbox.x,
+        bbox_y: bbox.y,
+        bbox_w: bbox.width,
+        bbox_h: bbox.height,
+        map_protein_id: mapProteinId,
+      }),
+    });
+  }
+
+  /**
+   * Apply batch changes to crops (create, update, delete).
+   */
+  async batchUpdateCrops(
+    fovId: number,
+    changes: CropBatchUpdateItem[],
+    regenerateFeatures = true,
+    confirmDeleteComparisons = false
+  ) {
+    return this.request<CropBatchUpdateResponse>(`/api/images/${fovId}/crops/batch`, {
+      method: "PATCH",
+      body: JSON.stringify({
+        changes,
+        regenerate_features: regenerateFeatures,
+        confirm_delete_comparisons: confirmDeleteComparisons,
+      }),
+    });
+  }
+
   // Embeddings / UMAP
   async getUmapData(
     experimentId?: number,
@@ -517,6 +600,18 @@ class ApiClient {
     return this.request<{ message: string }>("/api/settings/avatar", {
       method: "DELETE",
     });
+  }
+
+  // Bug Reports
+  async submitBugReport(data: BugReportCreate) {
+    return this.request<BugReport>("/api/bug-reports", {
+      method: "POST",
+      body: JSON.stringify(data),
+    });
+  }
+
+  async getMyBugReports() {
+    return this.request<BugReportListResponse>("/api/bug-reports");
   }
 
   /**
@@ -813,7 +908,7 @@ export interface EmbeddingStatus {
 }
 
 // Settings types
-export type DisplayMode = "grayscale" | "inverted" | "green" | "fire" | "hilo";
+export type DisplayMode = "grayscale" | "inverted" | "green" | "fire";
 export type Theme = "dark" | "light";
 export type Language = "en" | "fr";
 
@@ -843,6 +938,92 @@ export interface PasswordChangeRequest {
 export interface AvatarUploadResponse {
   avatar_url: string;
   message?: string;
+}
+
+// Bug Report types
+export type BugReportCategory = "bug" | "feature" | "other";
+export type BugReportStatus = "open" | "in_progress" | "resolved" | "closed";
+
+export interface BugReportCreate {
+  description: string;
+  category: BugReportCategory;
+  browser_info?: string;
+  page_url?: string;
+  screen_resolution?: string;
+  user_settings_json?: string;
+}
+
+export interface BugReport {
+  id: number;
+  user_id: number;
+  user_name: string;
+  user_email: string;
+  description: string;
+  category: BugReportCategory;
+  status: BugReportStatus;
+  browser_info?: string;
+  page_url?: string;
+  screen_resolution?: string;
+  user_settings_json?: string;
+  created_at: string;
+}
+
+export interface BugReportListResponse {
+  reports: BugReport[];
+  total: number;
+}
+
+// Crop Editor types
+export interface CropBboxUpdateResponse {
+  id: number;
+  bbox_x: number;
+  bbox_y: number;
+  bbox_w: number;
+  bbox_h: number;
+  needs_regeneration: boolean;
+}
+
+export interface ManualCropCreateResponse {
+  id: number;
+  image_id: number;
+  bbox_x: number;
+  bbox_y: number;
+  bbox_w: number;
+  bbox_h: number;
+  detection_confidence: number | null;
+  needs_processing: boolean;
+}
+
+export interface CropRegenerateResponse {
+  id: number;
+  bbox_x: number;
+  bbox_y: number;
+  bbox_w: number;
+  bbox_h: number;
+  mip_path: string | null;
+  sum_crop_path: string | null;
+  mean_intensity: number | null;
+  embedding_model: string | null;
+  has_embedding: boolean;
+  processing_status: "completed" | "processing" | "failed";
+}
+
+export interface CropBatchUpdateItem {
+  id?: number;
+  action: "create" | "update" | "delete";
+  bbox_x?: number;
+  bbox_y?: number;
+  bbox_w?: number;
+  bbox_h?: number;
+  map_protein_id?: number;
+}
+
+export interface CropBatchUpdateResponse {
+  created: number[];
+  updated: number[];
+  deleted: number[];
+  failed: { action: string; id?: number; error: string }[];
+  regeneration_queued: boolean;
 }
 
 export const api = new ApiClient();

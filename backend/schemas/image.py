@@ -1,6 +1,6 @@
 """Image schemas."""
 from datetime import datetime
-from typing import Optional, List
+from typing import Optional, List, Literal
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -134,3 +134,129 @@ class FOVResponse(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+# =============================================================================
+# Crop Editor Schemas
+# =============================================================================
+
+
+class CropBboxUpdateRequest(BaseModel):
+    """Schema for updating crop bounding box."""
+    bbox_x: int = Field(..., ge=0)
+    bbox_y: int = Field(..., ge=0)
+    bbox_w: int = Field(..., gt=0, le=2048)
+    bbox_h: int = Field(..., gt=0, le=2048)
+
+    @field_validator("bbox_w", "bbox_h")
+    @classmethod
+    def validate_min_size(cls, v: int) -> int:
+        """Ensure minimum viable crop size."""
+        if v < 10:
+            raise ValueError("Crop dimension must be at least 10 pixels")
+        return v
+
+
+class CropBboxUpdateResponse(BaseModel):
+    """Response after bbox update."""
+    id: int
+    bbox_x: int
+    bbox_y: int
+    bbox_w: int
+    bbox_h: int
+    needs_regeneration: bool = True
+
+    class Config:
+        from_attributes = True
+
+
+class ManualCropCreateRequest(BaseModel):
+    """Schema for creating a manual crop."""
+    bbox_x: int = Field(..., ge=0)
+    bbox_y: int = Field(..., ge=0)
+    bbox_w: int = Field(..., gt=0, le=2048)
+    bbox_h: int = Field(..., gt=0, le=2048)
+    map_protein_id: Optional[int] = None
+
+    @field_validator("bbox_w", "bbox_h")
+    @classmethod
+    def validate_min_size(cls, v: int) -> int:
+        """Ensure minimum viable crop size."""
+        if v < 10:
+            raise ValueError("Crop dimension must be at least 10 pixels")
+        return v
+
+
+class ManualCropCreateResponse(BaseModel):
+    """Response after creating a manual crop."""
+    id: int
+    image_id: int
+    bbox_x: int
+    bbox_y: int
+    bbox_w: int
+    bbox_h: int
+    detection_confidence: Optional[float] = None
+    needs_processing: bool = True
+
+    class Config:
+        from_attributes = True
+
+
+class CropRegenerateRequest(BaseModel):
+    """Schema for crop regeneration options."""
+    async_processing: bool = Field(
+        default=False,
+        description="If True, return immediately and process in background"
+    )
+
+
+class CropRegenerateResponse(BaseModel):
+    """Response after crop regeneration."""
+    id: int
+    bbox_x: int
+    bbox_y: int
+    bbox_w: int
+    bbox_h: int
+    mip_path: Optional[str] = None
+    sum_crop_path: Optional[str] = None
+    mean_intensity: Optional[float] = None
+    embedding_model: Optional[str] = None
+    has_embedding: bool = False
+    processing_status: str  # "completed", "partial", "failed"
+    warnings: Optional[List[str]] = None  # Warnings for partial success
+
+    class Config:
+        from_attributes = True
+
+
+class CropBatchUpdateItem(BaseModel):
+    """Single crop update in batch."""
+    id: Optional[int] = None  # None for new crops
+    action: Literal["create", "update", "delete"]
+    bbox_x: Optional[int] = Field(None, ge=0)
+    bbox_y: Optional[int] = Field(None, ge=0)
+    bbox_w: Optional[int] = Field(None, gt=0, le=2048)
+    bbox_h: Optional[int] = Field(None, gt=0, le=2048)
+    map_protein_id: Optional[int] = None
+
+
+class CropBatchUpdateRequest(BaseModel):
+    """Schema for batch crop updates."""
+    changes: List[CropBatchUpdateItem] = Field(..., max_length=500)
+    regenerate_features: bool = Field(
+        default=True,
+        description="Trigger feature regeneration for modified crops"
+    )
+    confirm_delete_comparisons: bool = Field(
+        default=False,
+        description="Required if any deleted crops have ranking comparisons"
+    )
+
+
+class CropBatchUpdateResponse(BaseModel):
+    """Response after batch update."""
+    created: List[int] = []
+    updated: List[int] = []
+    deleted: List[int] = []
+    failed: List[dict] = []
+    regeneration_queued: bool = False

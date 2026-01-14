@@ -2,6 +2,7 @@
 import logging
 import os
 import uuid
+import io
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Optional
@@ -9,8 +10,9 @@ from typing import List, Optional
 logger = logging.getLogger(__name__)
 
 import aiofiles
+from PIL import Image as PILImage
 from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Form, Query, BackgroundTasks
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from sqlalchemy import select, func, delete, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -30,6 +32,14 @@ from schemas.image import (
     BatchProcessRequest,
     BatchProcessResponse,
     FOVResponse,
+    CropBboxUpdateRequest,
+    CropBboxUpdateResponse,
+    ManualCropCreateRequest,
+    ManualCropCreateResponse,
+    CropRegenerateRequest,
+    CropRegenerateResponse,
+    CropBatchUpdateRequest,
+    CropBatchUpdateResponse,
 )
 from utils.security import get_current_user, decode_token, TokenPayload
 from services.image_processor import (
@@ -59,6 +69,57 @@ def safe_remove_file(path: Optional[str]) -> bool:
         except OSError as e:
             logger.warning(f"Failed to delete file {path}: {e}")
     return False
+
+
+def serve_image_file(file_path: str) -> Response | FileResponse:
+    """
+    Serve an image file, converting TIFF to PNG for browser compatibility.
+
+    Browsers cannot display TIFF format directly, so we convert to PNG on-the-fly.
+    16-bit and float TIFF images are normalized to 8-bit for display.
+
+    Args:
+        file_path: Path to the image file
+
+    Returns:
+        Response with PNG data or FileResponse for non-TIFF formats
+    """
+    file_lower = file_path.lower()
+    if file_lower.endswith(('.tif', '.tiff')):
+        try:
+            import numpy as np
+            with PILImage.open(file_path) as img:
+                # Handle various TIFF modes
+                if img.mode in ('I', 'I;16', 'I;16B', 'F'):
+                    # 16-bit grayscale or float - normalize to 8-bit
+                    arr = np.array(img, dtype=np.float64)
+                    arr_min, arr_max = arr.min(), arr.max()
+                    # Handle uniform images (avoid division by zero)
+                    if arr_max - arr_min < 1e-10:
+                        arr = np.full_like(arr, 127, dtype=np.uint8)
+                    else:
+                        arr = ((arr - arr_min) / (arr_max - arr_min) * 255).astype(np.uint8)
+                    img = PILImage.fromarray(arr)
+                elif img.mode == 'RGBA':
+                    pass  # Keep RGBA
+                elif img.mode != 'RGB':
+                    img = img.convert('RGB')
+
+                # Save to bytes buffer as PNG
+                buffer = io.BytesIO()
+                img.save(buffer, format='PNG', optimize=False)
+                buffer.seek(0)
+
+                return Response(
+                    content=buffer.getvalue(),
+                    media_type="image/png",
+                    headers={"Cache-Control": "max-age=3600"}
+                )
+        except Exception as e:
+            logger.error(f"Failed to convert TIFF to PNG: {e}")
+            # Fall through to return original file if conversion fails
+
+    return FileResponse(file_path)
 
 
 def validate_image_token(token: Optional[str]) -> TokenPayload:
@@ -444,6 +505,67 @@ async def list_cell_crops(
     ]
 
 
+@router.get("/{fov_id}/crops", response_model=List[CellCropGalleryResponse])
+async def list_fov_crops(
+    fov_id: int,
+    exclude_excluded: bool = Query(False),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """List all cell crops for a specific FOV image."""
+    # Verify image ownership
+    result = await db.execute(
+        select(Image)
+        .join(Experiment, Image.experiment_id == Experiment.id)
+        .where(
+            Image.id == fov_id,
+            Experiment.user_id == current_user.id
+        )
+    )
+    image = result.scalar_one_or_none()
+    if not image:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Image not found"
+        )
+
+    # Build query with optional exclusion filter
+    query = (
+        select(CellCrop)
+        .options(
+            selectinload(CellCrop.image),
+            selectinload(CellCrop.map_protein)
+        )
+        .where(CellCrop.image_id == fov_id)
+        .order_by(CellCrop.created_at.desc())
+    )
+
+    if exclude_excluded:
+        query = query.where(CellCrop.excluded == False)
+
+    result = await db.execute(query)
+    crops = result.scalars().all()
+
+    return [
+        CellCropGalleryResponse(
+            id=c.id,
+            image_id=c.image_id,
+            parent_filename=c.image.original_filename,
+            bbox_x=c.bbox_x,
+            bbox_y=c.bbox_y,
+            bbox_w=c.bbox_w,
+            bbox_h=c.bbox_h,
+            bundleness_score=c.bundleness_score,
+            detection_confidence=c.detection_confidence,
+            excluded=c.excluded,
+            created_at=c.created_at,
+            map_protein_name=c.map_protein.name if c.map_protein else None,
+            map_protein_color=c.map_protein.color if c.map_protein else None,
+        )
+        for c in crops
+    ]
+
+
 @router.get("/crops/{crop_id}/image")
 async def get_crop_image(
     crop_id: int,
@@ -490,7 +612,7 @@ async def get_crop_image(
             detail=f"Crop image file not found ({type})"
         )
 
-    return FileResponse(file_path)
+    return serve_image_file(file_path)
 
 
 @router.delete("/crops/{crop_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -630,6 +752,405 @@ async def update_cell_crop_protein(
     }
 
 
+# =============================================================================
+# Crop Editor Endpoints
+# =============================================================================
+
+
+@router.patch("/crops/{crop_id}/bbox", response_model=CropBboxUpdateResponse)
+async def update_crop_bbox(
+    crop_id: int,
+    request: CropBboxUpdateRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Update bounding box coordinates for a cell crop.
+
+    This updates the bbox coordinates in the database. Use the /regenerate
+    endpoint afterwards to regenerate crop images and features.
+    """
+    from services.crop_editor_service import (
+        get_crop_with_ownership_check,
+        validate_bbox_within_image,
+    )
+
+    crop, image, error = await get_crop_with_ownership_check(crop_id, current_user.id, db)
+    if error:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=error
+        )
+
+    # Validate bbox within image bounds
+    is_valid, validation_error = validate_bbox_within_image(
+        request.bbox_x,
+        request.bbox_y,
+        request.bbox_w,
+        request.bbox_h,
+        image.width,
+        image.height,
+    )
+    if not is_valid:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=validation_error
+        )
+
+    # Update bbox coordinates
+    crop.bbox_x = request.bbox_x
+    crop.bbox_y = request.bbox_y
+    crop.bbox_w = request.bbox_w
+    crop.bbox_h = request.bbox_h
+
+    # Mark features as stale
+    crop.embedding = None
+    crop.embedding_model = None
+    crop.mean_intensity = None
+    crop.umap_x = None
+    crop.umap_y = None
+    crop.umap_computed_at = None
+
+    await db.commit()
+
+    return CropBboxUpdateResponse(
+        id=crop.id,
+        bbox_x=crop.bbox_x,
+        bbox_y=crop.bbox_y,
+        bbox_w=crop.bbox_w,
+        bbox_h=crop.bbox_h,
+        needs_regeneration=True,
+    )
+
+
+@router.post("/crops/{crop_id}/regenerate", response_model=CropRegenerateResponse)
+async def regenerate_crop_features(
+    crop_id: int,
+    request: CropRegenerateRequest = CropRegenerateRequest(),
+    background_tasks: BackgroundTasks = None,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Regenerate crop images and features from current bbox coordinates.
+
+    This extracts new pixels from the parent FOV, saves new crop images,
+    calculates mean_intensity, and extracts new DINOv3 embedding.
+    """
+    from services.crop_editor_service import (
+        get_crop_with_ownership_check,
+        regenerate_crop_features as do_regenerate,
+    )
+
+    crop, image, error = await get_crop_with_ownership_check(crop_id, current_user.id, db)
+    if error:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=error
+        )
+
+    # Perform regeneration
+    result = await do_regenerate(crop, image, db)
+
+    if not result["success"]:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=result.get("error", "Regeneration failed")
+        )
+
+    await db.commit()
+
+    # Determine processing status (completed vs partial)
+    processing_status = "partial" if result.get("partial_success") else "completed"
+
+    return CropRegenerateResponse(
+        id=crop.id,
+        bbox_x=crop.bbox_x,
+        bbox_y=crop.bbox_y,
+        bbox_w=crop.bbox_w,
+        bbox_h=crop.bbox_h,
+        mip_path=crop.mip_path,
+        sum_crop_path=crop.sum_crop_path,
+        mean_intensity=crop.mean_intensity,
+        embedding_model=crop.embedding_model,
+        has_embedding=crop.embedding is not None,
+        processing_status=processing_status,
+        warnings=result.get("warnings"),
+    )
+
+
+@router.post("/{fov_id}/crops", response_model=ManualCropCreateResponse, status_code=status.HTTP_201_CREATED)
+async def create_manual_crop(
+    fov_id: int,
+    request: ManualCropCreateRequest,
+    background_tasks: BackgroundTasks,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Create a new manual crop on an FOV image.
+
+    Creates a crop with the specified bounding box, extracts pixels from
+    the parent FOV, and queues feature extraction.
+    """
+    from services.crop_editor_service import (
+        get_image_with_ownership_check,
+        create_manual_crop as do_create,
+    )
+    from ml.features import extract_features_for_crops
+
+    image, error = await get_image_with_ownership_check(fov_id, current_user.id, db)
+    if error:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=error
+        )
+
+    # Verify image is ready
+    if image.status != UploadStatus.READY:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Image is not ready (status: {image.status.value})"
+        )
+
+    # Create the crop
+    crop, error = await do_create(
+        image,
+        request.bbox_x,
+        request.bbox_y,
+        request.bbox_w,
+        request.bbox_h,
+        db,
+        request.map_protein_id,
+    )
+
+    if error:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=error
+        )
+
+    await db.commit()
+
+    # Extract features in background
+    async def extract_features_task(crop_id: int):
+        from database import get_db_context
+        async with get_db_context() as task_db:
+            try:
+                await extract_features_for_crops([crop_id], task_db)
+            except Exception as e:
+                logger.error(f"Failed to extract features for crop {crop_id}: {e}")
+
+    background_tasks.add_task(extract_features_task, crop.id)
+
+    return ManualCropCreateResponse(
+        id=crop.id,
+        image_id=crop.image_id,
+        bbox_x=crop.bbox_x,
+        bbox_y=crop.bbox_y,
+        bbox_w=crop.bbox_w,
+        bbox_h=crop.bbox_h,
+        detection_confidence=crop.detection_confidence,
+        needs_processing=True,
+    )
+
+
+@router.patch("/{fov_id}/crops/batch", response_model=CropBatchUpdateResponse)
+async def batch_update_crops(
+    fov_id: int,
+    request: CropBatchUpdateRequest,
+    background_tasks: BackgroundTasks,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Apply batch changes to crops (create, update, delete).
+
+    Processes multiple crop changes atomically and optionally queues
+    feature regeneration for modified crops.
+    """
+    from services.crop_editor_service import (
+        get_image_with_ownership_check,
+        validate_bbox_within_image,
+        create_manual_crop as do_create,
+        delete_crop_files,
+    )
+    from services.umap_service import invalidate_crop_umap
+    from ml.features import extract_features_for_crops
+
+    image, error = await get_image_with_ownership_check(fov_id, current_user.id, db)
+    if error:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=error
+        )
+
+    created_ids = []
+    updated_ids = []
+    deleted_ids = []
+    failed = []
+    crops_to_regenerate = []
+
+    for change in request.changes:
+        try:
+            if change.action == "create":
+                # Validate required fields
+                if change.bbox_x is None or change.bbox_y is None or change.bbox_w is None or change.bbox_h is None:
+                    failed.append({"action": "create", "error": "Missing bbox coordinates"})
+                    continue
+
+                # Create new crop
+                crop, err = await do_create(
+                    image,
+                    change.bbox_x,
+                    change.bbox_y,
+                    change.bbox_w,
+                    change.bbox_h,
+                    db,
+                    change.map_protein_id,
+                )
+                if err:
+                    failed.append({"action": "create", "error": err})
+                else:
+                    created_ids.append(crop.id)
+                    crops_to_regenerate.append(crop.id)
+
+            elif change.action == "update":
+                if change.id is None:
+                    failed.append({"action": "update", "error": "Missing crop id"})
+                    continue
+
+                # Get crop and verify ownership
+                result = await db.execute(
+                    select(CellCrop).where(
+                        CellCrop.id == change.id,
+                        CellCrop.image_id == fov_id
+                    )
+                )
+                crop = result.scalar_one_or_none()
+
+                if not crop:
+                    failed.append({"action": "update", "id": change.id, "error": "Crop not found"})
+                    continue
+
+                # Validate bbox if provided
+                bbox_x = change.bbox_x if change.bbox_x is not None else crop.bbox_x
+                bbox_y = change.bbox_y if change.bbox_y is not None else crop.bbox_y
+                bbox_w = change.bbox_w if change.bbox_w is not None else crop.bbox_w
+                bbox_h = change.bbox_h if change.bbox_h is not None else crop.bbox_h
+
+                is_valid, err = validate_bbox_within_image(
+                    bbox_x, bbox_y, bbox_w, bbox_h, image.width, image.height
+                )
+                if not is_valid:
+                    failed.append({"action": "update", "id": change.id, "error": err})
+                    continue
+
+                # Update crop
+                crop.bbox_x = bbox_x
+                crop.bbox_y = bbox_y
+                crop.bbox_w = bbox_w
+                crop.bbox_h = bbox_h
+                if change.map_protein_id is not None:
+                    crop.map_protein_id = change.map_protein_id
+
+                # Mark for regeneration
+                crop.embedding = None
+                crop.embedding_model = None
+                crop.mean_intensity = None
+                crop.umap_x = None
+                crop.umap_y = None
+
+                updated_ids.append(crop.id)
+                crops_to_regenerate.append(crop.id)
+
+            elif change.action == "delete":
+                if change.id is None:
+                    failed.append({"action": "delete", "error": "Missing crop id"})
+                    continue
+
+                # Get crop
+                result = await db.execute(
+                    select(CellCrop).where(
+                        CellCrop.id == change.id,
+                        CellCrop.image_id == fov_id
+                    )
+                )
+                crop = result.scalar_one_or_none()
+
+                if not crop:
+                    failed.append({"action": "delete", "id": change.id, "error": "Crop not found"})
+                    continue
+
+                # Check for comparisons if not confirmed
+                if not request.confirm_delete_comparisons:
+                    comparison_result = await db.execute(
+                        select(func.count(Comparison.id)).where(
+                            or_(
+                                Comparison.crop_a_id == change.id,
+                                Comparison.crop_b_id == change.id,
+                            ),
+                            Comparison.undone == False
+                        )
+                    )
+                    count = comparison_result.scalar() or 0
+                    if count > 0:
+                        failed.append({
+                            "action": "delete",
+                            "id": change.id,
+                            "error": f"Has {count} comparisons, set confirm_delete_comparisons=true"
+                        })
+                        continue
+
+                # Delete crop files and record
+                delete_crop_files(crop)
+                await db.delete(crop)
+                deleted_ids.append(change.id)
+
+        except Exception as e:
+            failed.append({"action": change.action, "id": change.id, "error": str(e)})
+
+    # Commit all changes
+    await db.commit()
+
+    # Invalidate UMAP for the image
+    if updated_ids or deleted_ids:
+        await invalidate_crop_umap(db, image_id=fov_id)
+        await db.commit()
+
+    # Queue feature regeneration if requested
+    regeneration_queued = False
+    if request.regenerate_features and crops_to_regenerate:
+        async def regenerate_task(crop_ids: list):
+            from database import get_db_context
+            from services.crop_editor_service import regenerate_crop_features as do_regen
+            async with get_db_context() as task_db:
+                for crop_id in crop_ids:
+                    try:
+                        result = await task_db.execute(
+                            select(CellCrop)
+                            .options(selectinload(CellCrop.image))
+                            .where(CellCrop.id == crop_id)
+                        )
+                        crop = result.scalar_one_or_none()
+                        if crop:
+                            await do_regen(crop, crop.image, task_db)
+                    except Exception as e:
+                        logger.error(f"Failed to regenerate crop {crop_id}: {e}")
+                await task_db.commit()
+
+        background_tasks.add_task(regenerate_task, crops_to_regenerate)
+        regeneration_queued = True
+
+    return CropBatchUpdateResponse(
+        created=created_ids,
+        updated=updated_ids,
+        deleted=deleted_ids,
+        failed=failed,
+        regeneration_queued=regeneration_queued,
+    )
+
+
 @router.get("/{image_id}", response_model=ImageDetailResponse)
 async def get_image(
     image_id: int,
@@ -712,7 +1233,7 @@ async def get_image_file(
             detail="File not found (may have been discarded after processing)"
         )
 
-    return FileResponse(file_path)
+    return serve_image_file(file_path)
 
 
 @router.delete("/{image_id}", status_code=status.HTTP_204_NO_CONTENT)

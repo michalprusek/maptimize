@@ -195,10 +195,4 @@
     filter: sepia(1) saturate(10) hue-rotate(-10deg) brightness(1.1) contrast(1.1);
   }
 
-  /* HiLo: Uses canvas-based rendering, this class is a placeholder */
-  .lut-hilo {
-    /* HiLo mode uses JavaScript canvas manipulation to highlight
-     * under-exposed (blue) and over-exposed (red) pixels.
-     * The actual rendering is handled by the MicroscopyImage component. */
-  }
 }
