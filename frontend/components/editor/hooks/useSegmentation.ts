@@ -75,16 +75,27 @@ export function useSegmentation({
       setEmbeddingStatus(response.status);
     } catch (error) {
       console.error("[useSegmentation] Failed to get embedding status:", error);
+      // Set error state so UI can show feedback
+      setEmbeddingStatus("error");
+      setState(prev => ({
+        ...prev,
+        error: error instanceof Error ? error.message : "Failed to check embedding status",
+      }));
     }
   }, [imageId]);
 
   const computeEmbedding = useCallback(async () => {
     try {
-      await api.computeSAMEmbedding(imageId);
       setEmbeddingStatus("pending");
+      await api.computeSAMEmbedding(imageId);
     } catch (error) {
       console.error("[useSegmentation] Failed to trigger embedding computation:", error);
-      throw error;
+      // Set error state instead of re-throwing
+      setEmbeddingStatus("error");
+      setState(prev => ({
+        ...prev,
+        error: error instanceof Error ? error.message : "Failed to start embedding computation",
+      }));
     }
   }, [imageId]);
 

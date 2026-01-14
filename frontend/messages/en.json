@@ -257,6 +257,9 @@
     "clearSegmentation": "Clear all points",
     "saveMask": "Save mask",
     "segmentHint": "Left-click: foreground • Right-click: background",
-    "noTargetCrop": "Select a cell to save the mask"
+    "noTargetCrop": "Select a cell to save the mask",
+    "loadMasksError": "Failed to load saved segmentation masks",
+    "embeddingStatusError": "Failed to check segmentation status",
+    "embeddingComputeError": "Failed to start segmentation computation"
   }
 }

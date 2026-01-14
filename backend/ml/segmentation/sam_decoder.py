@@ -1,5 +1,5 @@
 """
-SAM 3 decoder service for interactive segmentation inference.
+MobileSAM decoder service for interactive segmentation inference.
 
 Takes pre-computed image embeddings and click prompts to generate masks.
 This is the fast part - runs in ~10-50ms per inference.
@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 
 class SAMDecoder:
     """
-    SAM 3 decoder for interactive mask prediction.
+    MobileSAM decoder for interactive mask prediction.
 
     Uses pre-computed image embeddings for fast inference.
     The decoder takes point prompts (clicks) and produces segmentation masks.
@@ -65,7 +65,14 @@ class SAMDecoder:
             - low_res_logits: Low-resolution mask logits for refinement
         """
         self.encoder.ensure_loaded()
+
+        # Validate model and predictor are available
+        if self.encoder.model is None:
+            raise RuntimeError("SAM model not loaded. Check model weights.")
+
         predictor = self.encoder.model.predictor
+        if predictor is None:
+            raise RuntimeError("SAM predictor not initialized. Model may have failed to load.")
 
         # Set the cached embedding
         # Convert embedding to tensor and set in predictor
@@ -125,8 +132,8 @@ class SAMDecoder:
             return mask.astype(bool), iou_score, low_res
 
         except Exception as e:
-            logger.exception(f"Mask prediction failed")
-            raise RuntimeError(f"Mask prediction failed: {e}")
+            logger.exception("Mask prediction failed")
+            raise RuntimeError(f"Mask prediction failed: {e}") from e
 
     def predict_from_image(
         self,

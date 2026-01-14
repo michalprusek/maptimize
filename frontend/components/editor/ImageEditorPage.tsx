@@ -21,6 +21,7 @@ import type {
   ContextMenuState,
   Rect,
   CellPolygon,
+  SAMEmbeddingStatus,
 } from "@/lib/editor/types";
 import {
   cropToEditorBbox,
@@ -48,9 +49,6 @@ import { useSegmentation } from "./hooks/useSegmentation";
 // localStorage key for persisting toolbar position
 const TOOLBAR_POSITION_KEY = "maptimize:editor:toolbarPosition";
 const DEFAULT_TOOLBAR_POSITION: ToolbarPosition = { edge: "bottom", offset: 0.5 };
-
-// Helper type for SAM embedding status
-type SAMEmbeddingStatus = "not_started" | "pending" | "computing" | "ready" | "error";
 
 interface SegmentationModeButtonProps {
   isActive: boolean;
@@ -248,20 +246,32 @@ export function ImageEditorPage({
         const result = await api.getSegmentationMasksBatch(cropIds);
         if (result.masks && typeof result.masks === 'object') {
           // Backend returns masks as an object keyed by crop_id
-          const polygons = Object.entries(result.masks).map(([cropIdStr, maskData]) => ({
-            cropId: parseInt(cropIdStr, 10),
-            points: maskData.polygon as [number, number][],
-            iouScore: maskData.iou_score,
-          }));
+          // Validate each entry before adding to state
+          const polygons = Object.entries(result.masks)
+            .filter(([_, maskData]) =>
+              maskData?.polygon &&
+              Array.isArray(maskData.polygon) &&
+              maskData.polygon.length >= 3
+            )
+            .map(([cropIdStr, maskData]) => {
+              const cropId = parseInt(cropIdStr, 10);
+              return {
+                cropId,
+                points: maskData.polygon as [number, number][],
+                iouScore: maskData.iou_score ?? 0,
+              };
+            })
+            .filter(p => !isNaN(p.cropId));
           setSavedPolygons(polygons);
         }
       } catch (err) {
         console.error("[Editor] Failed to load segmentation masks:", err);
+        showError(t("loadMasksError"));
       }
     };
 
     loadPolygons();
-  }, [crops]);
+  }, [crops, showError, t]);
 
   // Update container dimensions for overlay sizing
   useEffect(() => {
@@ -899,9 +909,11 @@ export function ImageEditorPage({
           </div>
         </div>
 
-        {/* Image navigation - top right */}
+        {/* Image navigation - top right, adjusts position based on segment mode */}
         {totalImages > 1 && (
-          <div className="absolute top-4 right-[17rem] z-50 flex items-center gap-2">
+          <div className={`absolute top-4 z-50 flex items-center gap-2 transition-all duration-300 ${
+            editorState.mode === "segment" ? "right-4" : "right-[17rem]"
+          }`}>
             {/* Previous button */}
             <button
               onClick={onNavigatePrev}
@@ -980,6 +992,7 @@ export function ImageEditorPage({
             onImageLoaded={(img) => {
               sourceImageRef.current = img;
             }}
+            isSegmentMode={editorState.mode === "segment"}
           />
 
           {/* Segmentation overlay - renders click points and polygons */}
@@ -996,20 +1009,22 @@ export function ImageEditorPage({
           />
         </div>
 
-        {/* Crop preview panel */}
-        <ImageEditorCropPreview
-          bboxes={bboxes}
-          selectedBboxId={editorState.selectedBboxId}
-          hoveredBboxId={editorState.hoveredBboxId}
-          onBboxSelect={handleBboxSelect}
-          onBboxHover={handleBboxHover}
-          imageUrl={imageUrl}
-          sourceImageRef={sourceImageRef}
-          modifyingBboxId={modifyingBboxId}
-          liveBboxRect={liveBboxRect}
-          displayMode={displayMode}
-          savedPolygons={savedPolygons}
-        />
+        {/* Crop preview panel - hidden in segment mode */}
+        {editorState.mode !== "segment" && (
+          <ImageEditorCropPreview
+            bboxes={bboxes}
+            selectedBboxId={editorState.selectedBboxId}
+            hoveredBboxId={editorState.hoveredBboxId}
+            onBboxSelect={handleBboxSelect}
+            onBboxHover={handleBboxHover}
+            imageUrl={imageUrl}
+            sourceImageRef={sourceImageRef}
+            modifyingBboxId={modifyingBboxId}
+            liveBboxRect={liveBboxRect}
+            displayMode={displayMode}
+            savedPolygons={savedPolygons}
+          />
+        )}
       </div>
 
       {/* Toolbar - fixed position for proper centering */}

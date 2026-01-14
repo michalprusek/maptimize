@@ -23,8 +23,8 @@ router = APIRouter()
 
 class ClickPoint(BaseModel):
     """A single click point for segmentation."""
-    x: int = Field(..., description="X coordinate in image pixels")
-    y: int = Field(..., description="Y coordinate in image pixels")
+    x: float = Field(..., description="X coordinate in image pixels")
+    y: float = Field(..., description="Y coordinate in image pixels")
     label: int = Field(..., ge=0, le=1, description="1 = foreground, 0 = background")
 
 
@@ -37,7 +37,7 @@ class SegmentRequest(BaseModel):
 class SegmentResponse(BaseModel):
     """Response from interactive segmentation."""
     success: bool
-    polygon: Optional[List[List[int]]] = None
+    polygon: Optional[List[List[float]]] = None
     iou_score: Optional[float] = None
     area_pixels: Optional[int] = None
     error: Optional[str] = None
@@ -46,7 +46,7 @@ class SegmentResponse(BaseModel):
 class SaveMaskRequest(BaseModel):
     """Request to save a finalized segmentation mask."""
     crop_id: int = Field(..., description="ID of the cell crop")
-    polygon: List[List[int]] = Field(..., min_length=3, description="Polygon points [[x, y], ...]")
+    polygon: List[List[float]] = Field(..., min_length=3, description="Polygon points [[x, y], ...]")
     iou_score: float = Field(..., ge=0, le=1, description="SAM IoU prediction score")
     prompt_count: int = Field(..., ge=0, description="Number of click prompts used")
 
@@ -161,8 +161,8 @@ async def segment_interactive(
     Points with label=1 indicate foreground (object to segment).
     Points with label=0 indicate background (exclude from mask).
     """
-    # Convert points to tuples
-    point_coords = [(p.x, p.y) for p in request.points]
+    # Convert points to tuples (round floats to int for SAM)
+    point_coords = [(int(round(p.x)), int(round(p.y))) for p in request.points]
     point_labels = [p.label for p in request.points]
 
     result = await segmentation_service.segment_from_prompts(

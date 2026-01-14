@@ -4,8 +4,8 @@ MobileSAM image encoder service for pre-computing embeddings.
 Uses MobileSAM (lightweight Segment Anything Model) to generate image embeddings
 that can be cached and reused for fast interactive segmentation.
 
-The encoder is the expensive part (~1-3s on GPU for MobileSAM).
-Once embeddings are cached, interactive inference is instant (~10-50ms).
+The encoder is the expensive part of SAM (timing varies by image size and GPU).
+Once embeddings are cached, interactive inference is fast (~10-50ms).
 """
 
 import logging
@@ -189,8 +189,8 @@ class SAMEncoder:
         """
         Compress embedding for database storage.
 
-        Uses float16 conversion and zlib compression to reduce size
-        from ~16MB to ~2-4MB.
+        Uses float16 conversion and zlib compression for significant
+        size reduction (typically 6-8x compression ratio).
 
         Args:
             embedding: Embedding array from encode_image()
@@ -235,6 +235,16 @@ class SAMEncoder:
         embedding = np.frombuffer(decompressed, dtype=np.float16)
         # Reshape and convert back to float32 for inference
         return embedding.reshape(shape).astype(np.float32)
+
+    def ensure_loaded(self) -> None:
+        """Ensure the model is loaded. Public alias for _load_model()."""
+        self._load_model()
+
+    @property
+    def model(self):
+        """Get the underlying SAM model. Ensures model is loaded first."""
+        self.ensure_loaded()
+        return self._model
 
     def reset(self) -> None:
         """Reset the encoder and release model from memory."""

@@ -4,7 +4,9 @@ Download model weights for Maptimize.
 
 This script downloads the required model weights:
 - MobileSAM for interactive segmentation
-- YOLO (if not present) for cell detection
+
+Note: YOLO weights are custom-trained and require manual setup.
+      They cannot be auto-downloaded.
 
 Usage:
     python scripts/download_weights.py [--force]
@@ -44,7 +46,18 @@ MODELS = {
 
 
 def get_file_hash(filepath: Path, algorithm: str = "md5") -> str:
-    """Calculate file hash."""
+    """
+    Calculate file hash for integrity verification.
+
+    TODO: Use this for verifying downloaded weights against known checksums.
+
+    Args:
+        filepath: Path to file
+        algorithm: Hash algorithm (default: md5)
+
+    Returns:
+        Hex digest of file hash
+    """
     hasher = hashlib.new(algorithm)
     with open(filepath, "rb") as f:
         for chunk in iter(lambda: f.read(8192), b""):
@@ -70,10 +83,13 @@ def download_with_progress(url: str, dest: Path) -> bool:
         print()  # New line after progress
         return True
     except URLError as e:
-        print(f"\n  Error: {e}")
+        print(f"\n  Network error: {e}")
         return False
-    except Exception as e:
-        print(f"\n  Error: {e}")
+    except (OSError, IOError) as e:
+        print(f"\n  File system error: {e}")
+        return False
+    except ValueError as e:
+        print(f"\n  Invalid URL or data: {e}")
         return False
 
 

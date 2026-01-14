@@ -35,7 +35,13 @@ mkdir -p "$WEIGHTS_DIR"
 if [ -f "$SAM_WEIGHTS" ]; then
     echo "[OK] SAM weights found: $SAM_WEIGHTS"
 else
-    download_file "$SAM_URL" "$SAM_WEIGHTS" "MobileSAM weights" || true
+    if ! download_file "$SAM_URL" "$SAM_WEIGHTS" "MobileSAM weights"; then
+        echo ""
+        echo "[ERROR] SAM weights download failed. Segmentation features will be unavailable."
+        echo "[ERROR] Manual download: curl -fL -o $SAM_WEIGHTS $SAM_URL"
+        echo ""
+        # Continue startup - segmentation will fail gracefully at runtime
+    fi
 fi
 
 if [ -f "$YOLO_WEIGHTS" ]; then
