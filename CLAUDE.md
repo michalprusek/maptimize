@@ -102,6 +102,24 @@ docker compose -f docker-compose.prod.yml restart maptimize-backend
 - Při generování URL v backendu vždy zahrnout `/api/` prefix
 - Platí pro: `/api/auth/`, `/api/experiments/`, `/api/images/`, `/api/metrics/`, `/api/ranking/`, `/api/proteins/`, `/api/embeddings/`
 
+### Z-index a layout problémy (ČASTÉ!)
+
+**Symptom:** Dropdown menu, modály nebo jiné plovoucí elementy jsou překryté jinými komponentami a nejsou vidět.
+
+**Příčina:** Nedostatečný z-index nebo chybějící `position: relative` na parent elementu.
+
+**Prevence:**
+- Dropdown menu vždy používat `z-50` nebo vyšší (ne `z-10`)
+- Modály používat `z-[100]` nebo vyšší
+- Pokud dropdown nepřekrývá ostatní sekce, zkontrolovat parent element - může potřebovat `relative` a vlastní `z-index`
+- Při vytváření nových floating elementů (dropdown, tooltip, popover) VŽDY testovat překrývání s okolními komponentami
+
+**Typické hodnoty z-index:**
+- `z-10` - mírně nad ostatními (nestačí pro dropdown přes jiné sekce!)
+- `z-50` - dropdown menu, floating elements
+- `z-[100]` - modály, dialogy
+- `z-[999]` - kritické overlays (loading screens, etc.)
+
 ### Mazání cell crops s ranking comparisons
 
 **Chování:** Při mazání cell crop, který má ranking comparisons, API vrátí 409 Conflict s upozorněním.

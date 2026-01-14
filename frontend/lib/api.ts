@@ -153,11 +153,15 @@ class ApiClient {
   }
 
   // Images
+
+  /**
+   * Upload a microscopy image (Phase 1 of two-phase workflow).
+   * This creates projections and thumbnail. Use batchProcessImages for Phase 2.
+   */
   async uploadImage(
     experimentId: number,
     file: File,
-    mapProteinId?: number,
-    detectCells: boolean = true
+    mapProteinId?: number
   ) {
     const formData = new FormData();
     formData.append("experiment_id", experimentId.toString());
@@ -165,12 +169,41 @@ class ApiClient {
     if (mapProteinId) {
       formData.append("map_protein_id", mapProteinId.toString());
     }
-    formData.append("detect_cells", detectCells.toString());
 
     return this.request<Image>("/api/images/upload", {
       method: "POST",
       body: formData,
     });
+  }
+
+  /**
+   * Start Phase 2 processing for multiple images (batch processing).
+   * Configures detection settings and starts detection + feature extraction.
+   */
+  async batchProcessImages(
+    imageIds: number[],
+    detectCells: boolean = true,
+    mapProteinId?: number
+  ) {
+    const body: { image_ids: number[]; detect_cells: boolean; map_protein_id?: number } = {
+      image_ids: imageIds,
+      detect_cells: detectCells,
+    };
+    if (mapProteinId !== undefined) {
+      body.map_protein_id = mapProteinId;
+    }
+    return this.request<BatchProcessResponse>("/api/images/batch-process", {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+  }
+
+  /**
+   * Get FOV (Field of View) images for an experiment.
+   * Returns Image records for the FOV gallery view.
+   */
+  async getFOVs(experimentId: number) {
+    return this.request<FOVImage[]>(`/api/images/fovs?experiment_id=${experimentId}`);
   }
 
   async getImages(experimentId: number) {
@@ -425,11 +458,13 @@ export interface MapProtein {
   color?: string;
 }
 
+export type ImageStatus = "UPLOADING" | "UPLOADED" | "PROCESSING" | "DETECTING" | "EXTRACTING_FEATURES" | "READY" | "ERROR";
+
 export interface Image {
   id: number;
   experiment_id: number;
   original_filename: string;
-  status: "uploading" | "processing" | "detecting" | "extracting_features" | "ready" | "error";
+  status: ImageStatus;
   width?: number;
   height?: number;
   z_slices?: number;
@@ -437,6 +472,29 @@ export interface Image {
   created_at: string;
   map_protein?: MapProtein;
   cell_count: number;
+  detect_cells?: boolean;
+}
+
+export interface BatchProcessResponse {
+  processing_count: number;
+  message: string;
+}
+
+export interface FOVImage {
+  id: number;
+  experiment_id: number;
+  original_filename: string;
+  status: ImageStatus;
+  width?: number;
+  height?: number;
+  z_slices?: number;
+  file_size?: number;
+  detect_cells: boolean;
+  thumbnail_url?: string;
+  cell_count: number;
+  map_protein?: MapProtein;
+  created_at: string;
+  processed_at?: string;
 }
 
 export interface CellCrop {

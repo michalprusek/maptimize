@@ -4,6 +4,7 @@ from enum import Enum as PyEnum
 from typing import TYPE_CHECKING, List, Optional
 
 from sqlalchemy import String, Text, Enum, DateTime, Integer, ForeignKey, func, JSON, Boolean
+from pgvector.sqlalchemy import Vector
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from database import Base
@@ -14,13 +15,24 @@ if TYPE_CHECKING:
 
 
 class UploadStatus(str, PyEnum):
-    """Image upload/processing status."""
-    UPLOADING = "uploading"
-    PROCESSING = "processing"
-    DETECTING = "detecting"
-    EXTRACTING_FEATURES = "extracting_features"
-    READY = "ready"
-    ERROR = "error"
+    """
+    Image upload/processing status across the two-phase workflow.
+
+    Phase 1 (upload): File is uploaded, projections and thumbnails are created
+    Phase 2 (process): Detection runs (optional), features are extracted
+
+    State transitions:
+    UPLOADING -> UPLOADED (Phase 1 complete)
+    UPLOADED -> PROCESSING -> DETECTING -> EXTRACTING_FEATURES -> READY (Phase 2)
+    Any state -> ERROR (on failure)
+    """
+    UPLOADING = "UPLOADING"  # Phase 1: File being uploaded and processed
+    UPLOADED = "UPLOADED"    # Phase 1 complete: projections created, awaiting Phase 2
+    PROCESSING = "PROCESSING"  # Phase 2: Generic processing state
+    DETECTING = "DETECTING"    # Phase 2: Running YOLO cell detection
+    EXTRACTING_FEATURES = "EXTRACTING_FEATURES"  # Phase 2: Extracting DINOv2 embeddings
+    READY = "READY"          # Complete: all processing finished successfully
+    ERROR = "ERROR"          # Failed: see error_message field for details
 
 
 class MapProtein(Base):
@@ -80,6 +92,10 @@ class Image(Base):
     )
     error_message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     image_metadata: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+
+    # DINOv3 embedding for FOV MIP projection (1024-dim for large variant)
+    embedding: Mapped[Optional[list]] = mapped_column(Vector(1024), nullable=True)
+    embedding_model: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
 
     # Timestamps
     created_at: Mapped[datetime] = mapped_column(
