@@ -38,10 +38,9 @@ const displayModeConfig: Record<DisplayMode, { bgColor: string; fgColor: string 
   inverted: { bgColor: "#ffffff", fgColor: "#000000" },
   green: { bgColor: "#000000", fgColor: "#00ff00" },
   fire: { bgColor: "#000000", fgColor: "#ff6600" },
-  hilo: { bgColor: "#808080", fgColor: "linear-gradient(to right, #0000ff, #808080, #ff0000)" },
 };
 
-const displayModeKeys: DisplayMode[] = ["grayscale", "inverted", "green", "fire", "hilo"];
+const displayModeKeys: DisplayMode[] = ["grayscale", "inverted", "green", "fire"];
 
 const languageOptions: { value: Language; flag: string }[] = [
   { value: "en", flag: "EN" },

@@ -1,0 +1,745 @@
+"use client";
+
+/**
+ * ImageEditorPage Component
+ *
+ * Full-page image editor for bbox manipulation.
+ * Provides canvas, toolbar, crop preview panel, and navigation sidebar.
+ */
+
+import { useState, useCallback, useEffect, useRef } from "react";
+import { useTranslations } from "next-intl";
+import { AnimatePresence } from "framer-motion";
+import { ChevronRight, ChevronLeft, ArrowLeft } from "lucide-react";
+import { useSettingsStore } from "@/stores/settingsStore";
+import { api, type CellCropGallery, type FOVImage } from "@/lib/api";
+import { AppSidebar } from "@/components/layout";
+import type {
+  EditorBbox,
+  EditorState,
+  ImageFilters,
+  ContextMenuState,
+  Rect,
+} from "@/lib/editor/types";
+import {
+  cropToEditorBbox,
+  generateTempId,
+} from "@/lib/editor/types";
+import {
+  DEFAULT_FILTERS,
+  MIN_ZOOM,
+  MAX_ZOOM,
+} from "@/lib/editor/constants";
+import {
+  calculateFitScale,
+  calculateCenterOffset,
+} from "@/lib/editor/geometry";
+
+import { ImageEditorCanvas } from "./ImageEditorCanvas";
+import { ImageEditorToolbar, type ToolbarPosition } from "./ImageEditorToolbar";
+import { ImageEditorCropPreview } from "./ImageEditorCropPreview";
+import { ImageEditorContextMenu } from "./ImageEditorContextMenu";
+import { useBboxInteraction } from "./hooks/useBboxInteraction";
+import { useUndoHistory } from "./hooks/useUndoHistory";
+
+// localStorage key for persisting toolbar position
+const TOOLBAR_POSITION_KEY = "maptimize:editor:toolbarPosition";
+const DEFAULT_TOOLBAR_POSITION: ToolbarPosition = { edge: "bottom", offset: 0.5 };
+
+interface ImageEditorPageProps {
+  fovImage: FOVImage;
+  crops: CellCropGallery[];
+  experimentId: number;
+  focusCropId?: number;
+  onClose: () => void;
+  onDataChanged?: () => void;
+  // Image navigation props
+  currentImageIndex?: number;
+  totalImages?: number;
+  hasPrevImage?: boolean;
+  hasNextImage?: boolean;
+  onNavigatePrev?: () => void;
+  onNavigateNext?: () => void;
+}
+
+export function ImageEditorPage({
+  fovImage,
+  crops,
+  experimentId,
+  focusCropId,
+  onClose,
+  onDataChanged,
+  currentImageIndex = 0,
+  totalImages = 1,
+  hasPrevImage = false,
+  hasNextImage = false,
+  onNavigatePrev,
+  onNavigateNext,
+}: ImageEditorPageProps) {
+  const t = useTranslations("editor");
+  const displayMode = useSettingsStore((state) => state.displayMode);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const imageCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const sourceImageRef = useRef<HTMLImageElement | null>(null);
+
+  // Navigation sidebar state
+  const [showNavigation, setShowNavigation] = useState(false);
+
+  // Convert crops to editor bboxes
+  const [bboxes, setBboxes] = useState<EditorBbox[]>(() =>
+    crops.map(cropToEditorBbox)
+  );
+
+  // Sync bboxes when crops change (e.g., from React Query refetch)
+  useEffect(() => {
+    console.log("[Editor] Crops received:", crops.length, crops);
+    if (crops.length > 0) {
+      setBboxes(crops.map(cropToEditorBbox));
+    }
+  }, [crops]);
+
+  // Editor state
+  const [editorState, setEditorState] = useState<EditorState>(() => ({
+    mode: "view",
+    selectedBboxId: focusCropId ?? null,
+    hoveredBboxId: null,
+    activeHandle: null,
+    isDragging: false,
+    dragStart: null,
+    isSpacePressed: false,
+    zoom: 1,
+    panOffset: { x: 0, y: 0 },
+  }));
+
+  // Image filters
+  const [filters, setFilters] = useState<ImageFilters>(DEFAULT_FILTERS);
+
+  // Context menu state
+  const [contextMenu, setContextMenu] = useState<ContextMenuState>({
+    isOpen: false,
+    position: null,
+    targetBbox: null,
+  });
+
+  // Toolbar position state - persisted in localStorage
+  const [toolbarPosition, setToolbarPosition] = useState<ToolbarPosition>(() => {
+    if (typeof window === "undefined") return DEFAULT_TOOLBAR_POSITION;
+    try {
+      const stored = localStorage.getItem(TOOLBAR_POSITION_KEY);
+      if (stored) {
+        const parsed = JSON.parse(stored);
+        if (parsed.edge && typeof parsed.offset === "number") {
+          return parsed as ToolbarPosition;
+        }
+      }
+    } catch {
+      // Ignore parse errors
+    }
+    return DEFAULT_TOOLBAR_POSITION;
+  });
+
+  // Persist toolbar position to localStorage
+  const handleToolbarPositionChange = useCallback((newPosition: ToolbarPosition) => {
+    setToolbarPosition(newPosition);
+    try {
+      localStorage.setItem(TOOLBAR_POSITION_KEY, JSON.stringify(newPosition));
+    } catch {
+      // Ignore storage errors
+    }
+  }, []);
+
+  // API handlers
+  const handleBboxCreate = useCallback(
+    async (bbox: Omit<EditorBbox, "id">) => {
+      const result = await api.createManualCrop(fovImage.id, {
+        x: bbox.x,
+        y: bbox.y,
+        width: bbox.width,
+        height: bbox.height,
+      });
+      return result.id;
+    },
+    [fovImage.id]
+  );
+
+  const handleBboxUpdate = useCallback(
+    async (id: number, bbox: Partial<EditorBbox>) => {
+      await api.updateCropBbox(id, {
+        x: bbox.x ?? 0,
+        y: bbox.y ?? 0,
+        width: bbox.width ?? 0,
+        height: bbox.height ?? 0,
+      });
+    },
+    []
+  );
+
+  const handleBboxDelete = useCallback(async (id: number) => {
+    await api.deleteCellCrop(id);
+  }, []);
+
+  const handleRegenerateFeatures = useCallback(async (cropId: number) => {
+    await api.regenerateCropFeatures(cropId);
+  }, []);
+
+  // Undo history
+  const undoHistory = useUndoHistory({
+    onBboxCreate: async (bbox) => {
+      const id = await handleBboxCreate(bbox);
+      // Update local state
+      setBboxes((prev) => [
+        ...prev,
+        {
+          id,
+          cropId: id,
+          x: bbox.x ?? 0,
+          y: bbox.y ?? 0,
+          width: bbox.width ?? 0,
+          height: bbox.height ?? 0,
+          isNew: false,
+          isModified: false,
+        },
+      ]);
+      onDataChanged?.();
+      return id;
+    },
+    onBboxUpdate: async (id, bbox) => {
+      await handleBboxUpdate(id, bbox);
+      await handleRegenerateFeatures(id);
+      // Update local state to match undo position
+      setBboxes((prev) =>
+        prev.map((b) =>
+          b.cropId === id
+            ? {
+                ...b,
+                x: bbox.x ?? b.x,
+                y: bbox.y ?? b.y,
+                width: bbox.width ?? b.width,
+                height: bbox.height ?? b.height,
+                isModified: false,
+              }
+            : b
+        )
+      );
+      onDataChanged?.();
+    },
+    onBboxDelete: async (id) => {
+      await handleBboxDelete(id);
+      // Remove from local state
+      setBboxes((prev) => prev.filter((b) => b.cropId !== id));
+      onDataChanged?.();
+    },
+  });
+
+  // Initialize view to fit image
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container || !fovImage.width || !fovImage.height) return;
+
+    const rect = container.getBoundingClientRect();
+    const scale = calculateFitScale(
+      fovImage.width,
+      fovImage.height,
+      rect.width,
+      rect.height
+    );
+    const offset = calculateCenterOffset(
+      fovImage.width,
+      fovImage.height,
+      rect.width,
+      rect.height,
+      scale
+    );
+
+    setEditorState((prev) => ({
+      ...prev,
+      zoom: scale,
+      panOffset: offset,
+    }));
+  }, [fovImage.width, fovImage.height]);
+
+  // Handle bbox change during drag/resize (local state only, no API call)
+  const handleBboxChange = useCallback(
+    (id: string | number, changes: Partial<EditorBbox>) => {
+      setBboxes((prev) =>
+        prev.map((bbox) =>
+          bbox.id === id ? { ...bbox, ...changes } : bbox
+        )
+      );
+    },
+    []
+  );
+
+  // Handle bbox change completion (API save + undo stack)
+  const handleBboxChangeComplete = useCallback(
+    async (id: string | number, originalBbox: Rect, finalBbox: Rect) => {
+      const bbox = bboxes.find((b) => b.id === id);
+      if (!bbox?.cropId) return;
+
+      // Store previous state for undo
+      const previousState: EditorBbox = {
+        ...bbox,
+        x: originalBbox.x,
+        y: originalBbox.y,
+        width: originalBbox.width,
+        height: originalBbox.height,
+      };
+
+      // Call API to update
+      try {
+        await handleBboxUpdate(bbox.cropId, finalBbox);
+
+        // Queue feature regeneration
+        await handleRegenerateFeatures(bbox.cropId);
+
+        // Push to undo stack (single action for entire drag/resize)
+        undoHistory.pushAction({
+          type: "update",
+          bboxId: id,
+          previousState,
+          newState: { ...bbox, ...finalBbox, isModified: true },
+        });
+
+        onDataChanged?.();
+      } catch (error) {
+        console.error("Failed to update bbox:", error);
+        // Revert local state on error
+        setBboxes((prev) =>
+          prev.map((b) => (b.id === id ? previousState : b))
+        );
+      }
+    },
+    [bboxes, handleBboxUpdate, handleRegenerateFeatures, onDataChanged, undoHistory]
+  );
+
+  // Handle bbox create
+  const handleBboxCreateLocal = useCallback(
+    async (rect: Rect) => {
+      const tempId = generateTempId();
+      const newBbox: EditorBbox = {
+        id: tempId,
+        x: rect.x,
+        y: rect.y,
+        width: rect.width,
+        height: rect.height,
+        isNew: true,
+        isModified: false,
+      };
+
+      // Add to local state immediately
+      setBboxes((prev) => [...prev, newBbox]);
+      setEditorState((prev) => ({
+        ...prev,
+        selectedBboxId: tempId,
+        mode: "view",
+      }));
+
+      // Create via API
+      try {
+        const cropId = await handleBboxCreate(newBbox);
+
+        // Update with real ID
+        setBboxes((prev) =>
+          prev.map((bbox) =>
+            bbox.id === tempId
+              ? { ...bbox, id: cropId, cropId, isNew: false }
+              : bbox
+          )
+        );
+
+        setEditorState((prev) => ({
+          ...prev,
+          selectedBboxId: cropId,
+        }));
+
+        // Push to undo stack
+        undoHistory.pushAction({
+          type: "create",
+          bboxId: cropId,
+          newState: { ...newBbox, id: cropId, cropId },
+        });
+
+        onDataChanged?.();
+      } catch (error) {
+        console.error("Failed to create bbox:", error);
+        // Remove from local state on error
+        setBboxes((prev) => prev.filter((b) => b.id !== tempId));
+      }
+    },
+    [handleBboxCreate, onDataChanged, undoHistory]
+  );
+
+  // Handle bbox select
+  const handleBboxSelect = useCallback((id: string | number | null) => {
+    setEditorState((prev) => ({
+      ...prev,
+      selectedBboxId: id,
+    }));
+  }, []);
+
+  // Handle bbox hover (from preview panel)
+  const handleBboxHover = useCallback((id: string | number | null) => {
+    setEditorState((prev) => ({
+      ...prev,
+      hoveredBboxId: id,
+    }));
+  }, []);
+
+  // Handle bbox delete
+  const handleBboxDeleteLocal = useCallback(
+    async (bbox: EditorBbox) => {
+      // Store for undo
+      const previousState = { ...bbox };
+
+      // Remove from local state
+      setBboxes((prev) => prev.filter((b) => b.id !== bbox.id));
+      setEditorState((prev) => ({
+        ...prev,
+        selectedBboxId: null,
+      }));
+
+      // Delete via API
+      if (bbox.cropId) {
+        try {
+          await handleBboxDelete(bbox.cropId);
+
+          // Push to undo stack
+          undoHistory.pushAction({
+            type: "delete",
+            bboxId: bbox.id,
+            previousState,
+          });
+
+          onDataChanged?.();
+        } catch (error) {
+          console.error("Failed to delete bbox:", error);
+          // Restore on error
+          setBboxes((prev) => [...prev, previousState]);
+        }
+      }
+    },
+    [handleBboxDelete, onDataChanged, undoHistory]
+  );
+
+  // Handle bbox reset (restore original coordinates)
+  const handleBboxReset = useCallback(
+    async (bbox: EditorBbox) => {
+      if (!bbox.original) return;
+
+      const resetBbox: EditorBbox = {
+        ...bbox,
+        x: bbox.original.x,
+        y: bbox.original.y,
+        width: bbox.original.width,
+        height: bbox.original.height,
+        isModified: false,
+      };
+
+      await handleBboxChange(bbox.id, resetBbox);
+    },
+    [handleBboxChange]
+  );
+
+  // Handle context menu
+  const handleContextMenu = useCallback(
+    (e: React.MouseEvent<HTMLCanvasElement>) => {
+      e.preventDefault();
+
+      const bbox = bboxes.find((b) => b.id === editorState.selectedBboxId);
+      if (bbox) {
+        setContextMenu({
+          isOpen: true,
+          position: { x: e.clientX, y: e.clientY },
+          targetBbox: bbox,
+        });
+      }
+    },
+    [bboxes, editorState.selectedBboxId]
+  );
+
+  // Reset view
+  const handleResetView = useCallback(() => {
+    const container = containerRef.current;
+    if (!container || !fovImage.width || !fovImage.height) return;
+
+    const rect = container.getBoundingClientRect();
+    const scale = calculateFitScale(
+      fovImage.width,
+      fovImage.height,
+      rect.width,
+      rect.height
+    );
+    const offset = calculateCenterOffset(
+      fovImage.width,
+      fovImage.height,
+      rect.width,
+      rect.height,
+      scale
+    );
+
+    setEditorState((prev) => ({
+      ...prev,
+      zoom: scale,
+      panOffset: offset,
+    }));
+  }, [fovImage.width, fovImage.height]);
+
+  // Keyboard shortcuts
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      // Delete = delete selected bbox
+      if ((e.key === "Delete" || e.key === "Backspace") && editorState.selectedBboxId) {
+        const bbox = bboxes.find((b) => b.id === editorState.selectedBboxId);
+        if (bbox) {
+          handleBboxDeleteLocal(bbox);
+        }
+        return;
+      }
+
+      // Ctrl+Z = undo
+      if ((e.ctrlKey || e.metaKey) && e.key === "z") {
+        e.preventDefault();
+        undoHistory.undo();
+        return;
+      }
+
+      // N = toggle draw mode
+      if (e.key === "n" || e.key === "N") {
+        setEditorState((prev) => ({
+          ...prev,
+          mode: prev.mode === "draw" ? "view" : "draw",
+        }));
+        return;
+      }
+
+      // Space = enable panning
+      if (e.key === " " && !editorState.isSpacePressed) {
+        e.preventDefault();
+        setEditorState((prev) => ({
+          ...prev,
+          isSpacePressed: true,
+        }));
+      }
+    };
+
+    const handleKeyUp = (e: KeyboardEvent) => {
+      if (e.key === " ") {
+        setEditorState((prev) => ({
+          ...prev,
+          isSpacePressed: false,
+        }));
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    window.addEventListener("keyup", handleKeyUp);
+
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown);
+      window.removeEventListener("keyup", handleKeyUp);
+    };
+  }, [bboxes, editorState.selectedBboxId, editorState.isSpacePressed, handleBboxDeleteLocal, undoHistory]);
+
+  // Bbox interaction hook
+  const {
+    handleMouseDown,
+    handleMouseMove,
+    handleMouseUp,
+    handleMouseLeave,
+    handleWheel,
+    cursor,
+    drawingBbox,
+    modifyingBboxId,
+    liveBboxRect,
+  } = useBboxInteraction({
+    bboxes,
+    editorState,
+    setEditorState,
+    canvasRef: containerRef,
+    imageWidth: fovImage.width || 0,
+    imageHeight: fovImage.height || 0,
+    onBboxChange: handleBboxChange,
+    onBboxChangeComplete: handleBboxChangeComplete,
+    onBboxCreate: handleBboxCreateLocal,
+    onBboxSelect: handleBboxSelect,
+  });
+
+  // Handle wheel events
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+
+    const wheelHandler = (e: WheelEvent) => {
+      e.preventDefault();
+      handleWheel(e);
+    };
+
+    container.addEventListener("wheel", wheelHandler, { passive: false });
+    return () => container.removeEventListener("wheel", wheelHandler);
+  }, [handleWheel]);
+
+  // Get image URL
+  const imageUrl = api.getImageUrl(fovImage.id, "mip");
+
+  return (
+    <div className="h-screen bg-bg-primary flex overflow-hidden">
+      {/* Full-screen canvas with crop panel */}
+      <div className="flex-1 flex overflow-hidden relative">
+        {/* Back button - top left, moves with sidebar */}
+        <button
+          onClick={onClose}
+          className={`absolute top-4 z-50 bg-bg-secondary/80 backdrop-blur-sm p-2.5 rounded-xl border border-white/10 hover:bg-white/10 hover:border-white/20 transition-all duration-300 group ${
+            showNavigation ? "left-[17rem]" : "left-4"
+          }`}
+          title={t("back")}
+        >
+          <ArrowLeft className="w-5 h-5 text-text-secondary group-hover:text-text-primary transition-colors" />
+        </button>
+
+        {/* Image navigation - top right */}
+        {totalImages > 1 && (
+          <div className="absolute top-4 right-[17rem] z-50 flex items-center gap-2">
+            {/* Previous button */}
+            <button
+              onClick={onNavigatePrev}
+              disabled={!hasPrevImage}
+              className={`bg-bg-secondary/80 backdrop-blur-sm p-2 rounded-lg border border-white/10 transition-all duration-200 ${
+                hasPrevImage
+                  ? "hover:bg-white/10 hover:border-white/20 cursor-pointer"
+                  : "opacity-40 cursor-not-allowed"
+              }`}
+              title={t("previousImage")}
+            >
+              <ChevronLeft className="w-4 h-4 text-text-secondary" />
+            </button>
+
+            {/* Image info */}
+            <div className="bg-bg-secondary/80 backdrop-blur-sm px-3 py-1.5 rounded-lg border border-white/10">
+              <div className="text-xs text-text-secondary text-center">
+                {currentImageIndex + 1} / {totalImages}
+              </div>
+              <div className="text-sm text-text-primary truncate max-w-[200px]" title={fovImage.original_filename}>
+                {fovImage.original_filename}
+              </div>
+            </div>
+
+            {/* Next button */}
+            <button
+              onClick={onNavigateNext}
+              disabled={!hasNextImage}
+              className={`bg-bg-secondary/80 backdrop-blur-sm p-2 rounded-lg border border-white/10 transition-all duration-200 ${
+                hasNextImage
+                  ? "hover:bg-white/10 hover:border-white/20 cursor-pointer"
+                  : "opacity-40 cursor-not-allowed"
+              }`}
+              title={t("nextImage")}
+            >
+              <ChevronRight className="w-4 h-4 text-text-secondary" />
+            </button>
+          </div>
+        )}
+
+        {/* Navigation toggle trigger - moves with sidebar */}
+        <button
+          onClick={() => setShowNavigation(!showNavigation)}
+          className={`absolute top-1/2 -translate-y-1/2 z-50 bg-bg-secondary px-1 py-6 rounded-r-lg border-y border-r border-white/5 hover:bg-white/5 transition-all duration-300 ${
+            showNavigation ? "left-64" : "left-0"
+          }`}
+          title={showNavigation ? "Hide navigation" : "Show navigation"}
+        >
+          <ChevronRight className={`w-4 h-4 text-text-secondary transition-transform duration-200 ${showNavigation ? "rotate-180" : ""}`} />
+        </button>
+
+        {/* Slide-out navigation sidebar - same as dashboard */}
+        <AnimatePresence>
+          {showNavigation && (
+            <AppSidebar
+              variant="overlay"
+              onClose={() => setShowNavigation(false)}
+              activePath={`/dashboard/experiments/${experimentId}`}
+            />
+          )}
+        </AnimatePresence>
+
+        {/* Canvas area - takes full remaining space */}
+        <div className="flex-1 relative">
+          <ImageEditorCanvas
+            imageUrl={imageUrl}
+            imageWidth={fovImage.width || 0}
+            imageHeight={fovImage.height || 0}
+            bboxes={bboxes}
+            editorState={editorState}
+            filters={filters}
+            displayMode={displayMode}
+            drawingBbox={drawingBbox}
+            onMouseDown={handleMouseDown}
+            onMouseMove={handleMouseMove}
+            onMouseUp={handleMouseUp}
+            onMouseLeave={handleMouseLeave}
+            onContextMenu={handleContextMenu}
+            cursor={cursor}
+            containerRef={containerRef}
+            onImageCanvasReady={(canvas) => {
+              imageCanvasRef.current = canvas;
+            }}
+            onImageLoaded={(img) => {
+              sourceImageRef.current = img;
+            }}
+          />
+        </div>
+
+        {/* Crop preview panel */}
+        <ImageEditorCropPreview
+          bboxes={bboxes}
+          selectedBboxId={editorState.selectedBboxId}
+          hoveredBboxId={editorState.hoveredBboxId}
+          onBboxSelect={handleBboxSelect}
+          onBboxHover={handleBboxHover}
+          imageUrl={imageUrl}
+          sourceImageRef={sourceImageRef}
+          modifyingBboxId={modifyingBboxId}
+          liveBboxRect={liveBboxRect}
+          displayMode={displayMode}
+        />
+      </div>
+
+      {/* Toolbar - fixed position for proper centering */}
+      <ImageEditorToolbar
+        filters={filters}
+        onFiltersChange={setFilters}
+        displayMode={displayMode}
+        onDisplayModeChange={(mode) => useSettingsStore.getState().setDisplayMode(mode)}
+        editorMode={editorState.mode}
+        onEditorModeChange={(mode) =>
+          setEditorState((prev) => ({ ...prev, mode }))
+        }
+        zoom={editorState.zoom}
+        onZoomChange={(zoom) =>
+          setEditorState((prev) => ({
+            ...prev,
+            zoom: Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, zoom)),
+          }))
+        }
+        onResetView={handleResetView}
+        canUndo={undoHistory.canUndo}
+        onUndo={undoHistory.undo}
+        isUndoing={undoHistory.isUndoing}
+        position={toolbarPosition}
+        onPositionChange={handleToolbarPositionChange}
+        sidebarOpen={showNavigation}
+      />
+
+      {/* Context menu */}
+      <ImageEditorContextMenu
+        isOpen={contextMenu.isOpen}
+        position={contextMenu.position}
+        targetBbox={contextMenu.targetBbox}
+        onDelete={handleBboxDeleteLocal}
+        onReset={handleBboxReset}
+        onClose={() =>
+          setContextMenu({ isOpen: false, position: null, targetBbox: null })
+        }
+      />
+    </div>
+  );
+}

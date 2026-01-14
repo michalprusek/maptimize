@@ -287,19 +287,25 @@ export function UmapVisualization({
                 domain={["dataMin - 1", "dataMax + 1"]}
                 tickFormatter={(value) => Math.round(value).toString()}
               />
-              <ZAxis range={[40, 40]} />
+              <ZAxis range={[60, 60]} />
               <Tooltip
                 content={isFov ? <FovTooltip t={t} /> : <CroppedTooltip t={t} />}
                 cursor={{ strokeDasharray: "3 3", stroke: "#5a7285" }}
               />
-              <Scatter data={data.points} isAnimationActive={false}>
+              <Scatter
+                data={data.points}
+                isAnimationActive={true}
+                animationDuration={300}
+                animationEasing="ease-out"
+              >
                 {data.points.map((point, index) => (
                   <Cell
                     key={`cell-${index}`}
                     fill={point.protein_color || DEFAULT_COLOR}
                     fillOpacity={0.75}
                     stroke="rgba(255,255,255,0.3)"
-                    strokeWidth={0.5}
+                    strokeWidth={1}
+                    cursor="pointer"
                   />
                 ))}
               </Scatter>

@@ -2,7 +2,7 @@
  * Settings store for user display preferences.
  *
  * Manages:
- * - Display mode (LUT): grayscale, inverted, green, fire, hilo
+ * - Display mode (LUT): grayscale, inverted, green, fire
  * - Theme: dark, light
  * - Language: en, fr
  *

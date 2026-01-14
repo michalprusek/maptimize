@@ -127,9 +127,7 @@
       "green": "Green (GFP)",
       "greenDesc": "Green on black, fluorescence style",
       "fire": "Fire",
-      "fireDesc": "Heat-map style (black-red-yellow-white)",
-      "hilo": "HiLo",
-      "hiloDesc": "Highlights under/over-exposed pixels"
+      "fireDesc": "Heat-map style (black-red-yellow-white)"
     },
     "language": {
       "title": "Language",
@@ -159,6 +157,26 @@
     "prc1": "PRC1",
     "unassigned": "Unassigned"
   },
+  "bugReport": {
+    "title": "Report a Bug",
+    "description": "Description",
+    "descriptionPlaceholder": "Describe the issue you encountered...",
+    "category": "Category",
+    "bug": "Bug",
+    "feature": "Feature Request",
+    "other": "Other",
+    "submit": "Submit Report",
+    "submitting": "Submitting...",
+    "success": "Bug report submitted successfully!",
+    "error": "Failed to submit bug report",
+    "debugInfo": "Debug Information",
+    "debugInfoDesc": "This information helps us diagnose the issue",
+    "browser": "Browser",
+    "screenSize": "Screen Size",
+    "currentPage": "Current Page",
+    "userSettings": "User Settings",
+    "reportBug": "Report Bug"
+  },
   "umap": {
     "title": "Feature Space (UMAP)",
     "fovImages": "FOV images",
@@ -183,5 +201,35 @@
     "bundleness": "Bundleness",
     "cropId": "Crop #{id}",
     "imageId": "Image #{id}"
+  },
+  "editor": {
+    "title": "Image Editor",
+    "cropPreviews": "Cell Previews",
+    "newCrop": "New",
+    "modifiedCrop": "Modified",
+    "deleteBbox": "Delete Cell",
+    "resetBbox": "Reset to Original",
+    "brightness": "Brightness",
+    "contrast": "Contrast",
+    "displayMode": "Display Mode",
+    "zoom": "Zoom",
+    "resetView": "Reset View",
+    "undo": "Undo",
+    "addCell": "Add Cell",
+    "addBbox": "Add Cell",
+    "viewMode": "View",
+    "drawMode": "Draw",
+    "shortcuts": {
+      "escape": "ESC to close",
+      "delete": "Del to delete",
+      "undo": "Ctrl+Z to undo",
+      "draw": "N to toggle draw mode",
+      "pan": "Space+drag to pan"
+    },
+    "noCells": "No cells detected",
+    "clickToAdd": "Click \"Add Cell\" to create one",
+    "back": "Back",
+    "previousImage": "Previous image",
+    "nextImage": "Next image"
   }
 }
