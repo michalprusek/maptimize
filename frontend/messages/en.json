@@ -243,6 +243,17 @@
     "undoError": "Failed to undo",
     "createError": "Failed to create cell",
     "deleteError": "Failed to delete cell",
-    "updateError": "Failed to update cell"
+    "updateError": "Failed to update cell",
+    "segmentMode": "Segment Mode",
+    "samReady": "SAM Ready",
+    "samComputing": "Computing...",
+    "samError": "SAM Error",
+    "computeSam": "Compute SAM",
+    "clickPoints": "{count, plural, =1 {# point} other {# points}}",
+    "undoClick": "Undo last click",
+    "clearSegmentation": "Clear all points",
+    "saveMask": "Save mask",
+    "segmentHint": "Left-click: foreground • Right-click: background",
+    "noTargetCrop": "Select a cell to save the mask"
   }
 }

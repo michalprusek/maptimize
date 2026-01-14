@@ -52,7 +52,76 @@ export type HandlePosition =
 /**
  * Editor interaction modes.
  */
-export type EditorMode = "view" | "draw" | "edit";
+export type EditorMode = "view" | "draw" | "edit" | "segment";
+
+// ============================================================================
+// Segmentation Types
+// ============================================================================
+
+/**
+ * Click point for SAM segmentation.
+ * Left click = positive (foreground), Right click = negative (background)
+ */
+export interface SegmentClickPoint {
+  /** X coordinate in image pixels */
+  x: number;
+  /** Y coordinate in image pixels */
+  y: number;
+  /** 1 = foreground (include), 0 = background (exclude) */
+  label: 1 | 0;
+}
+
+/**
+ * Segmentation state for the editor.
+ */
+export interface SegmentationState {
+  /** Current click points for active segmentation */
+  clickPoints: SegmentClickPoint[];
+  /** Preview polygon from SAM inference (live update) */
+  previewPolygon: [number, number][] | null;
+  /** IoU score of current preview (confidence) */
+  previewIoU: number | null;
+  /** Whether segmentation API is loading */
+  isLoading: boolean;
+  /** Error message if segmentation failed */
+  error: string | null;
+  /** Target crop ID for saving the mask */
+  targetCropId: number | null;
+}
+
+/**
+ * Saved polygon for a cell crop.
+ */
+export interface CellPolygon {
+  /** Cell crop database ID */
+  cropId: number;
+  /** Polygon points [[x, y], ...] */
+  points: [number, number][];
+  /** SAM IoU prediction score */
+  iouScore: number;
+}
+
+/**
+ * SAM embedding status for an image.
+ */
+export type SAMEmbeddingStatus =
+  | "not_started"
+  | "pending"
+  | "computing"
+  | "ready"
+  | "error";
+
+/**
+ * Initial segmentation state.
+ */
+export const INITIAL_SEGMENTATION_STATE: SegmentationState = {
+  clickPoints: [],
+  previewPolygon: null,
+  previewIoU: null,
+  isLoading: false,
+  error: null,
+  targetCropId: null,
+};
 
 /**
  * Editor state for tracking interactions.

@@ -107,6 +107,8 @@ async def ensure_schema_updates():
             ("images", "umap_computed_at", "TIMESTAMP WITH TIME ZONE"),
             # User avatar support
             ("users", "avatar_url", "VARCHAR(500)"),
+            # SAM embedding status for interactive segmentation
+            ("images", "sam_embedding_status", "VARCHAR(20)"),
         ]
 
         for table, column, col_type in updates:

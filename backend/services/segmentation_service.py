@@ -1,0 +1,449 @@
+"""
+High-level segmentation service coordinating encoder, decoder, and database.
+
+This service provides the main API for:
+- Computing and storing SAM embeddings
+- Running interactive segmentation from click prompts
+- Saving and retrieving segmentation masks
+"""
+
+import asyncio
+import logging
+from typing import List, Optional, Tuple, Dict, Any
+
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from models.image import Image
+from models.sam_embedding import SAMEmbedding
+from models.segmentation import SegmentationMask, UserSegmentationPrompt
+from models.cell_crop import CellCrop
+from ml.segmentation.sam_encoder import get_sam_encoder
+from ml.segmentation.sam_decoder import get_sam_decoder
+
+logger = logging.getLogger(__name__)
+
+
+async def compute_sam_embedding(
+    image_id: int,
+    db: AsyncSession,
+) -> Dict[str, Any]:
+    """
+    Compute and store SAM embedding for an image.
+
+    Called during upload processing or on-demand when user opens
+    segmentation mode.
+
+    Args:
+        image_id: Database ID of the image
+        db: Async database session
+
+    Returns:
+        Dict with success status and details
+    """
+    # Get image
+    result = await db.execute(select(Image).where(Image.id == image_id))
+    image = result.scalar_one_or_none()
+
+    if not image:
+        return {"success": False, "error": "Image not found"}
+
+    # Determine source path (prefer MIP projection)
+    source_path = image.mip_path or image.file_path
+    if not source_path:
+        return {"success": False, "error": "No image file available"}
+
+    # Update status to computing
+    image.sam_embedding_status = "computing"
+    await db.commit()
+
+    try:
+        # Get encoder and compute embedding
+        encoder = get_sam_encoder()
+
+        # Run encoding in thread pool to avoid blocking event loop
+        loop = asyncio.get_event_loop()
+        embedding, width, height = await loop.run_in_executor(
+            None,
+            lambda: encoder.encode_image(source_path)
+        )
+
+        # Compress for storage
+        compressed = encoder.compress_embedding(embedding)
+
+        # Check for existing embedding and delete
+        existing = await db.execute(
+            select(SAMEmbedding).where(SAMEmbedding.image_id == image_id)
+        )
+        existing_emb = existing.scalar_one_or_none()
+        if existing_emb:
+            await db.delete(existing_emb)
+            await db.flush()
+
+        # Create new embedding record
+        sam_embedding = SAMEmbedding(
+            image_id=image_id,
+            model_variant=encoder.model_name,
+            embedding_data=compressed,
+            embedding_shape=",".join(map(str, embedding.shape)),
+            original_width=width,
+            original_height=height,
+        )
+
+        db.add(sam_embedding)
+        image.sam_embedding_status = "ready"
+        await db.commit()
+
+        logger.info(
+            f"SAM embedding computed for image {image_id}: "
+            f"{len(compressed) / 1024 / 1024:.1f}MB"
+        )
+
+        return {
+            "success": True,
+            "embedding_size": len(compressed),
+            "image_shape": (width, height),
+            "embedding_shape": embedding.shape,
+        }
+
+    except Exception as e:
+        logger.exception(f"Failed to compute SAM embedding for image {image_id}")
+        image.sam_embedding_status = "error"
+        await db.commit()
+        return {"success": False, "error": str(e)}
+
+
+async def get_embedding_status(
+    image_id: int,
+    db: AsyncSession,
+) -> Dict[str, Any]:
+    """
+    Get SAM embedding status for an image.
+
+    Args:
+        image_id: Database ID of the image
+        db: Async database session
+
+    Returns:
+        Dict with status information
+    """
+    result = await db.execute(
+        select(Image, SAMEmbedding)
+        .outerjoin(SAMEmbedding, Image.id == SAMEmbedding.image_id)
+        .where(Image.id == image_id)
+    )
+    row = result.one_or_none()
+
+    if not row:
+        return {"status": "not_found", "has_embedding": False}
+
+    image, sam_embedding = row
+
+    return {
+        "image_id": image_id,
+        "status": image.sam_embedding_status or "not_started",
+        "has_embedding": sam_embedding is not None,
+        "embedding_shape": sam_embedding.embedding_shape if sam_embedding else None,
+        "model_variant": sam_embedding.model_variant if sam_embedding else None,
+    }
+
+
+async def segment_from_prompts(
+    image_id: int,
+    point_coords: List[Tuple[int, int]],
+    point_labels: List[int],
+    db: AsyncSession,
+    multimask_output: bool = False,
+) -> Dict[str, Any]:
+    """
+    Run interactive segmentation from click prompts.
+
+    This is the main inference endpoint. Uses pre-computed embedding
+    for fast response (~10-50ms).
+
+    Args:
+        image_id: Database ID of the image
+        point_coords: List of (x, y) click coordinates
+        point_labels: List of labels (1=foreground, 0=background)
+        db: Async database session
+        multimask_output: Whether to return multiple mask options
+
+    Returns:
+        Dict with polygon, IoU score, and area
+    """
+    # Get image and embedding
+    result = await db.execute(
+        select(Image, SAMEmbedding)
+        .join(SAMEmbedding, Image.id == SAMEmbedding.image_id)
+        .where(Image.id == image_id)
+    )
+    row = result.one_or_none()
+
+    if not row:
+        return {"success": False, "error": "Image or embedding not found"}
+
+    image, sam_embedding = row
+
+    # Decompress embedding
+    encoder = get_sam_encoder()
+    shape = tuple(map(int, sam_embedding.embedding_shape.split(",")))
+
+    # Run decompression in thread pool
+    loop = asyncio.get_event_loop()
+    embedding = await loop.run_in_executor(
+        None,
+        lambda: encoder.decompress_embedding(sam_embedding.embedding_data, shape)
+    )
+
+    # Run decoder inference
+    decoder = get_sam_decoder()
+
+    def run_inference():
+        return decoder.predict_mask(
+            embedding=embedding,
+            image_shape=(sam_embedding.original_height, sam_embedding.original_width),
+            point_coords=point_coords,
+            point_labels=point_labels,
+            multimask_output=multimask_output,
+        )
+
+    mask, iou_score, _ = await loop.run_in_executor(None, run_inference)
+
+    # Convert mask to polygon
+    polygon = await loop.run_in_executor(
+        None,
+        lambda: decoder.mask_to_polygon(mask)
+    )
+
+    area = decoder.calculate_mask_area(mask)
+
+    return {
+        "success": True,
+        "polygon": polygon,
+        "iou_score": float(iou_score),
+        "area_pixels": area,
+        "mask_shape": list(mask.shape),
+    }
+
+
+async def save_segmentation_mask(
+    crop_id: int,
+    polygon: List[Tuple[int, int]],
+    iou_score: float,
+    prompt_count: int,
+    db: AsyncSession,
+    creation_method: str = "interactive",
+) -> Dict[str, Any]:
+    """
+    Save finalized segmentation mask for a cell crop.
+
+    Args:
+        crop_id: Database ID of the cell crop
+        polygon: List of (x, y) polygon points
+        iou_score: SAM's IoU prediction score
+        prompt_count: Number of click prompts used
+        db: Async database session
+        creation_method: How the mask was created
+
+    Returns:
+        Dict with success status
+    """
+    # Get crop
+    result = await db.execute(select(CellCrop).where(CellCrop.id == crop_id))
+    crop = result.scalar_one_or_none()
+
+    if not crop:
+        return {"success": False, "error": "Crop not found"}
+
+    # Calculate area using shoelace formula
+    decoder = get_sam_decoder()
+    area = decoder.calculate_polygon_area(polygon)
+
+    # Create or update mask
+    existing = await db.execute(
+        select(SegmentationMask).where(SegmentationMask.cell_crop_id == crop_id)
+    )
+    existing_mask = existing.scalar_one_or_none()
+
+    if existing_mask:
+        existing_mask.polygon_points = [list(p) for p in polygon]
+        existing_mask.area_pixels = area
+        existing_mask.iou_score = iou_score
+        existing_mask.prompt_count = prompt_count
+        existing_mask.creation_method = creation_method
+    else:
+        mask = SegmentationMask(
+            cell_crop_id=crop_id,
+            polygon_points=[list(p) for p in polygon],
+            area_pixels=area,
+            iou_score=iou_score,
+            creation_method=creation_method,
+            prompt_count=prompt_count,
+        )
+        db.add(mask)
+
+    await db.commit()
+
+    logger.info(f"Saved segmentation mask for crop {crop_id}: {len(polygon)} points")
+
+    return {"success": True, "crop_id": crop_id, "area_pixels": area}
+
+
+async def get_segmentation_mask(
+    crop_id: int,
+    db: AsyncSession,
+) -> Dict[str, Any]:
+    """
+    Get segmentation mask for a cell crop.
+
+    Args:
+        crop_id: Database ID of the cell crop
+        db: Async database session
+
+    Returns:
+        Dict with mask data or has_mask=False
+    """
+    result = await db.execute(
+        select(SegmentationMask).where(SegmentationMask.cell_crop_id == crop_id)
+    )
+    mask = result.scalar_one_or_none()
+
+    if not mask:
+        return {"has_mask": False}
+
+    return {
+        "has_mask": True,
+        "polygon": mask.polygon_points,
+        "iou_score": mask.iou_score,
+        "area_pixels": mask.area_pixels,
+        "creation_method": mask.creation_method,
+        "prompt_count": mask.prompt_count,
+    }
+
+
+async def get_segmentation_masks_batch(
+    crop_ids: List[int],
+    db: AsyncSession,
+) -> Dict[int, Dict[str, Any]]:
+    """
+    Get segmentation masks for multiple crops at once.
+
+    Args:
+        crop_ids: List of cell crop IDs
+        db: Async database session
+
+    Returns:
+        Dict mapping crop_id to mask data
+    """
+    if not crop_ids:
+        return {}
+
+    result = await db.execute(
+        select(SegmentationMask).where(SegmentationMask.cell_crop_id.in_(crop_ids))
+    )
+    masks = result.scalars().all()
+
+    return {
+        mask.cell_crop_id: {
+            "polygon": mask.polygon_points,
+            "iou_score": mask.iou_score,
+            "area_pixels": mask.area_pixels,
+            "creation_method": mask.creation_method,
+        }
+        for mask in masks
+    }
+
+
+async def delete_segmentation_mask(
+    crop_id: int,
+    db: AsyncSession,
+) -> Dict[str, Any]:
+    """
+    Delete segmentation mask for a cell crop.
+
+    Args:
+        crop_id: Database ID of the cell crop
+        db: Async database session
+
+    Returns:
+        Dict with success status
+    """
+    result = await db.execute(
+        select(SegmentationMask).where(SegmentationMask.cell_crop_id == crop_id)
+    )
+    mask = result.scalar_one_or_none()
+
+    if not mask:
+        return {"success": False, "error": "Mask not found"}
+
+    await db.delete(mask)
+    await db.commit()
+
+    return {"success": True, "crop_id": crop_id}
+
+
+async def save_user_prompt(
+    user_id: int,
+    image_id: int,
+    click_points: List[Dict[str, int]],
+    result_polygon: Optional[List[Tuple[int, int]]],
+    db: AsyncSession,
+    experiment_id: Optional[int] = None,
+    crop_id: Optional[int] = None,
+    name: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Save user's click prompts as an exemplar for future use.
+
+    Args:
+        user_id: Database ID of the user
+        image_id: Database ID of the source image
+        click_points: List of click points [{"x": int, "y": int, "label": int}, ...]
+        result_polygon: The resulting polygon from these prompts
+        db: Async database session
+        experiment_id: Optional experiment scope
+        crop_id: Optional associated crop
+        name: Optional descriptive name
+
+    Returns:
+        Dict with success status and prompt ID
+    """
+    prompt = UserSegmentationPrompt(
+        user_id=user_id,
+        experiment_id=experiment_id,
+        source_image_id=image_id,
+        source_crop_id=crop_id,
+        click_points=click_points,
+        result_polygon=[list(p) for p in result_polygon] if result_polygon else None,
+        name=name,
+    )
+
+    db.add(prompt)
+    await db.commit()
+    await db.refresh(prompt)
+
+    return {"success": True, "prompt_id": prompt.id}
+
+
+async def queue_sam_embedding(image_id: int) -> None:
+    """
+    Queue SAM embedding computation as a background task.
+
+    This is called from the upload pipeline to trigger async encoding.
+
+    Args:
+        image_id: Database ID of the image
+    """
+    from database import get_db_context
+
+    async with get_db_context() as db:
+        # Update status to pending
+        result = await db.execute(select(Image).where(Image.id == image_id))
+        image = result.scalar_one_or_none()
+
+        if image and image.sam_embedding_status is None:
+            image.sam_embedding_status = "pending"
+            await db.commit()
+
+        # Compute embedding
+        await compute_sam_embedding(image_id, db)

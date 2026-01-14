@@ -11,6 +11,7 @@ from database import Base
 if TYPE_CHECKING:
     from .image import Image, MapProtein
     from .ranking import UserRating
+    from .segmentation import SegmentationMask
 
 
 class CellCrop(Base):
@@ -70,6 +71,11 @@ class CellCrop(Base):
     map_protein: Mapped[Optional["MapProtein"]] = relationship()
     ratings: Mapped[List["UserRating"]] = relationship(
         back_populates="cell_crop",
+        cascade="all, delete-orphan"
+    )
+    segmentation_mask: Mapped[Optional["SegmentationMask"]] = relationship(
+        back_populates="cell_crop",
+        uselist=False,
         cascade="all, delete-orphan"
     )
 

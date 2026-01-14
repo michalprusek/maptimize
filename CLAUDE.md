@@ -72,22 +72,22 @@ Hlavní nginx-main na portech 80/443 routuje traffic podle domény:
 ⚠️ **YOLOv8 váhy (`weights/best.pt`)** nejsou součástí repozitáře.
 Backend NEPŮJDE spustit bez těchto vah - detekce buněk vyžaduje natrénovaný model.
 
-## 🚀 Development Setup (lokální vývoj s hot-reload)
+## 🚀 Development Setup (Docker - podobné produkci)
 
-**Princip:** Infrastruktura (DB, Redis) běží v Dockeru, aplikace (backend, frontend) běží lokálně.
-Výhoda: Nativní rychlost, okamžitý hot-reload, žádné problémy s volume mount.
+**Princip:** Celý stack běží v Dockeru s hot-reload. Podobné produkčnímu prostředí.
 
 ### Spuštění dev prostředí
 
 ```bash
-# 1. Spusť infrastrukturu (DB + Redis)
+# Spusť celý stack (frontend + backend + DB + Redis)
 docker compose -f docker-compose.dev.yml up -d
 
-# 2. Spusť backend (v novém terminálu)
-cd backend && uv run uvicorn main:app --reload --port 8000
+# Sleduj logy
+docker compose -f docker-compose.dev.yml logs -f
 
-# 3. Spusť frontend (v novém terminálu)
-cd frontend && npm run dev
+# Restart po změnách
+docker compose -f docker-compose.dev.yml restart frontend
+docker compose -f docker-compose.dev.yml restart backend
 ```
 
 ### Důležité porty pro dev
@@ -95,36 +95,72 @@ cd frontend && npm run dev
 | Port | Služba |
 |------|--------|
 | 3000 | Frontend (Next.js dev server) |
-| 8000 | Backend (FastAPI) |
-| 5433 | PostgreSQL (v Dockeru, port 5433 kvůli konfliktu s lokálním PostgreSQL) |
-| 6379 | Redis (v Dockeru) |
+| 8000 | Backend (FastAPI s hot-reload) |
+| 5433 | PostgreSQL (kvůli konfliktu s lokálním PostgreSQL) |
+| 6379 | Redis |
 
-### Konfigurace (.env)
+### První spuštění
 
-Hlavní `.env` soubor je v rootu projektu. Backend ho načítá přes symlink (`backend/.env` → `../.env`).
+```bash
+# 1. Build images
+docker compose -f docker-compose.dev.yml build
 
-Klíčové hodnoty pro dev:
-```env
-DATABASE_URL=postgresql://maptimize:maptimize@localhost:5433/maptimize
-REDIS_URL=redis://localhost:6379
+# 2. Spusť stack
+docker compose -f docker-compose.dev.yml up -d
+
+# 3. Zkontroluj stav
+docker compose -f docker-compose.dev.yml ps
 ```
 
-### Proč to funguje v produkci i dev
+### Hot-reload
 
-1. **Stejný kód** - žádné speciální dev-only konfigurce
-2. **Stejná struktura DB** - pgvector v Dockeru i v produkci
-3. **Stejné env proměnné** - jen jiné hodnoty (localhost vs hostname)
-4. **Frontend API_URL** - v dev volá přímo backend:8000, v produkci přes nginx
+- **Frontend:** Změny v `frontend/` se automaticky projeví (Next.js HMR)
+- **Backend:** Změny v `backend/` spustí automatický restart (uvicorn --reload)
+- **Poznámka:** Pro změny v `package.json` nebo `pyproject.toml` nutný rebuild
+
+### Rebuild po změně závislostí
+
+```bash
+# Frontend (po změně package.json)
+docker compose -f docker-compose.dev.yml build frontend --no-cache
+docker compose -f docker-compose.dev.yml up -d frontend
+
+# Backend (po změně pyproject.toml)
+docker compose -f docker-compose.dev.yml build backend --no-cache
+docker compose -f docker-compose.dev.yml up -d backend
+```
+
+### Zastavení a cleanup
+
+```bash
+# Zastavit
+docker compose -f docker-compose.dev.yml down
+
+# Zastavit včetně volumes (⚠️ smaže DB data!)
+docker compose -f docker-compose.dev.yml down -v
+```
 
 ### Troubleshooting dev
 
-**PostgreSQL port conflict:**
-Pokud máš lokální PostgreSQL na 5432, dev používá port 5433.
+**Port conflict:**
+```bash
+# Zkontroluj co běží na portech
+lsof -i:3000
+lsof -i:8000
 
-**pgvector extension:**
-Při prvním spuštění nové DB:
+# Uvolni porty
+docker compose -f docker-compose.dev.yml down
+```
+
+**pgvector extension (první spuštění):**
 ```bash
 docker exec maptimize-dev-db psql -U maptimize -d maptimize -c "CREATE EXTENSION IF NOT EXISTS vector;"
+```
+
+**Logy jednotlivých služeb:**
+```bash
+docker compose -f docker-compose.dev.yml logs -f frontend
+docker compose -f docker-compose.dev.yml logs -f backend
 ```
 
 ## 🔧 Deploy & Rebuild (Produkce)

@@ -22,8 +22,15 @@ import {
   Maximize2,
   GripVertical,
   GripHorizontal,
+  Wand2,
+  Save,
+  Trash2,
+  RotateCcw,
+  Loader2,
+  AlertCircle,
+  CheckCircle2,
 } from "lucide-react";
-import type { ImageFilters, EditorMode } from "@/lib/editor/types";
+import type { ImageFilters, EditorMode, SAMEmbeddingStatus } from "@/lib/editor/types";
 import type { DisplayMode } from "@/lib/api";
 import { DEFAULT_FILTERS, FILTER_LIMITS, MIN_ZOOM, MAX_ZOOM } from "@/lib/editor/constants";
 
@@ -49,6 +56,25 @@ interface ImageEditorToolbarProps {
   onPositionChange: (position: ToolbarPosition) => void;
   /** Whether the sidebar is open (affects left edge positioning) */
   sidebarOpen?: boolean;
+  // Segmentation props
+  /** SAM embedding status for current image */
+  samEmbeddingStatus?: SAMEmbeddingStatus;
+  /** Trigger SAM embedding computation */
+  onComputeEmbedding?: () => void;
+  /** Whether there are click points in segmentation */
+  hasClickPoints?: boolean;
+  /** Whether there's a preview polygon ready to save */
+  hasPreviewPolygon?: boolean;
+  /** Clear all segmentation click points */
+  onClearSegmentation?: () => void;
+  /** Save the current segmentation mask */
+  onSaveMask?: () => void;
+  /** Undo the last click point */
+  onUndoClick?: () => void;
+  /** Whether mask is currently being saved */
+  isSavingMask?: boolean;
+  /** Number of click points */
+  clickPointCount?: number;
 }
 
 const displayModes: { value: DisplayMode; label: string }[] = [
@@ -166,6 +192,16 @@ export function ImageEditorToolbar({
   position,
   onPositionChange,
   sidebarOpen = false,
+  // Segmentation props
+  samEmbeddingStatus = "not_started",
+  onComputeEmbedding,
+  hasClickPoints = false,
+  hasPreviewPolygon = false,
+  onClearSegmentation,
+  onSaveMask,
+  onUndoClick,
+  isSavingMask = false,
+  clickPointCount = 0,
 }: ImageEditorToolbarProps) {
   const t = useTranslations("editor");
   const toolbarRef = useRef<HTMLDivElement>(null);
@@ -515,19 +551,144 @@ export function ImageEditorToolbar({
         <Plus className="w-4 h-4" />
       </button>
 
-      {/* Undo */}
+      {/* Segment mode toggle */}
       <button
-        onClick={onUndo}
-        disabled={!canUndo || isUndoing}
-        className={`p-1.5 rounded transition-colors ${
-          canUndo && !isUndoing
-            ? "bg-bg-tertiary text-text-secondary hover:bg-white/10"
-            : "bg-bg-tertiary/50 text-text-muted cursor-not-allowed"
+        onClick={() => onEditorModeChange(editorMode === "segment" ? "view" : "segment")}
+        className={`p-1.5 rounded transition-colors relative ${
+          editorMode === "segment"
+            ? "bg-emerald-500 text-white"
+            : "bg-bg-tertiary text-text-secondary hover:bg-white/10"
         }`}
-        title={t("shortcuts.undo")}
+        title={t("segmentMode")}
+        disabled={samEmbeddingStatus === "computing" || samEmbeddingStatus === "pending"}
       >
-        <Undo2 className="w-4 h-4" />
+        <Wand2 className="w-4 h-4" />
+        {/* SAM status indicator dot */}
+        {samEmbeddingStatus === "ready" && (
+          <span className="absolute -top-0.5 -right-0.5 w-2 h-2 bg-emerald-400 rounded-full" />
+        )}
+        {(samEmbeddingStatus === "computing" || samEmbeddingStatus === "pending") && (
+          <span className="absolute -top-0.5 -right-0.5 w-2 h-2 bg-amber-400 rounded-full animate-pulse" />
+        )}
+        {samEmbeddingStatus === "error" && (
+          <span className="absolute -top-0.5 -right-0.5 w-2 h-2 bg-red-400 rounded-full" />
+        )}
       </button>
+
+      {/* Segment mode controls - only show when in segment mode */}
+      {editorMode === "segment" && (
+        <>
+          {divider}
+
+          {/* SAM status badge */}
+          <div className={`flex items-center gap-1.5 px-2 py-1 rounded-lg text-xs font-medium ${
+            samEmbeddingStatus === "ready"
+              ? "bg-emerald-500/20 text-emerald-400"
+              : samEmbeddingStatus === "computing" || samEmbeddingStatus === "pending"
+              ? "bg-amber-500/20 text-amber-400"
+              : samEmbeddingStatus === "error"
+              ? "bg-red-500/20 text-red-400"
+              : "bg-gray-500/20 text-gray-400"
+          }`}>
+            {samEmbeddingStatus === "ready" && (
+              <>
+                <CheckCircle2 className="w-3 h-3" />
+                <span>{t("samReady")}</span>
+              </>
+            )}
+            {(samEmbeddingStatus === "computing" || samEmbeddingStatus === "pending") && (
+              <>
+                <Loader2 className="w-3 h-3 animate-spin" />
+                <span>{t("samComputing")}</span>
+              </>
+            )}
+            {samEmbeddingStatus === "error" && (
+              <>
+                <AlertCircle className="w-3 h-3" />
+                <span>{t("samError")}</span>
+              </>
+            )}
+            {samEmbeddingStatus === "not_started" && onComputeEmbedding && (
+              <button
+                onClick={onComputeEmbedding}
+                className="flex items-center gap-1 hover:text-emerald-300 transition-colors"
+              >
+                <Wand2 className="w-3 h-3" />
+                <span>{t("computeSam")}</span>
+              </button>
+            )}
+          </div>
+
+          {/* Click point count */}
+          {clickPointCount > 0 && (
+            <span className="text-xs text-text-muted">
+              {t("clickPoints", { count: clickPointCount })}
+            </span>
+          )}
+
+          {/* Undo last click */}
+          <button
+            onClick={onUndoClick}
+            disabled={!hasClickPoints}
+            className={`p-1.5 rounded transition-colors ${
+              hasClickPoints
+                ? "bg-bg-tertiary text-text-secondary hover:bg-white/10"
+                : "bg-bg-tertiary/50 text-text-muted cursor-not-allowed"
+            }`}
+            title={t("undoClick")}
+          >
+            <RotateCcw className="w-4 h-4" />
+          </button>
+
+          {/* Clear segmentation */}
+          <button
+            onClick={onClearSegmentation}
+            disabled={!hasClickPoints}
+            className={`p-1.5 rounded transition-colors ${
+              hasClickPoints
+                ? "bg-bg-tertiary text-red-400 hover:bg-red-500/20"
+                : "bg-bg-tertiary/50 text-text-muted cursor-not-allowed"
+            }`}
+            title={t("clearSegmentation")}
+          >
+            <Trash2 className="w-4 h-4" />
+          </button>
+
+          {/* Save mask */}
+          <button
+            onClick={onSaveMask}
+            disabled={!hasPreviewPolygon || isSavingMask}
+            className={`p-1.5 rounded transition-colors ${
+              hasPreviewPolygon && !isSavingMask
+                ? "bg-emerald-500 text-white hover:bg-emerald-600"
+                : "bg-bg-tertiary/50 text-text-muted cursor-not-allowed"
+            }`}
+            title={t("saveMask")}
+          >
+            {isSavingMask ? (
+              <Loader2 className="w-4 h-4 animate-spin" />
+            ) : (
+              <Save className="w-4 h-4" />
+            )}
+          </button>
+        </>
+      )}
+
+      {/* Undo (for bbox operations, hidden in segment mode) */}
+      {editorMode !== "segment" && (
+        <button
+          onClick={onUndo}
+          disabled={!canUndo || isUndoing}
+          className={`p-1.5 rounded transition-colors ${
+            canUndo && !isUndoing
+              ? "bg-bg-tertiary text-text-secondary hover:bg-white/10"
+              : "bg-bg-tertiary/50 text-text-muted cursor-not-allowed"
+          }`}
+          title={t("shortcuts.undo")}
+        >
+          <Undo2 className="w-4 h-4" />
+        </button>
+      )}
     </motion.div>
   );
 }

@@ -7,6 +7,8 @@ from .cell_crop import CellCrop
 from .ranking import UserRating, Comparison, RankingSource
 from .metric import Metric, MetricImage, MetricRating, MetricComparison
 from .bug_report import BugReport, BugReportStatus, BugReportCategory
+from .sam_embedding import SAMEmbedding
+from .segmentation import SegmentationMask, UserSegmentationPrompt
 
 __all__ = [
     "User",
@@ -28,4 +30,7 @@ __all__ = [
     "BugReport",
     "BugReportStatus",
     "BugReportCategory",
+    "SAMEmbedding",
+    "SegmentationMask",
+    "UserSegmentationPrompt",
 ]

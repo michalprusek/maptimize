@@ -602,6 +602,87 @@ class ApiClient {
     });
   }
 
+  // ============================================================================
+  // Segmentation (SAM)
+  // ============================================================================
+
+  /**
+   * Trigger SAM embedding computation for an image.
+   * This is GPU-intensive and runs in background.
+   */
+  async computeSAMEmbedding(imageId: number) {
+    return this.request<{ message: string; image_id: number }>(
+      `/api/segmentation/compute-embedding/${imageId}`,
+      { method: "POST" }
+    );
+  }
+
+  /**
+   * Check SAM embedding status for an image.
+   */
+  async getSAMEmbeddingStatus(imageId: number) {
+    return this.request<SAMEmbeddingStatusResponse>(
+      `/api/segmentation/embedding-status/${imageId}`
+    );
+  }
+
+  /**
+   * Run interactive segmentation from click prompts.
+   * Requires pre-computed embedding (status = "ready").
+   */
+  async segmentInteractive(imageId: number, points: SegmentClickPoint[]) {
+    return this.request<SegmentResponse>("/api/segmentation/segment", {
+      method: "POST",
+      body: JSON.stringify({ image_id: imageId, points }),
+    });
+  }
+
+  /**
+   * Save finalized segmentation mask for a crop.
+   */
+  async saveSegmentationMask(data: {
+    crop_id: number;
+    polygon: [number, number][];
+    iou_score: number;
+    prompt_count: number;
+  }) {
+    return this.request<{ success: boolean; crop_id: number; area_pixels: number }>(
+      "/api/segmentation/save-mask",
+      {
+        method: "POST",
+        body: JSON.stringify(data),
+      }
+    );
+  }
+
+  /**
+   * Get segmentation mask for a crop.
+   */
+  async getSegmentationMask(cropId: number) {
+    return this.request<SegmentationMaskResponse>(
+      `/api/segmentation/mask/${cropId}`
+    );
+  }
+
+  /**
+   * Get segmentation masks for multiple crops at once.
+   */
+  async getSegmentationMasksBatch(cropIds: number[]) {
+    return this.request<SegmentationMasksBatchResponse>(
+      `/api/segmentation/masks/batch?crop_ids=${cropIds.join(",")}`
+    );
+  }
+
+  /**
+   * Delete segmentation mask for a crop.
+   */
+  async deleteSegmentationMask(cropId: number) {
+    return this.request<{ success: boolean; crop_id: number }>(
+      `/api/segmentation/mask/${cropId}`,
+      { method: "DELETE" }
+    );
+  }
+
   // Bug Reports
   async submitBugReport(data: BugReportCreate) {
     return this.request<BugReport>("/api/bug-reports", {
@@ -1024,6 +1105,57 @@ export interface CropBatchUpdateResponse {
   deleted: number[];
   failed: { action: string; id?: number; error: string }[];
   regeneration_queued: boolean;
+}
+
+// ============================================================================
+// Segmentation types
+// ============================================================================
+
+export type SAMEmbeddingStatus =
+  | "not_started"
+  | "pending"
+  | "computing"
+  | "ready"
+  | "error";
+
+export interface SAMEmbeddingStatusResponse {
+  image_id: number;
+  status: SAMEmbeddingStatus;
+  has_embedding: boolean;
+  embedding_shape?: string;
+  model_variant?: string;
+}
+
+export interface SegmentClickPoint {
+  x: number;
+  y: number;
+  label: 0 | 1; // 0 = background, 1 = foreground
+}
+
+export interface SegmentResponse {
+  success: boolean;
+  polygon?: [number, number][];
+  iou_score?: number;
+  area_pixels?: number;
+  error?: string;
+}
+
+export interface SegmentationMaskResponse {
+  has_mask: boolean;
+  polygon?: [number, number][];
+  iou_score?: number;
+  area_pixels?: number;
+  creation_method?: string;
+  prompt_count?: number;
+}
+
+export interface SegmentationMasksBatchResponse {
+  masks: Record<number, {
+    polygon: [number, number][];
+    iou_score: number;
+    area_pixels: number;
+    creation_method: string;
+  }>;
 }
 
 export const api = new ApiClient();

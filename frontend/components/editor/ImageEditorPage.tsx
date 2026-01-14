@@ -20,6 +20,7 @@ import type {
   ImageFilters,
   ContextMenuState,
   Rect,
+  CellPolygon,
 } from "@/lib/editor/types";
 import {
   cropToEditorBbox,
@@ -39,8 +40,10 @@ import { ImageEditorCanvas } from "./ImageEditorCanvas";
 import { ImageEditorToolbar, type ToolbarPosition } from "./ImageEditorToolbar";
 import { ImageEditorCropPreview } from "./ImageEditorCropPreview";
 import { ImageEditorContextMenu } from "./ImageEditorContextMenu";
+import { SegmentationOverlay } from "./SegmentationOverlay";
 import { useBboxInteraction } from "./hooks/useBboxInteraction";
 import { useUndoHistory } from "./hooks/useUndoHistory";
+import { useSegmentation } from "./hooks/useSegmentation";
 
 // localStorage key for persisting toolbar position
 const TOOLBAR_POSITION_KEY = "maptimize:editor:toolbarPosition";
@@ -124,11 +127,73 @@ export function ImageEditorPage({
   // Error state for user feedback
   const [error, setError] = useState<string | null>(null);
 
+  // Saved polygons for all crops
+  const [savedPolygons, setSavedPolygons] = useState<CellPolygon[]>([]);
+
+  // Container dimensions for segmentation overlay
+  const [containerDimensions, setContainerDimensions] = useState({ width: 0, height: 0 });
+
   // Show error toast
   const showError = useCallback((message: string) => {
     setError(message);
     // Auto-dismiss after 5 seconds
     setTimeout(() => setError(null), 5000);
+  }, []);
+
+  // Segmentation hook
+  const segmentation = useSegmentation({
+    imageId: fovImage.id,
+    onMaskSaved: useCallback((cropId: number, polygon: [number, number][], iouScore: number) => {
+      // Add to saved polygons
+      setSavedPolygons(prev => {
+        const existing = prev.find(p => p.cropId === cropId);
+        if (existing) {
+          return prev.map(p => p.cropId === cropId ? { cropId, points: polygon, iouScore } : p);
+        }
+        return [...prev, { cropId, points: polygon, iouScore }];
+      });
+      onDataChanged?.();
+    }, [onDataChanged]),
+  });
+
+  // Load saved polygons when crops change
+  useEffect(() => {
+    const loadPolygons = async () => {
+      const cropIds = crops.map(c => c.id);
+      if (cropIds.length === 0) return;
+
+      try {
+        const result = await api.getSegmentationMasksBatch(cropIds);
+        if (result.masks) {
+          setSavedPolygons(
+            result.masks.map(m => ({
+              cropId: m.crop_id,
+              points: m.polygon as [number, number][],
+              iouScore: m.iou_score,
+            }))
+          );
+        }
+      } catch (err) {
+        console.error("[Editor] Failed to load segmentation masks:", err);
+      }
+    };
+
+    loadPolygons();
+  }, [crops]);
+
+  // Update container dimensions for overlay sizing
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+
+    const updateDimensions = () => {
+      const rect = container.getBoundingClientRect();
+      setContainerDimensions({ width: rect.width, height: rect.height });
+    };
+
+    updateDimensions();
+    window.addEventListener("resize", updateDimensions);
+    return () => window.removeEventListener("resize", updateDimensions);
   }, []);
 
   // Toolbar position state - persisted in localStorage
@@ -528,6 +593,23 @@ export function ImageEditorPage({
         return;
       }
 
+      // S = toggle segment mode
+      if (e.key === "s" || e.key === "S") {
+        if (segmentation.isReady || segmentation.embeddingStatus === "not_started") {
+          setEditorState((prev) => ({
+            ...prev,
+            mode: prev.mode === "segment" ? "view" : "segment",
+          }));
+        }
+        return;
+      }
+
+      // Escape = clear segmentation points (when in segment mode)
+      if (e.key === "Escape" && editorState.mode === "segment") {
+        segmentation.clearSegmentation();
+        return;
+      }
+
       // Space = enable panning
       if (e.key === " " && !editorState.isSpacePressed) {
         e.preventDefault();
@@ -554,7 +636,7 @@ export function ImageEditorPage({
       window.removeEventListener("keydown", handleKeyDown);
       window.removeEventListener("keyup", handleKeyUp);
     };
-  }, [bboxes, editorState.selectedBboxId, editorState.isSpacePressed, handleBboxDeleteLocal, undoHistory]);
+  }, [bboxes, editorState.selectedBboxId, editorState.isSpacePressed, editorState.mode, handleBboxDeleteLocal, undoHistory, segmentation]);
 
   // Bbox interaction hook
   const {
@@ -579,6 +661,82 @@ export function ImageEditorPage({
     onBboxCreate: handleBboxCreateLocal,
     onBboxSelect: handleBboxSelect,
   });
+
+  // Handle segmentation clicks (convert canvas coordinates to image coordinates)
+  const handleSegmentationClick = useCallback(
+    (e: React.MouseEvent<HTMLCanvasElement | HTMLDivElement>) => {
+      if (editorState.mode !== "segment" || !segmentation.isReady) return;
+
+      const container = containerRef.current;
+      if (!container) return;
+
+      const rect = container.getBoundingClientRect();
+      const canvasX = e.clientX - rect.left;
+      const canvasY = e.clientY - rect.top;
+
+      // Convert canvas coords to image coords
+      const imageX = (canvasX - editorState.panOffset.x) / editorState.zoom;
+      const imageY = (canvasY - editorState.panOffset.y) / editorState.zoom;
+
+      // Check bounds
+      if (imageX < 0 || imageY < 0 || imageX > (fovImage.width || 0) || imageY > (fovImage.height || 0)) {
+        return;
+      }
+
+      // Left click = foreground (1), Right click = background (0)
+      const label: 0 | 1 = e.button === 2 ? 0 : 1;
+      segmentation.addClickPoint(imageX, imageY, label);
+    },
+    [editorState.mode, editorState.zoom, editorState.panOffset, segmentation, fovImage.width, fovImage.height]
+  );
+
+  // Handle save mask (requires selected crop)
+  const handleSaveMask = useCallback(async () => {
+    const selectedCropId = typeof editorState.selectedBboxId === "number"
+      ? editorState.selectedBboxId
+      : null;
+
+    if (!selectedCropId) {
+      showError(t("noTargetCrop"));
+      return;
+    }
+
+    const result = await segmentation.saveMask(selectedCropId);
+    if (!result.success && result.error) {
+      showError(result.error);
+    }
+  }, [editorState.selectedBboxId, segmentation, showError, t]);
+
+  // Wrap mouse down handler to support segmentation mode
+  const handleMouseDownWithSegmentation = useCallback(
+    (e: React.MouseEvent<HTMLCanvasElement>) => {
+      // In segment mode, handle segmentation clicks
+      if (editorState.mode === "segment" && segmentation.isReady) {
+        // Prevent context menu on right click
+        if (e.button === 2) {
+          e.preventDefault();
+        }
+        handleSegmentationClick(e);
+        return;
+      }
+      // Otherwise, delegate to bbox interaction
+      handleMouseDown(e);
+    },
+    [editorState.mode, segmentation.isReady, handleSegmentationClick, handleMouseDown]
+  );
+
+  // Wrap context menu handler to allow right-click in segment mode
+  const handleContextMenuWithSegmentation = useCallback(
+    (e: React.MouseEvent<HTMLCanvasElement>) => {
+      // In segment mode, right-click adds background point (handled by mouse down)
+      if (editorState.mode === "segment" && segmentation.isReady) {
+        e.preventDefault();
+        return;
+      }
+      handleContextMenu(e);
+    },
+    [editorState.mode, segmentation.isReady, handleContextMenu]
+  );
 
   // Handle wheel events
   useEffect(() => {
@@ -688,12 +846,12 @@ export function ImageEditorPage({
             filters={filters}
             displayMode={displayMode}
             drawingBbox={drawingBbox}
-            onMouseDown={handleMouseDown}
+            onMouseDown={handleMouseDownWithSegmentation}
             onMouseMove={handleMouseMove}
             onMouseUp={handleMouseUp}
             onMouseLeave={handleMouseLeave}
-            onContextMenu={handleContextMenu}
-            cursor={cursor}
+            onContextMenu={handleContextMenuWithSegmentation}
+            cursor={editorState.mode === "segment" ? "crosshair" : cursor}
             containerRef={containerRef}
             onImageCanvasReady={(canvas) => {
               imageCanvasRef.current = canvas;
@@ -701,6 +859,19 @@ export function ImageEditorPage({
             onImageLoaded={(img) => {
               sourceImageRef.current = img;
             }}
+          />
+
+          {/* Segmentation overlay - renders click points and polygons */}
+          <SegmentationOverlay
+            clickPoints={segmentation.state.clickPoints}
+            previewPolygon={segmentation.state.previewPolygon}
+            savedPolygons={savedPolygons}
+            zoom={editorState.zoom}
+            panOffset={editorState.panOffset}
+            isActive={editorState.mode === "segment"}
+            isLoading={segmentation.state.isLoading}
+            containerWidth={containerDimensions.width}
+            containerHeight={containerDimensions.height}
           />
         </div>
 
@@ -716,6 +887,7 @@ export function ImageEditorPage({
           modifyingBboxId={modifyingBboxId}
           liveBboxRect={liveBboxRect}
           displayMode={displayMode}
+          savedPolygons={savedPolygons}
         />
       </div>
 
@@ -743,6 +915,16 @@ export function ImageEditorPage({
         position={toolbarPosition}
         onPositionChange={handleToolbarPositionChange}
         sidebarOpen={showNavigation}
+        // Segmentation props
+        samEmbeddingStatus={segmentation.embeddingStatus}
+        onComputeEmbedding={segmentation.computeEmbedding}
+        hasClickPoints={segmentation.state.clickPoints.length > 0}
+        hasPreviewPolygon={!!segmentation.state.previewPolygon}
+        onClearSegmentation={segmentation.clearSegmentation}
+        onSaveMask={handleSaveMask}
+        onUndoClick={segmentation.undoLastClick}
+        isSavingMask={false}
+        clickPointCount={segmentation.state.clickPoints.length}
       />
 
       {/* Context menu */}

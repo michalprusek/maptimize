@@ -11,11 +11,12 @@
 import { useMemo, useState, useEffect, type RefObject } from "react";
 import { useTranslations } from "next-intl";
 import { motion } from "framer-motion";
-import { Sparkles, Edit2 } from "lucide-react";
-import type { EditorBbox, Rect } from "@/lib/editor/types";
+import { Sparkles, Edit2, Hexagon } from "lucide-react";
+import type { EditorBbox, Rect, CellPolygon } from "@/lib/editor/types";
 import { getDisplayModeFilter } from "@/lib/editor/display";
 import { api, type DisplayMode } from "@/lib/api";
 import { extractCropFromImage } from "@/lib/editor/canvasUtils";
+import { CropPolygonOverlay } from "./SegmentationOverlay";
 
 interface ImageEditorCropPreviewProps {
   bboxes: EditorBbox[];
@@ -33,7 +34,12 @@ interface ImageEditorCropPreviewProps {
   onBboxHover?: (id: string | number | null) => void;
   /** Current display mode for preview rendering */
   displayMode: DisplayMode;
+  /** Saved segmentation polygons for crops */
+  savedPolygons?: CellPolygon[];
 }
+
+// Thumbnail size for polygon overlay calculation
+const THUMBNAIL_SIZE = 256; // w-64 = 16rem = 256px
 
 export function ImageEditorCropPreview({
   bboxes,
@@ -46,6 +52,7 @@ export function ImageEditorCropPreview({
   liveBboxRect,
   onBboxHover,
   displayMode,
+  savedPolygons = [],
 }: ImageEditorCropPreviewProps) {
   const t = useTranslations("editor");
 
@@ -158,7 +165,7 @@ export function ImageEditorCropPreview({
               } ${isBeingModified ? "ring-2 ring-accent-amber animate-pulse" : ""}`}
             >
               {/* Preview thumbnail */}
-              <div className="w-full aspect-square overflow-hidden bg-bg-tertiary">
+              <div className="w-full aspect-square overflow-hidden bg-bg-tertiary relative">
                 {previewUrl ? (
                   <img
                     src={previewUrl}
@@ -177,6 +184,20 @@ export function ImageEditorCropPreview({
                     )}
                   </div>
                 )}
+                {/* Polygon overlay for crops with segmentation */}
+                {(() => {
+                  const polygon = savedPolygons.find(p => p.cropId === bbox.cropId);
+                  if (polygon && polygon.points.length >= 3) {
+                    return (
+                      <CropPolygonOverlay
+                        polygon={polygon.points}
+                        bbox={{ x: bbox.x, y: bbox.y, width: bbox.width, height: bbox.height }}
+                        thumbnailSize={THUMBNAIL_SIZE}
+                      />
+                    );
+                  }
+                  return null;
+                })()}
               </div>
 
               {/* Info below thumbnail */}
@@ -195,6 +216,12 @@ export function ImageEditorCropPreview({
                   {!bbox.isNew && !bbox.isModified && (
                     <span className="text-xs text-text-secondary">
                       {bbox.width}×{bbox.height} px
+                    </span>
+                  )}
+                  {/* Segmentation indicator */}
+                  {savedPolygons.some(p => p.cropId === bbox.cropId) && (
+                    <span className="flex items-center gap-0.5 px-1.5 py-0.5 text-[10px] bg-emerald-500/20 text-emerald-400 rounded-md font-medium" title="Has segmentation mask">
+                      <Hexagon className="w-2.5 h-2.5" />
                     </span>
                   )}
                 </div>

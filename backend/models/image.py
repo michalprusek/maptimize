@@ -12,6 +12,7 @@ from database import Base
 if TYPE_CHECKING:
     from .experiment import Experiment
     from .cell_crop import CellCrop
+    from .sam_embedding import SAMEmbedding
 
 
 class UploadStatus(str, PyEnum):
@@ -97,6 +98,13 @@ class Image(Base):
     embedding: Mapped[Optional[list]] = mapped_column(Vector(1024), nullable=True)
     embedding_model: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
 
+    # SAM embedding status for interactive segmentation
+    # None = not started, "pending" = queued, "computing" = in progress,
+    # "ready" = embedding available, "error" = failed
+    sam_embedding_status: Mapped[Optional[str]] = mapped_column(
+        String(20), nullable=True, default=None
+    )
+
     # Pre-computed UMAP coordinates for FOV visualization
     umap_x: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     umap_y: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
@@ -119,6 +127,11 @@ class Image(Base):
     map_protein: Mapped[Optional["MapProtein"]] = relationship(back_populates="images")
     cell_crops: Mapped[List["CellCrop"]] = relationship(
         back_populates="image",
+        cascade="all, delete-orphan"
+    )
+    sam_embedding: Mapped[Optional["SAMEmbedding"]] = relationship(
+        back_populates="image",
+        uselist=False,
         cascade="all, delete-orphan"
     )
 

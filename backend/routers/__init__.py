@@ -10,6 +10,7 @@ from .metrics import router as metrics_router
 from .embeddings import router as embeddings_router
 from .settings import router as settings_router
 from .bug_reports import router as bug_reports_router
+from .segmentation import router as segmentation_router
 
 api_router = APIRouter()
 
@@ -22,3 +23,4 @@ api_router.include_router(metrics_router, prefix="/metrics", tags=["Metrics"])
 api_router.include_router(embeddings_router, prefix="/embeddings", tags=["Embeddings"])
 api_router.include_router(settings_router, prefix="/settings", tags=["Settings"])
 api_router.include_router(bug_reports_router, prefix="/bug-reports", tags=["Bug Reports"])
+api_router.include_router(segmentation_router, prefix="/segmentation", tags=["Segmentation"])

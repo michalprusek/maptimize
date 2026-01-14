@@ -159,6 +159,9 @@ class ImageProcessor:
                     original_path.unlink()
                     logger.info(f"Deleted original Z-stack: {original_path}")
 
+                # Trigger SAM embedding computation (non-blocking, runs in background)
+                await self._trigger_sam_embedding(db, image)
+
                 logger.info(f"Phase 1 complete for image {image.id}")
                 return True
 
@@ -596,6 +599,35 @@ class ImageProcessor:
             logger.error(f"DINOv3 model error during FOV feature extraction: {e}")
         except Exception as e:
             logger.exception(f"Unexpected FOV feature extraction error: {e}")
+
+    async def _trigger_sam_embedding(
+        self,
+        db: AsyncSession,
+        image: Image
+    ) -> None:
+        """
+        Trigger SAM embedding computation (non-blocking, runs in background).
+
+        Sets image status to 'pending' and queues embedding computation.
+        The embedding is computed asynchronously to avoid blocking upload.
+        """
+        try:
+            from services.segmentation_service import queue_sam_embedding
+
+            # Set status to pending
+            image.sam_embedding_status = "pending"
+            await db.commit()
+
+            # Queue background computation (will be processed by worker)
+            await queue_sam_embedding(image.id)
+
+            logger.info(f"SAM embedding queued for image {image.id}")
+        except ImportError as e:
+            logger.warning(f"SAM segmentation service not available: {e}")
+            # Not fatal - segmentation is optional
+        except Exception as e:
+            logger.warning(f"Failed to queue SAM embedding for image {image.id}: {e}")
+            # Not fatal - user can trigger manually later
 
     async def _save_crop(
         self,

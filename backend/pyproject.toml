@@ -38,6 +38,7 @@ ml = [
     "umap-learn>=0.5.7",
     "numba>=0.59.0",
     "scikit-learn>=1.4.0",
+    "opencv-python-headless>=4.9.0",
 ]
 dev = [
     "pytest>=7.4.0",

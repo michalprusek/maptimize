@@ -1,29 +1,63 @@
-# Backend Development Dockerfile with hot reload
+# Backend Development Dockerfile
+# Hot-reload enabled for development (CPU mode - no GPU in dev)
 FROM python:3.11-slim
 
 WORKDIR /app
 
 # Install system dependencies
-RUN apt-get update && apt-get install -y \
-    libgl1 \
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    libgomp1 \
     libglib2.0-0 \
+    libsm6 \
+    libxext6 \
+    libxrender-dev \
+    libgl1 \
     curl \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    && apt-get clean
 
 # Install uv for fast dependency management
 RUN pip install uv
 
-# Copy dependency files first for caching
+# Copy pyproject.toml for dependency installation
 COPY pyproject.toml ./
 
-# Install dependencies (including ML packages)
+# Install dependencies (CPU versions for dev - faster build)
+RUN uv pip install --system torch torchvision --index-url https://download.pytorch.org/whl/cpu
+
+# Install all ML dependencies explicitly
+RUN uv pip install --system \
+    pgvector \
+    opencv-python-headless \
+    ultralytics \
+    transformers \
+    timm \
+    umap-learn \
+    numba \
+    scikit-learn
+
+# Install all project dependencies (including ml extras)
 RUN uv pip install --system -e ".[ml]"
 
-# Create upload directory
-RUN mkdir -p data/uploads
+# Copy application code
+COPY . .
 
-# Expose port
+# Create directories
+RUN mkdir -p data/uploads /app/weights /app/.cache/huggingface
+
+# Environment
+ENV PYTHONPATH=/app
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
+ENV PORT=8000
+ENV HF_HOME=/app/.cache/huggingface
+
 EXPOSE 8000
 
-# Run with hot reload enabled
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--reload", "--reload-dir", "/app"]
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
+    CMD curl -f http://localhost:8000/health || exit 1
+
+# Run with hot-reload
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]

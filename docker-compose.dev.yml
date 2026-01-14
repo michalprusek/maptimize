@@ -1,24 +1,93 @@
-# Maptimize Development - Infrastructure Only
-# Databáze a Redis v Dockeru, aplikace běží lokálně (rychlejší hot-reload)
+# Maptimize Development - Full Docker Stack
+# Podobné produkci ale s hot-reload pro vývoj
 #
 # Použití:
 #   docker compose -f docker-compose.dev.yml up -d
-#   cd backend && uv run uvicorn main:app --reload --port 8000
-#   cd frontend && npm run dev
+#   docker compose -f docker-compose.dev.yml logs -f
+#
+# Porty:
+#   Frontend: http://localhost:3000
+#   Backend:  http://localhost:8000
+#   DB:       localhost:5433
+#   Redis:    localhost:6379
 
 services:
+  # Frontend (Next.js dev server s hot-reload)
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile.dev
+    container_name: maptimize-dev-frontend
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=development
+      - NEXT_PUBLIC_API_URL=http://localhost:8000
+      - WATCHPACK_POLLING=true
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+      - /app/.next
+    depends_on:
+      - backend
+    networks:
+      - maptimize-dev-network
+    restart: unless-stopped
+
+  # Backend (FastAPI s hot-reload)
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.dev
+    container_name: maptimize-dev-backend
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_URL=postgresql://maptimize:maptimize@db:5432/maptimize
+      - REDIS_URL=redis://redis:6379
+      - JWT_SECRET=dev-secret-key-change-in-production
+      - JWT_ALGORITHM=HS256
+      - JWT_EXPIRE_MINUTES=1440
+      - DEBUG=true
+      - PYTHONDONTWRITEBYTECODE=1
+      - PYTHONUNBUFFERED=1
+      # YOLOv8 Configuration
+      - YOLO_MODEL_PATH=/app/weights/best.pt
+      - YOLO_CONFIDENCE_THRESHOLD=0.25
+      - YOLO_IOU_THRESHOLD=0.7
+      # HuggingFace
+      - HF_HOME=/app/.cache/huggingface
+      # Admin
+      - DEFAULT_ADMIN_EMAIL=admin@localhost
+      - DEFAULT_ADMIN_PASSWORD=admin123
+    volumes:
+      - ./backend:/app
+      - ./data/uploads:/app/data/uploads
+      - ./weights:/app/weights:ro
+      - huggingface_dev_cache:/app/.cache/huggingface
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    networks:
+      - maptimize-dev-network
+    restart: unless-stopped
+
   # PostgreSQL with pgvector
   db:
     image: pgvector/pgvector:pg16
     container_name: maptimize-dev-db
     ports:
-      - "5433:5432"  # 5433 to avoid conflict with local PostgreSQL
+      - "5433:5432"
     environment:
       - POSTGRES_USER=maptimize
       - POSTGRES_PASSWORD=maptimize
       - POSTGRES_DB=maptimize
     volumes:
       - maptimize_dev_postgres:/var/lib/postgresql/data
+    networks:
+      - maptimize-dev-network
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U maptimize -d maptimize"]
       interval: 5s
@@ -35,6 +104,8 @@ services:
     volumes:
       - maptimize_dev_redis:/data
     command: redis-server --maxmemory 256mb --maxmemory-policy allkeys-lru
+    networks:
+      - maptimize-dev-network
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
@@ -42,8 +113,15 @@ services:
       retries: 5
     restart: unless-stopped
 
+networks:
+  maptimize-dev-network:
+    driver: bridge
+    name: maptimize-dev-network
+
 volumes:
   maptimize_dev_postgres:
     name: maptimize_dev_postgres
   maptimize_dev_redis:
     name: maptimize_dev_redis
+  huggingface_dev_cache:
+    name: maptimize_dev_huggingface_cache
