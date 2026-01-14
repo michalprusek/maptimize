@@ -568,7 +568,6 @@ export default function ExperimentDetailPage(): JSX.Element {
           filteredFovs={filteredFovs}
           fovs={fovs}
           isLoading={fovsLoading}
-          hasActiveFilters={hasActiveFilters}
           onClearFilters={clearFilters}
           selectedIds={selectedFovIds}
           onToggleSelect={toggleSelect}

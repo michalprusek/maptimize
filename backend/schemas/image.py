@@ -2,7 +2,7 @@
 from datetime import datetime
 from typing import Optional, List
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from models.image import UploadStatus
 
@@ -94,15 +94,25 @@ class ImageDetailResponse(ImageResponse):
 
 class BatchProcessRequest(BaseModel):
     """Request schema for batch processing images."""
-    image_ids: List[int] = Field(..., min_length=1, description="List of image IDs to process")
+    image_ids: List[int] = Field(..., min_length=1, max_length=1000, description="List of image IDs to process")
     detect_cells: bool = Field(True, description="Whether to run YOLO detection")
     map_protein_id: Optional[int] = Field(None, description="Optional MAP protein to assign to all images")
+
+    @field_validator("image_ids")
+    @classmethod
+    def unique_image_ids(cls, v: List[int]) -> List[int]:
+        """Ensure image IDs are unique to prevent duplicate processing."""
+        unique_ids = list(dict.fromkeys(v))  # Preserves order while removing duplicates
+        if len(unique_ids) != len(v):
+            # Return unique IDs instead of raising error for better UX
+            return unique_ids
+        return v
 
 
 class BatchProcessResponse(BaseModel):
     """Response schema for batch processing."""
-    processing_count: int = Field(..., description="Number of images queued for processing")
-    message: str = Field(..., description="Status message")
+    processing_count: int = Field(..., ge=0, description="Number of images queued for processing")
+    message: str = Field(..., min_length=1, description="Status message")
 
 
 class FOVResponse(BaseModel):
@@ -111,13 +121,13 @@ class FOVResponse(BaseModel):
     experiment_id: int
     original_filename: str
     status: UploadStatus
-    width: Optional[int] = None
-    height: Optional[int] = None
-    z_slices: Optional[int] = None
-    file_size: Optional[int] = None
+    width: Optional[int] = Field(None, gt=0)
+    height: Optional[int] = Field(None, gt=0)
+    z_slices: Optional[int] = Field(None, gt=0)
+    file_size: Optional[int] = Field(None, gt=0)
     detect_cells: bool = False
     thumbnail_url: Optional[str] = None
-    cell_count: int = 0
+    cell_count: int = Field(default=0, ge=0)
     map_protein: Optional[MapProteinResponse] = None
     created_at: datetime
     processed_at: Optional[datetime] = None

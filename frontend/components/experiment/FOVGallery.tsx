@@ -19,10 +19,11 @@ import {
 
 interface FOVGalleryProps {
   experimentId: number;
-  filteredFovs: FOVImage[];
+  /** Filtered FOVs to display (after search/filter). Should be subset of `fovs`. */
+  filteredFovs: FOVImage[] | undefined;
+  /** All FOVs before filtering. Used to show "X of Y" count. */
   fovs: FOVImage[] | undefined;
   isLoading: boolean;
-  hasActiveFilters: boolean;
   onClearFilters: () => void;
   selectedIds: Set<number>;
   onToggleSelect: (id: number) => void;
@@ -33,11 +34,17 @@ export function FOVGallery({
   filteredFovs,
   fovs,
   isLoading,
-  hasActiveFilters,
   onClearFilters,
   selectedIds,
   onToggleSelect,
 }: FOVGalleryProps): JSX.Element {
+  // Derive hasActiveFilters from props for consistency
+  const hasActiveFilters = fovs !== undefined &&
+    filteredFovs !== undefined &&
+    filteredFovs.length !== fovs.length;
+
+  // Safe access to filteredFovs with fallback
+  const displayFovs = filteredFovs ?? [];
   const queryClient = useQueryClient();
 
   // Delete state
@@ -121,14 +128,14 @@ export function FOVGallery({
       {/* Results count */}
       {hasActiveFilters && fovs && (
         <p className="text-sm text-text-muted">
-          Showing {filteredFovs.length} of {fovs.length} images
+          Showing {displayFovs.length} of {fovs.length} images
         </p>
       )}
 
       {/* FOV Grid */}
-      {filteredFovs.length > 0 ? (
+      {displayFovs.length > 0 ? (
         <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6 gap-4">
-          {filteredFovs.map((fov, i) => (
+          {displayFovs.map((fov, i) => (
             <motion.div
               key={fov.id}
               initial={{ opacity: 0, scale: 0.95 }}

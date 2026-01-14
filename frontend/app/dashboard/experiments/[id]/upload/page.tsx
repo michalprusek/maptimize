@@ -66,7 +66,7 @@ export default function UploadPage(): JSX.Element {
   const selectedProtein = proteins?.find((p) => p.id === selectedProteinId);
 
   // Query uploaded images to show thumbnails
-  const { data: uploadedImages } = useQuery({
+  const { data: uploadedImages, error: uploadedImagesError } = useQuery({
     queryKey: ["uploaded-images", uploadedImageIds],
     queryFn: async () => {
       if (uploadedImageIds.length === 0) return [];
@@ -76,6 +76,8 @@ export default function UploadPage(): JSX.Element {
       return images;
     },
     enabled: uploadedImageIds.length > 0,
+    retry: 3,
+    retryDelay: (attemptIndex) => Math.min(1000 * 2 ** attemptIndex, 10000),
     refetchInterval: (query) => {
       // Poll while any image is still processing Phase 1
       const images = query.state.data;
@@ -578,8 +580,26 @@ export default function UploadPage(): JSX.Element {
               </button>
             )}
 
+            {/* Batch process error message */}
+            {batchProcessMutation.isError && (
+              <div className="p-3 bg-accent-red/10 border border-accent-red/20 rounded-lg">
+                <p className="text-accent-red text-sm">
+                  {batchProcessMutation.error?.message || "Failed to start processing. Please try again."}
+                </p>
+              </div>
+            )}
+
+            {/* Upload images error message */}
+            {uploadedImagesError && (
+              <div className="p-3 bg-accent-red/10 border border-accent-red/20 rounded-lg">
+                <p className="text-accent-red text-sm">
+                  Failed to fetch image status: {uploadedImagesError.message}
+                </p>
+              </div>
+            )}
+
             {/* Waiting for uploads message */}
-            {!allPhase1Complete && (
+            {!allPhase1Complete && !uploadedImagesError && (
               <div className="flex items-center gap-2 text-sm text-text-muted">
                 <Loader2 className="w-4 h-4 animate-spin" />
                 <span>Waiting for uploads to complete...</span>
@@ -811,7 +831,7 @@ export default function UploadPage(): JSX.Element {
           {createProteinMutation.isError && (
             <div className="p-3 bg-accent-red/10 border border-accent-red/20 rounded-lg">
               <p className="text-accent-red text-sm">
-                Failed to create protein. Please try again.
+                {createProteinMutation.error?.message || "Failed to create protein. Please try again."}
               </p>
             </div>
           )}

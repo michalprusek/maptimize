@@ -211,6 +211,11 @@ class ImageProcessor:
                     mip = await self._load_image(image.mip_path)
                 else:
                     # Fallback: load from original file if still exists
+                    logger.warning(
+                        f"MIP projection missing for image {image.id} (mip_path={image.mip_path}), "
+                        f"falling back to original file: {image.file_path}. "
+                        f"This may indicate Phase 1 did not complete properly."
+                    )
                     mip = await self._load_image(image.file_path)
 
                 if mip is None:
