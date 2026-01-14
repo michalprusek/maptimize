@@ -29,9 +29,10 @@ router = APIRouter()
 settings = get_settings()
 
 # Allowed avatar file extensions and content types
-ALLOWED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".webp"}
-ALLOWED_CONTENT_TYPES = {"image/jpeg", "image/png", "image/gif", "image/webp"}
-MAX_AVATAR_SIZE = 5 * 1024 * 1024  # 5MB
+# TIFF files are allowed and will be converted to JPEG during processing
+ALLOWED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".tif", ".tiff"}
+ALLOWED_CONTENT_TYPES = {"image/jpeg", "image/png", "image/gif", "image/webp", "image/tiff"}
+MAX_AVATAR_SIZE = 10 * 1024 * 1024  # 10MB (TIFF files can be larger)
 AVATAR_SIZE = (256, 256)  # Resize avatars to this size
 
 
@@ -238,9 +239,22 @@ async def upload_avatar(
     try:
         img = PILImage.open(BytesIO(content))
 
-        # Convert to RGB if necessary (handles RGBA, etc.)
-        if img.mode in ("RGBA", "P"):
-            img = img.convert("RGB")
+        # Convert to RGB if necessary
+        # TIFF files can have various modes: I (32-bit int), F (float), L (grayscale),
+        # RGBA, CMYK, LAB, I;16 (16-bit), etc.
+        if img.mode != "RGB":
+            # For modes with alpha channel, composite onto white background
+            if img.mode in ("RGBA", "LA", "PA"):
+                background = PILImage.new("RGB", img.size, (255, 255, 255))
+                if img.mode == "RGBA":
+                    background.paste(img, mask=img.split()[3])
+                else:
+                    img = img.convert("RGBA")
+                    background.paste(img, mask=img.split()[3])
+                img = background
+            else:
+                # Direct conversion for other modes (L, P, CMYK, I, F, I;16, etc.)
+                img = img.convert("RGB")
 
         # Resize with aspect ratio preservation and center crop
         img.thumbnail((AVATAR_SIZE[0] * 2, AVATAR_SIZE[1] * 2), PILImage.Resampling.LANCZOS)

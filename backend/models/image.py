@@ -30,7 +30,7 @@ class UploadStatus(str, PyEnum):
     UPLOADED = "UPLOADED"    # Phase 1 complete: projections created, awaiting Phase 2
     PROCESSING = "PROCESSING"  # Phase 2: Generic processing state
     DETECTING = "DETECTING"    # Phase 2: Running YOLO cell detection
-    EXTRACTING_FEATURES = "EXTRACTING_FEATURES"  # Phase 2: Extracting DINOv2 embeddings
+    EXTRACTING_FEATURES = "EXTRACTING_FEATURES"  # Phase 2: Extracting DINOv3 embeddings
     READY = "READY"          # Complete: all processing finished successfully
     ERROR = "ERROR"          # Failed: see error_message field for details
 

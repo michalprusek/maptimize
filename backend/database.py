@@ -105,6 +105,8 @@ async def ensure_schema_updates():
             ("images", "umap_x", "FLOAT"),
             ("images", "umap_y", "FLOAT"),
             ("images", "umap_computed_at", "TIMESTAMP WITH TIME ZONE"),
+            # User avatar support
+            ("users", "avatar_url", "VARCHAR(500)"),
         ]
 
         for table, column, col_type in updates:
