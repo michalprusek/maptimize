@@ -10,7 +10,7 @@
 import { useState, useCallback, useEffect, useRef } from "react";
 import { useTranslations } from "next-intl";
 import { AnimatePresence, motion } from "framer-motion";
-import { ChevronRight, ChevronLeft, ArrowLeft, AlertCircle, X } from "lucide-react";
+import { ChevronRight, ChevronLeft, ArrowLeft, AlertCircle, X, ScanSearch, Wand2, Loader2 } from "lucide-react";
 import { useSettingsStore } from "@/stores/settingsStore";
 import { api, type CellCropGallery, type FOVImage } from "@/lib/api";
 import { AppSidebar } from "@/components/layout";
@@ -526,8 +526,17 @@ export function ImageEditorPage({
     (e: React.MouseEvent<HTMLCanvasElement>) => {
       e.preventDefault();
 
-      const bbox = bboxes.find((b) => b.id === editorState.selectedBboxId);
+      // First try to use hoveredBboxId (bbox under cursor)
+      // Fall back to selectedBboxId if no hovered bbox
+      const targetId = editorState.hoveredBboxId ?? editorState.selectedBboxId;
+      const bbox = bboxes.find((b) => b.id === targetId);
+
       if (bbox) {
+        // Also select the bbox when showing context menu
+        setEditorState((prev) => ({
+          ...prev,
+          selectedBboxId: bbox.id,
+        }));
         setContextMenu({
           isOpen: true,
           position: { x: e.clientX, y: e.clientY },
@@ -535,7 +544,7 @@ export function ImageEditorPage({
         });
       }
     },
-    [bboxes, editorState.selectedBboxId]
+    [bboxes, editorState.hoveredBboxId, editorState.selectedBboxId]
   );
 
   // Reset view
@@ -759,16 +768,73 @@ export function ImageEditorPage({
     <div className="h-screen bg-bg-primary flex overflow-hidden">
       {/* Full-screen canvas with crop panel */}
       <div className="flex-1 flex overflow-hidden relative">
-        {/* Back button - top left, moves with sidebar */}
-        <button
-          onClick={onClose}
-          className={`absolute top-4 z-50 bg-bg-secondary/80 backdrop-blur-sm p-2.5 rounded-xl border border-white/10 hover:bg-white/10 hover:border-white/20 transition-all duration-300 group ${
-            showNavigation ? "left-[17rem]" : "left-4"
-          }`}
-          title={t("back")}
-        >
-          <ArrowLeft className="w-5 h-5 text-text-secondary group-hover:text-text-primary transition-colors" />
-        </button>
+        {/* Back button + Mode switch - top left, moves with sidebar */}
+        <div className={`absolute top-4 z-50 flex items-center gap-2 transition-all duration-300 ${
+          showNavigation ? "left-[17rem]" : "left-4"
+        }`}>
+          {/* Back button */}
+          <button
+            onClick={onClose}
+            className="bg-bg-secondary/80 backdrop-blur-sm p-2.5 rounded-xl border border-white/10 hover:bg-white/10 hover:border-white/20 transition-all group"
+            title={t("back")}
+          >
+            <ArrowLeft className="w-5 h-5 text-text-secondary group-hover:text-text-primary transition-colors" />
+          </button>
+
+          {/* Detection / Segmentation mode switch */}
+          <div className="bg-bg-secondary/80 backdrop-blur-sm rounded-xl border border-white/10 p-1 flex items-center gap-1">
+            {/* Detection mode button */}
+            <button
+              onClick={() => {
+                if (editorState.mode === "segment") {
+                  setEditorState(prev => ({ ...prev, mode: "view" }));
+                  segmentation.clearSegmentation();
+                }
+              }}
+              className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm font-medium transition-all ${
+                editorState.mode !== "segment"
+                  ? "bg-primary-500 text-white"
+                  : "text-text-secondary hover:bg-white/10"
+              }`}
+              title={t("detectionMode")}
+            >
+              <ScanSearch className="w-4 h-4" />
+              <span className="hidden sm:inline">{t("detection")}</span>
+            </button>
+
+            {/* Segmentation mode button */}
+            <button
+              onClick={() => {
+                if (editorState.mode !== "segment") {
+                  setEditorState(prev => ({ ...prev, mode: "segment" }));
+                }
+              }}
+              disabled={segmentation.embeddingStatus === "computing" || segmentation.embeddingStatus === "pending"}
+              className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm font-medium transition-all relative ${
+                editorState.mode === "segment"
+                  ? "bg-emerald-500 text-white"
+                  : segmentation.embeddingStatus === "computing" || segmentation.embeddingStatus === "pending"
+                    ? "text-text-muted cursor-not-allowed"
+                    : "text-text-secondary hover:bg-white/10"
+              }`}
+              title={t("segmentMode")}
+            >
+              {segmentation.embeddingStatus === "computing" || segmentation.embeddingStatus === "pending" ? (
+                <Loader2 className="w-4 h-4 animate-spin" />
+              ) : (
+                <Wand2 className="w-4 h-4" />
+              )}
+              <span className="hidden sm:inline">{t("segmentation")}</span>
+              {/* Status indicator dot */}
+              {segmentation.embeddingStatus === "ready" && editorState.mode !== "segment" && (
+                <span className="absolute -top-0.5 -right-0.5 w-2 h-2 bg-emerald-400 rounded-full" />
+              )}
+              {segmentation.embeddingStatus === "error" && (
+                <span className="absolute -top-0.5 -right-0.5 w-2 h-2 bg-red-400 rounded-full" />
+              )}
+            </button>
+          </div>
+        </div>
 
         {/* Image navigation - top right */}
         {totalImages > 1 && (

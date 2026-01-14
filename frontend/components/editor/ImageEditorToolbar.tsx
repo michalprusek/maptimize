@@ -538,42 +538,20 @@ export function ImageEditorToolbar({
 
       {divider}
 
-      {/* Draw mode */}
-      <button
-        onClick={() => onEditorModeChange(editorMode === "draw" ? "view" : "draw")}
-        className={`p-1.5 rounded transition-colors ${
-          editorMode === "draw"
-            ? "bg-primary-500 text-white"
-            : "bg-bg-tertiary text-text-secondary hover:bg-white/10"
-        }`}
-        title={t("addBbox")}
-      >
-        <Plus className="w-4 h-4" />
-      </button>
-
-      {/* Segment mode toggle */}
-      <button
-        onClick={() => onEditorModeChange(editorMode === "segment" ? "view" : "segment")}
-        className={`p-1.5 rounded transition-colors relative ${
-          editorMode === "segment"
-            ? "bg-emerald-500 text-white"
-            : "bg-bg-tertiary text-text-secondary hover:bg-white/10"
-        }`}
-        title={t("segmentMode")}
-        disabled={samEmbeddingStatus === "computing" || samEmbeddingStatus === "pending"}
-      >
-        <Wand2 className="w-4 h-4" />
-        {/* SAM status indicator dot */}
-        {samEmbeddingStatus === "ready" && (
-          <span className="absolute -top-0.5 -right-0.5 w-2 h-2 bg-emerald-400 rounded-full" />
-        )}
-        {(samEmbeddingStatus === "computing" || samEmbeddingStatus === "pending") && (
-          <span className="absolute -top-0.5 -right-0.5 w-2 h-2 bg-amber-400 rounded-full animate-pulse" />
-        )}
-        {samEmbeddingStatus === "error" && (
-          <span className="absolute -top-0.5 -right-0.5 w-2 h-2 bg-red-400 rounded-full" />
-        )}
-      </button>
+      {/* Draw mode - only show when not in segment mode */}
+      {editorMode !== "segment" && (
+        <button
+          onClick={() => onEditorModeChange(editorMode === "draw" ? "view" : "draw")}
+          className={`p-1.5 rounded transition-colors ${
+            editorMode === "draw"
+              ? "bg-primary-500 text-white"
+              : "bg-bg-tertiary text-text-secondary hover:bg-white/10"
+          }`}
+          title={t("addBbox")}
+        >
+          <Plus className="w-4 h-4" />
+        </button>
+      )}
 
       {/* Segment mode controls - only show when in segment mode */}
       {editorMode === "segment" && (

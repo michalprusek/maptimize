@@ -19,8 +19,17 @@ from PIL import Image as PILImage
 logger = logging.getLogger(__name__)
 
 # SAM model configuration
-# Using Ultralytics SAM3 for simpler API
-SAM3_MODEL_PATH = "sam3.pt"  # Will be downloaded on first use
+# Using Ultralytics MobileSAM for faster interactive segmentation
+# Available models: sam_b.pt (base), sam_l.pt (large), mobile_sam.pt (fast)
+# Model weights are stored in weights/ directory (configurable via env)
+import os
+
+# Use WEIGHTS_DIR from env, or default to /app/weights (Docker) or backend/weights (local)
+WEIGHTS_DIR = os.environ.get(
+    "WEIGHTS_DIR",
+    os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "weights")
+)
+SAM_MODEL_PATH = os.path.join(WEIGHTS_DIR, "mobile_sam.pt")
 
 
 class SAMEncoder:
@@ -78,15 +87,28 @@ class SAMEncoder:
             logger.info(f"Loading SAM3 model...")
             logger.info(f"Device: {self.device}")
 
-            # Load SAM3 model (downloads automatically if not present)
-            self._model = SAM(SAM3_MODEL_PATH)
+            # Load SAM model from local weights
+            if not os.path.exists(SAM_MODEL_PATH):
+                raise RuntimeError(
+                    f"SAM model weights not found at {SAM_MODEL_PATH}. "
+                    f"Run: python scripts/download_weights.py"
+                )
+            self._model = SAM(SAM_MODEL_PATH)
 
             # Move to device
             self._model.to(self.device)
 
-            # Get the predictor for embedding computation
-            # Ultralytics SAM provides set_image() and predict() methods
+            # Initialize the predictor by running a dummy prediction
+            # Ultralytics SAM requires at least one prediction to initialize the predictor
+            logger.info("Initializing SAM predictor with dummy prediction...")
+            dummy_img = np.zeros((64, 64, 3), dtype=np.uint8)
+            self._model.predict(dummy_img, bboxes=[[0, 0, 32, 32]], verbose=False)
+
+            # Now the predictor is available
             self._predictor = self._model.predictor
+
+            if self._predictor is None:
+                raise RuntimeError("Failed to initialize SAM predictor")
 
             self._is_loaded = True
             logger.info(f"SAM3 model loaded successfully on {self.device}")
@@ -156,7 +178,7 @@ class SAMEncoder:
 
             # Convert to numpy and move to CPU
             if isinstance(features, torch.Tensor):
-                embedding = features.cpu().numpy()
+                embedding = features.detach().cpu().numpy()
             else:
                 embedding = np.array(features)
 
@@ -209,7 +231,7 @@ class SAMEncoder:
             raise RuntimeError("Failed to extract features from SAM encoder")
 
         if isinstance(features, torch.Tensor):
-            return features.cpu().numpy()
+            return features.detach().cpu().numpy()
         return np.array(features)
 
     def compress_embedding(self, embedding: np.ndarray) -> bytes:
