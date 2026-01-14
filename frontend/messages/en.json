@@ -90,12 +90,15 @@
     "profile": {
       "title": "Profile",
       "avatar": "Profile Picture",
+      "avatarAlt": "User avatar",
       "uploadAvatar": "Upload Avatar",
       "removeAvatar": "Remove Avatar",
       "changeAvatar": "Change Avatar",
       "name": "Name",
       "email": "Email",
-      "updateProfile": "Update Profile"
+      "updateProfile": "Update Profile",
+      "avatarUploadError": "Failed to upload avatar",
+      "avatarDeleteError": "Failed to delete avatar"
     },
     "password": {
       "title": "Change Password",
@@ -155,5 +158,30 @@
     "tau": "Tau",
     "prc1": "PRC1",
     "unassigned": "Unassigned"
+  },
+  "umap": {
+    "title": "Feature Space (UMAP)",
+    "fovImages": "FOV images",
+    "cellCrops": "cell crops",
+    "silhouette": "Silhouette",
+    "silhouetteTooltip": "Silhouette score measures cluster separation quality (-1 to 1, higher is better)",
+    "fov": "FOV",
+    "cropped": "Cropped",
+    "fovTooltip": "Show FOV-level UMAP",
+    "croppedTooltip": "Show cell crop-level UMAP",
+    "refresh": "Refresh",
+    "loading": "Computing UMAP projection...",
+    "loadingHint": "This may take a moment for large datasets",
+    "notEnoughData": "Not Enough Data",
+    "unableToGenerate": "Unable to Generate Visualization",
+    "retry": "Retry",
+    "noEmbeddings": "No Embeddings Available",
+    "noEmbeddingsFov": "Upload and process images to generate FOV embeddings for visualization.",
+    "noEmbeddingsCrops": "Upload and process images to generate feature embeddings for visualization.",
+    "unknownError": "Unknown error",
+    "unassigned": "Unassigned",
+    "bundleness": "Bundleness",
+    "cropId": "Crop #{id}",
+    "imageId": "Image #{id}"
   }
 }

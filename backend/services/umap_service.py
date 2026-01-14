@@ -100,13 +100,19 @@ def compute_umap_online(
 
     np.random.seed(RANDOM_STATE)
 
+    # Validate n_neighbors: UMAP requires n_neighbors < n_samples
+    n_samples = len(embeddings)
+    effective_n_neighbors = min(n_neighbors, n_samples - 1)
+    if effective_n_neighbors < 2:
+        raise ValueError(f"Need at least 3 samples for UMAP, got {n_samples}")
+
     # L2 normalize for cosine similarity
     norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
     norms = np.where(norms == 0, 1, norms)
     embeddings_norm = embeddings / norms
 
     reducer = umap.UMAP(
-        n_neighbors=n_neighbors,
+        n_neighbors=effective_n_neighbors,
         min_dist=min_dist,
         n_components=2,
         metric="cosine",
@@ -295,6 +301,8 @@ async def invalidate_crop_umap(
     Invalidate pre-computed UMAP coordinates for crops.
 
     Call this after new embeddings are extracted or existing ones change.
+    Clears umap_x, umap_y, and umap_computed_at so that UMAP will be
+    recomputed on next request.
 
     Args:
         db: AsyncSession database connection
@@ -304,7 +312,11 @@ async def invalidate_crop_umap(
     Returns:
         Number of crops invalidated
     """
-    stmt = update(CellCrop).values(umap_computed_at=None)
+    stmt = update(CellCrop).values(
+        umap_x=None,
+        umap_y=None,
+        umap_computed_at=None,
+    )
 
     if image_id:
         stmt = stmt.where(CellCrop.image_id == image_id)
@@ -327,6 +339,9 @@ async def invalidate_fov_umap(
     """
     Invalidate pre-computed UMAP coordinates for FOV images.
 
+    Clears umap_x, umap_y, and umap_computed_at so that UMAP will be
+    recomputed on next request.
+
     Args:
         db: AsyncSession database connection
         experiment_id: Invalidate images in this experiment
@@ -335,7 +350,11 @@ async def invalidate_fov_umap(
     Returns:
         Number of images invalidated
     """
-    stmt = update(Image).values(umap_computed_at=None)
+    stmt = update(Image).values(
+        umap_x=None,
+        umap_y=None,
+        umap_computed_at=None,
+    )
 
     if image_id:
         stmt = stmt.where(Image.id == image_id)

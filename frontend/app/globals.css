@@ -20,21 +20,31 @@
     --color-text-secondary: #8ba3b5;
     --color-text-muted: #5a7285;
     --color-border: rgba(255, 255, 255, 0.1);
+
+    /* Primary accent colors */
+    --color-primary-400: #1affc9;
+    --color-primary-500: #00d4aa;
+    --color-primary-600: #00b894;
   }
 
-  /* Light theme - softer, less bright */
+  /* Light theme - muted, easy on eyes */
   .light {
-    --background: 210 20% 92%;
+    --background: 210 15% 82%;
     --foreground: 210 33% 15%;
 
-    --color-bg-primary: #e8ecf0;
-    --color-bg-secondary: #dfe4e9;
-    --color-bg-elevated: #eef2f6;
-    --color-bg-hover: #d0d7de;
-    --color-text-primary: #1e293b;
-    --color-text-secondary: #475569;
-    --color-text-muted: #64748b;
-    --color-border: rgba(0, 0, 0, 0.12);
+    --color-bg-primary: #c8d0d8;
+    --color-bg-secondary: #bec7d0;
+    --color-bg-elevated: #d4dce4;
+    --color-bg-hover: #b0bac4;
+    --color-text-primary: #1a2535;
+    --color-text-secondary: #3d4d5c;
+    --color-text-muted: #5a6a7a;
+    --color-border: rgba(0, 0, 0, 0.15);
+
+    /* Primary accent colors - darker for light bg */
+    --color-primary-400: #00a080;
+    --color-primary-500: #008066;
+    --color-primary-600: #006650;
   }
 
   * {
@@ -94,8 +104,11 @@
   /* Button styles */
   .btn-primary {
     @apply px-6 py-3 bg-primary-600 hover:bg-primary-500 text-white font-medium rounded-xl
-           transition-all duration-200 shadow-lg hover:shadow-primary-500/25
+           transition-all duration-200 shadow-lg
            active:scale-[0.98] disabled:opacity-50 disabled:cursor-not-allowed;
+    &:hover {
+      box-shadow: 0 10px 15px -3px color-mix(in srgb, var(--color-primary-500) 25%, transparent);
+    }
   }
 
   .btn-secondary {
@@ -113,13 +126,20 @@
   .input-field {
     @apply w-full px-4 py-3 bg-bg-secondary border border-white/10 rounded-xl
            text-text-primary placeholder:text-text-muted
-           focus:outline-none focus:border-primary-500/50 focus:ring-2 focus:ring-primary-500/20
+           focus:outline-none focus:ring-2
            transition-all duration-200;
+    &:focus {
+      border-color: color-mix(in srgb, var(--color-primary-500) 50%, transparent);
+      --tw-ring-color: color-mix(in srgb, var(--color-primary-500) 20%, transparent);
+    }
   }
 
   /* Card hover effect */
   .card-hover {
-    @apply transition-all duration-300 hover:scale-[1.02] hover:shadow-xl hover:shadow-primary-500/5;
+    @apply transition-all duration-300 hover:scale-[1.02] hover:shadow-xl;
+    &:hover {
+      --tw-shadow-color: color-mix(in srgb, var(--color-primary-500) 5%, transparent);
+    }
   }
 }
 

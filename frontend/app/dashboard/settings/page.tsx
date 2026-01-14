@@ -78,6 +78,9 @@ export default function SettingsPage(): JSX.Element {
   const [profileError, setProfileError] = useState<string | null>(null);
   const [profileSuccess, setProfileSuccess] = useState(false);
 
+  // Avatar error state
+  const [avatarError, setAvatarError] = useState<string | null>(null);
+
   // Password form state
   const [currentPassword, setCurrentPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
@@ -102,17 +105,25 @@ export default function SettingsPage(): JSX.Element {
   const uploadAvatarMutation = useMutation({
     mutationFn: (file: File) => api.uploadAvatar(file),
     onSuccess: () => {
+      setAvatarError(null);
       queryClient.invalidateQueries({ queryKey: ["user"] });
       // Refresh auth state to get new avatar URL
       useAuthStore.getState().checkAuth();
+    },
+    onError: (err: Error) => {
+      setAvatarError(err.message || t("profile.avatarUploadError"));
     },
   });
 
   const deleteAvatarMutation = useMutation({
     mutationFn: () => api.deleteAvatar(),
     onSuccess: () => {
+      setAvatarError(null);
       queryClient.invalidateQueries({ queryKey: ["user"] });
       useAuthStore.getState().checkAuth();
+    },
+    onError: (err: Error) => {
+      setAvatarError(err.message || t("profile.avatarDeleteError"));
     },
   });
 
@@ -209,11 +220,15 @@ export default function SettingsPage(): JSX.Element {
         <div className="flex items-center gap-6">
           <div className="relative">
             <div className="w-24 h-24 rounded-full bg-primary-500/20 flex items-center justify-center overflow-hidden">
-              {user?.avatar_url ? (
+              {user?.avatar_url && api.getAvatarUrl(user.avatar_url) ? (
                 <img
                   src={api.getAvatarUrl(user.avatar_url)}
-                  alt="Avatar"
+                  alt={t("profile.avatarAlt")}
                   className="w-full h-full object-cover"
+                  onError={(e) => {
+                    // Hide broken image and let parent show fallback
+                    (e.target as HTMLImageElement).style.display = 'none';
+                  }}
                 />
               ) : (
                 <User className="w-12 h-12 text-primary-400" />
@@ -244,7 +259,7 @@ export default function SettingsPage(): JSX.Element {
             <p className="text-sm text-text-secondary">
               {t("profile.uploadAvatar")}
             </p>
-            {user?.avatar_url && (
+            {user?.avatar_url && api.getAvatarUrl(user.avatar_url) && (
               <button
                 onClick={() => deleteAvatarMutation.mutate()}
                 disabled={deleteAvatarMutation.isPending}
@@ -253,6 +268,12 @@ export default function SettingsPage(): JSX.Element {
                 <Trash2 className="w-4 h-4" />
                 {t("profile.removeAvatar")}
               </button>
+            )}
+            {avatarError && (
+              <div className="flex items-center gap-2 text-accent-red text-sm">
+                <AlertCircle className="w-4 h-4" />
+                {avatarError}
+              </div>
             )}
           </div>
         </div>

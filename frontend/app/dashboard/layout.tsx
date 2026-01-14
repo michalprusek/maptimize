@@ -109,11 +109,15 @@ export default function DashboardLayout({
         <div className="p-4 border-t border-white/5">
           <div className="flex items-center gap-3 px-4 py-3 mb-2">
             <div className="w-10 h-10 rounded-full bg-primary-500/20 flex items-center justify-center overflow-hidden">
-              {user?.avatar_url ? (
+              {user?.avatar_url && api.getAvatarUrl(user.avatar_url) ? (
                 <img
                   src={api.getAvatarUrl(user.avatar_url)}
                   alt="Avatar"
                   className="w-full h-full object-cover"
+                  onError={(e) => {
+                    // Hide broken image and let parent show fallback
+                    (e.target as HTMLImageElement).style.display = 'none';
+                  }}
                 />
               ) : (
                 <User className="w-5 h-5 text-primary-400" />

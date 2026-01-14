@@ -20,6 +20,8 @@ interface SettingsState {
   language: Language;
   isLoading: boolean;
   isSyncing: boolean;
+  syncError: string | null;
+  loadError: string | null;
 
   // Actions
   setDisplayMode: (mode: DisplayMode) => void;
@@ -27,6 +29,7 @@ interface SettingsState {
   setLanguage: (language: Language) => void;
   loadSettings: () => Promise<void>;
   syncSettings: () => Promise<void>;
+  clearErrors: () => void;
 }
 
 // Apply theme to document
@@ -52,6 +55,12 @@ export const useSettingsStore = create<SettingsState>()(
       language: "en",
       isLoading: false,
       isSyncing: false,
+      syncError: null,
+      loadError: null,
+
+      clearErrors: () => {
+        set({ syncError: null, loadError: null });
+      },
 
       setDisplayMode: (mode) => {
         set({ displayMode: mode });
@@ -75,7 +84,7 @@ export const useSettingsStore = create<SettingsState>()(
       },
 
       loadSettings: async () => {
-        set({ isLoading: true });
+        set({ isLoading: true, loadError: null });
         try {
           const settings = await api.getSettings();
           set({
@@ -85,7 +94,9 @@ export const useSettingsStore = create<SettingsState>()(
           });
           applyTheme(settings.theme);
         } catch (error) {
+          const message = error instanceof Error ? error.message : "Failed to load settings";
           console.error("Failed to load settings:", error);
+          set({ loadError: message });
           // Keep local settings on error
         } finally {
           set({ isLoading: false });
@@ -93,12 +104,16 @@ export const useSettingsStore = create<SettingsState>()(
       },
 
       syncSettings: async () => {
-        const { displayMode, theme, language, isSyncing } = get();
+        const { isSyncing } = get();
 
-        // Debounce: skip if already syncing
+        // Debounce: skip if already syncing (will re-sync after current sync completes)
         if (isSyncing) return;
 
-        set({ isSyncing: true });
+        set({ isSyncing: true, syncError: null });
+
+        // Capture current state at sync start
+        const { displayMode, theme, language } = get();
+
         try {
           await api.updateSettings({
             display_mode: displayMode,
@@ -106,10 +121,23 @@ export const useSettingsStore = create<SettingsState>()(
             language: language,
           });
         } catch (error) {
+          const message = error instanceof Error ? error.message : "Failed to sync settings";
           console.error("Failed to sync settings:", error);
+          set({ syncError: message });
           // Settings are still persisted locally
         } finally {
           set({ isSyncing: false });
+
+          // Check if state changed during sync - if so, sync again
+          const current = get();
+          if (
+            current.displayMode !== displayMode ||
+            current.theme !== theme ||
+            current.language !== language
+          ) {
+            // State changed while syncing, trigger another sync
+            get().syncSettings();
+          }
         }
       },
     }),

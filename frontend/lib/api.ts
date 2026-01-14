@@ -521,10 +521,18 @@ class ApiClient {
 
   /**
    * Get the full URL for a user's avatar.
-   * Returns undefined if the user has no avatar.
+   * Returns undefined if the user has no avatar or if the path is invalid.
+   *
+   * Valid avatar paths must start with /uploads/ to ensure they point to
+   * the static files directory, not to API endpoints.
    */
   getAvatarUrl(avatarPath: string | undefined): string | undefined {
     if (!avatarPath) return undefined;
+    // Only allow paths that start with /uploads/ to prevent loading from API endpoints
+    if (!avatarPath.startsWith('/uploads/')) {
+      console.warn(`[API] Invalid avatar path: ${avatarPath}. Avatar paths must start with /uploads/`);
+      return undefined;
+    }
     return `${API_URL}${avatarPath}`;
   }
 }

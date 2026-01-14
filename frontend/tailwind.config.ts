@@ -10,15 +10,15 @@ const config: Config = {
   theme: {
     extend: {
       colors: {
-        // Primary - Fluorescent teal (like GFP)
+        // Primary - Fluorescent teal (like GFP) - key shades use CSS vars for theming
         primary: {
           50: "#e6fff9",
           100: "#b3ffed",
           200: "#80ffe1",
           300: "#4dffd5",
-          400: "#1affc9",
-          500: "#00d4aa",
-          600: "#00b894",
+          400: "var(--color-primary-400)",
+          500: "var(--color-primary-500)",
+          600: "var(--color-primary-600)",
           700: "#009c7d",
           800: "#008066",
           900: "#004d40",

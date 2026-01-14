@@ -165,13 +165,25 @@ async def get_avatar(
     """Get current user's avatar URL.
 
     Returns the avatar URL if set, otherwise returns 404.
-    This endpoint handles stray GET requests to /avatar gracefully.
+
+    Note: This endpoint is for programmatic access only.
+    To display avatars in img tags, use the direct path from user.avatar_url
+    with the /uploads/ static file server (no authentication required).
     """
     if not current_user.avatar_url:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="No avatar set"
+            detail="No avatar set. Upload an avatar using POST /api/settings/avatar"
         )
+
+    # Validate the avatar URL format
+    if not current_user.avatar_url.startswith('/uploads/'):
+        logger.warning(f"User {current_user.id} has invalid avatar_url: {current_user.avatar_url}")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Avatar URL is invalid. Please re-upload your avatar."
+        )
+
     return {"avatar_url": current_user.avatar_url}
 
 

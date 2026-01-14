@@ -2,6 +2,7 @@
 
 import { useState, useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
+import { useTranslations } from "next-intl";
 import {
   ScatterChart,
   Scatter,
@@ -47,10 +48,15 @@ function hideOnError(e: React.SyntheticEvent<HTMLImageElement>): void {
 }
 
 // Tooltip for cropped cell view
+interface CroppedTooltipProps extends TooltipProps<number, string> {
+  t: (key: string, values?: Record<string, string | number>) => string;
+}
+
 function CroppedTooltip({
   active,
   payload,
-}: TooltipProps<number, string>): JSX.Element | null {
+  t,
+}: CroppedTooltipProps): JSX.Element | null {
   if (!active || !payload || !payload.length) return null;
 
   const point = payload[0].payload as UmapPoint;
@@ -72,24 +78,29 @@ function CroppedTooltip({
             className="w-2.5 h-2.5 rounded-full flex-shrink-0"
             style={{ backgroundColor: point.protein_color }}
           />
-          {point.protein_name || "Unassigned"}
+          {point.protein_name || t("unassigned")}
         </div>
         {point.bundleness_score !== null && (
           <div className="text-xs text-text-secondary">
-            Bundleness: {point.bundleness_score.toFixed(2)}
+            {t("bundleness")}: {point.bundleness_score.toFixed(2)}
           </div>
         )}
-        <div className="text-xs text-text-muted">Crop #{point.crop_id}</div>
+        <div className="text-xs text-text-muted">{t("cropId", { id: point.crop_id })}</div>
       </div>
     </div>
   );
 }
 
 // Tooltip for FOV view
+interface FovTooltipProps extends TooltipProps<number, string> {
+  t: (key: string, values?: Record<string, string | number>) => string;
+}
+
 function FovTooltip({
   active,
   payload,
-}: TooltipProps<number, string>): JSX.Element | null {
+  t,
+}: FovTooltipProps): JSX.Element | null {
   if (!active || !payload || !payload.length) return null;
 
   const point = payload[0].payload as UmapFovPoint;
@@ -114,9 +125,9 @@ function FovTooltip({
             className="w-2.5 h-2.5 rounded-full flex-shrink-0"
             style={{ backgroundColor: point.protein_color }}
           />
-          {point.protein_name || "Unassigned"}
+          {point.protein_name || t("unassigned")}
         </div>
-        <div className="text-xs text-text-muted">Image #{point.image_id}</div>
+        <div className="text-xs text-text-muted">{t("imageId", { id: point.image_id })}</div>
       </div>
     </div>
   );
@@ -134,6 +145,7 @@ export function UmapVisualization({
   height = 500,
   preferFovMode = false,
 }: UmapVisualizationProps): JSX.Element {
+  const t = useTranslations("umap");
   const [viewMode, setViewMode] = useState<UmapType>(preferFovMode ? "fov" : "cropped");
 
   const { data, isLoading, error, refetch, isFetching } = useQuery({
@@ -153,7 +165,7 @@ export function UmapVisualization({
     >();
 
     data.points.forEach((point) => {
-      const name = point.protein_name || "Unassigned";
+      const name = point.protein_name || t("unassigned");
       const color = point.protein_color || DEFAULT_COLOR;
 
       if (!groups.has(name)) {
@@ -163,7 +175,7 @@ export function UmapVisualization({
     });
 
     return Array.from(groups.values()).sort((a, b) => b.count - a.count);
-  }, [data?.points]);
+  }, [data?.points, t]);
 
   // Prepare data for rendering (may be null/undefined)
   const isFov = data ? isFovResponse(data) : viewMode === "fov";
@@ -173,7 +185,7 @@ export function UmapVisualization({
   const silhouetteScore = data?.silhouette_score ?? null;
 
   // Error message parsing
-  const errorMessage = error instanceof Error ? error.message : error ? "Unknown error" : null;
+  const errorMessage = error instanceof Error ? error.message : error ? t("unknownError") : null;
   const isNotEnoughData = errorMessage?.includes("Need at least") ?? false;
 
   // Log non-expected errors for debugging
@@ -191,10 +203,10 @@ export function UmapVisualization({
         >
           <Spinner size="lg" />
           <span className="mt-3 text-text-secondary">
-            Computing UMAP projection...
+            {t("loading")}
           </span>
           <span className="text-xs text-text-muted mt-1">
-            This may take a moment for large datasets
+            {t("loadingHint")}
           </span>
         </div>
       );
@@ -213,8 +225,8 @@ export function UmapVisualization({
           )}
           <h3 className="text-lg font-semibold text-text-primary mb-2">
             {isNotEnoughData
-              ? "Not Enough Data"
-              : "Unable to Generate Visualization"}
+              ? t("notEnoughData")
+              : t("unableToGenerate")}
           </h3>
           <p className="text-text-secondary mb-4 max-w-md">{errorMessage}</p>
           {!isNotEnoughData && (
@@ -223,7 +235,7 @@ export function UmapVisualization({
               className="btn-secondary inline-flex items-center gap-2"
             >
               <RefreshCw className="w-4 h-4" />
-              Retry
+              {t("retry")}
             </button>
           )}
         </div>
@@ -238,12 +250,12 @@ export function UmapVisualization({
         >
           <Info className="w-12 h-12 text-text-muted mb-4" />
           <h3 className="text-lg font-semibold text-text-primary mb-2">
-            No Embeddings Available
+            {t("noEmbeddings")}
           </h3>
           <p className="text-text-secondary max-w-md">
             {viewMode === "fov"
-              ? "Upload and process images to generate FOV embeddings for visualization."
-              : "Upload and process images to generate DINOv3 feature embeddings for visualization."}
+              ? t("noEmbeddingsFov")
+              : t("noEmbeddingsCrops")}
           </p>
         </div>
       );
@@ -277,7 +289,7 @@ export function UmapVisualization({
               />
               <ZAxis range={[40, 40]} />
               <Tooltip
-                content={isFov ? <FovTooltip /> : <CroppedTooltip />}
+                content={isFov ? <FovTooltip t={t} /> : <CroppedTooltip t={t} />}
                 cursor={{ strokeDasharray: "3 3", stroke: "#5a7285" }}
               />
               <Scatter data={data.points} isAnimationActive={false}>
@@ -323,12 +335,12 @@ export function UmapVisualization({
       <div className="flex items-center justify-between mb-4">
         <div>
           <h3 className="font-display font-semibold text-text-primary">
-            Feature Space (UMAP)
+            {t("title")}
           </h3>
           {data && (
             <div className="flex items-center gap-3 text-sm text-text-secondary">
               <span>
-                {totalCount.toLocaleString()} {isFov ? "FOV images" : "cell crops"}
+                {totalCount.toLocaleString()} {isFov ? t("fovImages") : t("cellCrops")}
               </span>
               {silhouetteScore !== null && (
                 <span
@@ -339,9 +351,9 @@ export function UmapVisualization({
                         ? "bg-accent-amber/20 text-accent-amber"
                         : "bg-accent-red/20 text-accent-red"
                   }`}
-                  title="Silhouette score measures cluster separation quality (-1 to 1, higher is better)"
+                  title={t("silhouetteTooltip")}
                 >
-                  Silhouette: {silhouetteScore.toFixed(3)}
+                  {t("silhouette")}: {silhouetteScore.toFixed(3)}
                 </span>
               )}
             </div>
@@ -358,10 +370,10 @@ export function UmapVisualization({
                   ? "bg-primary-500 text-white"
                   : "text-text-secondary hover:text-text-primary"
               }`}
-              title="Show FOV-level UMAP"
+              title={t("fovTooltip")}
             >
               <Grid className="w-4 h-4" />
-              FOV
+              {t("fov")}
             </button>
             <button
               onClick={() => setViewMode("cropped")}
@@ -370,10 +382,10 @@ export function UmapVisualization({
                   ? "bg-primary-500 text-white"
                   : "text-text-secondary hover:text-text-primary"
               }`}
-              title="Show cell crop-level UMAP"
+              title={t("croppedTooltip")}
             >
               <Layers className="w-4 h-4" />
-              Cropped
+              {t("cropped")}
             </button>
           </div>
 
@@ -382,7 +394,7 @@ export function UmapVisualization({
             onClick={() => refetch()}
             disabled={isFetching}
             className="p-2 hover:bg-white/5 rounded-lg transition-colors disabled:opacity-50"
-            title="Refresh"
+            title={t("refresh")}
           >
             <RefreshCw
               className={`w-4 h-4 text-text-secondary ${isFetching ? "animate-spin" : ""}`}

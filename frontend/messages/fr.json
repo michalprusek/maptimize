@@ -90,12 +90,15 @@
     "profile": {
       "title": "Profil",
       "avatar": "Photo de profil",
+      "avatarAlt": "Avatar de l'utilisateur",
       "uploadAvatar": "Telecharger un avatar",
       "removeAvatar": "Supprimer l'avatar",
       "changeAvatar": "Changer l'avatar",
       "name": "Nom",
       "email": "E-mail",
-      "updateProfile": "Mettre a jour le profil"
+      "updateProfile": "Mettre a jour le profil",
+      "avatarUploadError": "Echec du telechargement de l'avatar",
+      "avatarDeleteError": "Echec de la suppression de l'avatar"
     },
     "password": {
       "title": "Changer le mot de passe",
@@ -155,5 +158,30 @@
     "tau": "Tau",
     "prc1": "PRC1",
     "unassigned": "Non assigne"
+  },
+  "umap": {
+    "title": "Espace des caracteristiques (UMAP)",
+    "fovImages": "images FOV",
+    "cellCrops": "cellules decoupees",
+    "silhouette": "Silhouette",
+    "silhouetteTooltip": "Le score de silhouette mesure la qualite de separation des clusters (-1 a 1, plus c'est eleve, mieux c'est)",
+    "fov": "FOV",
+    "cropped": "Decoupe",
+    "fovTooltip": "Afficher l'UMAP au niveau FOV",
+    "croppedTooltip": "Afficher l'UMAP au niveau des cellules decoupees",
+    "refresh": "Actualiser",
+    "loading": "Calcul de la projection UMAP...",
+    "loadingHint": "Cela peut prendre un moment pour les grands ensembles de donnees",
+    "notEnoughData": "Donnees insuffisantes",
+    "unableToGenerate": "Impossible de generer la visualisation",
+    "retry": "Reessayer",
+    "noEmbeddings": "Aucun embedding disponible",
+    "noEmbeddingsFov": "Telechargez et traitez des images pour generer des embeddings FOV pour la visualisation.",
+    "noEmbeddingsCrops": "Telechargez et traitez des images pour generer des embeddings de caracteristiques pour la visualisation.",
+    "unknownError": "Erreur inconnue",
+    "unassigned": "Non assigne",
+    "bundleness": "Groupement",
+    "cropId": "Decoupe #{id}",
+    "imageId": "Image #{id}"
   }
 }
