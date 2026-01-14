@@ -13,6 +13,7 @@ if TYPE_CHECKING:
     from .experiment import Experiment
     from .cell_crop import CellCrop
     from .sam_embedding import SAMEmbedding
+    from .segmentation import FOVSegmentationMask
 
 
 class UploadStatus(str, PyEnum):
@@ -130,6 +131,11 @@ class Image(Base):
         cascade="all, delete-orphan"
     )
     sam_embedding: Mapped[Optional["SAMEmbedding"]] = relationship(
+        back_populates="image",
+        uselist=False,
+        cascade="all, delete-orphan"
+    )
+    fov_segmentation_mask: Mapped[Optional["FOVSegmentationMask"]] = relationship(
         back_populates="image",
         uselist=False,
         cascade="all, delete-orphan"

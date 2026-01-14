@@ -683,6 +683,101 @@ class ApiClient {
     );
   }
 
+  // ============================================================================
+  // FOV-Level Segmentation API
+  // ============================================================================
+
+  /**
+   * Save FOV-level segmentation mask.
+   * The mask covers the entire field of view. Individual cell masks
+   * are then extracted as clips based on bounding boxes.
+   */
+  async saveFOVSegmentationMask(data: {
+    image_id: number;
+    polygon: [number, number][];
+    iou_score: number;
+    prompt_count: number;
+  }) {
+    return this.request<{ success: boolean; image_id: number; area_pixels: number }>(
+      "/api/segmentation/save-fov-mask",
+      {
+        method: "POST",
+        body: JSON.stringify(data),
+      }
+    );
+  }
+
+  /**
+   * Get FOV-level segmentation mask for an image.
+   */
+  async getFOVSegmentationMask(imageId: number) {
+    return this.request<{
+      has_mask: boolean;
+      polygon?: [number, number][];
+      iou_score?: number;
+      area_pixels?: number;
+      creation_method?: string;
+      prompt_count?: number;
+    }>(`/api/segmentation/fov-mask/${imageId}`);
+  }
+
+  /**
+   * Delete FOV-level segmentation mask.
+   */
+  async deleteFOVSegmentationMask(imageId: number) {
+    return this.request<{ success: boolean; image_id: number }>(
+      `/api/segmentation/fov-mask/${imageId}`,
+      { method: "DELETE" }
+    );
+  }
+
+  /**
+   * Get segmentation capabilities (device, model variant, text support).
+   * Used to determine if text prompting UI should be shown.
+   */
+  async getSegmentationCapabilities() {
+    return this.request<SegmentationCapabilitiesResponse>(
+      "/api/segmentation/capabilities"
+    );
+  }
+
+  /**
+   * Run text-based segmentation using SAM 3.
+   * Returns all instances matching the text description.
+   * Requires CUDA GPU (SAM 3).
+   */
+  async segmentWithText(imageId: number, textPrompt: string, confidenceThreshold: number = 0.5) {
+    return this.request<TextSegmentResponse>("/api/segmentation/segment-text", {
+      method: "POST",
+      body: JSON.stringify({
+        image_id: imageId,
+        text_prompt: textPrompt,
+        confidence_threshold: confidenceThreshold,
+      }),
+    });
+  }
+
+  /**
+   * Refine a text-detected instance using point prompts.
+   * Combines initial text detection with click refinement.
+   */
+  async refineTextSegment(
+    imageId: number,
+    textPrompt: string,
+    instanceIndex: number,
+    points: SegmentClickPoint[]
+  ) {
+    return this.request<SegmentResponse>("/api/segmentation/segment-text-refine", {
+      method: "POST",
+      body: JSON.stringify({
+        image_id: imageId,
+        text_prompt: textPrompt,
+        instance_index: instanceIndex,
+        points,
+      }),
+    });
+  }
+
   // Bug Reports
   async submitBugReport(data: BugReportCreate) {
     return this.request<BugReport>("/api/bug-reports", {
@@ -1153,6 +1248,41 @@ export interface SegmentationMasksBatchResponse {
     area_pixels: number;
     creation_method: string;
   }>;
+}
+
+// ============================================================================
+// SAM 3 Text Segmentation types
+// ============================================================================
+
+/**
+ * Segmentation capabilities response.
+ */
+export interface SegmentationCapabilitiesResponse {
+  device: "cuda" | "mps" | "cpu";
+  variant: "mobilesam" | "sam3";
+  supports_text_prompts: boolean;
+  model_name: string;
+}
+
+/**
+ * A single detected instance from text segmentation.
+ */
+export interface TextSegmentInstance {
+  index: number;
+  polygon: [number, number][];
+  bbox: [number, number, number, number]; // [x1, y1, x2, y2]
+  score: number;
+  area_pixels: number;
+}
+
+/**
+ * Response from text-based segmentation.
+ */
+export interface TextSegmentResponse {
+  success: boolean;
+  instances?: TextSegmentInstance[];
+  prompt?: string;
+  error?: string;
 }
 
 export const api = new ApiClient();

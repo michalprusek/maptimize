@@ -123,6 +123,73 @@ export const INITIAL_SEGMENTATION_STATE: SegmentationState = {
   targetCropId: null,
 };
 
+// ============================================================================
+// SAM 3 Text Segmentation Types
+// ============================================================================
+
+/**
+ * Segmentation prompt mode - Point or Text.
+ * Text mode requires SAM 3 (CUDA GPU).
+ */
+export type SegmentPromptMode = "point" | "text";
+
+/**
+ * A single detected instance from text-based segmentation.
+ */
+export interface DetectedInstance {
+  /** Instance index (0-based) */
+  index: number;
+  /** Polygon points [[x, y], ...] */
+  polygon: [number, number][];
+  /** Bounding box [x1, y1, x2, y2] */
+  bbox: [number, number, number, number];
+  /** Confidence score (0-1) */
+  score: number;
+  /** Area in pixels */
+  areaPixels: number;
+}
+
+/**
+ * Text segmentation state for SAM 3.
+ */
+export interface TextSegmentationState {
+  /** Current text prompt */
+  textPrompt: string;
+  /** Detected instances from text query */
+  detectedInstances: DetectedInstance[];
+  /** Selected instance index for refinement */
+  selectedInstanceIndex: number | null;
+  /** Whether text query is loading */
+  isQuerying: boolean;
+  /** Error message from text query */
+  error: string | null;
+}
+
+/**
+ * Initial text segmentation state.
+ */
+export const INITIAL_TEXT_SEGMENTATION_STATE: TextSegmentationState = {
+  textPrompt: "",
+  detectedInstances: [],
+  selectedInstanceIndex: null,
+  isQuerying: false,
+  error: null,
+};
+
+/**
+ * SAM capabilities returned by the backend.
+ */
+export interface SegmentationCapabilities {
+  /** Current compute device */
+  device: "cuda" | "mps" | "cpu";
+  /** SAM variant in use */
+  variant: "mobilesam" | "sam3";
+  /** Whether text prompting is available */
+  supportsTextPrompts: boolean;
+  /** Human-readable model name */
+  modelName: string;
+}
+
 /**
  * Editor state for tracking interactions.
  */
@@ -141,6 +208,8 @@ export interface EditorState {
   dragStart: { x: number; y: number } | null;
   /** Whether Space key is pressed (for panning) */
   isSpacePressed: boolean;
+  /** Whether Shift key is pressed (for pan/undo in segment mode) */
+  isShiftPressed: boolean;
   /** Current zoom level (1 = 100%) */
   zoom: number;
   /** Pan offset */

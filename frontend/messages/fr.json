@@ -260,6 +260,23 @@
     "noTargetCrop": "Selectionnez une cellule pour enregistrer le masque",
     "loadMasksError": "Échec du chargement des masques de segmentation",
     "embeddingStatusError": "Échec de la vérification du statut de segmentation",
-    "embeddingComputeError": "Échec du démarrage du calcul de segmentation"
+    "embeddingComputeError": "Échec du démarrage du calcul de segmentation",
+    "addForeground": "Ajouter premier plan",
+    "addBackground": "Ajouter arrière-plan",
+    "panImage": "Déplacer l'image",
+    "undoPoint": "Annuler point",
+    "saveHint": "Enregistrer le masque avant de segmenter une autre cellule",
+    "maskSaved": "Masque enregistré ! Cliquez sur la prochaine cellule pour continuer",
+    "selectCropFirst": "Sélectionnez d'abord une cellule dans le panneau d'aperçu",
+    "pointPrompt": "Points",
+    "textPrompt": "Texte",
+    "searchPlaceholder": "Décrire ce qu'il faut segmenter...",
+    "suggestions": "Suggestions",
+    "foundInstances": "{count} instance(s) trouvée(s)",
+    "noInstancesFound": "Aucune instance trouvée",
+    "saveInstance": "Sauver",
+    "clear": "Effacer",
+    "search": "Rechercher",
+    "fovMaskSaved": "Masque FOV enregistré avec succès"
   }
 }

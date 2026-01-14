@@ -19,7 +19,7 @@ COPY pyproject.toml ./
 # Build PyTorch with CUDA support
 RUN --mount=type=cache,target=/root/.cache/pip \
     pip wheel --no-cache-dir --wheel-dir /wheels \
-    torch==2.1.0+cu118 torchvision==0.16.0+cu118 -f https://download.pytorch.org/whl/torch_stable.html
+    torch torchvision --extra-index-url https://download.pytorch.org/whl/cu118
 
 # Build other ML dependencies
 RUN --mount=type=cache,target=/root/.cache/pip \

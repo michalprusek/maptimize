@@ -90,22 +90,7 @@ export function SegmentationOverlay({
       style={{ overflow: "visible" }}
     >
       <defs>
-        {/* Dashed stroke pattern for preview */}
-        <pattern
-          id="dash-pattern"
-          patternUnits="userSpaceOnUse"
-          width={8 / zoom}
-          height={8 / zoom}
-        >
-          <line
-            x1="0"
-            y1="0"
-            x2={4 / zoom}
-            y2="0"
-            stroke="#22c55e"
-            strokeWidth={2 / zoom}
-          />
-        </pattern>
+        {/* Reserved for future patterns/gradients */}
       </defs>
 
       {/* Saved polygons - only show in segment mode */}
@@ -117,7 +102,7 @@ export function SegmentationOverlay({
               d={path}
               fill="rgba(59, 130, 246, 0.15)"
               stroke="rgba(59, 130, 246, 0.6)"
-              strokeWidth={1.5 / zoom}
+              strokeWidth={1.5}
             />
           ) : null
         )}
@@ -136,8 +121,8 @@ export function SegmentationOverlay({
             d={previewPath}
             fill="none"
             stroke="#22c55e"
-            strokeWidth={2 / zoom}
-            strokeDasharray={`${6 / zoom} ${4 / zoom}`}
+            strokeWidth={2}
+            strokeDasharray="6 4"
             strokeLinecap="round"
             strokeLinejoin="round"
           />
@@ -147,7 +132,7 @@ export function SegmentationOverlay({
               d={previewPath}
               fill="none"
               stroke="#22c55e"
-              strokeWidth={3 / zoom}
+              strokeWidth={3}
               strokeOpacity={0.5}
               className="animate-pulse"
             />
@@ -155,80 +140,85 @@ export function SegmentationOverlay({
         </g>
       )}
 
-      {/* Click points */}
+      {/* Click points - scale with zoom (smaller when zoomed out) */}
       {isActive &&
-        clickPoints.map((point, index) => {
-          const { x, y } = toCanvas(point.x, point.y);
-          const isPositive = point.label === 1;
-          const color = isPositive ? "#22c55e" : "#ef4444";
+        (() => {
+          // Scale markers: smaller when zoomed out, normal at 100%+
+          // At 10% zoom: scale ~0.5, at 100%+: scale 1.0
+          const markerScale = Math.max(0.5, Math.min(1, Math.sqrt(zoom)));
+          const radius = 12 * markerScale;
+          const symbolSize = 5 * markerScale;
+          const strokeW = Math.max(1.5, 2 * markerScale);
+          const fontSize = Math.max(9, 11 * markerScale);
+          const labelOffset = 14 * markerScale + 2;
 
-          return (
-            <g key={`click-${index}`}>
-              {/* Outer ring */}
-              <circle
-                cx={x}
-                cy={y}
-                r={10 / zoom}
-                fill="rgba(0, 0, 0, 0.5)"
-                stroke={color}
-                strokeWidth={2 / zoom}
-              />
-              {/* Inner dot */}
-              <circle
-                cx={x}
-                cy={y}
-                r={4 / zoom}
-                fill={color}
-              />
-              {/* Plus/Minus symbol */}
-              {isPositive ? (
-                // Plus sign
-                <>
+          return clickPoints.map((point, index) => {
+            const { x, y } = toCanvas(point.x, point.y);
+            const isPositive = point.label === 1;
+            const color = isPositive ? "#22c55e" : "#ef4444";
+
+            return (
+              <g key={`click-${index}`}>
+                {/* Outer ring */}
+                <circle
+                  cx={x}
+                  cy={y}
+                  r={radius}
+                  fill="rgba(0, 0, 0, 0.6)"
+                  stroke={color}
+                  strokeWidth={strokeW}
+                />
+                {/* Plus/Minus symbol */}
+                {isPositive ? (
+                  // Plus sign
+                  <>
+                    <line
+                      x1={x - symbolSize}
+                      y1={y}
+                      x2={x + symbolSize}
+                      y2={y}
+                      stroke="white"
+                      strokeWidth={strokeW}
+                      strokeLinecap="round"
+                    />
+                    <line
+                      x1={x}
+                      y1={y - symbolSize}
+                      x2={x}
+                      y2={y + symbolSize}
+                      stroke="white"
+                      strokeWidth={strokeW}
+                      strokeLinecap="round"
+                    />
+                  </>
+                ) : (
+                  // Minus sign
                   <line
-                    x1={x - 5 / zoom}
+                    x1={x - symbolSize}
                     y1={y}
-                    x2={x + 5 / zoom}
+                    x2={x + symbolSize}
                     y2={y}
                     stroke="white"
-                    strokeWidth={2 / zoom}
+                    strokeWidth={strokeW}
                     strokeLinecap="round"
                   />
-                  <line
-                    x1={x}
-                    y1={y - 5 / zoom}
-                    x2={x}
-                    y2={y + 5 / zoom}
-                    stroke="white"
-                    strokeWidth={2 / zoom}
-                    strokeLinecap="round"
-                  />
-                </>
-              ) : (
-                // Minus sign
-                <line
-                  x1={x - 5 / zoom}
-                  y1={y}
-                  x2={x + 5 / zoom}
-                  y2={y}
-                  stroke="white"
-                  strokeWidth={2 / zoom}
-                  strokeLinecap="round"
-                />
-              )}
-              {/* Point number label */}
-              <text
-                x={x + 14 / zoom}
-                y={y + 4 / zoom}
-                fontSize={11 / zoom}
-                fill={color}
-                fontWeight="600"
-                fontFamily="system-ui, sans-serif"
-              >
-                {index + 1}
-              </text>
-            </g>
-          );
-        })}
+                )}
+                {/* Point number label */}
+                <text
+                  x={x + labelOffset}
+                  y={y + fontSize * 0.35}
+                  fontSize={fontSize}
+                  fill={color}
+                  fontWeight="600"
+                  fontFamily="system-ui, sans-serif"
+                  style={{ textShadow: "0 1px 2px rgba(0,0,0,0.8)" }}
+                >
+                  {index + 1}
+                </text>
+              </g>
+            );
+          });
+        })()}
 
       {/* Loading spinner in center when loading with no preview yet */}
       {isActive && isLoading && !previewPath && clickPoints.length > 0 && (
@@ -236,15 +226,17 @@ export function SegmentationOverlay({
           {(() => {
             const lastPoint = clickPoints[clickPoints.length - 1];
             const { x, y } = toCanvas(lastPoint.x, lastPoint.y);
+            const spinnerScale = Math.max(0.5, Math.min(1, Math.sqrt(zoom)));
+            const spinnerR = 20 * spinnerScale;
             return (
               <circle
                 cx={x}
                 cy={y}
-                r={20 / zoom}
+                r={spinnerR}
                 fill="none"
                 stroke="rgba(34, 197, 94, 0.5)"
-                strokeWidth={2 / zoom}
-                strokeDasharray={`${10 / zoom} ${10 / zoom}`}
+                strokeWidth={2 * spinnerScale}
+                strokeDasharray={`${10 * spinnerScale} ${10 * spinnerScale}`}
                 className="animate-spin"
                 style={{ transformOrigin: `${x}px ${y}px` }}
               />

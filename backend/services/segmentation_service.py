@@ -16,7 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from models.image import Image
 from models.sam_embedding import SAMEmbedding
-from models.segmentation import SegmentationMask, UserSegmentationPrompt
+from models.segmentation import SegmentationMask, UserSegmentationPrompt, FOVSegmentationMask
 from models.cell_crop import CellCrop
 from ml.segmentation.sam_encoder import get_sam_encoder
 from ml.segmentation.sam_decoder import get_sam_decoder
@@ -447,3 +447,308 @@ async def queue_sam_embedding(image_id: int) -> None:
 
         # Compute embedding
         await compute_sam_embedding(image_id, db)
+
+
+# ============================================================================
+# FOV-Level Segmentation Functions
+# ============================================================================
+
+async def save_fov_segmentation_mask(
+    image_id: int,
+    polygon: List[Tuple[int, int]],
+    iou_score: float,
+    prompt_count: int,
+    db: AsyncSession,
+    creation_method: str = "interactive",
+) -> Dict[str, Any]:
+    """
+    Save FOV-level segmentation mask for an image.
+
+    Args:
+        image_id: Database ID of the image
+        polygon: List of (x, y) polygon points in FOV coordinates
+        iou_score: SAM's IoU prediction score
+        prompt_count: Number of click prompts used
+        db: Async database session
+        creation_method: How the mask was created
+
+    Returns:
+        Dict with success status
+    """
+    # Get image
+    result = await db.execute(select(Image).where(Image.id == image_id))
+    image = result.scalar_one_or_none()
+
+    if not image:
+        return {"success": False, "error": "Image not found"}
+
+    # Calculate area using shoelace formula
+    decoder = get_sam_decoder()
+    area = decoder.calculate_polygon_area(polygon)
+
+    # Create or update mask
+    existing = await db.execute(
+        select(FOVSegmentationMask).where(FOVSegmentationMask.image_id == image_id)
+    )
+    existing_mask = existing.scalar_one_or_none()
+
+    if existing_mask:
+        existing_mask.polygon_points = [list(p) for p in polygon]
+        existing_mask.area_pixels = area
+        existing_mask.iou_score = iou_score
+        existing_mask.prompt_count = prompt_count
+        existing_mask.creation_method = creation_method
+    else:
+        mask = FOVSegmentationMask(
+            image_id=image_id,
+            polygon_points=[list(p) for p in polygon],
+            area_pixels=area,
+            iou_score=iou_score,
+            creation_method=creation_method,
+            prompt_count=prompt_count,
+        )
+        db.add(mask)
+
+    await db.commit()
+
+    logger.info(f"Saved FOV segmentation mask for image {image_id}: {len(polygon)} points")
+
+    return {"success": True, "image_id": image_id, "area_pixels": area}
+
+
+async def get_fov_segmentation_mask(
+    image_id: int,
+    db: AsyncSession,
+) -> Dict[str, Any]:
+    """
+    Get FOV-level segmentation mask for an image.
+
+    Args:
+        image_id: Database ID of the image
+        db: Async database session
+
+    Returns:
+        Dict with mask data or has_mask=False
+    """
+    result = await db.execute(
+        select(FOVSegmentationMask).where(FOVSegmentationMask.image_id == image_id)
+    )
+    mask = result.scalar_one_or_none()
+
+    if not mask:
+        return {"has_mask": False}
+
+    return {
+        "has_mask": True,
+        "polygon": mask.polygon_points,
+        "iou_score": mask.iou_score,
+        "area_pixels": mask.area_pixels,
+        "creation_method": mask.creation_method,
+        "prompt_count": mask.prompt_count,
+    }
+
+
+async def delete_fov_segmentation_mask(
+    image_id: int,
+    db: AsyncSession,
+) -> Dict[str, Any]:
+    """
+    Delete FOV-level segmentation mask for an image.
+
+    Args:
+        image_id: Database ID of the image
+        db: Async database session
+
+    Returns:
+        Dict with success status
+    """
+    result = await db.execute(
+        select(FOVSegmentationMask).where(FOVSegmentationMask.image_id == image_id)
+    )
+    mask = result.scalar_one_or_none()
+
+    if not mask:
+        return {"success": False, "error": "FOV mask not found"}
+
+    await db.delete(mask)
+    await db.commit()
+
+    return {"success": True, "image_id": image_id}
+
+
+# ============================================================================
+# SAM 3 Text Segmentation Functions
+# ============================================================================
+
+def get_segmentation_capabilities() -> Dict[str, Any]:
+    """
+    Get capabilities of the current SAM setup.
+
+    Returns device, model variant, and whether text prompting is supported.
+    Text prompting requires SAM 3, which requires CUDA.
+
+    Returns:
+        Dict with device, variant, supports_text_prompts, model_name
+    """
+    from ml.segmentation.sam_factory import get_capabilities
+    return get_capabilities()
+
+
+async def segment_from_text(
+    image_id: int,
+    text_prompt: str,
+    confidence_threshold: float,
+    db: AsyncSession,
+) -> Dict[str, Any]:
+    """
+    Run text-based segmentation using SAM 3.
+
+    Finds all instances matching the text description.
+    Requires CUDA GPU (SAM 3).
+
+    Args:
+        image_id: Database ID of the image
+        text_prompt: Natural language description (e.g., "cell", "nucleus")
+        confidence_threshold: Minimum confidence to include (0.0-1.0)
+        db: Async database session
+
+    Returns:
+        Dict with instances (polygons, boxes, scores) or error
+    """
+    from ml.segmentation.sam_factory import text_segmentation_available, detect_device
+
+    # Check if text segmentation is available
+    if not text_segmentation_available():
+        return {
+            "success": False,
+            "error": f"Text segmentation requires CUDA GPU. Current device: {detect_device()}",
+        }
+
+    # Get image path
+    result = await db.execute(select(Image).where(Image.id == image_id))
+    image = result.scalar_one_or_none()
+
+    if not image:
+        return {"success": False, "error": "Image not found"}
+
+    # Determine source path (prefer MIP projection)
+    source_path = image.mip_path or image.file_path
+    if not source_path:
+        return {"success": False, "error": "No image file available"}
+
+    try:
+        from ml.segmentation.sam3_encoder import get_sam3_encoder
+        import asyncio
+
+        encoder = get_sam3_encoder()
+
+        # Run inference in thread pool
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(
+            None,
+            lambda: encoder.predict_with_text(
+                image_path=source_path,
+                text_prompt=text_prompt,
+                confidence_threshold=confidence_threshold,
+            )
+        )
+
+        if not result.get("success"):
+            return {"success": False, "error": result.get("error", "Unknown error")}
+
+        # Format instances for API response
+        instances = []
+        for i in range(len(result.get("polygons", []))):
+            instances.append({
+                "index": i,
+                "polygon": result["polygons"][i],
+                "bbox": result["boxes"][i] if i < len(result["boxes"]) else [0, 0, 0, 0],
+                "score": result["scores"][i] if i < len(result["scores"]) else 0.0,
+                "area_pixels": result["areas"][i] if i < len(result["areas"]) else 0,
+            })
+
+        logger.info(f"Text segmentation found {len(instances)} instances for '{text_prompt}'")
+
+        return {
+            "success": True,
+            "instances": instances,
+            "prompt": text_prompt,
+        }
+
+    except Exception as e:
+        logger.exception(f"Text segmentation failed for image {image_id}")
+        return {"success": False, "error": str(e)}
+
+
+async def refine_text_segmentation(
+    image_id: int,
+    text_prompt: str,
+    instance_index: int,
+    point_coords: List[Tuple[int, int]],
+    point_labels: List[int],
+    db: AsyncSession,
+) -> Dict[str, Any]:
+    """
+    Refine a text-detected instance using point prompts.
+
+    First runs text query, then uses point prompts to refine the selected instance.
+
+    Args:
+        image_id: Database ID of the image
+        text_prompt: Original text prompt
+        instance_index: Which detected instance to refine (0-indexed)
+        point_coords: List of (x, y) click coordinates
+        point_labels: List of labels (1=foreground, 0=background)
+        db: Async database session
+
+    Returns:
+        Dict with refined polygon, score, and area
+    """
+    from ml.segmentation.sam_factory import text_segmentation_available
+
+    if not text_segmentation_available():
+        return {"success": False, "error": "Text segmentation not available"}
+
+    # Get image path
+    result = await db.execute(select(Image).where(Image.id == image_id))
+    image = result.scalar_one_or_none()
+
+    if not image:
+        return {"success": False, "error": "Image not found"}
+
+    source_path = image.mip_path or image.file_path
+    if not source_path:
+        return {"success": False, "error": "No image file available"}
+
+    try:
+        from ml.segmentation.sam3_encoder import get_sam3_encoder
+        import asyncio
+
+        encoder = get_sam3_encoder()
+
+        # Run refinement in thread pool
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(
+            None,
+            lambda: encoder.refine_with_points(
+                image_path=source_path,
+                text_prompt=text_prompt,
+                instance_index=instance_index,
+                point_coords=point_coords,
+                point_labels=point_labels,
+            )
+        )
+
+        if not result.get("success"):
+            return {"success": False, "error": result.get("error", "Refinement failed")}
+
+        return {
+            "success": True,
+            "polygon": result["polygon"],
+            "iou_score": result.get("score", 0.9),
+            "area_pixels": result.get("area", 0),
+        }
+
+    except Exception as e:
+        logger.exception(f"Text refinement failed for image {image_id}")
+        return {"success": False, "error": str(e)}

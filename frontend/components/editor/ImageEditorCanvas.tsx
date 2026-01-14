@@ -44,6 +44,8 @@ interface ImageEditorCanvasProps {
   onImageError?: (error: string) => void;
   /** Hide bboxes when in segment mode */
   isSegmentMode?: boolean;
+  /** Optional background color override */
+  backgroundColor?: string;
 }
 
 /**
@@ -91,6 +93,7 @@ export function ImageEditorCanvas({
   onImageLoaded,
   onImageError,
   isSegmentMode = false,
+  backgroundColor,
 }: ImageEditorCanvasProps) {
   const imageCanvasRef = useRef<HTMLCanvasElement>(null);
   const overlayCanvasRef = useRef<HTMLCanvasElement>(null);
@@ -384,8 +387,8 @@ export function ImageEditorCanvas({
   return (
     <div
       ref={containerRef}
-      className="relative w-full h-full overflow-hidden bg-black"
-      style={{ cursor }}
+      className="relative w-full h-full overflow-hidden transition-colors duration-300"
+      style={{ cursor, backgroundColor: backgroundColor || "#000" }}
     >
       {/* Image layer */}
       <canvas
