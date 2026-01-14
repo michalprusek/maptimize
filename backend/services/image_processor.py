@@ -50,18 +50,210 @@ class ImageProcessor:
     """
     Processes microscopy images through the analysis pipeline.
 
-    Supports two modes:
-    - detect_cells=True: Run YOLO, create crops, delete source images
-    - detect_cells=False: Keep full projections, no detection
+    Supports two-phase processing:
+    - Phase 1 (upload_only): Load image, create projections, create thumbnail
+    - Phase 2 (process_batch): Run detection and feature extraction
+
+    Legacy mode (detect_cells parameter) is still supported for backward compatibility.
     """
 
     def __init__(self, image_id: int, detect_cells: bool = True):
         self.image_id = image_id
         self.detect_cells = detect_cells
 
+    async def process_upload_only(self) -> bool:
+        """
+        Phase 1: Process uploaded image - create projections and thumbnail only.
+
+        This method:
+        - Loads the image/Z-stack
+        - Creates MIP and SUM projections (for Z-stacks)
+        - Creates thumbnail
+        - Saves paths to database
+        - Sets status to UPLOADED
+
+        Does NOT run detection or feature extraction.
+
+        Returns:
+            True if successful, False otherwise
+        """
+        async with get_db_context() as db:
+            try:
+                # Get image record
+                result = await db.execute(
+                    select(Image).where(Image.id == self.image_id)
+                )
+                image = result.scalar_one_or_none()
+
+                if not image:
+                    logger.error(f"Image {self.image_id} not found")
+                    return False
+
+                logger.info(f"Phase 1 processing image {image.id}: {image.original_filename}")
+
+                # Update status
+                image.status = UploadStatus.PROCESSING
+                await db.commit()
+
+                # Load image
+                data = await self._load_image(image.file_path)
+                if data is None:
+                    raise ValueError(f"Failed to load image: {image.file_path}")
+
+                # Check if Z-stack (3D) or 2D image
+                is_zstack = len(data.shape) == 3
+
+                # Store dimensions
+                if is_zstack:
+                    image.z_slices = data.shape[0]
+                    image.height = data.shape[1]
+                    image.width = data.shape[2]
+                else:
+                    image.height = data.shape[0]
+                    image.width = data.shape[1]
+
+                # Create projections based on image type
+                if is_zstack:
+                    logger.info(f"Processing Z-stack with {data.shape[0]} slices...")
+
+                    # Create MIP projection
+                    mip = create_mip(data)
+                    mip_path = await self._save_projection(image, mip, "mip")
+                    image.mip_path = str(mip_path)
+
+                    # Create SUM projection
+                    sum_proj = create_sum_projection(data)
+                    sum_path = await self._save_projection(image, sum_proj, "sum")
+                    image.sum_path = str(sum_path)
+
+                    # Delete original Z-stack file (keep only projections)
+                    original_path = Path(image.file_path)
+                    if original_path.exists():
+                        original_path.unlink()
+                        logger.info(f"Deleted original Z-stack: {original_path}")
+                    image.source_discarded = True
+                else:
+                    logger.info("Processing 2D image...")
+                    # For 2D images, use as-is (no projections needed)
+                    mip = data
+
+                # Save thumbnail (always from MIP)
+                thumb_path = await self._save_thumbnail(image, mip)
+                image.thumbnail_path = str(thumb_path)
+
+                # Set status to UPLOADED (Phase 1 complete)
+                image.status = UploadStatus.UPLOADED
+                await db.commit()
+
+                logger.info(f"Phase 1 complete for image {image.id}")
+                return True
+
+            except Exception as e:
+                logger.exception(f"Error in Phase 1 processing image {self.image_id}: {e}")
+
+                # Update status to error
+                result = await db.execute(
+                    select(Image).where(Image.id == self.image_id)
+                )
+                image = result.scalar_one_or_none()
+                if image:
+                    image.status = UploadStatus.ERROR
+                    image.error_message = str(e)
+                    await db.commit()
+
+                return False
+
+    async def process_batch(self, detect_cells: bool, map_protein_id: Optional[int] = None) -> bool:
+        """
+        Phase 2: Run detection and feature extraction on an already-uploaded image.
+
+        This method:
+        - Loads existing MIP projection
+        - Optionally runs YOLO detection
+        - Creates cell crops (if detection enabled)
+        - Extracts DINOv2 embeddings
+        - Sets status to READY
+
+        Args:
+            detect_cells: Whether to run YOLO detection
+            map_protein_id: Optional MAP protein to assign
+
+        Returns:
+            True if successful, False otherwise
+        """
+        async with get_db_context() as db:
+            try:
+                # Get image record
+                result = await db.execute(
+                    select(Image).where(Image.id == self.image_id)
+                )
+                image = result.scalar_one_or_none()
+
+                if not image:
+                    logger.error(f"Image {self.image_id} not found")
+                    return False
+
+                # Verify image is in UPLOADED status
+                if image.status not in [UploadStatus.UPLOADED, UploadStatus.READY, UploadStatus.ERROR]:
+                    logger.warning(f"Image {image.id} has status {image.status}, expected UPLOADED")
+
+                logger.info(f"Phase 2 processing image {image.id}: detect_cells={detect_cells}")
+
+                # Update settings
+                image.detect_cells = detect_cells
+                if map_protein_id is not None:
+                    image.map_protein_id = map_protein_id
+                image.status = UploadStatus.PROCESSING
+                await db.commit()
+
+                # Load MIP projection (should already exist from Phase 1)
+                if image.mip_path and Path(image.mip_path).exists():
+                    mip = await self._load_image(image.mip_path)
+                else:
+                    # Fallback: load from original file if still exists
+                    mip = await self._load_image(image.file_path)
+
+                if mip is None:
+                    raise ValueError(f"Cannot load MIP for image {image.id}")
+
+                # Load SUM projection if exists
+                sum_proj = None
+                if image.sum_path and Path(image.sum_path).exists():
+                    sum_proj = await self._load_image(image.sum_path)
+
+                if detect_cells:
+                    # Run detection pipeline
+                    await self._run_detection(db, image, mip, sum_proj, sum_proj is not None)
+                else:
+                    # No detection - just mark as ready (FOV only)
+                    logger.info("Detection disabled - FOV will be shown without crops")
+                    image.status = UploadStatus.READY
+                    image.processed_at = datetime.now(timezone.utc)
+
+                await db.commit()
+                logger.info(f"Phase 2 complete for image {image.id}")
+                return True
+
+            except Exception as e:
+                logger.exception(f"Error in Phase 2 processing image {self.image_id}: {e}")
+
+                # Update status to error
+                result = await db.execute(
+                    select(Image).where(Image.id == self.image_id)
+                )
+                image = result.scalar_one_or_none()
+                if image:
+                    image.status = UploadStatus.ERROR
+                    image.error_message = str(e)
+                    await db.commit()
+
+                return False
+
     async def process(self) -> bool:
         """
-        Run the full processing pipeline.
+        Run the full processing pipeline (legacy mode).
+
+        This combines Phase 1 and Phase 2 for backward compatibility.
 
         Returns:
             True if successful, False otherwise
@@ -138,9 +330,8 @@ class ImageProcessor:
                     # Run detection pipeline
                     await self._run_detection(db, image, mip, sum_proj, is_zstack)
                 else:
-                    # No detection - treat whole image as a single crop
-                    logger.info("Detection disabled - creating whole-image crop")
-                    await self._create_whole_image_crop(db, image, mip, sum_proj)
+                    # No detection - just mark as ready (FOV only, no whole-image crop)
+                    logger.info("Detection disabled - FOV will be shown without crops")
                     image.status = UploadStatus.READY
                     image.processed_at = datetime.now(timezone.utc)
 
@@ -215,61 +406,6 @@ class ImageProcessor:
         # Mark as complete
         image.status = UploadStatus.READY
         image.processed_at = datetime.now(timezone.utc)
-
-    async def _create_whole_image_crop(
-        self,
-        db: AsyncSession,
-        image: Image,
-        mip: np.ndarray,
-        sum_proj: Optional[np.ndarray]
-    ):
-        """
-        Create a single CellCrop representing the whole image.
-
-        Used when detect_cells=False - treats the entire image as one "crop"
-        so it appears in the gallery and can be imported into metrics.
-        """
-        height, width = mip.shape[:2]
-
-        mip_crop_path = await self._save_whole_image_crop(image, mip, "mip")
-
-        sum_crop_path = None
-        if sum_proj is not None:
-            sum_crop_path = await self._save_whole_image_crop(image, sum_proj, "sum")
-
-        cell_crop = self._create_cell_crop(
-            image=image,
-            mip_crop=mip,
-            mip_path=mip_crop_path,
-            sum_crop_path=sum_crop_path,
-            bbox=(0, 0, width, height),
-            confidence=1.0,
-        )
-        db.add(cell_crop)
-        await db.flush()
-
-        await self._extract_features_for_crops([cell_crop], db)
-
-    async def _save_whole_image_crop(
-        self,
-        image: Image,
-        projection: np.ndarray,
-        suffix: str
-    ) -> Path:
-        """Save whole image projection as a crop file."""
-        proj_8bit = normalize_image(projection)
-
-        # Create crops directory
-        upload_dir = Path(image.file_path).parent
-        crops_dir = upload_dir / "crops"
-        crops_dir.mkdir(exist_ok=True)
-
-        # Save with "whole" prefix and image ID to ensure unique filenames
-        crop_path = crops_dir / f"whole_{image.id}_{suffix}.png"
-        pil_img = PILImage.fromarray(proj_8bit)
-        pil_img.save(crop_path)
-
-        return crop_path
 
     async def _load_image(self, file_path: str) -> Optional[np.ndarray]:
         """Load image from file (supports TIFF Z-stacks)."""
@@ -462,3 +598,72 @@ async def _update_error_status(image_id: int, error_message: str):
                 await db.commit()
     except Exception as db_err:
         logger.error(f"Failed to update error status for image {image_id}: {db_err}")
+
+
+# ============================================================================
+# Phase 1 & Phase 2 Processing Functions (Two-Phase Workflow)
+# ============================================================================
+
+async def process_upload_only(image_id: int) -> bool:
+    """
+    Phase 1: Process uploaded image - create projections and thumbnail.
+
+    Args:
+        image_id: ID of the image to process
+
+    Returns:
+        True if successful
+    """
+    processor = ImageProcessor(image_id)
+    return await processor.process_upload_only()
+
+
+async def process_upload_only_background(image_id: int):
+    """
+    Phase 1 background task: Process uploaded image.
+    Creates projections and thumbnail, sets status to UPLOADED.
+    """
+    try:
+        await process_upload_only(image_id)
+    except asyncio.CancelledError:
+        logger.info(f"Phase 1 processing cancelled for image {image_id}")
+        raise
+    except (MemoryError, SystemExit, KeyboardInterrupt):
+        logger.critical(f"System-level error during Phase 1 for image {image_id}")
+        raise
+    except Exception as e:
+        logger.exception(f"Phase 1 background processing failed for image {image_id}: {e}")
+        await _update_error_status(image_id, str(e))
+
+
+async def process_batch(image_id: int, detect_cells: bool, map_protein_id: Optional[int] = None) -> bool:
+    """
+    Phase 2: Run detection and feature extraction on an already-uploaded image.
+
+    Args:
+        image_id: ID of the image to process
+        detect_cells: Whether to run YOLO detection
+        map_protein_id: Optional MAP protein to assign
+
+    Returns:
+        True if successful
+    """
+    processor = ImageProcessor(image_id)
+    return await processor.process_batch(detect_cells, map_protein_id)
+
+
+async def process_batch_background(image_id: int, detect_cells: bool, map_protein_id: Optional[int] = None):
+    """
+    Phase 2 background task: Run detection and feature extraction.
+    """
+    try:
+        await process_batch(image_id, detect_cells, map_protein_id)
+    except asyncio.CancelledError:
+        logger.info(f"Phase 2 processing cancelled for image {image_id}")
+        raise
+    except (MemoryError, SystemExit, KeyboardInterrupt):
+        logger.critical(f"System-level error during Phase 2 for image {image_id}")
+        raise
+    except Exception as e:
+        logger.exception(f"Phase 2 background processing failed for image {image_id}: {e}")
+        await _update_error_status(image_id, str(e))

@@ -90,3 +90,37 @@ class ImageDetailResponse(ImageResponse):
     mip_url: Optional[str] = None
     sum_url: Optional[str] = None  # SUM projection URL
     thumbnail_url: Optional[str] = None
+
+
+class BatchProcessRequest(BaseModel):
+    """Request schema for batch processing images."""
+    image_ids: List[int] = Field(..., min_length=1, description="List of image IDs to process")
+    detect_cells: bool = Field(True, description="Whether to run YOLO detection")
+    map_protein_id: Optional[int] = Field(None, description="Optional MAP protein to assign to all images")
+
+
+class BatchProcessResponse(BaseModel):
+    """Response schema for batch processing."""
+    processing_count: int = Field(..., description="Number of images queued for processing")
+    message: str = Field(..., description="Status message")
+
+
+class FOVResponse(BaseModel):
+    """FOV (Field of View) response - represents an uploaded image for FOV gallery."""
+    id: int
+    experiment_id: int
+    original_filename: str
+    status: UploadStatus
+    width: Optional[int] = None
+    height: Optional[int] = None
+    z_slices: Optional[int] = None
+    file_size: Optional[int] = None
+    detect_cells: bool = False
+    thumbnail_url: Optional[str] = None
+    cell_count: int = 0
+    map_protein: Optional[MapProteinResponse] = None
+    created_at: datetime
+    processed_at: Optional[datetime] = None
+
+    class Config:
+        from_attributes = True

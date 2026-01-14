@@ -23,9 +23,20 @@ from models.image import Image, MapProtein, UploadStatus
 from models.cell_crop import CellCrop
 from models.metric import MetricImage, MetricRating, MetricComparison
 from models.ranking import Comparison
-from schemas.image import ImageResponse, ImageDetailResponse, CellCropGalleryResponse
+from schemas.image import (
+    ImageResponse,
+    ImageDetailResponse,
+    CellCropGalleryResponse,
+    BatchProcessRequest,
+    BatchProcessResponse,
+    FOVResponse,
+)
 from utils.security import get_current_user, decode_token, TokenPayload
-from services.image_processor import process_image_background
+from services.image_processor import (
+    process_image_background,
+    process_upload_only_background,
+    process_batch_background,
+)
 
 router = APIRouter()
 settings = get_settings()
@@ -91,19 +102,24 @@ async def upload_image(
     background_tasks: BackgroundTasks,
     experiment_id: int = Form(...),
     map_protein_id: Optional[int] = Form(None),
-    detect_cells: bool = Form(True),
     file: UploadFile = File(...),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
     """
-    Upload a microscopy image and optionally trigger detection pipeline.
+    Upload a microscopy image (Phase 1 of two-phase workflow).
+
+    This endpoint:
+    - Saves the file to disk
+    - Triggers background processing to create projections and thumbnail
+    - Sets status to UPLOADED when Phase 1 is complete
+
+    Detection is NOT triggered here. Use /batch-process endpoint after upload
+    to configure detection settings and start Phase 2.
 
     Args:
         experiment_id: Target experiment ID
         map_protein_id: Optional MAP protein association
-        detect_cells: If True (default), run YOLO detection and crop cells.
-                     If False, keep full projections without detection.
         file: The image file (TIFF Z-stack, PNG, JPG)
     """
     # Verify experiment ownership
@@ -152,7 +168,7 @@ async def upload_image(
         file_path=str(file_path),
         file_size=len(content),
         status=UploadStatus.UPLOADING,
-        detect_cells=detect_cells,
+        detect_cells=False,  # Will be set in Phase 2
     )
     db.add(image)
     await db.commit()
@@ -165,14 +181,160 @@ async def upload_image(
     )
     image = result.scalar_one()
 
-    # Trigger background processing (detection, feature extraction)
+    # Trigger Phase 1 background processing (projections, thumbnail only)
     background_tasks.add_task(
-        process_image_background,
-        image.id,
-        detect_cells
+        process_upload_only_background,
+        image.id
     )
 
     return ImageResponse.model_validate(image)
+
+
+@router.post("/batch-process", response_model=BatchProcessResponse)
+async def batch_process_images(
+    request: BatchProcessRequest,
+    background_tasks: BackgroundTasks,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Start Phase 2 processing for multiple images (batch processing).
+
+    This endpoint:
+    - Validates that all images exist and are owned by the user
+    - Validates that images are in UPLOADED status (Phase 1 complete)
+    - Queues background processing for detection and feature extraction
+    - Updates detect_cells and map_protein_id settings
+
+    Args:
+        request: BatchProcessRequest with image_ids, detect_cells, and optional map_protein_id
+    """
+    # Get all images and verify ownership
+    result = await db.execute(
+        select(Image)
+        .join(Experiment, Image.experiment_id == Experiment.id)
+        .where(
+            Image.id.in_(request.image_ids),
+            Experiment.user_id == current_user.id
+        )
+    )
+    images = result.scalars().all()
+
+    if len(images) != len(request.image_ids):
+        found_ids = {img.id for img in images}
+        missing_ids = set(request.image_ids) - found_ids
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Images not found or not accessible: {missing_ids}"
+        )
+
+    # Verify all images are in appropriate status for processing
+    invalid_images = [
+        img for img in images
+        if img.status not in [UploadStatus.UPLOADED, UploadStatus.READY, UploadStatus.ERROR]
+    ]
+    if invalid_images:
+        invalid_info = [(img.id, img.status.value) for img in invalid_images]
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Images not ready for processing (still uploading?): {invalid_info}"
+        )
+
+    # Verify MAP protein exists if provided
+    if request.map_protein_id is not None:
+        protein_result = await db.execute(
+            select(MapProtein).where(MapProtein.id == request.map_protein_id)
+        )
+        if not protein_result.scalar_one_or_none():
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="MAP protein not found"
+            )
+
+    # Queue background processing for each image
+    for image in images:
+        background_tasks.add_task(
+            process_batch_background,
+            image.id,
+            request.detect_cells,
+            request.map_protein_id
+        )
+
+    return BatchProcessResponse(
+        processing_count=len(images),
+        message=f"Processing started for {len(images)} images"
+    )
+
+
+@router.get("/fovs", response_model=List[FOVResponse])
+async def list_fovs(
+    experiment_id: int = Query(...),
+    skip: int = Query(0, ge=0),
+    limit: int = Query(50, ge=1, le=100),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    List FOV (Field of View) images in an experiment.
+
+    Returns Image records representing the original uploaded images (FOVs),
+    not the detected cell crops. Use this for the FOV gallery view.
+    """
+    # Verify experiment ownership
+    result = await db.execute(
+        select(Experiment).where(
+            Experiment.id == experiment_id,
+            Experiment.user_id == current_user.id
+        )
+    )
+    if not result.scalar_one_or_none():
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Experiment not found"
+        )
+
+    # Get images with protein info and cell counts
+    result = await db.execute(
+        select(
+            Image,
+            func.count(CellCrop.id).label("cell_count")
+        )
+        .options(selectinload(Image.map_protein))
+        .outerjoin(CellCrop, Image.id == CellCrop.image_id)
+        .where(Image.experiment_id == experiment_id)
+        .group_by(Image.id)
+        .order_by(Image.created_at.desc())
+        .offset(skip)
+        .limit(limit)
+    )
+    rows = result.all()
+
+    response = []
+    for img, cell_count in rows:
+        # Build thumbnail URL
+        thumbnail_url = None
+        if img.thumbnail_path:
+            thumbnail_url = f"/api/images/{img.id}/file?type=thumbnail"
+
+        fov_response = FOVResponse(
+            id=img.id,
+            experiment_id=img.experiment_id,
+            original_filename=img.original_filename,
+            status=img.status,
+            width=img.width,
+            height=img.height,
+            z_slices=img.z_slices,
+            file_size=img.file_size,
+            detect_cells=img.detect_cells,
+            thumbnail_url=thumbnail_url,
+            cell_count=cell_count or 0,
+            map_protein=img.map_protein,
+            created_at=img.created_at,
+            processed_at=img.processed_at,
+        )
+        response.append(fov_response)
+
+    return response
 
 
 @router.get("", response_model=List[ImageResponse])

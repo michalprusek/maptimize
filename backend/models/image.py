@@ -15,12 +15,13 @@ if TYPE_CHECKING:
 
 class UploadStatus(str, PyEnum):
     """Image upload/processing status."""
-    UPLOADING = "uploading"
-    PROCESSING = "processing"
-    DETECTING = "detecting"
-    EXTRACTING_FEATURES = "extracting_features"
-    READY = "ready"
-    ERROR = "error"
+    UPLOADING = "UPLOADING"
+    UPLOADED = "UPLOADED"  # Phase 1 complete: projections created, awaiting processing
+    PROCESSING = "PROCESSING"
+    DETECTING = "DETECTING"
+    EXTRACTING_FEATURES = "EXTRACTING_FEATURES"
+    READY = "READY"
+    ERROR = "ERROR"
 
 
 class MapProtein(Base):
