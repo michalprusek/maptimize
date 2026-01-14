@@ -2,6 +2,7 @@
 
 import { useEffect } from "react";
 import { useRouter } from "next/navigation";
+import { useQueryClient } from "@tanstack/react-query";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { motion } from "framer-motion";
@@ -30,6 +31,7 @@ export default function DashboardLayout({
 }) {
   const router = useRouter();
   const pathname = usePathname();
+  const queryClient = useQueryClient();
   const { user, isAuthenticated, isLoading, checkAuth, logout } = useAuthStore();
 
   useEffect(() => {
@@ -115,6 +117,7 @@ export default function DashboardLayout({
 
           <button
             onClick={() => {
+              queryClient.clear();
               logout();
               router.push("/auth");
             }}
