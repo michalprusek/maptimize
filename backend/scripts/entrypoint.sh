@@ -2,58 +2,53 @@
 # Docker entrypoint script for Maptimize backend
 # Checks for required model weights and downloads if missing
 
-set -e
+set -eu
 
-WEIGHTS_DIR="/app/weights"
-SAM_WEIGHTS="$WEIGHTS_DIR/mobile_sam.pt"
-YOLO_WEIGHTS="$WEIGHTS_DIR/best.pt"
+readonly WEIGHTS_DIR="/app/weights"
+readonly SAM_WEIGHTS="$WEIGHTS_DIR/mobile_sam.pt"
+readonly SAM_URL="https://github.com/ultralytics/assets/releases/download/v8.2.0/mobile_sam.pt"
+readonly YOLO_WEIGHTS="$WEIGHTS_DIR/best.pt"
 
-# SAM weights URL (from Ultralytics releases)
-SAM_URL="https://github.com/ultralytics/assets/releases/download/v8.2.0/mobile_sam.pt"
+download_file() {
+    local url="$1"
+    local dest="$2"
+    local name="$3"
+
+    echo "Downloading $name from $url"
+    if curl -fL -o "$dest.tmp" "$url"; then
+        mv "$dest.tmp" "$dest"
+        echo "[OK] $name downloaded successfully"
+        return 0
+    else
+        rm -f "$dest.tmp"
+        echo "[FAIL] Failed to download $name"
+        return 1
+    fi
+}
 
 echo "========================================"
 echo "Maptimize Backend Startup"
 echo "========================================"
 
-# Ensure weights directory exists
 mkdir -p "$WEIGHTS_DIR"
 
-# Check SAM weights
-if [ ! -f "$SAM_WEIGHTS" ]; then
-    echo "SAM weights not found. Downloading MobileSAM..."
-    echo "URL: $SAM_URL"
-
-    # Download with curl (progress bar)
-    if curl -L -o "$SAM_WEIGHTS.tmp" "$SAM_URL"; then
-        mv "$SAM_WEIGHTS.tmp" "$SAM_WEIGHTS"
-        echo "✓ SAM weights downloaded successfully"
-    else
-        echo "✗ Failed to download SAM weights"
-        rm -f "$SAM_WEIGHTS.tmp"
-        # Continue anyway - SAM will fail gracefully at runtime
-    fi
+if [ -f "$SAM_WEIGHTS" ]; then
+    echo "[OK] SAM weights found: $SAM_WEIGHTS"
 else
-    echo "✓ SAM weights found: $SAM_WEIGHTS"
+    download_file "$SAM_URL" "$SAM_WEIGHTS" "MobileSAM weights" || true
 fi
 
-# Check YOLO weights (these are custom-trained, can't auto-download)
-if [ ! -f "$YOLO_WEIGHTS" ]; then
-    echo "⚠ YOLO weights not found: $YOLO_WEIGHTS"
-    echo "  Cell detection will not work without custom-trained weights."
-    echo "  Please copy your trained weights to ./weights/best.pt"
+if [ -f "$YOLO_WEIGHTS" ]; then
+    echo "[OK] YOLO weights found: $YOLO_WEIGHTS"
 else
-    echo "✓ YOLO weights found: $YOLO_WEIGHTS"
+    echo "[WARN] YOLO weights not found: $YOLO_WEIGHTS"
+    echo "       Cell detection requires custom-trained weights at ./weights/best.pt"
 fi
 
-# Show weights summary
 echo ""
 echo "Weights summary:"
 ls -lh "$WEIGHTS_DIR"/*.pt 2>/dev/null || echo "  No .pt files found"
+
 echo ""
-
-echo "========================================"
 echo "Starting application..."
-echo "========================================"
-
-# Execute the main command
 exec "$@"

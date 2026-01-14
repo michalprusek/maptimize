@@ -49,6 +49,96 @@ import { useSegmentation } from "./hooks/useSegmentation";
 const TOOLBAR_POSITION_KEY = "maptimize:editor:toolbarPosition";
 const DEFAULT_TOOLBAR_POSITION: ToolbarPosition = { edge: "bottom", offset: 0.5 };
 
+// Helper type for SAM embedding status
+type SAMEmbeddingStatus = "not_started" | "pending" | "computing" | "ready" | "error";
+
+interface SegmentationModeButtonProps {
+  isActive: boolean;
+  embeddingStatus: SAMEmbeddingStatus;
+  onClick: () => void;
+  label: string;
+  title: string;
+}
+
+/**
+ * Returns class names for navigation buttons (prev/next image).
+ */
+function getNavButtonClassName(isEnabled: boolean): string {
+  const base = "bg-bg-secondary/80 backdrop-blur-sm p-2 rounded-lg border border-white/10 transition-all duration-200";
+  if (isEnabled) {
+    return `${base} hover:bg-white/10 hover:border-white/20 cursor-pointer`;
+  }
+  return `${base} opacity-40 cursor-not-allowed`;
+}
+
+/**
+ * Updates saved polygons list - replaces existing or adds new.
+ */
+function updateSavedPolygon(
+  polygons: CellPolygon[],
+  cropId: number,
+  points: [number, number][],
+  iouScore: number
+): CellPolygon[] {
+  const existingIndex = polygons.findIndex(p => p.cropId === cropId);
+  if (existingIndex >= 0) {
+    const updated = [...polygons];
+    updated[existingIndex] = { cropId, points, iouScore };
+    return updated;
+  }
+  return [...polygons, { cropId, points, iouScore }];
+}
+
+/**
+ * Segmentation mode button with status indicators.
+ * Extracted to avoid nested ternaries in the main component.
+ */
+function SegmentationModeButton({
+  isActive,
+  embeddingStatus,
+  onClick,
+  label,
+  title,
+}: SegmentationModeButtonProps): React.ReactElement {
+  const isComputing = embeddingStatus === "computing" || embeddingStatus === "pending";
+  const isDisabled = isComputing;
+
+  function getButtonClassName(): string {
+    const base = "flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm font-medium transition-all relative";
+    if (isActive) {
+      return `${base} bg-emerald-500 text-white`;
+    }
+    if (isComputing) {
+      return `${base} text-text-muted cursor-not-allowed`;
+    }
+    return `${base} text-text-secondary hover:bg-white/10`;
+  }
+
+  return (
+    <button
+      onClick={onClick}
+      disabled={isDisabled}
+      className={getButtonClassName()}
+      title={title}
+    >
+      {isComputing ? (
+        <Loader2 className="w-4 h-4 animate-spin" />
+      ) : (
+        <Wand2 className="w-4 h-4" />
+      )}
+      <span className="hidden sm:inline">{label}</span>
+      {/* Ready indicator dot */}
+      {embeddingStatus === "ready" && !isActive && (
+        <span className="absolute -top-0.5 -right-0.5 w-2 h-2 bg-emerald-400 rounded-full" />
+      )}
+      {/* Error indicator dot */}
+      {embeddingStatus === "error" && (
+        <span className="absolute -top-0.5 -right-0.5 w-2 h-2 bg-red-400 rounded-full" />
+      )}
+    </button>
+  );
+}
+
 interface ImageEditorPageProps {
   fovImage: FOVImage;
   crops: CellCropGallery[];
@@ -95,7 +185,6 @@ export function ImageEditorPage({
 
   // Sync bboxes when crops change (e.g., from React Query refetch)
   useEffect(() => {
-    console.log("[Editor] Crops received:", crops.length, crops);
     if (crops.length > 0) {
       setBboxes(crops.map(cropToEditorBbox));
     }
@@ -144,14 +233,7 @@ export function ImageEditorPage({
   const segmentation = useSegmentation({
     imageId: fovImage.id,
     onMaskSaved: useCallback((cropId: number, polygon: [number, number][], iouScore: number) => {
-      // Add to saved polygons
-      setSavedPolygons(prev => {
-        const existing = prev.find(p => p.cropId === cropId);
-        if (existing) {
-          return prev.map(p => p.cropId === cropId ? { cropId, points: polygon, iouScore } : p);
-        }
-        return [...prev, { cropId, points: polygon, iouScore }];
-      });
+      setSavedPolygons(prev => updateSavedPolygon(prev, cropId, polygon, iouScore));
       onDataChanged?.();
     }, [onDataChanged]),
   });
@@ -718,14 +800,14 @@ export function ImageEditorPage({
 
   // Wrap mouse down handler to support segmentation mode
   const handleMouseDownWithSegmentation = useCallback(
-    (e: React.MouseEvent<HTMLCanvasElement>) => {
+    (e: React.MouseEvent<HTMLElement>) => {
       // In segment mode, handle segmentation clicks
       if (editorState.mode === "segment" && segmentation.isReady) {
         // Prevent context menu on right click
         if (e.button === 2) {
           e.preventDefault();
         }
-        handleSegmentationClick(e);
+        handleSegmentationClick(e as React.MouseEvent<HTMLCanvasElement | HTMLDivElement>);
         return;
       }
       // Otherwise, delegate to bbox interaction
@@ -803,36 +885,17 @@ export function ImageEditorPage({
             </button>
 
             {/* Segmentation mode button */}
-            <button
+            <SegmentationModeButton
+              isActive={editorState.mode === "segment"}
+              embeddingStatus={segmentation.embeddingStatus}
               onClick={() => {
                 if (editorState.mode !== "segment") {
                   setEditorState(prev => ({ ...prev, mode: "segment" }));
                 }
               }}
-              disabled={segmentation.embeddingStatus === "computing" || segmentation.embeddingStatus === "pending"}
-              className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm font-medium transition-all relative ${
-                editorState.mode === "segment"
-                  ? "bg-emerald-500 text-white"
-                  : segmentation.embeddingStatus === "computing" || segmentation.embeddingStatus === "pending"
-                    ? "text-text-muted cursor-not-allowed"
-                    : "text-text-secondary hover:bg-white/10"
-              }`}
+              label={t("segmentation")}
               title={t("segmentMode")}
-            >
-              {segmentation.embeddingStatus === "computing" || segmentation.embeddingStatus === "pending" ? (
-                <Loader2 className="w-4 h-4 animate-spin" />
-              ) : (
-                <Wand2 className="w-4 h-4" />
-              )}
-              <span className="hidden sm:inline">{t("segmentation")}</span>
-              {/* Status indicator dot */}
-              {segmentation.embeddingStatus === "ready" && editorState.mode !== "segment" && (
-                <span className="absolute -top-0.5 -right-0.5 w-2 h-2 bg-emerald-400 rounded-full" />
-              )}
-              {segmentation.embeddingStatus === "error" && (
-                <span className="absolute -top-0.5 -right-0.5 w-2 h-2 bg-red-400 rounded-full" />
-              )}
-            </button>
+            />
           </div>
         </div>
 
@@ -843,11 +906,7 @@ export function ImageEditorPage({
             <button
               onClick={onNavigatePrev}
               disabled={!hasPrevImage}
-              className={`bg-bg-secondary/80 backdrop-blur-sm p-2 rounded-lg border border-white/10 transition-all duration-200 ${
-                hasPrevImage
-                  ? "hover:bg-white/10 hover:border-white/20 cursor-pointer"
-                  : "opacity-40 cursor-not-allowed"
-              }`}
+              className={getNavButtonClassName(hasPrevImage)}
               title={t("previousImage")}
             >
               <ChevronLeft className="w-4 h-4 text-text-secondary" />
@@ -867,11 +926,7 @@ export function ImageEditorPage({
             <button
               onClick={onNavigateNext}
               disabled={!hasNextImage}
-              className={`bg-bg-secondary/80 backdrop-blur-sm p-2 rounded-lg border border-white/10 transition-all duration-200 ${
-                hasNextImage
-                  ? "hover:bg-white/10 hover:border-white/20 cursor-pointer"
-                  : "opacity-40 cursor-not-allowed"
-              }`}
+              className={getNavButtonClassName(hasNextImage)}
               title={t("nextImage")}
             >
               <ChevronRight className="w-4 h-4 text-text-secondary" />
