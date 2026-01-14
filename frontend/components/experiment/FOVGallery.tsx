@@ -49,17 +49,20 @@ export function FOVGallery({
 
   // Delete state
   const [fovToDelete, setFovToDelete] = useState<{ id: number; name: string } | null>(null);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
 
   const deleteFovMutation = useMutation({
     mutationFn: (imageId: number) => api.deleteImage(imageId),
     onSuccess: () => {
       setFovToDelete(null);
+      setDeleteError(null);
       queryClient.invalidateQueries({ queryKey: ["fovs", experimentId] });
       queryClient.invalidateQueries({ queryKey: ["crops", experimentId] });
       queryClient.invalidateQueries({ queryKey: ["experiment", experimentId] });
     },
     onError: (err: Error) => {
       console.error("Failed to delete FOV:", err);
+      setDeleteError(err.message || "Failed to delete FOV. Please try again.");
     },
   });
 
@@ -263,10 +266,32 @@ export function FOVGallery({
         </div>
       ) : null}
 
+      {/* Delete error message */}
+      {deleteError && (
+        <div className="fixed bottom-4 right-4 z-50 p-4 bg-accent-red/10 border border-accent-red/20 rounded-lg shadow-lg max-w-md">
+          <div className="flex items-start gap-3">
+            <AlertCircle className="w-5 h-5 text-accent-red flex-shrink-0 mt-0.5" />
+            <div>
+              <p className="text-accent-red text-sm font-medium">Delete failed</p>
+              <p className="text-accent-red/80 text-sm mt-1">{deleteError}</p>
+            </div>
+            <button
+              onClick={() => setDeleteError(null)}
+              className="text-accent-red/60 hover:text-accent-red ml-auto"
+            >
+              ×
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Delete confirmation modal */}
       <ConfirmModal
         isOpen={!!fovToDelete}
-        onClose={() => setFovToDelete(null)}
+        onClose={() => {
+          setFovToDelete(null);
+          setDeleteError(null);
+        }}
         onConfirm={() => fovToDelete && deleteFovMutation.mutate(fovToDelete.id)}
         title="Delete FOV Image"
         message={`Are you sure you want to delete "${fovToDelete?.name}"? This will also delete all detected cells from this image. This action cannot be undone.`}

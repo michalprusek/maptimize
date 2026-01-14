@@ -58,9 +58,11 @@ export default function UploadPage(): JSX.Element {
     queryFn: () => api.getExperiment(experimentId),
   });
 
-  const { data: proteins } = useQuery({
+  const { data: proteins, error: proteinsError } = useQuery({
     queryKey: ["proteins"],
     queryFn: () => api.getProteins(),
+    retry: 3,
+    retryDelay: (attemptIndex) => Math.min(1000 * 2 ** attemptIndex, 10000),
   });
 
   const selectedProtein = proteins?.find((p) => p.id === selectedProteinId);
@@ -482,6 +484,13 @@ export default function UploadPage(): JSX.Element {
               <label className="block text-sm text-text-secondary mb-2">
                 MAP Protein (applied to all images)
               </label>
+              {proteinsError ? (
+                <div className="p-3 bg-accent-red/10 border border-accent-red/20 rounded-lg">
+                  <p className="text-accent-red text-sm">
+                    Failed to load proteins: {proteinsError.message}
+                  </p>
+                </div>
+              ) : (
               <button
                 onClick={() => setProteinDropdownOpen(!proteinDropdownOpen)}
                 className="flex items-center justify-between w-full px-4 py-3 bg-bg-secondary border border-white/10 rounded-lg hover:bg-bg-hover transition-colors"
@@ -506,8 +515,9 @@ export default function UploadPage(): JSX.Element {
                   }`}
                 />
               </button>
+              )}
 
-              {proteinDropdownOpen && (
+              {!proteinsError && proteinDropdownOpen && (
                 <motion.div
                   initial={{ opacity: 0, y: -10 }}
                   animate={{ opacity: 1, y: 0 }}
