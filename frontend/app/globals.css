@@ -5,9 +5,46 @@
 @tailwind utilities;
 
 @layer base {
-  :root {
+  /* Dark theme (default) */
+  :root,
+  .dark {
     --background: 210 33% 6%;
     --foreground: 200 30% 93%;
+
+    /* Theme CSS variables */
+    --color-bg-primary: #0a0f14;
+    --color-bg-secondary: #121a22;
+    --color-bg-elevated: #1a242e;
+    --color-bg-hover: #222e3a;
+    --color-text-primary: #e8f0f5;
+    --color-text-secondary: #8ba3b5;
+    --color-text-muted: #5a7285;
+    --color-border: rgba(255, 255, 255, 0.1);
+
+    /* Primary accent colors */
+    --color-primary-400: #1affc9;
+    --color-primary-500: #00d4aa;
+    --color-primary-600: #00b894;
+  }
+
+  /* Light theme - muted, easy on eyes */
+  .light {
+    --background: 210 15% 82%;
+    --foreground: 210 33% 15%;
+
+    --color-bg-primary: #c8d0d8;
+    --color-bg-secondary: #bec7d0;
+    --color-bg-elevated: #d4dce4;
+    --color-bg-hover: #b0bac4;
+    --color-text-primary: #1a2535;
+    --color-text-secondary: #3d4d5c;
+    --color-text-muted: #5a6a7a;
+    --color-border: rgba(0, 0, 0, 0.15);
+
+    /* Primary accent colors - darker for light bg */
+    --color-primary-400: #00a080;
+    --color-primary-500: #008066;
+    --color-primary-600: #006650;
   }
 
   * {
@@ -40,7 +77,8 @@
 @layer components {
   /* Glass card effect */
   .glass-card {
-    @apply bg-bg-elevated/80 backdrop-blur-xl border border-white/5 rounded-2xl;
+    background-color: color-mix(in srgb, var(--color-bg-elevated) 80%, transparent);
+    @apply backdrop-blur-xl border border-white/5 rounded-2xl;
   }
 
   /* Glow effect for primary elements */
@@ -66,8 +104,11 @@
   /* Button styles */
   .btn-primary {
     @apply px-6 py-3 bg-primary-600 hover:bg-primary-500 text-white font-medium rounded-xl
-           transition-all duration-200 shadow-lg hover:shadow-primary-500/25
+           transition-all duration-200 shadow-lg
            active:scale-[0.98] disabled:opacity-50 disabled:cursor-not-allowed;
+    &:hover {
+      box-shadow: 0 10px 15px -3px color-mix(in srgb, var(--color-primary-500) 25%, transparent);
+    }
   }
 
   .btn-secondary {
@@ -85,13 +126,20 @@
   .input-field {
     @apply w-full px-4 py-3 bg-bg-secondary border border-white/10 rounded-xl
            text-text-primary placeholder:text-text-muted
-           focus:outline-none focus:border-primary-500/50 focus:ring-2 focus:ring-primary-500/20
+           focus:outline-none focus:ring-2
            transition-all duration-200;
+    &:focus {
+      border-color: color-mix(in srgb, var(--color-primary-500) 50%, transparent);
+      --tw-ring-color: color-mix(in srgb, var(--color-primary-500) 20%, transparent);
+    }
   }
 
   /* Card hover effect */
   .card-hover {
-    @apply transition-all duration-300 hover:scale-[1.02] hover:shadow-xl hover:shadow-primary-500/5;
+    @apply transition-all duration-300 hover:scale-[1.02] hover:shadow-xl;
+    &:hover {
+      --tw-shadow-color: color-mix(in srgb, var(--color-primary-500) 5%, transparent);
+    }
   }
 }
 
@@ -120,5 +168,37 @@
     mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
     -webkit-mask-composite: xor;
     mask-composite: exclude;
+  }
+
+  /* ==========================================================================
+   * LUT (Lookup Table) Display Modes for Microscopy Images
+   * Based on ImageJ conventions for scientific image visualization
+   * ========================================================================== */
+
+  /* Grayscale: Default display - white on black (no filter needed) */
+  .lut-grayscale {
+    /* Default microscopy display */
+  }
+
+  /* Inverted: Black on white - good for printing and presentations */
+  .lut-inverted {
+    filter: invert(1);
+  }
+
+  /* Green (GFP): Green fluorescence on black - mimics GFP channel */
+  .lut-green {
+    filter: sepia(1) saturate(5) hue-rotate(70deg) brightness(0.9);
+  }
+
+  /* Fire: Heat-map style (black -> red -> yellow -> white) */
+  .lut-fire {
+    filter: sepia(1) saturate(10) hue-rotate(-10deg) brightness(1.1) contrast(1.1);
+  }
+
+  /* HiLo: Uses canvas-based rendering, this class is a placeholder */
+  .lut-hilo {
+    /* HiLo mode uses JavaScript canvas manipulation to highlight
+     * under-exposed (blue) and over-exposed (red) pixels.
+     * The actual rendering is handled by the MicroscopyImage component. */
   }
 }

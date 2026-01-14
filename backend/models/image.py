@@ -3,7 +3,7 @@ from datetime import datetime
 from enum import Enum as PyEnum
 from typing import TYPE_CHECKING, List, Optional
 
-from sqlalchemy import String, Text, Enum, DateTime, Integer, ForeignKey, func, JSON, Boolean
+from sqlalchemy import String, Text, Enum, DateTime, Integer, Float, ForeignKey, func, JSON, Boolean
 from pgvector.sqlalchemy import Vector
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -30,7 +30,7 @@ class UploadStatus(str, PyEnum):
     UPLOADED = "UPLOADED"    # Phase 1 complete: projections created, awaiting Phase 2
     PROCESSING = "PROCESSING"  # Phase 2: Generic processing state
     DETECTING = "DETECTING"    # Phase 2: Running YOLO cell detection
-    EXTRACTING_FEATURES = "EXTRACTING_FEATURES"  # Phase 2: Extracting DINOv2 embeddings
+    EXTRACTING_FEATURES = "EXTRACTING_FEATURES"  # Phase 2: Extracting DINOv3 embeddings
     READY = "READY"          # Complete: all processing finished successfully
     ERROR = "ERROR"          # Failed: see error_message field for details
 
@@ -96,6 +96,13 @@ class Image(Base):
     # DINOv3 embedding for FOV MIP projection (1024-dim for large variant)
     embedding: Mapped[Optional[list]] = mapped_column(Vector(1024), nullable=True)
     embedding_model: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+
+    # Pre-computed UMAP coordinates for FOV visualization
+    umap_x: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    umap_y: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    umap_computed_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
     # Timestamps
     created_at: Mapped[datetime] = mapped_column(

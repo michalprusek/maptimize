@@ -1,6 +1,7 @@
 import type { Config } from "tailwindcss";
 
 const config: Config = {
+  darkMode: "class",
   content: [
     "./pages/**/*.{js,ts,jsx,tsx,mdx}",
     "./components/**/*.{js,ts,jsx,tsx,mdx}",
@@ -9,26 +10,26 @@ const config: Config = {
   theme: {
     extend: {
       colors: {
-        // Primary - Fluorescent teal (like GFP)
+        // Primary - Fluorescent teal (like GFP) - key shades use CSS vars for theming
         primary: {
           50: "#e6fff9",
           100: "#b3ffed",
           200: "#80ffe1",
           300: "#4dffd5",
-          400: "#1affc9",
-          500: "#00d4aa",
-          600: "#00b894",
+          400: "var(--color-primary-400)",
+          500: "var(--color-primary-500)",
+          600: "var(--color-primary-600)",
           700: "#009c7d",
           800: "#008066",
           900: "#004d40",
           950: "#00332a",
         },
-        // Background - Dark, like microscope background
+        // Background - Uses CSS variables for theme switching
         bg: {
-          primary: "#0a0f14",
-          secondary: "#121a22",
-          elevated: "#1a242e",
-          hover: "#222e3a",
+          primary: "var(--color-bg-primary)",
+          secondary: "var(--color-bg-secondary)",
+          elevated: "var(--color-bg-elevated)",
+          hover: "var(--color-bg-hover)",
         },
         // Accent colors for proteins
         accent: {
@@ -38,11 +39,15 @@ const config: Config = {
           cyan: "#00bcd4",
           red: "#ff6b6b",
         },
-        // Text
+        // Text - Uses CSS variables for theme switching
         text: {
-          primary: "#e8f0f5",
-          secondary: "#8ba3b5",
-          muted: "#5a7285",
+          primary: "var(--color-text-primary)",
+          secondary: "var(--color-text-secondary)",
+          muted: "var(--color-text-muted)",
+        },
+        // Border
+        border: {
+          DEFAULT: "var(--color-border)",
         },
       },
       fontFamily: {

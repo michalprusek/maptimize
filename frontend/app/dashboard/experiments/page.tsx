@@ -4,6 +4,7 @@ import { useState } from "react";
 import Link from "next/link";
 import { motion, AnimatePresence } from "framer-motion";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useTranslations } from "next-intl";
 import { api } from "@/lib/api";
 import { ConfirmModal, StatusBadge } from "@/components/ui";
 import {
@@ -19,6 +20,8 @@ import {
 } from "lucide-react";
 
 export default function ExperimentsPage(): JSX.Element {
+  const t = useTranslations("experiments");
+  const tCommon = useTranslations("common");
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [newExpName, setNewExpName] = useState("");
   const [newExpDescription, setNewExpDescription] = useState("");
@@ -75,18 +78,15 @@ export default function ExperimentsPage(): JSX.Element {
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-3xl font-display font-bold text-text-primary">
-            Experiments
+            {t("title")}
           </h1>
-          <p className="text-text-secondary mt-2">
-            Manage your microscopy image collections
-          </p>
         </div>
         <button
           onClick={() => setShowCreateModal(true)}
           className="btn-primary flex items-center gap-2"
         >
           <Plus className="w-5 h-5" />
-          New Experiment
+          {t("create")}
         </button>
       </div>
 
@@ -164,11 +164,11 @@ export default function ExperimentsPage(): JSX.Element {
                   <div className="flex items-center gap-4 text-sm text-text-muted">
                     <div className="flex items-center gap-1">
                       <ImageIcon className="w-4 h-4" />
-                      <span>{exp.image_count} images</span>
+                      <span>{exp.image_count} {t("images")}</span>
                     </div>
                     <div className="flex items-center gap-1">
                       <Layers className="w-4 h-4" />
-                      <span>{exp.cell_count} crops</span>
+                      <span>{exp.cell_count} {t("crops")}</span>
                     </div>
                   </div>
 
@@ -189,17 +189,17 @@ export default function ExperimentsPage(): JSX.Element {
             <FolderOpen className="w-10 h-10 text-primary-400" />
           </div>
           <h3 className="text-xl font-display font-semibold text-text-primary mb-2">
-            No experiments yet
+            {t("noExperiments")}
           </h3>
           <p className="text-text-secondary mb-6 max-w-md mx-auto">
-            Create your first experiment to organize and analyze your microscopy images
+            {t("startFirst")}
           </p>
           <button
             onClick={() => setShowCreateModal(true)}
             className="btn-primary inline-flex items-center gap-2"
           >
             <Plus className="w-5 h-5" />
-            Create Experiment
+            {t("create")}
           </button>
         </div>
       )}
@@ -223,7 +223,7 @@ export default function ExperimentsPage(): JSX.Element {
             >
               <div className="flex items-center justify-between mb-6">
                 <h2 className="text-xl font-display font-semibold text-text-primary">
-                  New Experiment
+                  {t("create")}
                 </h2>
                 <button
                   onClick={() => setShowCreateModal(false)}
@@ -236,7 +236,7 @@ export default function ExperimentsPage(): JSX.Element {
               <form onSubmit={handleCreate} className="space-y-4">
                 <div>
                   <label className="block text-sm font-medium text-text-secondary mb-2">
-                    Name
+                    {t("name")}
                   </label>
                   <input
                     type="text"
@@ -250,13 +250,12 @@ export default function ExperimentsPage(): JSX.Element {
 
                 <div>
                   <label className="block text-sm font-medium text-text-secondary mb-2">
-                    Description (optional)
+                    {t("description")}
                   </label>
                   <textarea
                     value={newExpDescription}
                     onChange={(e) => setNewExpDescription(e.target.value)}
                     className="input-field min-h-[100px] resize-none"
-                    placeholder="Describe the purpose of this experiment..."
                   />
                 </div>
 
@@ -266,7 +265,7 @@ export default function ExperimentsPage(): JSX.Element {
                     onClick={() => setShowCreateModal(false)}
                     className="btn-secondary flex-1"
                   >
-                    Cancel
+                    {tCommon("cancel")}
                   </button>
                   <button
                     type="submit"
@@ -278,7 +277,7 @@ export default function ExperimentsPage(): JSX.Element {
                     ) : (
                       <>
                         <Plus className="w-5 h-5" />
-                        Create
+                        {t("create")}
                       </>
                     )}
                   </button>
@@ -294,11 +293,11 @@ export default function ExperimentsPage(): JSX.Element {
         isOpen={!!experimentToDelete}
         onClose={() => setExperimentToDelete(null)}
         onConfirm={() => experimentToDelete && deleteMutation.mutate(experimentToDelete.id)}
-        title="Delete Experiment"
-        message="Are you sure you want to delete this experiment? All images and cell crops will be permanently removed."
+        title={tCommon("delete")}
+        message={t("deleteConfirm")}
         detail={experimentToDelete?.name}
-        confirmLabel="Delete"
-        cancelLabel="Cancel"
+        confirmLabel={tCommon("delete")}
+        cancelLabel={tCommon("cancel")}
         isLoading={deleteMutation.isPending}
         variant="danger"
       />

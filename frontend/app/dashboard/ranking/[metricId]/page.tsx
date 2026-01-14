@@ -5,9 +5,10 @@ import { useParams } from "next/navigation";
 import Link from "next/link";
 import { motion, AnimatePresence } from "framer-motion";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useTranslations } from "next-intl";
 import { api, API_URL, MetricImage, MetricImageForRanking } from "@/lib/api";
 import { ImportDialog } from "@/components/metric/ImportDialog";
-import { ConfirmModal } from "@/components/ui";
+import { ConfirmModal, MicroscopyImage } from "@/components/ui";
 import {
   ImageGalleryFilters,
   SortOrder,
@@ -82,7 +83,7 @@ function ComparisonCard({
       >
         <div className="bg-bg-secondary relative group flex items-center justify-center p-4 min-h-[300px]">
           {imageUrl ? (
-            <img
+            <MicroscopyImage
               src={imageUrl}
               alt={`Image ${image.id}`}
               className="max-h-[280px] object-contain"
@@ -487,7 +488,7 @@ export default function MetricDetailPage(): JSX.Element {
                     animate={{ opacity: 1, scale: 1 }}
                     className="aspect-square rounded-2xl overflow-hidden relative group bg-bg-secondary"
                   >
-                    <img
+                    <MicroscopyImage
                       src={getImageUrl(img)}
                       alt={`Image ${img.id}`}
                       className="w-full h-full object-cover"
@@ -730,7 +731,7 @@ export default function MetricDetailPage(): JSX.Element {
                           <div className="flex items-center gap-3">
                             {imageUrl && (
                               <div className="relative group/img">
-                                <img
+                                <MicroscopyImage
                                   src={imageUrl}
                                   alt={`Rank ${item.rank}`}
                                   className="w-10 h-10 rounded object-cover"
@@ -836,7 +837,7 @@ export default function MetricDetailPage(): JSX.Element {
               className="relative max-w-[90vw] max-h-[90vh]"
               onClick={(e) => e.stopPropagation()}
             >
-              <img
+              <MicroscopyImage
                 src={lightboxImage.url}
                 alt={lightboxImage.name}
                 className="max-w-full max-h-[85vh] object-contain rounded-lg"

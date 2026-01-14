@@ -172,7 +172,7 @@ class ImageProcessor:
 
         This method:
         - Loads existing MIP projection from Phase 1
-        - If detect_cells=True: runs YOLO detection, creates cell crops, extracts DINOv2 embeddings
+        - If detect_cells=True: runs YOLO detection, creates cell crops, extracts DINOv3 embeddings
         - If detect_cells=False: marks image as READY without creating crops (FOV only mode)
         - Always extracts FOV-level embedding regardless of detect_cells setting
         - Sets status to READY
@@ -529,7 +529,7 @@ class ImageProcessor:
         crops: List[CellCrop],
         db: AsyncSession
     ) -> None:
-        """Extract DINOv2 embeddings for cell crops (non-fatal on failure)."""
+        """Extract DINOv3 embeddings for cell crops (non-fatal on failure)."""
         if not crops:
             return
 
@@ -550,7 +550,7 @@ class ImageProcessor:
         except ImportError as e:
             logger.error(f"Feature extraction module not available: {e}")
         except RuntimeError as e:
-            logger.error(f"DINOv2 model error during feature extraction: {e}")
+            logger.error(f"DINOv3 model error during feature extraction: {e}")
         except Exception as e:
             logger.exception(f"Unexpected feature extraction error: {e}")
 

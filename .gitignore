@@ -68,3 +68,4 @@ weights/
 *.sqlite3
 
 sudo_password.txt
+*data/

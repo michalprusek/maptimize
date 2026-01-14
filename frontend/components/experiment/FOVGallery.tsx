@@ -4,14 +4,14 @@ import { useState } from "react";
 import { motion } from "framer-motion";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { api, FOVImage } from "@/lib/api";
-import { ConfirmModal } from "@/components/ui";
+import { ConfirmModal, MicroscopyImage } from "@/components/ui";
+import { SelectionCheckbox, DeleteOverlayButton } from "@/components/shared";
 import {
   Loader2,
-  Trash2,
   Search,
   ImageIcon,
   Layers,
-  Check,
+  AlertCircle,
 } from "lucide-react";
 
 interface FOVGalleryProps {
@@ -108,11 +108,10 @@ export function FOVGallery({
               {/* Image preview */}
               <div className="aspect-square bg-bg-secondary flex items-center justify-center relative overflow-hidden rounded-t-xl">
                 {fov.thumbnail_url ? (
-                  <img
+                  <MicroscopyImage
                     src={api.getImageUrl(fov.id, "thumbnail")}
                     alt={fov.original_filename}
                     className="w-full h-full object-cover"
-                    loading="lazy"
                     onError={(e) => {
                       console.warn(`[FOVGallery] Thumbnail load failed for image: ${fov.original_filename}`, e.type);
                       e.currentTarget.style.display = "none";
@@ -124,31 +123,14 @@ export function FOVGallery({
                 )}
                 <ImageIcon className="w-10 h-10 text-text-muted hidden" />
 
-                {/* Selection checkbox */}
-                <button
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    onToggleSelect(fov.id);
-                  }}
-                  className={`absolute top-2 left-2 w-5 h-5 rounded border-2 flex items-center justify-center transition-all ${
-                    selectedIds.has(fov.id)
-                      ? "bg-primary-500 border-primary-500"
-                      : "border-white/40 bg-black/30 opacity-0 group-hover:opacity-100"
-                  }`}
-                >
-                  {selectedIds.has(fov.id) && (
-                    <Check className="w-3 h-3 text-white" />
-                  )}
-                </button>
-
-                {/* Delete button overlay */}
-                <button
+                <SelectionCheckbox
+                  isSelected={selectedIds.has(fov.id)}
+                  onClick={() => onToggleSelect(fov.id)}
+                />
+                <DeleteOverlayButton
                   onClick={() => setFovToDelete({ id: fov.id, name: fov.original_filename })}
-                  className="absolute top-2 right-2 p-1.5 bg-bg-primary/80 hover:bg-accent-red/20 text-text-muted hover:text-accent-red rounded-lg opacity-0 group-hover:opacity-100 transition-all duration-200"
                   title="Delete FOV"
-                >
-                  <Trash2 className="w-4 h-4" />
-                </button>
+                />
 
                 {/* Cell count badge */}
                 {fov.cell_count > 0 && (

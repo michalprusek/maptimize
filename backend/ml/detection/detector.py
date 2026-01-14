@@ -11,10 +11,14 @@ import logging
 
 import numpy as np
 
+from config import get_settings
+
 logger = logging.getLogger(__name__)
 
-# Weights path - mounted from ./weights in docker-compose
-WEIGHTS_PATH = Path("/app/weights/best.pt")
+
+def get_weights_path() -> Path:
+    """Get YOLO weights path from configuration."""
+    return get_settings().yolo_model_path
 
 
 @dataclass
@@ -46,7 +50,7 @@ class CellDetector:
         iou_threshold: float = 0.7,
         max_det: int = 100,
     ):
-        self.weights_path = weights_path or WEIGHTS_PATH
+        self.weights_path = weights_path or get_weights_path()
         self.device = device
         self.conf_threshold = conf_threshold
         self.iou_threshold = iou_threshold

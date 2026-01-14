@@ -3,11 +3,13 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { motion, AnimatePresence } from "framer-motion";
+import { useTranslations } from "next-intl";
 import { useAuthStore } from "@/stores/authStore";
 import { Mail, Lock, User, ArrowRight, Loader2 } from "lucide-react";
 import { Logo } from "@/components/ui";
 
 export default function AuthPage() {
+  const t = useTranslations("auth");
   const [isLogin, setIsLogin] = useState(true);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -117,13 +119,8 @@ export default function AuthPage() {
             </div>
 
             <h2 className="text-2xl font-display font-semibold text-text-primary mb-2">
-              {isLogin ? "Welcome back" : "Create account"}
+              {isLogin ? t("login") : t("register")}
             </h2>
-            <p className="text-text-secondary mb-8">
-              {isLogin
-                ? "Sign in to continue your research"
-                : "Start analyzing your microscopy data"}
-            </p>
 
             <form onSubmit={handleSubmit} className="space-y-5">
               <AnimatePresence mode="wait">
@@ -134,7 +131,7 @@ export default function AuthPage() {
                     exit={{ opacity: 0, height: 0 }}
                   >
                     <label className="block text-sm font-medium text-text-secondary mb-2">
-                      Full Name
+                      {t("name")}
                     </label>
                     <div className="relative">
                       <User className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-text-muted" />
@@ -153,7 +150,7 @@ export default function AuthPage() {
 
               <div>
                 <label className="block text-sm font-medium text-text-secondary mb-2">
-                  Email
+                  {t("email")}
                 </label>
                 <div className="relative">
                   <Mail className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-text-muted" />
@@ -170,7 +167,7 @@ export default function AuthPage() {
 
               <div>
                 <label className="block text-sm font-medium text-text-secondary mb-2">
-                  Password
+                  {t("password")}
                 </label>
                 <div className="relative">
                   <Lock className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-text-muted" />
@@ -205,7 +202,7 @@ export default function AuthPage() {
                   <Loader2 className="w-5 h-5 animate-spin" />
                 ) : (
                   <>
-                    {isLogin ? "Sign In" : "Create Account"}
+                    {isLogin ? t("login") : t("register")}
                     <ArrowRight className="w-5 h-5" />
                   </>
                 )}
@@ -220,9 +217,7 @@ export default function AuthPage() {
                 }}
                 className="text-text-secondary hover:text-primary-400 transition-colors"
               >
-                {isLogin
-                  ? "Don't have an account? Sign up"
-                  : "Already have an account? Sign in"}
+                {isLogin ? t("noAccount") : t("hasAccount")}
               </button>
             </div>
           </div>

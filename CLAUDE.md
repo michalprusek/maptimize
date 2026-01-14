@@ -1,5 +1,11 @@
 # Maptimize - Lokální konfigurace (UTIA server)
 
+CRITICAL: před každou novou implementací zkontroluj, jestli už to není naimplementovano a zda by se to nedlao využít. Cti SSOT a DRY principy!
+
+CRITICAL: po každé nové implementaci spust code-simplifier agenty ať projdou celé repo a zjednoduší kód a zkontrolujou DRY a SSOT principy.
+
+Neboj se dělat velké a rozsáhlé změny a mazat kód. Legacy implementace maž kdykoliv na ně narazíš. Codebase udržuje maximálně clean a přehlednou. 
+
 ## ⚠️ KRITICKÉ UPOZORNĚNÍ - PRODUKCE
 
 **Toto je produkční prostředí!**
@@ -66,7 +72,62 @@ Hlavní nginx-main na portech 80/443 routuje traffic podle domény:
 ⚠️ **YOLOv8 váhy (`weights/best.pt`)** nejsou součástí repozitáře.
 Backend NEPŮJDE spustit bez těchto vah - detekce buněk vyžaduje natrénovaný model.
 
-## 🔧 Deploy & Rebuild
+## 🚀 Development Setup (lokální vývoj s hot-reload)
+
+**Princip:** Infrastruktura (DB, Redis) běží v Dockeru, aplikace (backend, frontend) běží lokálně.
+Výhoda: Nativní rychlost, okamžitý hot-reload, žádné problémy s volume mount.
+
+### Spuštění dev prostředí
+
+```bash
+# 1. Spusť infrastrukturu (DB + Redis)
+docker compose -f docker-compose.dev.yml up -d
+
+# 2. Spusť backend (v novém terminálu)
+cd backend && uv run uvicorn main:app --reload --port 8000
+
+# 3. Spusť frontend (v novém terminálu)
+cd frontend && npm run dev
+```
+
+### Důležité porty pro dev
+
+| Port | Služba |
+|------|--------|
+| 3000 | Frontend (Next.js dev server) |
+| 8000 | Backend (FastAPI) |
+| 5433 | PostgreSQL (v Dockeru, port 5433 kvůli konfliktu s lokálním PostgreSQL) |
+| 6379 | Redis (v Dockeru) |
+
+### Konfigurace (.env)
+
+Hlavní `.env` soubor je v rootu projektu. Backend ho načítá přes symlink (`backend/.env` → `../.env`).
+
+Klíčové hodnoty pro dev:
+```env
+DATABASE_URL=postgresql://maptimize:maptimize@localhost:5433/maptimize
+REDIS_URL=redis://localhost:6379
+```
+
+### Proč to funguje v produkci i dev
+
+1. **Stejný kód** - žádné speciální dev-only konfigurce
+2. **Stejná struktura DB** - pgvector v Dockeru i v produkci
+3. **Stejné env proměnné** - jen jiné hodnoty (localhost vs hostname)
+4. **Frontend API_URL** - v dev volá přímo backend:8000, v produkci přes nginx
+
+### Troubleshooting dev
+
+**PostgreSQL port conflict:**
+Pokud máš lokální PostgreSQL na 5432, dev používá port 5433.
+
+**pgvector extension:**
+Při prvním spuštění nové DB:
+```bash
+docker exec maptimize-dev-db psql -U maptimize -d maptimize -c "CREATE EXTENSION IF NOT EXISTS vector;"
+```
+
+## 🔧 Deploy & Rebuild (Produkce)
 
 **DŮLEŽITÉ:** Při každé změně kódu v backendu nebo frontendu je nutný rebuild:
 
@@ -132,3 +193,50 @@ DELETE /api/images/crops/{id}?confirm_delete_comparisons=true
 ```
 
 **Důvod:** Prevence nechtěné ztráty dat - uživatel musí explicitně potvrdit, že chce smazat i comparison historii.
+
+## 🌐 Internacionalizace (i18n)
+
+**CRITICAL: Každý textový řetězec v UI musí používat i18n wrapper!**
+
+### Pravidla pro překlady
+
+1. **Nikdy nepoužívat hardcoded stringy** - vždy použít `useTranslations()` hook
+2. **Přidat překlady do obou souborů** - `frontend/messages/en.json` a `frontend/messages/fr.json`
+3. **Používat strukturované klíče** - např. `settings.profile.title`, ne jen `profileTitle`
+
+### Příklad použití
+
+```typescript
+import { useTranslations } from "next-intl";
+
+export function MyComponent() {
+  const t = useTranslations("myNamespace");
+  const tCommon = useTranslations("common");
+
+  return (
+    <div>
+      <h1>{t("title")}</h1>
+      <button>{tCommon("save")}</button>
+    </div>
+  );
+}
+```
+
+### Struktura překladových souborů
+
+- `common` - Sdílené tlačítka (Save, Cancel, Delete, Loading, etc.)
+- `auth` - Přihlášení/registrace
+- `navigation` - Položky navigace
+- `dashboard` - Dashboard stránka
+- `experiments` - Experimenty
+- `images` - Upload a zpracování obrázků
+- `settings` - Nastavení
+- `ranking` - Ranking stránka
+- `proteins` - Názvy proteinů
+
+### Při přidávání nových textů
+
+1. Přidej klíč do `frontend/messages/en.json`
+2. Přidej překlad do `frontend/messages/fr.json`
+3. Použij `t("key")` v komponentě
+4. **NIKDY** nepřidávej hardcoded text do JSX!

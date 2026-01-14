@@ -1,0 +1,187 @@
+{
+  "common": {
+    "save": "Enregistrer",
+    "cancel": "Annuler",
+    "delete": "Supprimer",
+    "loading": "Chargement...",
+    "error": "Erreur",
+    "success": "Succes",
+    "confirm": "Confirmer",
+    "back": "Retour",
+    "close": "Fermer",
+    "upload": "Telecharger",
+    "search": "Rechercher",
+    "filter": "Filtrer",
+    "sort": "Trier",
+    "clear": "Effacer",
+    "select": "Selectionner",
+    "selectAll": "Tout selectionner",
+    "deselect": "Deselectionner",
+    "none": "Aucun",
+    "all": "Tous",
+    "showing": "Affichage de {count} sur {total}",
+    "noResults": "Aucun resultat trouve"
+  },
+  "auth": {
+    "login": "Se connecter",
+    "logout": "Se deconnecter",
+    "register": "Creer un compte",
+    "email": "E-mail",
+    "password": "Mot de passe",
+    "name": "Nom",
+    "forgotPassword": "Mot de passe oublie ?",
+    "noAccount": "Pas de compte ?",
+    "hasAccount": "Deja un compte ?",
+    "invalidCredentials": "E-mail ou mot de passe invalide"
+  },
+  "navigation": {
+    "dashboard": "Tableau de bord",
+    "experiments": "Experiences",
+    "ranking": "Classement",
+    "metrics": "Metriques",
+    "settings": "Parametres",
+    "signOut": "Deconnexion"
+  },
+  "dashboard": {
+    "welcome": "Bienvenue, {name}",
+    "stats": {
+      "experiments": "Experiences",
+      "images": "Images",
+      "cellCrops": "Cellules decoupees"
+    },
+    "recentExperiments": "Experiences recentes",
+    "createExperiment": "Creer une experience",
+    "featureSpace": "Visualisation de l'espace des caracteristiques"
+  },
+  "experiments": {
+    "title": "Experiences",
+    "create": "Nouvelle experience",
+    "name": "Nom",
+    "description": "Description",
+    "status": "Statut",
+    "images": "Images",
+    "cells": "Cellules",
+    "created": "Cree le",
+    "uploadImages": "Telecharger des images",
+    "noExperiments": "Aucune experience",
+    "startFirst": "Creez votre premiere experience pour commencer",
+    "fovs": "Champs de vue",
+    "crops": "Decoupages",
+    "deleteConfirm": "Etes-vous sur de vouloir supprimer cette experience ? Toutes les images et decoupages seront definitivement supprimes."
+  },
+  "images": {
+    "upload": {
+      "title": "Telecharger des images",
+      "dropzone": "Deposez des images de microscopie ici",
+      "dropzoneActive": "Deposez les fichiers ici",
+      "selectFiles": "ou cliquez pour selectionner des fichiers",
+      "supported": "Formats supportes : TIFF, PNG, JPG",
+      "processing": "Traitement en cours..."
+    },
+    "detectCells": "Detecter les cellules",
+    "detectCellsDesc": "Executer la detection YOLO pour identifier les cellules individuelles",
+    "assignProtein": "Assigner une proteine MAP",
+    "noImages": "Aucune image",
+    "uploadFirst": "Telechargez des images de microscopie pour commencer"
+  },
+  "settings": {
+    "title": "Parametres",
+    "saved": "Parametres enregistres avec succes",
+    "profile": {
+      "title": "Profil",
+      "avatar": "Photo de profil",
+      "avatarAlt": "Avatar de l'utilisateur",
+      "uploadAvatar": "Telecharger un avatar",
+      "removeAvatar": "Supprimer l'avatar",
+      "changeAvatar": "Changer l'avatar",
+      "name": "Nom",
+      "email": "E-mail",
+      "updateProfile": "Mettre a jour le profil",
+      "avatarUploadError": "Echec du telechargement de l'avatar",
+      "avatarDeleteError": "Echec de la suppression de l'avatar"
+    },
+    "password": {
+      "title": "Changer le mot de passe",
+      "current": "Mot de passe actuel",
+      "new": "Nouveau mot de passe",
+      "confirm": "Confirmer le mot de passe",
+      "change": "Changer le mot de passe",
+      "mismatch": "Les mots de passe ne correspondent pas",
+      "tooShort": "Le mot de passe doit contenir au moins 8 caracteres",
+      "incorrect": "Le mot de passe actuel est incorrect",
+      "changed": "Mot de passe change avec succes"
+    },
+    "appearance": {
+      "title": "Apparence",
+      "theme": "Theme",
+      "darkMode": "Mode sombre",
+      "lightMode": "Mode clair"
+    },
+    "display": {
+      "title": "Affichage des images",
+      "mode": "Mode d'affichage (LUT)",
+      "grayscale": "Niveaux de gris",
+      "grayscaleDesc": "Blanc sur noir (par defaut)",
+      "inverted": "Inverse",
+      "invertedDesc": "Noir sur blanc",
+      "green": "Vert (GFP)",
+      "greenDesc": "Vert sur noir, style fluorescence",
+      "fire": "Feu",
+      "fireDesc": "Style carte thermique (noir-rouge-jaune-blanc)",
+      "hilo": "HiLo",
+      "hiloDesc": "Met en evidence les pixels sous/surexposes"
+    },
+    "language": {
+      "title": "Langue",
+      "select": "Choisir la langue",
+      "en": "Anglais",
+      "fr": "Francais"
+    }
+  },
+  "ranking": {
+    "title": "Classement",
+    "compare": "Comparer les images",
+    "selectBetter": "Selectionnez l'image avec le meilleur regroupement",
+    "progress": "Progression",
+    "comparisons": "comparaisons",
+    "convergence": "Convergence",
+    "leaderboard": "Classement",
+    "rank": "Rang",
+    "score": "Score",
+    "undo": "Annuler la derniere comparaison",
+    "noImages": "Aucune image a comparer",
+    "complete": "Classement termine !"
+  },
+  "proteins": {
+    "map1": "MAP1",
+    "map2": "MAP2",
+    "tau": "Tau",
+    "prc1": "PRC1",
+    "unassigned": "Non assigne"
+  },
+  "umap": {
+    "title": "Espace des caracteristiques (UMAP)",
+    "fovImages": "images FOV",
+    "cellCrops": "cellules decoupees",
+    "silhouette": "Silhouette",
+    "silhouetteTooltip": "Le score de silhouette mesure la qualite de separation des clusters (-1 a 1, plus c'est eleve, mieux c'est)",
+    "fov": "FOV",
+    "cropped": "Decoupe",
+    "fovTooltip": "Afficher l'UMAP au niveau FOV",
+    "croppedTooltip": "Afficher l'UMAP au niveau des cellules decoupees",
+    "refresh": "Actualiser",
+    "loading": "Calcul de la projection UMAP...",
+    "loadingHint": "Cela peut prendre un moment pour les grands ensembles de donnees",
+    "notEnoughData": "Donnees insuffisantes",
+    "unableToGenerate": "Impossible de generer la visualisation",
+    "retry": "Reessayer",
+    "noEmbeddings": "Aucun embedding disponible",
+    "noEmbeddingsFov": "Telechargez et traitez des images pour generer des embeddings FOV pour la visualisation.",
+    "noEmbeddingsCrops": "Telechargez et traitez des images pour generer des embeddings de caracteristiques pour la visualisation.",
+    "unknownError": "Erreur inconnue",
+    "unassigned": "Non assigne",
+    "bundleness": "Groupement",
+    "cropId": "Decoupe #{id}",
+    "imageId": "Image #{id}"
+  }
+}

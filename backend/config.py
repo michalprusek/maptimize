@@ -26,6 +26,9 @@ class Settings(BaseSettings):
     upload_dir: Path = Path("data/uploads")
     max_upload_size: int = 500 * 1024 * 1024  # 500MB
 
+    # ML Models
+    yolo_model_path: Path = Path("weights/best.pt")  # Relative for local dev, override in Docker
+
     # TrueSkill parameters
     initial_mu: float = 25.0
     initial_sigma: float = 25.0 / 3
@@ -34,7 +37,8 @@ class Settings(BaseSettings):
 
     model_config = {
         "env_file": ".env",
-        "env_file_encoding": "utf-8"
+        "env_file_encoding": "utf-8",
+        "extra": "ignore"  # Ignore extra env vars not defined in Settings
     }
 
 

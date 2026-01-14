@@ -1,5 +1,6 @@
 """SQLAlchemy models."""
 from .user import User
+from .user_settings import UserSettings, DisplayMode, Theme, Language
 from .experiment import Experiment
 from .image import Image, MapProtein
 from .cell_crop import CellCrop
@@ -8,6 +9,10 @@ from .metric import Metric, MetricImage, MetricRating, MetricComparison
 
 __all__ = [
     "User",
+    "UserSettings",
+    "DisplayMode",
+    "Theme",
+    "Language",
     "Experiment",
     "Image",
     "MapProtein",
