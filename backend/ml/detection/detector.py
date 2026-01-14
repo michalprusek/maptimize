@@ -35,14 +35,14 @@ class CellDetector:
     Configured for overlapping cells with:
     - IOU threshold: 0.7 (high overlap tolerance)
     - Max detections: 100 per image
-    - Confidence threshold: 0.7 (default)
+    - Confidence threshold: 0.5 (default)
     """
 
     def __init__(
         self,
         weights_path: Optional[Path] = None,
         device: str = "cpu",
-        conf_threshold: float = 0.7,
+        conf_threshold: float = 0.5,
         iou_threshold: float = 0.7,
         max_det: int = 100,
     ):
@@ -195,16 +195,16 @@ def reset_detector() -> None:
 
 async def detect_cells_in_image(
     image: np.ndarray,
-    conf: float = 0.7,
-    iou: float = 0.7,
+    conf: Optional[float] = None,
+    iou: Optional[float] = None,
 ) -> List[Detection]:
     """
     Convenience function to detect cells in an image.
 
     Args:
         image: Input image as numpy array
-        conf: Confidence threshold
-        iou: IOU threshold for NMS
+        conf: Confidence threshold (default: uses detector's conf_threshold)
+        iou: IOU threshold for NMS (default: uses detector's iou_threshold)
 
     Returns:
         List of Detection objects

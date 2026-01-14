@@ -695,7 +695,7 @@ export default function UploadPage(): JSX.Element {
               <CheckCircle className="w-5 h-5 text-primary-400" />
               <span className="text-primary-400">
                 {uploadedImageIds.length} images processed successfully
-                {processingStatus?.errors && processingStatus.errors > 0 && (
+                {processingStatus?.errors != null && processingStatus.errors > 0 && (
                   <span className="text-red-400 ml-2">
                     ({processingStatus.errors} error{processingStatus.errors !== 1 ? "s" : ""})
                   </span>
