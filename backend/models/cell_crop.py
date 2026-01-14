@@ -51,6 +51,13 @@ class CellCrop(Base):
     embedding: Mapped[Optional[list]] = mapped_column(Vector(1024), nullable=True)
     embedding_model: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
 
+    # Pre-computed UMAP coordinates for visualization
+    umap_x: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    umap_y: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    umap_computed_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
     # Status
     excluded: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(

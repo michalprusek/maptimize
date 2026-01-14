@@ -4,7 +4,7 @@ import { useState } from "react";
 import { motion } from "framer-motion";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { api, FOVImage } from "@/lib/api";
-import { ConfirmModal } from "@/components/ui";
+import { ConfirmModal, MicroscopyImage } from "@/components/ui";
 import {
   Loader2,
   Trash2,
@@ -12,6 +12,7 @@ import {
   ImageIcon,
   Layers,
   Check,
+  AlertCircle,
 } from "lucide-react";
 
 interface FOVGalleryProps {
@@ -108,11 +109,10 @@ export function FOVGallery({
               {/* Image preview */}
               <div className="aspect-square bg-bg-secondary flex items-center justify-center relative overflow-hidden rounded-t-xl">
                 {fov.thumbnail_url ? (
-                  <img
+                  <MicroscopyImage
                     src={api.getImageUrl(fov.id, "thumbnail")}
                     alt={fov.original_filename}
                     className="w-full h-full object-cover"
-                    loading="lazy"
                     onError={(e) => {
                       console.warn(`[FOVGallery] Thumbnail load failed for image: ${fov.original_filename}`, e.type);
                       e.currentTarget.style.display = "none";

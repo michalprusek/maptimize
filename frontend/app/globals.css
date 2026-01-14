@@ -5,9 +5,36 @@
 @tailwind utilities;
 
 @layer base {
-  :root {
+  /* Dark theme (default) */
+  :root,
+  .dark {
     --background: 210 33% 6%;
     --foreground: 200 30% 93%;
+
+    /* Theme CSS variables */
+    --color-bg-primary: #0a0f14;
+    --color-bg-secondary: #121a22;
+    --color-bg-elevated: #1a242e;
+    --color-bg-hover: #222e3a;
+    --color-text-primary: #e8f0f5;
+    --color-text-secondary: #8ba3b5;
+    --color-text-muted: #5a7285;
+    --color-border: rgba(255, 255, 255, 0.1);
+  }
+
+  /* Light theme */
+  .light {
+    --background: 210 33% 98%;
+    --foreground: 210 33% 6%;
+
+    --color-bg-primary: #f8fafc;
+    --color-bg-secondary: #f1f5f9;
+    --color-bg-elevated: #ffffff;
+    --color-bg-hover: #e2e8f0;
+    --color-text-primary: #0f172a;
+    --color-text-secondary: #475569;
+    --color-text-muted: #94a3b8;
+    --color-border: rgba(0, 0, 0, 0.1);
   }
 
   * {
@@ -120,5 +147,37 @@
     mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
     -webkit-mask-composite: xor;
     mask-composite: exclude;
+  }
+
+  /* ==========================================================================
+   * LUT (Lookup Table) Display Modes for Microscopy Images
+   * Based on ImageJ conventions for scientific image visualization
+   * ========================================================================== */
+
+  /* Grayscale: Default display - white on black (no filter needed) */
+  .lut-grayscale {
+    /* Default microscopy display */
+  }
+
+  /* Inverted: Black on white - good for printing and presentations */
+  .lut-inverted {
+    filter: invert(1);
+  }
+
+  /* Green (GFP): Green fluorescence on black - mimics GFP channel */
+  .lut-green {
+    filter: sepia(1) saturate(5) hue-rotate(70deg) brightness(0.9);
+  }
+
+  /* Fire: Heat-map style (black -> red -> yellow -> white) */
+  .lut-fire {
+    filter: sepia(1) saturate(10) hue-rotate(-10deg) brightness(1.1) contrast(1.1);
+  }
+
+  /* HiLo: Uses canvas-based rendering, this class is a placeholder */
+  .lut-hilo {
+    /* HiLo mode uses JavaScript canvas manipulation to highlight
+     * under-exposed (blue) and over-exposed (red) pixels.
+     * The actual rendering is handled by the MicroscopyImage component. */
   }
 }

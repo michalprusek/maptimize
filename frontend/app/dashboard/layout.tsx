@@ -6,23 +6,19 @@ import { useQueryClient } from "@tanstack/react-query";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { motion } from "framer-motion";
+import { useTranslations } from "next-intl";
 import { useAuthStore } from "@/stores/authStore";
 import {
   LayoutDashboard,
-  Upload,
+  FolderOpen,
   Scale,
   LogOut,
   User,
   ChevronRight,
+  Settings,
 } from "lucide-react";
 import { Logo } from "@/components/ui";
 import { clsx } from "clsx";
-
-const navigation = [
-  { name: "Dashboard", href: "/dashboard", icon: LayoutDashboard },
-  { name: "Experiments", href: "/dashboard/experiments", icon: Upload },
-  { name: "Ranking", href: "/dashboard/ranking", icon: Scale },
-];
 
 export default function DashboardLayout({
   children,
@@ -32,7 +28,14 @@ export default function DashboardLayout({
   const router = useRouter();
   const pathname = usePathname();
   const queryClient = useQueryClient();
+  const t = useTranslations("navigation");
   const { user, isAuthenticated, isLoading, checkAuth, logout } = useAuthStore();
+
+  const navigation = [
+    { name: t("dashboard"), href: "/dashboard", icon: LayoutDashboard },
+    { name: t("experiments"), href: "/dashboard/experiments", icon: FolderOpen },
+    { name: t("metrics"), href: "/dashboard/ranking", icon: Scale },
+  ];
 
   useEffect(() => {
     checkAuth();
@@ -104,8 +107,16 @@ export default function DashboardLayout({
         {/* User section */}
         <div className="p-4 border-t border-white/5">
           <div className="flex items-center gap-3 px-4 py-3 mb-2">
-            <div className="w-10 h-10 rounded-full bg-primary-500/20 flex items-center justify-center">
-              <User className="w-5 h-5 text-primary-400" />
+            <div className="w-10 h-10 rounded-full bg-primary-500/20 flex items-center justify-center overflow-hidden">
+              {user?.avatar_url ? (
+                <img
+                  src={`${process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000"}${user.avatar_url}`}
+                  alt="Avatar"
+                  className="w-full h-full object-cover"
+                />
+              ) : (
+                <User className="w-5 h-5 text-primary-400" />
+              )}
             </div>
             <div className="flex-1 min-w-0">
               <p className="text-sm font-medium text-text-primary truncate">
@@ -113,19 +124,27 @@ export default function DashboardLayout({
               </p>
               <p className="text-xs text-text-muted truncate">{user?.email}</p>
             </div>
+            <div className="flex items-center gap-1">
+              <Link
+                href="/dashboard/settings"
+                className="p-2 text-text-secondary hover:text-primary-400 hover:bg-white/5 rounded-lg transition-all duration-200"
+                title={t("settings")}
+              >
+                <Settings className="w-5 h-5" />
+              </Link>
+              <button
+                onClick={() => {
+                  queryClient.clear();
+                  logout();
+                  router.push("/auth");
+                }}
+                className="p-2 text-text-secondary hover:text-accent-red hover:bg-accent-red/5 rounded-lg transition-all duration-200"
+                title={t("signOut")}
+              >
+                <LogOut className="w-5 h-5" />
+              </button>
+            </div>
           </div>
-
-          <button
-            onClick={() => {
-              queryClient.clear();
-              logout();
-              router.push("/auth");
-            }}
-            className="w-full flex items-center gap-3 px-4 py-3 text-text-secondary hover:text-accent-red hover:bg-accent-red/5 rounded-xl transition-all duration-200"
-          >
-            <LogOut className="w-5 h-5" />
-            <span className="font-medium">Sign Out</span>
-          </button>
         </div>
       </motion.aside>
 

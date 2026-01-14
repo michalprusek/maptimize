@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo } from "react";
+import { useState, useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
   ScatterChart,
@@ -13,18 +13,29 @@ import {
   Tooltip,
   TooltipProps,
 } from "recharts";
-import { api, UmapPoint, API_URL } from "@/lib/api";
-import { Spinner } from "@/components/ui";
-import { RefreshCw, Info, AlertCircle } from "lucide-react";
+import {
+  api,
+  UmapPoint,
+  UmapFovPoint,
+  UmapDataResponse,
+  UmapFovDataResponse,
+  UmapType,
+  API_URL,
+} from "@/lib/api";
+import { Spinner, MicroscopyImage } from "@/components/ui";
+import { RefreshCw, Info, AlertCircle, Grid, Layers } from "lucide-react";
 
 interface UmapVisualizationProps {
   experimentId?: number;
   height?: number;
+  /** If true, start with FOV mode (useful when no crops exist) */
+  preferFovMode?: boolean;
 }
 
 const DEFAULT_COLOR = "#888888";
 
-function CustomTooltip({
+// Tooltip for cropped cell view
+function CroppedTooltip({
   active,
   payload,
 }: TooltipProps<number, string>): JSX.Element | null {
@@ -32,16 +43,18 @@ function CustomTooltip({
 
   const point = payload[0].payload as UmapPoint;
   const token = api.getToken();
-  const imageUrl = `${API_URL}${point.thumbnail_url}&token=${token}`;
+  // URL may already have query params, so use & if ? exists
+  const separator = point.thumbnail_url.includes("?") ? "&" : "?";
+  const imageUrl = `${API_URL}${point.thumbnail_url}${separator}token=${token}`;
 
   return (
     <div className="bg-bg-elevated border border-white/10 rounded-lg shadow-xl p-3 max-w-[200px]">
-      <img
+      <MicroscopyImage
         src={imageUrl}
         alt="Cell crop"
         className="w-full h-32 object-contain rounded mb-2 bg-black/50"
         onError={(e) => {
-          (e.target as HTMLImageElement).src = "/placeholder-cell.png";
+          (e.target as HTMLImageElement).style.display = "none";
         }}
       />
       <div className="space-y-1">
@@ -66,13 +79,66 @@ function CustomTooltip({
   );
 }
 
+// Tooltip for FOV view
+function FovTooltip({
+  active,
+  payload,
+}: TooltipProps<number, string>): JSX.Element | null {
+  if (!active || !payload || !payload.length) return null;
+
+  const point = payload[0].payload as UmapFovPoint;
+  const token = api.getToken();
+  // URL may already have query params, so use & if ? exists
+  const separator = point.thumbnail_url.includes("?") ? "&" : "?";
+  const imageUrl = `${API_URL}${point.thumbnail_url}${separator}token=${token}`;
+
+  return (
+    <div className="bg-bg-elevated border border-white/10 rounded-lg shadow-xl p-3 max-w-[250px]">
+      <MicroscopyImage
+        src={imageUrl}
+        alt="FOV thumbnail"
+        className="w-full h-40 object-contain rounded mb-2 bg-black/50"
+        onError={(e) => {
+          (e.target as HTMLImageElement).style.display = "none";
+        }}
+      />
+      <div className="space-y-1">
+        <div className="font-medium text-text-primary truncate text-sm">
+          {point.original_filename}
+        </div>
+        <div
+          className="text-sm flex items-center gap-2"
+          style={{ color: point.protein_color }}
+        >
+          <span
+            className="w-2.5 h-2.5 rounded-full flex-shrink-0"
+            style={{ backgroundColor: point.protein_color }}
+          />
+          {point.protein_name || "Unassigned"}
+        </div>
+        <div className="text-xs text-text-muted">Image #{point.image_id}</div>
+      </div>
+    </div>
+  );
+}
+
+// Type guard to check if response is FOV type
+function isFovResponse(
+  data: UmapDataResponse | UmapFovDataResponse
+): data is UmapFovDataResponse {
+  return "total_images" in data;
+}
+
 export function UmapVisualization({
   experimentId,
   height = 500,
+  preferFovMode = false,
 }: UmapVisualizationProps): JSX.Element {
+  const [viewMode, setViewMode] = useState<UmapType>(preferFovMode ? "fov" : "cropped");
+
   const { data, isLoading, error, refetch, isFetching } = useQuery({
-    queryKey: ["umap", experimentId],
-    queryFn: () => api.getUmapData(experimentId),
+    queryKey: ["umap", experimentId, viewMode],
+    queryFn: () => api.getUmapData(experimentId, viewMode),
     staleTime: 1000 * 60 * 5, // Cache for 5 minutes
     retry: false,
   });
@@ -99,179 +165,234 @@ export function UmapVisualization({
     return Array.from(groups.values()).sort((a, b) => b.count - a.count);
   }, [data?.points]);
 
-  if (isLoading) {
-    return (
-      <div
-        className="glass-card p-8 flex flex-col items-center justify-center"
-        style={{ height }}
-      >
-        <Spinner size="lg" />
-        <span className="mt-3 text-text-secondary">
-          Computing UMAP projection...
-        </span>
-        <span className="text-xs text-text-muted mt-1">
-          This may take a moment for large datasets
-        </span>
-      </div>
-    );
+  // Prepare data for rendering (may be null/undefined)
+  const isFov = data ? isFovResponse(data) : viewMode === "fov";
+  const totalCount = data
+    ? (isFovResponse(data) ? data.total_images : data.total_crops)
+    : 0;
+  const silhouetteScore = data?.silhouette_score ?? null;
+
+  // Error message parsing
+  const errorMessage = error instanceof Error ? error.message : error ? "Unknown error" : null;
+  const isNotEnoughData = errorMessage?.includes("Need at least") ?? false;
+
+  // Log non-expected errors for debugging
+  if (error && !isNotEnoughData) {
+    console.error("[UmapVisualization] Failed to fetch UMAP data:", error);
   }
 
-  if (error) {
-    const errorMessage =
-      error instanceof Error ? error.message : "Unknown error";
-    const isNotEnoughData = errorMessage.includes("Need at least");
-
-    // Log error for debugging (not for expected "not enough data" cases)
-    if (!isNotEnoughData) {
-      console.error("[UmapVisualization] Failed to fetch UMAP data:", error);
+  // Render content based on state
+  const renderContent = () => {
+    if (isLoading) {
+      return (
+        <div
+          className="flex flex-col items-center justify-center"
+          style={{ height: height - 100 }}
+        >
+          <Spinner size="lg" />
+          <span className="mt-3 text-text-secondary">
+            Computing UMAP projection...
+          </span>
+          <span className="text-xs text-text-muted mt-1">
+            This may take a moment for large datasets
+          </span>
+        </div>
+      );
     }
 
-    return (
-      <div
-        className="glass-card p-8 flex flex-col items-center justify-center text-center"
-        style={{ height }}
-      >
-        {isNotEnoughData ? (
-          <Info className="w-12 h-12 text-accent-amber mb-4" />
-        ) : (
-          <AlertCircle className="w-12 h-12 text-accent-red mb-4" />
-        )}
-        <h3 className="text-lg font-semibold text-text-primary mb-2">
-          {isNotEnoughData
-            ? "Not Enough Data"
-            : "Unable to Generate Visualization"}
-        </h3>
-        <p className="text-text-secondary mb-4 max-w-md">{errorMessage}</p>
-        <button
-          onClick={() => refetch()}
-          className="btn-secondary inline-flex items-center gap-2"
+    if (error) {
+      return (
+        <div
+          className="flex flex-col items-center justify-center text-center"
+          style={{ height: height - 100 }}
         >
-          <RefreshCw className="w-4 h-4" />
-          Retry
-        </button>
-      </div>
-    );
-  }
+          {isNotEnoughData ? (
+            <Info className="w-12 h-12 text-accent-amber mb-4" />
+          ) : (
+            <AlertCircle className="w-12 h-12 text-accent-red mb-4" />
+          )}
+          <h3 className="text-lg font-semibold text-text-primary mb-2">
+            {isNotEnoughData
+              ? "Not Enough Data"
+              : "Unable to Generate Visualization"}
+          </h3>
+          <p className="text-text-secondary mb-4 max-w-md">{errorMessage}</p>
+          {!isNotEnoughData && (
+            <button
+              onClick={() => refetch()}
+              className="btn-secondary inline-flex items-center gap-2"
+            >
+              <RefreshCw className="w-4 h-4" />
+              Retry
+            </button>
+          )}
+        </div>
+      );
+    }
 
-  if (!data || data.points.length === 0) {
+    if (!data || data.points.length === 0) {
+      return (
+        <div
+          className="flex flex-col items-center justify-center text-center"
+          style={{ height: height - 100 }}
+        >
+          <Info className="w-12 h-12 text-text-muted mb-4" />
+          <h3 className="text-lg font-semibold text-text-primary mb-2">
+            No Embeddings Available
+          </h3>
+          <p className="text-text-secondary max-w-md">
+            {viewMode === "fov"
+              ? "Upload and process images to generate FOV embeddings for visualization."
+              : "Upload and process images to generate DINOv3 feature embeddings for visualization."}
+          </p>
+        </div>
+      );
+    }
+
+    // Success - render chart
     return (
-      <div
-        className="glass-card p-8 flex flex-col items-center justify-center text-center"
-        style={{ height }}
-      >
-        <Info className="w-12 h-12 text-text-muted mb-4" />
-        <h3 className="text-lg font-semibold text-text-primary mb-2">
-          No Embeddings Available
-        </h3>
-        <p className="text-text-secondary max-w-md">
-          Upload and process images to generate DINOv3 feature embeddings for
-          visualization.
-        </p>
-      </div>
+      <>
+        <div style={{ height: height - 100 }}>
+          <ResponsiveContainer width="100%" height="100%">
+            <ScatterChart margin={{ top: 20, right: 20, bottom: 20, left: 20 }}>
+              <XAxis
+                type="number"
+                dataKey="x"
+                name="UMAP 1"
+                tick={{ fill: "#5a7285", fontSize: 10 }}
+                axisLine={{ stroke: "#2a3a4a" }}
+                tickLine={{ stroke: "#2a3a4a" }}
+                domain={["dataMin - 1", "dataMax + 1"]}
+                tickFormatter={(value) => Math.round(value).toString()}
+              />
+              <YAxis
+                type="number"
+                dataKey="y"
+                name="UMAP 2"
+                tick={{ fill: "#5a7285", fontSize: 10 }}
+                axisLine={{ stroke: "#2a3a4a" }}
+                tickLine={{ stroke: "#2a3a4a" }}
+                domain={["dataMin - 1", "dataMax + 1"]}
+                tickFormatter={(value) => Math.round(value).toString()}
+              />
+              <ZAxis range={[40, 40]} />
+              <Tooltip
+                content={isFov ? <FovTooltip /> : <CroppedTooltip />}
+                cursor={{ strokeDasharray: "3 3", stroke: "#5a7285" }}
+              />
+              <Scatter data={data.points} isAnimationActive={false}>
+                {data.points.map((point, index) => (
+                  <Cell
+                    key={`cell-${index}`}
+                    fill={point.protein_color || DEFAULT_COLOR}
+                    fillOpacity={0.75}
+                    stroke="rgba(255,255,255,0.3)"
+                    strokeWidth={0.5}
+                  />
+                ))}
+              </Scatter>
+            </ScatterChart>
+          </ResponsiveContainer>
+        </div>
+
+        {/* Legend */}
+        <div className="flex flex-wrap gap-3 mt-4 pt-4 border-t border-white/5">
+          {proteinGroups.map((group) => (
+            <div
+              key={group.name}
+              className="flex items-center gap-1.5 px-2 py-1 rounded bg-white/5"
+            >
+              <div
+                className="w-3 h-3 rounded-full"
+                style={{ backgroundColor: group.color }}
+              />
+              <span className="text-xs text-text-secondary">
+                {group.name}{" "}
+                <span className="text-text-muted">({group.count})</span>
+              </span>
+            </div>
+          ))}
+        </div>
+      </>
     );
-  }
+  };
 
   return (
     <div className="glass-card p-4">
-      {/* Header */}
+      {/* Header with Toggle - ALWAYS VISIBLE */}
       <div className="flex items-center justify-between mb-4">
         <div>
           <h3 className="font-display font-semibold text-text-primary">
             Feature Space (UMAP)
           </h3>
-          <div className="flex items-center gap-3 text-sm text-text-secondary">
-            <span>{data.total_crops.toLocaleString()} cell crops</span>
-            {data.silhouette_score !== null && (
-              <span
-                className={`px-2 py-0.5 rounded text-xs font-mono ${
-                  data.silhouette_score > 0.5
-                    ? "bg-green-500/20 text-green-400"
-                    : data.silhouette_score > 0.25
-                      ? "bg-accent-amber/20 text-accent-amber"
-                      : "bg-accent-red/20 text-accent-red"
-                }`}
-                title="Silhouette score measures cluster separation quality (-1 to 1, higher is better)"
-              >
-                Silhouette: {data.silhouette_score.toFixed(3)}
+          {data && (
+            <div className="flex items-center gap-3 text-sm text-text-secondary">
+              <span>
+                {totalCount.toLocaleString()} {isFov ? "FOV images" : "cell crops"}
               </span>
-            )}
-          </div>
+              {silhouetteScore !== null && (
+                <span
+                  className={`px-2 py-0.5 rounded text-xs font-mono ${
+                    silhouetteScore > 0.5
+                      ? "bg-green-500/20 text-green-400"
+                      : silhouetteScore > 0.25
+                        ? "bg-accent-amber/20 text-accent-amber"
+                        : "bg-accent-red/20 text-accent-red"
+                  }`}
+                  title="Silhouette score measures cluster separation quality (-1 to 1, higher is better)"
+                >
+                  Silhouette: {silhouetteScore.toFixed(3)}
+                </span>
+              )}
+            </div>
+          )}
         </div>
 
-        <button
-          onClick={() => refetch()}
-          disabled={isFetching}
-          className="p-2 hover:bg-white/5 rounded-lg transition-colors disabled:opacity-50"
-          title="Refresh"
-        >
-          <RefreshCw
-            className={`w-4 h-4 text-text-secondary ${isFetching ? "animate-spin" : ""}`}
-          />
-        </button>
-      </div>
-
-      {/* Chart */}
-      <div style={{ height: height - 100 }}>
-        <ResponsiveContainer width="100%" height="100%">
-          <ScatterChart margin={{ top: 20, right: 20, bottom: 20, left: 20 }}>
-            <XAxis
-              type="number"
-              dataKey="x"
-              name="UMAP 1"
-              tick={{ fill: "#5a7285", fontSize: 10 }}
-              axisLine={{ stroke: "#2a3a4a" }}
-              tickLine={{ stroke: "#2a3a4a" }}
-              domain={["dataMin - 1", "dataMax + 1"]}
-              tickFormatter={(value) => Math.round(value).toString()}
-            />
-            <YAxis
-              type="number"
-              dataKey="y"
-              name="UMAP 2"
-              tick={{ fill: "#5a7285", fontSize: 10 }}
-              axisLine={{ stroke: "#2a3a4a" }}
-              tickLine={{ stroke: "#2a3a4a" }}
-              domain={["dataMin - 1", "dataMax + 1"]}
-              tickFormatter={(value) => Math.round(value).toString()}
-            />
-            <ZAxis range={[40, 40]} />
-            <Tooltip
-              content={<CustomTooltip />}
-              cursor={{ strokeDasharray: "3 3", stroke: "#5a7285" }}
-            />
-            <Scatter data={data.points} isAnimationActive={false}>
-              {data.points.map((point, index) => (
-                <Cell
-                  key={`cell-${index}`}
-                  fill={point.protein_color || DEFAULT_COLOR}
-                  fillOpacity={0.75}
-                  stroke="rgba(255,255,255,0.3)"
-                  strokeWidth={0.5}
-                />
-              ))}
-            </Scatter>
-          </ScatterChart>
-        </ResponsiveContainer>
-      </div>
-
-      {/* Legend */}
-      <div className="flex flex-wrap gap-3 mt-4 pt-4 border-t border-white/5">
-        {proteinGroups.map((group) => (
-          <div
-            key={group.name}
-            className="flex items-center gap-1.5 px-2 py-1 rounded bg-white/5"
-          >
-            <div
-              className="w-3 h-3 rounded-full"
-              style={{ backgroundColor: group.color }}
-            />
-            <span className="text-xs text-text-secondary">
-              {group.name}{" "}
-              <span className="text-text-muted">({group.count})</span>
-            </span>
+        <div className="flex items-center gap-3">
+          {/* Toggle Buttons */}
+          <div className="flex items-center bg-bg-secondary rounded-lg p-1">
+            <button
+              onClick={() => setViewMode("fov")}
+              className={`px-3 py-1.5 rounded-md text-sm font-medium transition-colors flex items-center gap-1.5 ${
+                viewMode === "fov"
+                  ? "bg-primary-500 text-white"
+                  : "text-text-secondary hover:text-text-primary"
+              }`}
+              title="Show FOV-level UMAP"
+            >
+              <Grid className="w-4 h-4" />
+              FOV
+            </button>
+            <button
+              onClick={() => setViewMode("cropped")}
+              className={`px-3 py-1.5 rounded-md text-sm font-medium transition-colors flex items-center gap-1.5 ${
+                viewMode === "cropped"
+                  ? "bg-primary-500 text-white"
+                  : "text-text-secondary hover:text-text-primary"
+              }`}
+              title="Show cell crop-level UMAP"
+            >
+              <Layers className="w-4 h-4" />
+              Cropped
+            </button>
           </div>
-        ))}
+
+          {/* Refresh button */}
+          <button
+            onClick={() => refetch()}
+            disabled={isFetching}
+            className="p-2 hover:bg-white/5 rounded-lg transition-colors disabled:opacity-50"
+            title="Refresh"
+          >
+            <RefreshCw
+              className={`w-4 h-4 text-text-secondary ${isFetching ? "animate-spin" : ""}`}
+            />
+          </button>
+        </div>
       </div>
+
+      {/* Content area */}
+      {renderContent()}
     </div>
   );
 }

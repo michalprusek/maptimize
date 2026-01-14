@@ -1,9 +1,11 @@
 """Embeddings and UMAP visualization endpoints."""
 
 import logging
-from typing import Optional
+from typing import Optional, Union
 
+import numpy as np
 from fastapi import APIRouter, Depends, HTTPException, Query, BackgroundTasks, status
+from fastapi.responses import JSONResponse
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -15,8 +17,11 @@ from models.image import Image
 from models.experiment import Experiment
 from utils.security import get_current_user
 from schemas.embeddings import (
+    UmapType,
     UmapPointResponse,
     UmapDataResponse,
+    UmapFovPointResponse,
+    UmapFovDataResponse,
     FeatureExtractionTriggerResponse,
     FeatureExtractionStatus,
 )
@@ -24,26 +29,41 @@ from schemas.embeddings import (
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
-# Minimum crops needed for meaningful UMAP
-MIN_CROPS_FOR_UMAP = 10
+# Minimum points needed for meaningful UMAP
+MIN_POINTS_FOR_UMAP = 10
 
 
-@router.get("/umap", response_model=UmapDataResponse)
+@router.get("/umap")
 async def get_umap_visualization(
+    umap_type: UmapType = Query(UmapType.CROPPED, description="Type: fov or cropped"),
     experiment_id: Optional[int] = Query(None, description="Filter by experiment"),
     n_neighbors: int = Query(15, ge=5, le=50, description="UMAP n_neighbors"),
     min_dist: float = Query(0.1, ge=0.0, le=1.0, description="UMAP min_dist"),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
-):
+) -> Union[UmapDataResponse, UmapFovDataResponse]:
     """
-    Get UMAP 2D projection of cell crop embeddings.
+    Get UMAP 2D projection of embeddings.
 
-    Returns coordinates colored by MAP protein type.
-    UMAP is computed on-the-fly for the requested scope.
+    - type=cropped: Returns cell crop embeddings (default)
+    - type=fov: Returns FOV/image embeddings
+
+    Uses pre-computed coordinates when available, otherwise computes on-the-fly.
     """
-    import numpy as np
+    if umap_type == UmapType.FOV:
+        return await _get_fov_umap(experiment_id, current_user, db)
+    else:
+        return await _get_cropped_umap(experiment_id, n_neighbors, min_dist, current_user, db)
 
+
+async def _get_cropped_umap(
+    experiment_id: Optional[int],
+    n_neighbors: int,
+    min_dist: float,
+    current_user: User,
+    db: AsyncSession
+) -> UmapDataResponse:
+    """Get UMAP visualization for cell crops."""
     # Build query for crops with embeddings
     query = (
         select(CellCrop)
@@ -74,72 +94,30 @@ async def get_umap_visualization(
             )
         query = query.where(Image.experiment_id == experiment_id)
 
+    # IMPORTANT: Order by ID for deterministic UMAP results
+    query = query.order_by(CellCrop.id)
     result = await db.execute(query)
     crops = result.scalars().all()
 
-    if len(crops) < MIN_CROPS_FOR_UMAP:
+    if len(crops) < MIN_POINTS_FOR_UMAP:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Need at least {MIN_CROPS_FOR_UMAP} crops with embeddings for UMAP. Found: {len(crops)}"
+            detail=f"Need at least {MIN_POINTS_FOR_UMAP} crops with embeddings for UMAP. Found: {len(crops)}"
         )
 
-    # Extract embeddings and L2-normalize for cosine distance
-    # Normalization ensures numerical stability and consistency
-    embeddings = np.array([c.embedding for c in crops])
-    norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
-    norms = np.where(norms == 0, 1, norms)  # Avoid division by zero
-    embeddings = embeddings / norms
+    # Check if we have pre-computed coordinates
+    all_have_umap = all(c.umap_x is not None and c.umap_y is not None for c in crops)
 
-    try:
-        import umap
-        reducer = umap.UMAP(
-            n_neighbors=n_neighbors,
-            min_dist=min_dist,
-            n_components=2,
-            metric="cosine",  # Cosine is better for high-dim embeddings
-            random_state=42,
-        )
-        projection = reducer.fit_transform(embeddings)
-    except ValueError as e:
-        # UMAP parameter validation errors
-        logger.error(f"UMAP parameter error: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Invalid UMAP parameters: {str(e)}"
-        )
-    except MemoryError:
-        logger.error(f"Out of memory computing UMAP for {len(crops)} crops")
-        raise HTTPException(
-            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-            detail="Too many data points for UMAP. Try filtering to a single experiment."
-        )
-    except Exception as e:
-        logger.exception(f"Unexpected UMAP computation error: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to compute UMAP projection. Please try again."
-        )
-
-    # Calculate silhouette score (cluster quality metric)
-    # Only use crops with assigned proteins for silhouette calculation
-    silhouette = None
-    labeled_indices = [i for i, c in enumerate(crops) if c.map_protein is not None]
-
-    if len(labeled_indices) >= 10:
-        labeled_embeddings = embeddings[labeled_indices]
-        protein_labels = [crops[i].map_protein.id for i in labeled_indices]
-        unique_labels = set(protein_labels)
-
-        # Need at least 2 different labels for silhouette score
-        if len(unique_labels) >= 2:
-            try:
-                from sklearn.metrics import silhouette_score
-                silhouette = float(silhouette_score(labeled_embeddings, protein_labels, metric="cosine"))
-                logger.info(f"Silhouette score: {silhouette:.3f} (from {len(labeled_indices)} labeled crops)")
-            except ValueError as e:
-                logger.warning(f"Could not compute silhouette score: {e}")
-            except ImportError:
-                logger.warning("sklearn not available for silhouette score")
+    if all_have_umap:
+        # Use pre-computed coordinates
+        logger.info(f"Using pre-computed UMAP for {len(crops)} crops")
+        projection = np.array([[c.umap_x, c.umap_y] for c in crops])
+        silhouette = _compute_silhouette_from_crops(crops)
+    else:
+        # Compute UMAP on-the-fly
+        logger.info(f"Computing UMAP on-the-fly for {len(crops)} crops")
+        embeddings = np.array([c.embedding for c in crops])
+        projection, silhouette = _compute_umap(embeddings, crops, n_neighbors, min_dist)
 
     # Build response
     points = []
@@ -163,6 +141,264 @@ async def get_umap_visualization(
         min_dist=min_dist,
         silhouette_score=silhouette,
     )
+
+
+async def _get_fov_umap(
+    experiment_id: Optional[int],
+    current_user: User,
+    db: AsyncSession
+) -> UmapFovDataResponse:
+    """Get UMAP visualization for FOV images."""
+    # Build query for images with embeddings
+    query = (
+        select(Image)
+        .join(Experiment, Image.experiment_id == Experiment.id)
+        .options(selectinload(Image.map_protein))
+        .where(
+            Experiment.user_id == current_user.id,
+            Image.embedding.isnot(None)
+        )
+    )
+
+    if experiment_id:
+        # Verify ownership
+        exp_result = await db.execute(
+            select(Experiment).where(
+                Experiment.id == experiment_id,
+                Experiment.user_id == current_user.id
+            )
+        )
+        if not exp_result.scalar_one_or_none():
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Experiment not found"
+            )
+        query = query.where(Image.experiment_id == experiment_id)
+
+    # IMPORTANT: Order by ID for deterministic UMAP results
+    query = query.order_by(Image.id)
+    result = await db.execute(query)
+    images = result.scalars().all()
+
+    if len(images) < MIN_POINTS_FOR_UMAP:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Need at least {MIN_POINTS_FOR_UMAP} FOV images with embeddings for UMAP. Found: {len(images)}"
+        )
+
+    # Check if we have pre-computed coordinates
+    all_have_umap = all(img.umap_x is not None and img.umap_y is not None for img in images)
+    computed_at = None
+
+    if all_have_umap:
+        # Use pre-computed coordinates
+        logger.info(f"Using pre-computed UMAP for {len(images)} FOV images")
+        projection = np.array([[img.umap_x, img.umap_y] for img in images])
+        silhouette = _compute_silhouette_from_images(images)
+        # Get the oldest computed_at as the effective computation time
+        computed_times = [img.umap_computed_at for img in images if img.umap_computed_at]
+        computed_at = min(computed_times) if computed_times else None
+    else:
+        # Compute UMAP on-the-fly
+        logger.info(f"Computing FOV UMAP on-the-fly for {len(images)} images")
+        embeddings = np.array([img.embedding for img in images])
+        projection, silhouette = _compute_umap(embeddings, images, 15, 0.1)
+
+    # Build response
+    points = []
+    for i, image in enumerate(images):
+        protein = image.map_protein
+        points.append(UmapFovPointResponse(
+            image_id=image.id,
+            experiment_id=image.experiment_id,
+            x=float(projection[i, 0]),
+            y=float(projection[i, 1]),
+            protein_name=protein.name if protein else None,
+            protein_color=protein.color if protein else "#888888",
+            thumbnail_url=f"/api/images/{image.id}/file?type=thumbnail",
+            original_filename=image.original_filename,
+        ))
+
+    return UmapFovDataResponse(
+        points=points,
+        total_images=len(images),
+        silhouette_score=silhouette,
+        is_precomputed=all_have_umap,
+        computed_at=computed_at,
+    )
+
+
+def _compute_umap(
+    embeddings: np.ndarray,
+    items: list,
+    n_neighbors: int,
+    min_dist: float,
+) -> tuple:
+    """Compute UMAP projection with deterministic settings."""
+    import umap
+
+    # L2-normalize for cosine distance
+    norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
+    norms = np.where(norms == 0, 1, norms)
+    embeddings_norm = embeddings / norms
+
+    try:
+        # Initialize seed for fully deterministic UMAP results
+        np.random.seed(42)
+        reducer = umap.UMAP(
+            n_neighbors=n_neighbors,
+            min_dist=min_dist,
+            n_components=2,
+            metric="cosine",
+            random_state=42,
+        )
+        projection = reducer.fit_transform(embeddings_norm)
+    except ValueError as e:
+        logger.error(f"UMAP parameter error: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid UMAP parameters: {str(e)}"
+        )
+    except MemoryError:
+        logger.error(f"Out of memory computing UMAP for {len(items)} items")
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail="Too many data points for UMAP. Try filtering to a single experiment."
+        )
+    except Exception as e:
+        logger.exception(f"Unexpected UMAP computation error: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to compute UMAP projection. Please try again."
+        )
+
+    # Compute silhouette score
+    silhouette = _compute_silhouette(embeddings_norm, items)
+    return projection, silhouette
+
+
+def _compute_silhouette(embeddings: np.ndarray, items: list) -> Optional[float]:
+    """Compute silhouette score based on protein labels."""
+    labeled_indices = []
+    labels = []
+
+    for i, item in enumerate(items):
+        protein = getattr(item, 'map_protein', None)
+        if protein is not None:
+            labeled_indices.append(i)
+            labels.append(protein.id)
+
+    if len(labeled_indices) < 10 or len(set(labels)) < 2:
+        return None
+
+    try:
+        from sklearn.metrics import silhouette_score
+        labeled_embeddings = embeddings[labeled_indices]
+        return float(silhouette_score(labeled_embeddings, labels, metric="cosine"))
+    except (ValueError, ImportError) as e:
+        logger.warning(f"Could not compute silhouette score: {e}")
+        return None
+
+
+def _compute_silhouette_from_crops(crops: list) -> Optional[float]:
+    """Compute silhouette from pre-computed UMAP coordinates for crops."""
+    labeled = [(c.umap_x, c.umap_y, c.map_protein.id)
+               for c in crops if c.map_protein is not None]
+
+    if len(labeled) < 10 or len(set(l[2] for l in labeled)) < 2:
+        return None
+
+    try:
+        from sklearn.metrics import silhouette_score
+        coords = np.array([[l[0], l[1]] for l in labeled])
+        labels = [l[2] for l in labeled]
+        return float(silhouette_score(coords, labels, metric="euclidean"))
+    except (ValueError, ImportError):
+        return None
+
+
+def _compute_silhouette_from_images(images: list) -> Optional[float]:
+    """Compute silhouette from pre-computed UMAP coordinates for images."""
+    labeled = [(img.umap_x, img.umap_y, img.map_protein.id)
+               for img in images if img.map_protein is not None]
+
+    if len(labeled) < 10 or len(set(l[2] for l in labeled)) < 2:
+        return None
+
+    try:
+        from sklearn.metrics import silhouette_score
+        coords = np.array([[l[0], l[1]] for l in labeled])
+        labels = [l[2] for l in labeled]
+        return float(silhouette_score(coords, labels, metric="euclidean"))
+    except (ValueError, ImportError):
+        return None
+
+
+@router.post("/umap/recompute")
+async def trigger_umap_recomputation(
+    umap_type: UmapType = Query(..., description="Type to recompute: fov or cropped"),
+    experiment_id: Optional[int] = Query(None, description="Experiment scope (optional)"),
+    background_tasks: BackgroundTasks = BackgroundTasks(),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Trigger UMAP recomputation for the specified type and scope.
+
+    This will re-compute and store UMAP coordinates for all items in the scope.
+    """
+    if experiment_id:
+        # Verify ownership
+        exp_result = await db.execute(
+            select(Experiment).where(
+                Experiment.id == experiment_id,
+                Experiment.user_id == current_user.id
+            )
+        )
+        if not exp_result.scalar_one_or_none():
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Experiment not found"
+            )
+
+    # Trigger background recomputation
+    background_tasks.add_task(
+        _recompute_umap_background,
+        umap_type,
+        current_user.id,
+        experiment_id
+    )
+
+    return {"message": f"UMAP recomputation started for {umap_type.value}"}
+
+
+async def _recompute_umap_background(
+    umap_type: UmapType,
+    user_id: int,
+    experiment_id: Optional[int]
+):
+    """Background task for UMAP recomputation."""
+    from database import get_db_context
+    from services.umap_service import compute_crop_umap, compute_fov_umap
+
+    logger.info(
+        f"Starting background UMAP recomputation for {umap_type.value}, "
+        f"user {user_id}, experiment {experiment_id or 'all'}"
+    )
+
+    try:
+        async with get_db_context() as db:
+            if umap_type == UmapType.FOV:
+                result = await compute_fov_umap(user_id, db, experiment_id)
+            else:
+                result = await compute_crop_umap(user_id, db, experiment_id)
+
+            if "error" in result:
+                logger.warning(f"UMAP recomputation: {result['error']}")
+            else:
+                logger.info(f"UMAP recomputation complete: {result}")
+    except Exception as e:
+        logger.exception(f"UMAP recomputation failed: {e}")
 
 
 @router.get("/status", response_model=FeatureExtractionStatus)
@@ -299,3 +535,89 @@ async def _extract_features_background(crop_ids: list, experiment_id: int):
         logger.exception(
             f"Background feature extraction failed for experiment {experiment_id}: {e}"
         )
+
+
+@router.post("/extract-fov", response_model=FeatureExtractionTriggerResponse)
+async def trigger_fov_feature_extraction(
+    experiment_id: Optional[int] = Query(None, description="Experiment ID (optional, all if not specified)"),
+    background_tasks: BackgroundTasks = BackgroundTasks(),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Trigger FOV embedding extraction for images without embeddings.
+    Runs in background.
+    """
+    # Build query for images without embeddings
+    base_conditions = [
+        Experiment.user_id == current_user.id,
+        Image.embedding.is_(None)
+    ]
+
+    if experiment_id:
+        # Verify ownership
+        exp_result = await db.execute(
+            select(Experiment).where(
+                Experiment.id == experiment_id,
+                Experiment.user_id == current_user.id
+            )
+        )
+        if not exp_result.scalar_one_or_none():
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Experiment not found"
+            )
+        base_conditions.append(Image.experiment_id == experiment_id)
+
+    # Count images without embeddings
+    count_result = await db.execute(
+        select(func.count(Image.id))
+        .join(Experiment, Image.experiment_id == Experiment.id)
+        .where(*base_conditions)
+    )
+    pending_count = count_result.scalar() or 0
+
+    if pending_count == 0:
+        return FeatureExtractionTriggerResponse(
+            message="All FOV images already have embeddings",
+            pending=0
+        )
+
+    # Get image IDs
+    images_result = await db.execute(
+        select(Image.id)
+        .join(Experiment, Image.experiment_id == Experiment.id)
+        .where(*base_conditions)
+    )
+    image_ids = [row[0] for row in images_result.all()]
+
+    # Trigger background extraction
+    background_tasks.add_task(
+        _extract_fov_features_background,
+        image_ids
+    )
+
+    return FeatureExtractionTriggerResponse(
+        message=f"FOV feature extraction started for {pending_count} images",
+        pending=pending_count
+    )
+
+
+async def _extract_fov_features_background(image_ids: list):
+    """Background task for FOV feature extraction."""
+    from database import get_db_context
+    from ml.features import extract_features_for_images
+
+    logger.info(f"Starting background FOV feature extraction for {len(image_ids)} images")
+
+    try:
+        async with get_db_context() as db:
+            result = await extract_features_for_images(image_ids, db)
+            logger.info(
+                f"Background FOV feature extraction complete: "
+                f"{result['success']} success, {result['failed']} failed"
+            )
+    except RuntimeError as e:
+        logger.error(f"Background FOV feature extraction failed (model error): {e}")
+    except Exception as e:
+        logger.exception(f"Background FOV feature extraction failed: {e}")

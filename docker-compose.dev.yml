@@ -1,73 +1,49 @@
-# Development compose file with hot reload
-# Usage: docker-compose -f docker-compose.dev.yml up
+# Maptimize Development - Infrastructure Only
+# Databáze a Redis v Dockeru, aplikace běží lokálně (rychlejší hot-reload)
+#
+# Použití:
+#   docker compose -f docker-compose.dev.yml up -d
+#   cd backend && uv run uvicorn main:app --reload --port 8000
+#   cd frontend && npm run dev
 
 services:
-  frontend:
-    build:
-      context: ./frontend
-      dockerfile: Dockerfile.dev
-    ports:
-      - "3000:3000"
-    environment:
-      - NEXT_PUBLIC_API_URL=http://localhost:8000
-      - WATCHPACK_POLLING=true
-    volumes:
-      - ./frontend:/app
-      - /app/node_modules
-      - /app/.next
-    depends_on:
-      - backend
-    stdin_open: true
-    tty: true
-
-  backend:
-    build:
-      context: ./backend
-      dockerfile: Dockerfile.dev
-    ports:
-      - "8000:8000"
-    environment:
-      - DATABASE_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
-      - REDIS_URL=${REDIS_URL}
-      - JWT_SECRET=${JWT_SECRET}
-      - JWT_ALGORITHM=${JWT_ALGORITHM:-HS256}
-      - JWT_EXPIRE_MINUTES=${JWT_EXPIRE_MINUTES:-1440}
-      - DEBUG=true
-      - HF_TOKEN=${HF_TOKEN}
-    volumes:
-      - ./backend:/app
-      - ./data/uploads:/app/data/uploads
-    depends_on:
-      db:
-        condition: service_healthy
-      redis:
-        condition: service_started
-    stdin_open: true
-    tty: true
-
+  # PostgreSQL with pgvector
   db:
     image: pgvector/pgvector:pg16
-    environment:
-      - POSTGRES_USER=${POSTGRES_USER}
-      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
-      - POSTGRES_DB=${POSTGRES_DB}
-    volumes:
-      - postgres_data_dev:/var/lib/postgresql/data
+    container_name: maptimize-dev-db
     ports:
-      - "5432:5432"
+      - "5433:5432"  # 5433 to avoid conflict with local PostgreSQL
+    environment:
+      - POSTGRES_USER=maptimize
+      - POSTGRES_PASSWORD=maptimize
+      - POSTGRES_DB=maptimize
+    volumes:
+      - maptimize_dev_postgres:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      test: ["CMD-SHELL", "pg_isready -U maptimize -d maptimize"]
       interval: 5s
       timeout: 5s
       retries: 5
+    restart: unless-stopped
 
+  # Redis
   redis:
     image: redis:7-alpine
+    container_name: maptimize-dev-redis
     ports:
       - "6379:6379"
     volumes:
-      - redis_data_dev:/data
+      - maptimize_dev_redis:/data
+    command: redis-server --maxmemory 256mb --maxmemory-policy allkeys-lru
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
 
 volumes:
-  postgres_data_dev:
-  redis_data_dev:
+  maptimize_dev_postgres:
+    name: maptimize_dev_postgres
+  maptimize_dev_redis:
+    name: maptimize_dev_redis

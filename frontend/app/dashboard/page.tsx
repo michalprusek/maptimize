@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { motion } from "framer-motion";
 import { useQuery } from "@tanstack/react-query";
+import { useTranslations } from "next-intl";
 import { api } from "@/lib/api";
 import { useAuthStore } from "@/stores/authStore";
 import { StatusBadge } from "@/components/ui";
@@ -33,6 +34,9 @@ const itemVariants = {
 
 export default function DashboardPage(): JSX.Element {
   const { user } = useAuthStore();
+  const t = useTranslations("dashboard");
+  const tExp = useTranslations("experiments");
+  const tCommon = useTranslations("common");
 
   const { data: experiments, isLoading } = useQuery({
     queryKey: ["experiments"],
@@ -62,11 +66,8 @@ export default function DashboardPage(): JSX.Element {
       {/* Header */}
       <motion.div variants={itemVariants}>
         <h1 className="text-3xl font-display font-bold text-text-primary">
-          Welcome back, {user?.name?.split(" ")[0]}
+          {t("welcome", { name: user?.name?.split(" ")[0] || "" })}
         </h1>
-        <p className="text-text-secondary mt-2">
-          Here's an overview of your microtubule analysis
-        </p>
       </motion.div>
 
       {/* Stats */}
@@ -76,19 +77,19 @@ export default function DashboardPage(): JSX.Element {
       >
         {[
           {
-            label: "Experiments",
+            label: t("stats.experiments"),
             value: stats.experiments,
             icon: FolderOpen,
             color: "primary",
           },
           {
-            label: "Images",
+            label: t("stats.images"),
             value: stats.images,
             icon: ImageIcon,
             color: "amber",
           },
           {
-            label: "Cell Crops",
+            label: t("stats.cellCrops"),
             value: stats.cellCrops,
             icon: Dna,
             color: "purple",
@@ -122,7 +123,7 @@ export default function DashboardPage(): JSX.Element {
       {/* Feature Space Visualization */}
       <motion.div variants={itemVariants}>
         <h2 className="text-xl font-display font-semibold text-text-primary mb-4">
-          Feature Space Visualization
+          {t("featureSpace")}
         </h2>
         <UmapVisualization height={450} />
       </motion.div>
@@ -131,13 +132,13 @@ export default function DashboardPage(): JSX.Element {
       <motion.div variants={itemVariants}>
         <div className="flex items-center justify-between mb-4">
           <h2 className="text-xl font-display font-semibold text-text-primary">
-            Recent Experiments
+            {t("recentExperiments")}
           </h2>
           <Link
             href="/dashboard/experiments"
             className="text-primary-400 hover:text-primary-300 text-sm font-medium flex items-center gap-1"
           >
-            View all
+            {tCommon("all")}
             <ArrowRight className="w-4 h-4" />
           </Link>
         </div>
@@ -163,7 +164,7 @@ export default function DashboardPage(): JSX.Element {
                         {exp.name}
                       </h3>
                       <p className="text-sm text-text-secondary">
-                        {exp.image_count} images · {exp.cell_count} crops
+                        {exp.image_count} {tExp("images")} · {exp.cell_count} {tExp("crops")}
                       </p>
                     </div>
                   </div>
@@ -181,15 +182,15 @@ export default function DashboardPage(): JSX.Element {
               <Sparkles className="w-8 h-8 text-primary-400" />
             </div>
             <h3 className="text-lg font-display font-semibold text-text-primary mb-2">
-              No experiments yet
+              {tExp("noExperiments")}
             </h3>
             <p className="text-text-secondary mb-6">
-              Create your first experiment to start analyzing microtubules
+              {tExp("startFirst")}
             </p>
             <Link href="/dashboard/experiments">
               <button className="btn-primary inline-flex items-center gap-2">
                 <Plus className="w-5 h-5" />
-                Create Experiment
+                {t("createExperiment")}
               </button>
             </Link>
           </div>

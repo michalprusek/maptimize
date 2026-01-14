@@ -5,8 +5,9 @@ import { useParams } from "next/navigation";
 import Link from "next/link";
 import { motion } from "framer-motion";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useTranslations } from "next-intl";
 import { api, CellCropGallery, FOVImage } from "@/lib/api";
-import { ConfirmModal } from "@/components/ui";
+import { ConfirmModal, MicroscopyImage } from "@/components/ui";
 import { FOVGallery } from "@/components/experiment";
 import {
   ImageGalleryFilters,
@@ -48,9 +49,12 @@ export default function ExperimentDetailPage(): JSX.Element {
   const params = useParams();
   const experimentId = Number(params.id);
   const queryClient = useQueryClient();
+  const t = useTranslations("experiments");
+  const tCommon = useTranslations("common");
+  const tImages = useTranslations("images");
 
-  // View mode state
-  const [viewMode, setViewMode] = useState<ViewMode>("crops");
+  // View mode state - will be set based on data availability
+  const [viewMode, setViewMode] = useState<ViewMode | null>(null);
 
   // Shared filter state
   const [searchQuery, setSearchQuery] = useState("");
@@ -71,9 +75,10 @@ export default function ExperimentDetailPage(): JSX.Element {
   const [showBulkDeleteConfirm, setShowBulkDeleteConfirm] = useState(false);
   const [bulkProteinDropdownOpen, setBulkProteinDropdownOpen] = useState(false);
 
-  // Current view's selected IDs (derived)
-  const selectedIds = viewMode === "fovs" ? selectedFovIds : selectedCropIds;
-  const setSelectedIds = viewMode === "fovs" ? setSelectedFovIds : setSelectedCropIds;
+  // Current view's selected IDs (derived) - default to crops if viewMode not set yet
+  const effectiveViewMode = viewMode ?? "crops";
+  const selectedIds = effectiveViewMode === "fovs" ? selectedFovIds : selectedCropIds;
+  const setSelectedIds = effectiveViewMode === "fovs" ? setSelectedFovIds : setSelectedCropIds;
 
   const { data: experiment, isLoading: expLoading } = useQuery({
     queryKey: ["experiment", experimentId],
@@ -94,6 +99,18 @@ export default function ExperimentDetailPage(): JSX.Element {
     queryKey: ["proteins"],
     queryFn: () => api.getProteins(),
   });
+
+  // Auto-select view mode based on available data
+  useEffect(() => {
+    if (viewMode === null && experiment) {
+      // If no crops exist, default to FOVs view
+      if (experiment.cell_count === 0) {
+        setViewMode("fovs");
+      } else {
+        setViewMode("crops");
+      }
+    }
+  }, [experiment, viewMode]);
 
   // Mutation error state for user feedback
   const [mutationError, setMutationError] = useState<string | null>(null);
@@ -234,13 +251,13 @@ export default function ExperimentDetailPage(): JSX.Element {
   const availableProteins = useMemo((): ProteinInfo[] => {
     const proteinSet = new Set<string>();
 
-    if (viewMode === "crops" && crops) {
+    if (effectiveViewMode === "crops" && crops) {
       crops.forEach((crop) => {
         if (crop.map_protein_name) {
           proteinSet.add(crop.map_protein_name);
         }
       });
-    } else if (viewMode === "fovs" && fovs) {
+    } else if (effectiveViewMode === "fovs" && fovs) {
       fovs.forEach((fov) => {
         if (fov.map_protein?.name) {
           proteinSet.add(fov.map_protein.name);
@@ -336,7 +353,7 @@ export default function ExperimentDetailPage(): JSX.Element {
   }, [fovs, searchQuery, fovSortField, sortOrder, proteinFilter]);
 
   // Get current view's filtered items (must be after filteredFovs and filteredCrops)
-  const currentFilteredItems = viewMode === "fovs" ? filteredFovs : filteredCrops;
+  const currentFilteredItems = effectiveViewMode === "fovs" ? filteredFovs : filteredCrops;
 
   const selectAll = () => {
     if (currentFilteredItems.length === selectedIds.size) {
@@ -393,11 +410,11 @@ export default function ExperimentDetailPage(): JSX.Element {
         <div className="flex items-center gap-3">
           <div className="flex items-center gap-4 px-3 py-1.5 bg-bg-elevated rounded-lg">
             <span className="text-sm text-text-secondary">
-              {experiment.image_count} FOVs
+              {experiment.image_count} {t("fovs")}
             </span>
             <span className="text-text-muted">·</span>
             <span className="text-sm text-text-secondary">
-              {experiment.cell_count} crops
+              {experiment.cell_count} {t("crops")}
             </span>
           </div>
           <Link
@@ -405,7 +422,7 @@ export default function ExperimentDetailPage(): JSX.Element {
             className="btn-primary flex items-center gap-2"
           >
             <Upload className="w-4 h-4" />
-            Upload Images
+            {t("uploadImages")}
           </Link>
         </div>
       </div>
@@ -416,28 +433,28 @@ export default function ExperimentDetailPage(): JSX.Element {
           <button
             onClick={() => setViewMode("fovs")}
             className={`flex items-center gap-2 px-4 py-2 rounded-md transition-all ${
-              viewMode === "fovs"
+              effectiveViewMode === "fovs"
                 ? "bg-primary-500 text-white"
                 : "text-text-secondary hover:text-text-primary hover:bg-white/5"
             }`}
           >
             <ImageIcon className="w-4 h-4" />
             <span className="font-medium">FOVs</span>
-            <span className={`text-xs ${viewMode === "fovs" ? "text-white/70" : "text-text-muted"}`}>
+            <span className={`text-xs ${effectiveViewMode === "fovs" ? "text-white/70" : "text-text-muted"}`}>
               ({experiment.image_count})
             </span>
           </button>
           <button
             onClick={() => setViewMode("crops")}
             className={`flex items-center gap-2 px-4 py-2 rounded-md transition-all ${
-              viewMode === "crops"
+              effectiveViewMode === "crops"
                 ? "bg-primary-500 text-white"
                 : "text-text-secondary hover:text-text-primary hover:bg-white/5"
             }`}
           >
             <Layers className="w-4 h-4" />
             <span className="font-medium">Crops</span>
-            <span className={`text-xs ${viewMode === "crops" ? "text-white/70" : "text-text-muted"}`}>
+            <span className={`text-xs ${effectiveViewMode === "crops" ? "text-white/70" : "text-text-muted"}`}>
               ({experiment.cell_count})
             </span>
           </button>
@@ -465,15 +482,15 @@ export default function ExperimentDetailPage(): JSX.Element {
       <ImageGalleryFilters
         searchQuery={searchQuery}
         onSearchChange={setSearchQuery}
-        searchPlaceholder={viewMode === "fovs" ? "Search by filename..." : "Search by parent image..."}
-        sortField={viewMode === "fovs" ? fovSortField : cropSortField}
-        onSortFieldChange={viewMode === "fovs"
+        searchPlaceholder={effectiveViewMode === "fovs" ? "Search by filename..." : "Search by parent image..."}
+        sortField={effectiveViewMode === "fovs" ? fovSortField : cropSortField}
+        onSortFieldChange={effectiveViewMode === "fovs"
           ? (v) => setFovSortField(v as FOVSortField)
           : (v) => setCropSortField(v as CropSortField)
         }
         sortOrder={sortOrder}
         onSortOrderChange={setSortOrder}
-        sortOptions={viewMode === "fovs" ? FOV_SORT_OPTIONS : CROP_SORT_OPTIONS}
+        sortOptions={effectiveViewMode === "fovs" ? FOV_SORT_OPTIONS : CROP_SORT_OPTIONS}
         proteinFilter={proteinFilter}
         onProteinFilterChange={setProteinFilter}
         availableProteins={availableProteins}
@@ -506,7 +523,7 @@ export default function ExperimentDetailPage(): JSX.Element {
                 </span>
 
                 {/* Bulk Assign MAP - only for crops */}
-                {viewMode === "crops" && (
+                {effectiveViewMode === "crops" && (
                   <div className="relative" ref={dropdownRef}>
                     <button
                       onClick={() => setBulkProteinDropdownOpen(!bulkProteinDropdownOpen)}
@@ -562,7 +579,7 @@ export default function ExperimentDetailPage(): JSX.Element {
       />
 
       {/* Conditional View */}
-      {viewMode === "fovs" ? (
+      {effectiveViewMode === "fovs" ? (
         <FOVGallery
           experimentId={experimentId}
           filteredFovs={filteredFovs}
@@ -600,11 +617,10 @@ export default function ExperimentDetailPage(): JSX.Element {
                   >
                     {/* Cell crop preview */}
                     <div className="aspect-square bg-bg-secondary flex items-center justify-center relative overflow-hidden rounded-t-xl">
-                      <img
+                      <MicroscopyImage
                         src={api.getCropImageUrl(crop.id, "mip")}
                         alt={`Cell from ${crop.parent_filename}`}
                         className="w-full h-full object-cover"
-                        loading="lazy"
                         onError={(e) => {
                           console.error(`Failed to load crop image ${crop.id}:`, e.type);
                           e.currentTarget.style.display = "none";
@@ -754,20 +770,20 @@ export default function ExperimentDetailPage(): JSX.Element {
         isOpen={showBulkDeleteConfirm}
         onClose={() => setShowBulkDeleteConfirm(false)}
         onConfirm={() => {
-          if (viewMode === "fovs") {
+          if (effectiveViewMode === "fovs") {
             bulkDeleteFovsMutation.mutate(Array.from(selectedFovIds));
           } else {
             bulkDeleteCropsMutation.mutate(Array.from(selectedCropIds));
           }
         }}
-        title={viewMode === "fovs" ? "Delete Selected FOVs" : "Delete Selected Cells"}
+        title={effectiveViewMode === "fovs" ? "Delete Selected FOVs" : "Delete Selected Cells"}
         message={
-          viewMode === "fovs"
+          effectiveViewMode === "fovs"
             ? `Are you sure you want to delete ${selectedFovIds.size} selected FOV image${selectedFovIds.size !== 1 ? "s" : ""}? This will also delete all detected cells from these images. This action cannot be undone.`
             : `Are you sure you want to delete ${selectedCropIds.size} selected cell crop${selectedCropIds.size !== 1 ? "s" : ""}? This action cannot be undone.`
         }
         confirmLabel="Delete All"
-        isLoading={viewMode === "fovs" ? bulkDeleteFovsMutation.isPending : bulkDeleteCropsMutation.isPending}
+        isLoading={effectiveViewMode === "fovs" ? bulkDeleteFovsMutation.isPending : bulkDeleteCropsMutation.isPending}
         variant="danger"
       />
     </div>

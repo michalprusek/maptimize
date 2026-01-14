@@ -405,15 +405,35 @@ class ApiClient {
   }
 
   // Embeddings / UMAP
-  async getUmapData(experimentId?: number, nNeighbors = 15, minDist = 0.1) {
+  async getUmapData(
+    experimentId?: number,
+    umapType: UmapType = "cropped",
+    nNeighbors = 15,
+    minDist = 0.1
+  ): Promise<UmapDataResponse | UmapFovDataResponse> {
     const params = new URLSearchParams({
+      umap_type: umapType,
       n_neighbors: nNeighbors.toString(),
       min_dist: minDist.toString(),
     });
     if (experimentId) {
       params.append("experiment_id", experimentId.toString());
     }
+    if (umapType === "fov") {
+      return this.request<UmapFovDataResponse>(`/api/embeddings/umap?${params}`);
+    }
     return this.request<UmapDataResponse>(`/api/embeddings/umap?${params}`);
+  }
+
+  async triggerUmapRecomputation(umapType: UmapType, experimentId?: number) {
+    const params = new URLSearchParams({ umap_type: umapType });
+    if (experimentId) {
+      params.append("experiment_id", experimentId.toString());
+    }
+    return this.request<{ message: string }>(
+      `/api/embeddings/umap/recompute?${params}`,
+      { method: "POST" }
+    );
   }
 
   async getEmbeddingStatus(experimentId?: number) {
@@ -426,6 +446,77 @@ class ApiClient {
       `/api/embeddings/extract?experiment_id=${experimentId}`,
       { method: "POST" }
     );
+  }
+
+  async triggerFovFeatureExtraction(experimentId?: number) {
+    const params = experimentId ? `?experiment_id=${experimentId}` : "";
+    return this.request<{ message: string; pending: number }>(
+      `/api/embeddings/extract-fov${params}`,
+      { method: "POST" }
+    );
+  }
+
+  // Settings
+  async getSettings() {
+    return this.request<UserSettings>("/api/settings");
+  }
+
+  async updateSettings(data: UserSettingsUpdate) {
+    return this.request<UserSettings>("/api/settings", {
+      method: "PATCH",
+      body: JSON.stringify(data),
+    });
+  }
+
+  async updateProfile(data: ProfileUpdate) {
+    return this.request<User>("/api/settings/profile", {
+      method: "PATCH",
+      body: JSON.stringify(data),
+    });
+  }
+
+  async changePassword(data: PasswordChangeRequest) {
+    return this.request<{ message: string }>("/api/settings/password", {
+      method: "POST",
+      body: JSON.stringify(data),
+    });
+  }
+
+  async uploadAvatar(file: File) {
+    const formData = new FormData();
+    formData.append("file", file);
+
+    // For file uploads, we need to let the browser set the Content-Type
+    // with the proper multipart boundary - so we make a direct fetch call
+    const url = `${API_URL}/api/settings/avatar`;
+    const token = this.getToken();
+
+    const response = await fetch(url, {
+      method: "POST",
+      headers: {
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: formData,
+    });
+
+    if (!response.ok) {
+      let errorDetail: string;
+      try {
+        const error = await response.json();
+        errorDetail = error.detail || "Upload failed";
+      } catch {
+        errorDetail = `Upload failed: ${response.status}`;
+      }
+      throw new Error(errorDetail);
+    }
+
+    return response.json() as Promise<AvatarUploadResponse>;
+  }
+
+  async deleteAvatar() {
+    return this.request<{ message: string }>("/api/settings/avatar", {
+      method: "DELETE",
+    });
   }
 }
 
@@ -473,6 +564,7 @@ export interface Image {
   map_protein?: MapProtein;
   cell_count: number;
   detect_cells?: boolean;
+  error_message?: string;
 }
 
 export interface BatchProcessResponse {
@@ -656,6 +748,8 @@ export interface ExperimentForImport {
 }
 
 // UMAP / Embeddings types
+export type UmapType = "fov" | "cropped";
+
 export interface UmapPoint {
   crop_id: number;
   image_id: number;
@@ -675,11 +769,63 @@ export interface UmapDataResponse {
   silhouette_score: number | null;
 }
 
+export interface UmapFovPoint {
+  image_id: number;
+  experiment_id: number;
+  x: number;
+  y: number;
+  protein_name: string | null;
+  protein_color: string;
+  thumbnail_url: string;
+  original_filename: string;
+}
+
+export interface UmapFovDataResponse {
+  points: UmapFovPoint[];
+  total_images: number;
+  silhouette_score: number | null;
+  is_precomputed: boolean;
+  computed_at: string | null;
+}
+
 export interface EmbeddingStatus {
   total: number;
   with_embeddings: number;
   without_embeddings: number;
   percentage: number;
+}
+
+// Settings types
+export type DisplayMode = "grayscale" | "inverted" | "green" | "fire" | "hilo";
+export type Theme = "dark" | "light";
+export type Language = "en" | "fr";
+
+export interface UserSettings {
+  display_mode: DisplayMode;
+  theme: Theme;
+  language: Language;
+}
+
+export interface UserSettingsUpdate {
+  display_mode?: DisplayMode;
+  theme?: Theme;
+  language?: Language;
+}
+
+export interface ProfileUpdate {
+  name?: string;
+  email?: string;
+}
+
+export interface PasswordChangeRequest {
+  current_password: string;
+  new_password: string;
+  confirm_password: string;
+}
+
+export interface AvatarUploadResponse {
+  avatar_url: string;
+  message: string;
 }
 
 export const api = new ApiClient();

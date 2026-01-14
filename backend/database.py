@@ -97,6 +97,14 @@ async def ensure_schema_updates():
             ("cell_crops", "embedding", "vector(1024)"),
             ("cell_crops", "embedding_model", "VARCHAR(100)"),
             ("cell_crops", "map_protein_id", "INTEGER REFERENCES map_proteins(id)"),
+            # Pre-computed UMAP coordinates for cell crops
+            ("cell_crops", "umap_x", "FLOAT"),
+            ("cell_crops", "umap_y", "FLOAT"),
+            ("cell_crops", "umap_computed_at", "TIMESTAMP WITH TIME ZONE"),
+            # Pre-computed UMAP coordinates for FOV images
+            ("images", "umap_x", "FLOAT"),
+            ("images", "umap_y", "FLOAT"),
+            ("images", "umap_computed_at", "TIMESTAMP WITH TIME ZONE"),
         ]
 
         for table, column, col_type in updates:

@@ -6,8 +6,9 @@ import Link from "next/link";
 import { motion } from "framer-motion";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useDropzone } from "react-dropzone";
+import { useTranslations } from "next-intl";
 import { api, Image as ApiImage } from "@/lib/api";
-import { Dialog } from "@/components/ui";
+import { Dialog, MicroscopyImage } from "@/components/ui";
 import {
   ArrowLeft,
   Upload,
@@ -40,6 +41,8 @@ export default function UploadPage(): JSX.Element {
   const router = useRouter();
   const experimentId = Number(params.id);
   const queryClient = useQueryClient();
+  const t = useTranslations("images");
+  const tCommon = useTranslations("common");
 
   // Workflow state
   const [phase, setPhase] = useState<WorkflowPhase>("idle");
@@ -742,11 +745,10 @@ export default function UploadPage(): JSX.Element {
                     </span>
                   </div>
                 ) : (
-                  <img
+                  <MicroscopyImage
                     src={api.getImageUrl(img.id, "thumbnail")}
                     alt={img.original_filename}
                     className="w-full h-full object-cover"
-                    loading="lazy"
                     onError={(e) => {
                       console.warn(`[Upload] Thumbnail load failed for image: ${img.original_filename}`, e.type);
                       e.currentTarget.style.display = "none";

@@ -1,0 +1,159 @@
+{
+  "common": {
+    "save": "Save",
+    "cancel": "Cancel",
+    "delete": "Delete",
+    "loading": "Loading...",
+    "error": "Error",
+    "success": "Success",
+    "confirm": "Confirm",
+    "back": "Back",
+    "close": "Close",
+    "upload": "Upload",
+    "search": "Search",
+    "filter": "Filter",
+    "sort": "Sort",
+    "clear": "Clear",
+    "select": "Select",
+    "selectAll": "Select all",
+    "deselect": "Deselect",
+    "none": "None",
+    "all": "All",
+    "showing": "Showing {count} of {total}",
+    "noResults": "No results found"
+  },
+  "auth": {
+    "login": "Sign In",
+    "logout": "Sign Out",
+    "register": "Create Account",
+    "email": "Email",
+    "password": "Password",
+    "name": "Name",
+    "forgotPassword": "Forgot password?",
+    "noAccount": "Don't have an account?",
+    "hasAccount": "Already have an account?",
+    "invalidCredentials": "Invalid email or password"
+  },
+  "navigation": {
+    "dashboard": "Dashboard",
+    "experiments": "Experiments",
+    "ranking": "Ranking",
+    "metrics": "Metrics",
+    "settings": "Settings",
+    "signOut": "Sign Out"
+  },
+  "dashboard": {
+    "welcome": "Welcome back, {name}",
+    "stats": {
+      "experiments": "Experiments",
+      "images": "Images",
+      "cellCrops": "Cell Crops"
+    },
+    "recentExperiments": "Recent Experiments",
+    "createExperiment": "Create Experiment",
+    "featureSpace": "Feature Space Visualization"
+  },
+  "experiments": {
+    "title": "Experiments",
+    "create": "New Experiment",
+    "name": "Name",
+    "description": "Description",
+    "status": "Status",
+    "images": "Images",
+    "cells": "Cells",
+    "created": "Created",
+    "uploadImages": "Upload Images",
+    "noExperiments": "No experiments yet",
+    "startFirst": "Create your first experiment to get started",
+    "fovs": "FOVs",
+    "crops": "Crops",
+    "deleteConfirm": "Are you sure you want to delete this experiment? All images and crops will be permanently deleted."
+  },
+  "images": {
+    "upload": {
+      "title": "Upload Images",
+      "dropzone": "Drag and drop microscopy images here",
+      "dropzoneActive": "Drop files here",
+      "selectFiles": "or click to select files",
+      "supported": "Supported formats: TIFF, PNG, JPG",
+      "processing": "Processing..."
+    },
+    "detectCells": "Detect cells",
+    "detectCellsDesc": "Run YOLO detection to identify individual cells",
+    "assignProtein": "Assign MAP Protein",
+    "noImages": "No images yet",
+    "uploadFirst": "Upload microscopy images to get started"
+  },
+  "settings": {
+    "title": "Settings",
+    "saved": "Settings saved successfully",
+    "profile": {
+      "title": "Profile",
+      "avatar": "Profile Picture",
+      "uploadAvatar": "Upload Avatar",
+      "removeAvatar": "Remove Avatar",
+      "changeAvatar": "Change Avatar",
+      "name": "Name",
+      "email": "Email",
+      "updateProfile": "Update Profile"
+    },
+    "password": {
+      "title": "Change Password",
+      "current": "Current Password",
+      "new": "New Password",
+      "confirm": "Confirm Password",
+      "change": "Change Password",
+      "mismatch": "Passwords do not match",
+      "tooShort": "Password must be at least 8 characters",
+      "incorrect": "Current password is incorrect",
+      "changed": "Password changed successfully"
+    },
+    "appearance": {
+      "title": "Appearance",
+      "theme": "Theme",
+      "darkMode": "Dark Mode",
+      "lightMode": "Light Mode"
+    },
+    "display": {
+      "title": "Image Display",
+      "mode": "Display Mode (LUT)",
+      "grayscale": "Grayscale",
+      "grayscaleDesc": "White on black (default)",
+      "inverted": "Inverted",
+      "invertedDesc": "Black on white",
+      "green": "Green (GFP)",
+      "greenDesc": "Green on black, fluorescence style",
+      "fire": "Fire",
+      "fireDesc": "Heat-map style (black-red-yellow-white)",
+      "hilo": "HiLo",
+      "hiloDesc": "Highlights under/over-exposed pixels"
+    },
+    "language": {
+      "title": "Language",
+      "select": "Select Language",
+      "en": "English",
+      "fr": "French"
+    }
+  },
+  "ranking": {
+    "title": "Ranking",
+    "compare": "Compare Images",
+    "selectBetter": "Select the image with better bundleness",
+    "progress": "Progress",
+    "comparisons": "comparisons",
+    "convergence": "Convergence",
+    "leaderboard": "Leaderboard",
+    "rank": "Rank",
+    "score": "Score",
+    "undo": "Undo last comparison",
+    "noImages": "No images to compare",
+    "complete": "Ranking complete!"
+  },
+  "proteins": {
+    "map1": "MAP1",
+    "map2": "MAP2",
+    "tau": "Tau",
+    "prc1": "PRC1",
+    "unassigned": "Unassigned"
+  }
+}

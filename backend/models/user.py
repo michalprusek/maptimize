@@ -12,6 +12,7 @@ if TYPE_CHECKING:
     from .experiment import Experiment
     from .ranking import UserRating, Comparison
     from .metric import Metric
+    from .user_settings import UserSettings
 
 
 class UserRole(str, PyEnum):
@@ -60,6 +61,11 @@ class User(Base):
     metrics: Mapped[List["Metric"]] = relationship(
         back_populates="user",
         cascade="all, delete-orphan"
+    )
+    settings: Mapped[Optional["UserSettings"]] = relationship(
+        back_populates="user",
+        cascade="all, delete-orphan",
+        uselist=False
     )
 
     def __repr__(self) -> str:

@@ -4,6 +4,7 @@ import { useState } from "react";
 import Link from "next/link";
 import { motion, AnimatePresence } from "framer-motion";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useTranslations } from "next-intl";
 import { api, Metric } from "@/lib/api";
 import { ConfirmModal } from "@/components/ui";
 import {
@@ -124,6 +125,8 @@ export default function RankingPage(): JSX.Element {
   const [showCreateDialog, setShowCreateDialog] = useState(false);
   const [metricToDelete, setMetricToDelete] = useState<Metric | null>(null);
   const queryClient = useQueryClient();
+  const t = useTranslations("ranking");
+  const tCommon = useTranslations("common");
 
   const { data: metricsData, isLoading } = useQuery({
     queryKey: ["metrics"],
@@ -146,18 +149,15 @@ export default function RankingPage(): JSX.Element {
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-3xl font-display font-bold text-text-primary">
-            Ranking Metrics
+            {t("title")}
           </h1>
-          <p className="text-text-secondary mt-2">
-            Create metrics and rank images through pairwise comparisons
-          </p>
         </div>
         <button
           onClick={() => setShowCreateDialog(true)}
           className="btn-primary flex items-center gap-2"
         >
           <Plus className="w-5 h-5" />
-          New Metric
+          {t("compare")}
         </button>
       </div>
 
@@ -265,11 +265,11 @@ export default function RankingPage(): JSX.Element {
         isOpen={!!metricToDelete}
         onClose={() => setMetricToDelete(null)}
         onConfirm={() => metricToDelete && deleteMutation.mutate(metricToDelete.id)}
-        title="Delete Metric"
-        message="Are you sure you want to delete this metric? This will remove all images and rankings."
+        title={tCommon("delete")}
+        message={t("noImages")}
         detail={metricToDelete?.name}
-        confirmLabel="Delete"
-        cancelLabel="Cancel"
+        confirmLabel={tCommon("delete")}
+        cancelLabel={tCommon("cancel")}
         isLoading={deleteMutation.isPending}
         variant="danger"
       />
