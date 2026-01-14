@@ -1111,12 +1111,9 @@ export interface CropBatchUpdateResponse {
 // Segmentation types
 // ============================================================================
 
-export type SAMEmbeddingStatus =
-  | "not_started"
-  | "pending"
-  | "computing"
-  | "ready"
-  | "error";
+// Re-export from canonical location to avoid DRY violation
+export type { SAMEmbeddingStatus } from "@/lib/editor/types";
+import type { SAMEmbeddingStatus } from "@/lib/editor/types";
 
 export interface SAMEmbeddingStatusResponse {
   image_id: number;

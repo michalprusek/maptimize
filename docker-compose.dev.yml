@@ -51,19 +51,22 @@ services:
       - DEBUG=true
       - PYTHONDONTWRITEBYTECODE=1
       - PYTHONUNBUFFERED=1
+      # Model Weights
+      - WEIGHTS_DIR=/app/weights
       # YOLOv8 Configuration
       - YOLO_MODEL_PATH=/app/weights/best.pt
       - YOLO_CONFIDENCE_THRESHOLD=0.25
       - YOLO_IOU_THRESHOLD=0.7
       # HuggingFace
       - HF_HOME=/app/.cache/huggingface
+      - HF_TOKEN=${HF_TOKEN:-}
       # Admin
       - DEFAULT_ADMIN_EMAIL=admin@localhost
       - DEFAULT_ADMIN_PASSWORD=admin123
     volumes:
       - ./backend:/app
       - ./data/uploads:/app/data/uploads
-      - ./weights:/app/weights:ro
+      - ./weights:/app/weights
       - huggingface_dev_cache:/app/.cache/huggingface
     depends_on:
       db:

@@ -244,6 +244,9 @@
     "createError": "Echec de la creation de la cellule",
     "deleteError": "Echec de la suppression de la cellule",
     "updateError": "Echec de la mise a jour de la cellule",
+    "detection": "Détection",
+    "segmentation": "Segmentation",
+    "detectionMode": "Mode détection",
     "segmentMode": "Mode segmentation",
     "samReady": "SAM pret",
     "samComputing": "Calcul...",
@@ -254,6 +257,9 @@
     "clearSegmentation": "Effacer tous les points",
     "saveMask": "Enregistrer le masque",
     "segmentHint": "Clic gauche: premier plan • Clic droit: arriere-plan",
-    "noTargetCrop": "Selectionnez une cellule pour enregistrer le masque"
+    "noTargetCrop": "Selectionnez une cellule pour enregistrer le masque",
+    "loadMasksError": "Échec du chargement des masques de segmentation",
+    "embeddingStatusError": "Échec de la vérification du statut de segmentation",
+    "embeddingComputeError": "Échec du démarrage du calcul de segmentation"
   }
 }

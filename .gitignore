@@ -69,3 +69,6 @@ weights/
 
 sudo_password.txt
 *data/
+# SAM model weights (downloaded at runtime)
+backend/mobile_sam.pt
+backend/*.pt

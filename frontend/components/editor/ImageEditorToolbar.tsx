@@ -176,6 +176,127 @@ function DraggableSlider({
   );
 }
 
+// Helper function to get SAM status badge styling
+function getSAMStatusStyle(status: SAMEmbeddingStatus): string {
+  switch (status) {
+    case "ready":
+      return "bg-emerald-500/20 text-emerald-400";
+    case "computing":
+    case "pending":
+      return "bg-amber-500/20 text-amber-400";
+    case "error":
+      return "bg-red-500/20 text-red-400";
+    default:
+      return "bg-gray-500/20 text-gray-400";
+  }
+}
+
+// SAM status badge component
+interface SAMStatusBadgeProps {
+  status: SAMEmbeddingStatus;
+  t: ReturnType<typeof useTranslations>;
+  onComputeEmbedding?: () => void;
+}
+
+function SAMStatusBadge({ status, t, onComputeEmbedding }: SAMStatusBadgeProps) {
+  const baseClasses = "flex items-center gap-1.5 px-2 py-1 rounded-lg text-xs font-medium";
+
+  switch (status) {
+    case "ready":
+      return (
+        <div className={`${baseClasses} ${getSAMStatusStyle(status)}`}>
+          <CheckCircle2 className="w-3 h-3" />
+          <span>{t("samReady")}</span>
+        </div>
+      );
+    case "computing":
+    case "pending":
+      return (
+        <div className={`${baseClasses} ${getSAMStatusStyle(status)}`}>
+          <Loader2 className="w-3 h-3 animate-spin" />
+          <span>{t("samComputing")}</span>
+        </div>
+      );
+    case "error":
+      return (
+        <div className={`${baseClasses} ${getSAMStatusStyle(status)}`}>
+          <AlertCircle className="w-3 h-3" />
+          <span>{t("samError")}</span>
+        </div>
+      );
+    case "not_started":
+      if (!onComputeEmbedding) {
+        return (
+          <div className={`${baseClasses} ${getSAMStatusStyle(status)}`}>
+            <Wand2 className="w-3 h-3" />
+            <span>{t("computeSam")}</span>
+          </div>
+        );
+      }
+      return (
+        <button
+          onClick={onComputeEmbedding}
+          className={`${baseClasses} ${getSAMStatusStyle(status)} hover:text-emerald-300 transition-colors`}
+        >
+          <Wand2 className="w-3 h-3" />
+          <span>{t("computeSam")}</span>
+        </button>
+      );
+    default:
+      return null;
+  }
+}
+
+// Toolbar icon button with consistent styling
+interface ToolbarIconButtonProps {
+  onClick?: () => void;
+  disabled?: boolean;
+  title: string;
+  icon: React.ComponentType<{ className?: string }>;
+  variant?: "default" | "danger" | "primary" | "active";
+  isLoading?: boolean;
+}
+
+function ToolbarIconButton({
+  onClick,
+  disabled = false,
+  title,
+  icon: Icon,
+  variant = "default",
+  isLoading = false,
+}: ToolbarIconButtonProps) {
+  function getButtonStyles(): string {
+    if (disabled) {
+      return "bg-bg-tertiary/50 text-text-muted cursor-not-allowed";
+    }
+    switch (variant) {
+      case "danger":
+        return "bg-bg-tertiary text-red-400 hover:bg-red-500/20";
+      case "primary":
+        return "bg-emerald-500 text-white hover:bg-emerald-600";
+      case "active":
+        return "bg-primary-500 text-white";
+      default:
+        return "bg-bg-tertiary text-text-secondary hover:bg-white/10";
+    }
+  }
+
+  return (
+    <button
+      onClick={onClick}
+      disabled={disabled}
+      className={`p-1.5 rounded transition-colors ${getButtonStyles()}`}
+      title={title}
+    >
+      {isLoading ? (
+        <Loader2 className="w-4 h-4 animate-spin" />
+      ) : (
+        <Icon className="w-4 h-4" />
+      )}
+    </button>
+  );
+}
+
 export function ImageEditorToolbar({
   filters,
   onFiltersChange,
@@ -538,42 +659,15 @@ export function ImageEditorToolbar({
 
       {divider}
 
-      {/* Draw mode */}
-      <button
-        onClick={() => onEditorModeChange(editorMode === "draw" ? "view" : "draw")}
-        className={`p-1.5 rounded transition-colors ${
-          editorMode === "draw"
-            ? "bg-primary-500 text-white"
-            : "bg-bg-tertiary text-text-secondary hover:bg-white/10"
-        }`}
-        title={t("addBbox")}
-      >
-        <Plus className="w-4 h-4" />
-      </button>
-
-      {/* Segment mode toggle */}
-      <button
-        onClick={() => onEditorModeChange(editorMode === "segment" ? "view" : "segment")}
-        className={`p-1.5 rounded transition-colors relative ${
-          editorMode === "segment"
-            ? "bg-emerald-500 text-white"
-            : "bg-bg-tertiary text-text-secondary hover:bg-white/10"
-        }`}
-        title={t("segmentMode")}
-        disabled={samEmbeddingStatus === "computing" || samEmbeddingStatus === "pending"}
-      >
-        <Wand2 className="w-4 h-4" />
-        {/* SAM status indicator dot */}
-        {samEmbeddingStatus === "ready" && (
-          <span className="absolute -top-0.5 -right-0.5 w-2 h-2 bg-emerald-400 rounded-full" />
-        )}
-        {(samEmbeddingStatus === "computing" || samEmbeddingStatus === "pending") && (
-          <span className="absolute -top-0.5 -right-0.5 w-2 h-2 bg-amber-400 rounded-full animate-pulse" />
-        )}
-        {samEmbeddingStatus === "error" && (
-          <span className="absolute -top-0.5 -right-0.5 w-2 h-2 bg-red-400 rounded-full" />
-        )}
-      </button>
+      {/* Draw mode - only show when not in segment mode */}
+      {editorMode !== "segment" && (
+        <ToolbarIconButton
+          onClick={() => onEditorModeChange(editorMode === "draw" ? "view" : "draw")}
+          icon={Plus}
+          variant={editorMode === "draw" ? "active" : "default"}
+          title={t("addBbox")}
+        />
+      )}
 
       {/* Segment mode controls - only show when in segment mode */}
       {editorMode === "segment" && (
@@ -581,43 +675,11 @@ export function ImageEditorToolbar({
           {divider}
 
           {/* SAM status badge */}
-          <div className={`flex items-center gap-1.5 px-2 py-1 rounded-lg text-xs font-medium ${
-            samEmbeddingStatus === "ready"
-              ? "bg-emerald-500/20 text-emerald-400"
-              : samEmbeddingStatus === "computing" || samEmbeddingStatus === "pending"
-              ? "bg-amber-500/20 text-amber-400"
-              : samEmbeddingStatus === "error"
-              ? "bg-red-500/20 text-red-400"
-              : "bg-gray-500/20 text-gray-400"
-          }`}>
-            {samEmbeddingStatus === "ready" && (
-              <>
-                <CheckCircle2 className="w-3 h-3" />
-                <span>{t("samReady")}</span>
-              </>
-            )}
-            {(samEmbeddingStatus === "computing" || samEmbeddingStatus === "pending") && (
-              <>
-                <Loader2 className="w-3 h-3 animate-spin" />
-                <span>{t("samComputing")}</span>
-              </>
-            )}
-            {samEmbeddingStatus === "error" && (
-              <>
-                <AlertCircle className="w-3 h-3" />
-                <span>{t("samError")}</span>
-              </>
-            )}
-            {samEmbeddingStatus === "not_started" && onComputeEmbedding && (
-              <button
-                onClick={onComputeEmbedding}
-                className="flex items-center gap-1 hover:text-emerald-300 transition-colors"
-              >
-                <Wand2 className="w-3 h-3" />
-                <span>{t("computeSam")}</span>
-              </button>
-            )}
-          </div>
+          <SAMStatusBadge
+            status={samEmbeddingStatus}
+            t={t}
+            onComputeEmbedding={onComputeEmbedding}
+          />
 
           {/* Click point count */}
           {clickPointCount > 0 && (
@@ -627,67 +689,43 @@ export function ImageEditorToolbar({
           )}
 
           {/* Undo last click */}
-          <button
+          <ToolbarIconButton
             onClick={onUndoClick}
             disabled={!hasClickPoints}
-            className={`p-1.5 rounded transition-colors ${
-              hasClickPoints
-                ? "bg-bg-tertiary text-text-secondary hover:bg-white/10"
-                : "bg-bg-tertiary/50 text-text-muted cursor-not-allowed"
-            }`}
+            icon={RotateCcw}
             title={t("undoClick")}
-          >
-            <RotateCcw className="w-4 h-4" />
-          </button>
+          />
 
           {/* Clear segmentation */}
-          <button
+          <ToolbarIconButton
             onClick={onClearSegmentation}
             disabled={!hasClickPoints}
-            className={`p-1.5 rounded transition-colors ${
-              hasClickPoints
-                ? "bg-bg-tertiary text-red-400 hover:bg-red-500/20"
-                : "bg-bg-tertiary/50 text-text-muted cursor-not-allowed"
-            }`}
+            icon={Trash2}
+            variant="danger"
             title={t("clearSegmentation")}
-          >
-            <Trash2 className="w-4 h-4" />
-          </button>
+          />
 
           {/* Save mask */}
-          <button
+          <ToolbarIconButton
             onClick={onSaveMask}
             disabled={!hasPreviewPolygon || isSavingMask}
-            className={`p-1.5 rounded transition-colors ${
-              hasPreviewPolygon && !isSavingMask
-                ? "bg-emerald-500 text-white hover:bg-emerald-600"
-                : "bg-bg-tertiary/50 text-text-muted cursor-not-allowed"
-            }`}
+            icon={Save}
+            variant="primary"
+            isLoading={isSavingMask}
             title={t("saveMask")}
-          >
-            {isSavingMask ? (
-              <Loader2 className="w-4 h-4 animate-spin" />
-            ) : (
-              <Save className="w-4 h-4" />
-            )}
-          </button>
+          />
         </>
       )}
 
       {/* Undo (for bbox operations, hidden in segment mode) */}
       {editorMode !== "segment" && (
-        <button
+        <ToolbarIconButton
           onClick={onUndo}
           disabled={!canUndo || isUndoing}
-          className={`p-1.5 rounded transition-colors ${
-            canUndo && !isUndoing
-              ? "bg-bg-tertiary text-text-secondary hover:bg-white/10"
-              : "bg-bg-tertiary/50 text-text-muted cursor-not-allowed"
-          }`}
+          icon={Undo2}
+          isLoading={isUndoing}
           title={t("shortcuts.undo")}
-        >
-          <Undo2 className="w-4 h-4" />
-        </button>
+        />
       )}
     </motion.div>
   );

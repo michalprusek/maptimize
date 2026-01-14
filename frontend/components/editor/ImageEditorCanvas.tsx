@@ -42,6 +42,8 @@ interface ImageEditorCanvasProps {
   onImageLoaded?: (image: HTMLImageElement) => void;
   /** Callback when image fails to load */
   onImageError?: (error: string) => void;
+  /** Hide bboxes when in segment mode */
+  isSegmentMode?: boolean;
 }
 
 /**
@@ -88,6 +90,7 @@ export function ImageEditorCanvas({
   onImageCanvasReady,
   onImageLoaded,
   onImageError,
+  isSegmentMode = false,
 }: ImageEditorCanvasProps) {
   const imageCanvasRef = useRef<HTMLCanvasElement>(null);
   const overlayCanvasRef = useRef<HTMLCanvasElement>(null);
@@ -190,6 +193,12 @@ export function ImageEditorCanvas({
     ctx.lineWidth = 2 / zoom;
     ctx.stroke();
 
+    // Skip bboxes in segment mode - only show image frame
+    if (isSegmentMode) {
+      ctx.restore();
+      return;
+    }
+
     const bboxRadius = CANVAS_SETTINGS.bboxBorderRadius;
 
     // Draw each bbox
@@ -257,7 +266,7 @@ export function ImageEditorCanvas({
     }
 
     ctx.restore();
-  }, [bboxes, zoom, panOffset, selectedBboxId, hoveredBboxId, drawingBbox, imageWidth, imageHeight]);
+  }, [bboxes, zoom, panOffset, selectedBboxId, hoveredBboxId, drawingBbox, imageWidth, imageHeight, isSegmentMode]);
 
   // Draw circular resize handles (corners only)
   function drawHandles(ctx: CanvasRenderingContext2D, bbox: EditorBbox, scale: number): void {

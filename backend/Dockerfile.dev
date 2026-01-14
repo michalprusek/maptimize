@@ -46,6 +46,9 @@ COPY . .
 # Create directories
 RUN mkdir -p data/uploads /app/weights /app/.cache/huggingface
 
+# Make entrypoint script executable
+RUN chmod +x /app/scripts/entrypoint.sh
+
 # Environment
 ENV PYTHONPATH=/app
 ENV PYTHONDONTWRITEBYTECODE=1
@@ -58,6 +61,9 @@ EXPOSE 8000
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
     CMD curl -f http://localhost:8000/health || exit 1
+
+# Use entrypoint script to check/download weights
+ENTRYPOINT ["/app/scripts/entrypoint.sh"]
 
 # Run with hot-reload
 CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
