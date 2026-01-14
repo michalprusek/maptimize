@@ -87,18 +87,30 @@ docker compose -f docker-compose.prod.yml restart maptimize-backend
 
 ## ⚠️ Známé problémy a řešení
 
-### 404 chyby na API endpointech
+### 404 chyby na API endpointech (OPRAVENO)
 
-**Symptom:** Frontend dostává 404 chyby při volání API (např. `/auth/login`, `/experiments`).
+**Symptom:** Frontend dostával 404 chyby při volání API (např. `/auth/login`, `/experiments`).
 
-**Příčina:** Frontend API klient (`frontend/lib/api.ts`) volá endpointy bez `/api` prefixu, ale backend má všechny routery registrované pod `/api/...`.
+**Příčina:** Frontend API klient (`frontend/lib/api.ts`) volal endpointy bez `/api` prefixu, ale backend má všechny routery registrované pod `/api/...`.
 
-**Řešení:**
-1. Zkontrolovat `frontend/lib/api.ts`
-2. Všechny endpoint cesty musí začínat `/api/`:
-   - ❌ `"/auth/login"` → 404
-   - ✅ `"/api/auth/login"` → OK
-3. Platí pro všechny endpointy: `/api/auth/`, `/api/experiments/`, `/api/images/`, `/api/metrics/`, `/api/ranking/`, `/api/proteins/`, `/api/embeddings/`
-4. Pozor i na přímé URL konstrukce (`${API_URL}/images/...` → `${API_URL}/api/images/...`)
+**Řešení (aplikováno):**
+1. Všechny endpoint cesty v `frontend/lib/api.ts` nyní začínají `/api/`
+2. Backend URL generátory (`embeddings.py`, `metrics.py`) nyní vracejí cesty s `/api/` prefixem
 
-**Prevence:** Při přidávání nových endpointů vždy používat `/api/` prefix v frontend klientu.
+**Prevence při budoucích změnách:**
+- Při přidávání nových endpointů vždy používat `/api/` prefix v frontend klientu
+- Při generování URL v backendu vždy zahrnout `/api/` prefix
+- Platí pro: `/api/auth/`, `/api/experiments/`, `/api/images/`, `/api/metrics/`, `/api/ranking/`, `/api/proteins/`, `/api/embeddings/`
+
+### Mazání cell crops s ranking comparisons
+
+**Chování:** Při mazání cell crop, který má ranking comparisons, API vrátí 409 Conflict s upozorněním.
+
+**Příčina:** Cell crops mají CASCADE DELETE na comparisons tabulku - smazání crop smaže i historii porovnání.
+
+**Řešení:** Pro potvrzení smazání přidat query parametr `?confirm_delete_comparisons=true`:
+```
+DELETE /api/images/crops/{id}?confirm_delete_comparisons=true
+```
+
+**Důvod:** Prevence nechtěné ztráty dat - uživatel musí explicitně potvrdit, že chce smazat i comparison historii.

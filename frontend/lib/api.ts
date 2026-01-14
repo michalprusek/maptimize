@@ -52,10 +52,19 @@ class ApiClient {
       headers["Content-Type"] = "application/json";
     }
 
-    const response = await fetch(url, {
-      ...options,
-      headers,
-    });
+    let response: Response;
+    try {
+      response = await fetch(url, {
+        ...options,
+        headers,
+      });
+    } catch (networkError) {
+      console.error(`[API] Network error calling ${endpoint}:`, networkError);
+      if (networkError instanceof TypeError && networkError.message.includes("fetch")) {
+        throw new Error("Unable to connect to the server. Please check your internet connection.");
+      }
+      throw new Error(`Network error: ${networkError instanceof Error ? networkError.message : "Unknown error"}`);
+    }
 
     if (!response.ok) {
       let errorDetail: string;
@@ -63,8 +72,27 @@ class ApiClient {
         const error: ApiError = await response.json();
         errorDetail = error.detail;
       } catch {
-        // Response wasn't JSON (e.g., HTML error page, empty response)
-        errorDetail = `Request failed: ${response.status} ${response.statusText}`;
+        // Response wasn't JSON - log for debugging
+        let rawBody = "";
+        try {
+          rawBody = await response.text();
+        } catch {
+          rawBody = "<unable to read response>";
+        }
+        console.error(
+          `[API] Non-JSON error from ${endpoint}:`,
+          `Status: ${response.status}`,
+          `Body: ${rawBody.substring(0, 500)}`
+        );
+
+        // Provide user-friendly messages for common errors
+        if (response.status === 502 || response.status === 503 || response.status === 504) {
+          errorDetail = "Server is temporarily unavailable. Please try again.";
+        } else if (response.status === 401) {
+          errorDetail = "Your session has expired. Please log in again.";
+        } else {
+          errorDetail = `Request failed: ${response.status} ${response.statusText}`;
+        }
       }
       throw new Error(errorDetail);
     }
@@ -155,6 +183,9 @@ class ApiClient {
 
   getImageUrl(imageId: number, type: "original" | "mip" | "thumbnail" = "mip") {
     const token = this.getToken();
+    if (!token) {
+      console.warn(`[API] No token available for image ${imageId}`);
+    }
     return `${API_URL}/api/images/${imageId}/file?type=${type}&token=${token}`;
   }
 
@@ -299,11 +330,17 @@ class ApiClient {
 
   getMetricImageUrl(metricId: number, imageId: number) {
     const token = this.getToken();
+    if (!token) {
+      console.warn(`[API] No token available for metric image ${metricId}/${imageId}`);
+    }
     return `${API_URL}/api/metrics/${metricId}/images/${imageId}/file?token=${token}`;
   }
 
   getCropImageUrl(cropId: number, type: "mip" | "sum" = "mip") {
     const token = this.getToken();
+    if (!token) {
+      console.warn(`[API] No token available for crop ${cropId}`);
+    }
     return `${API_URL}/api/images/crops/${cropId}/image?type=${type}&token=${token}`;
   }
 
