@@ -75,6 +75,12 @@ interface ImageEditorToolbarProps {
   isSavingMask?: boolean;
   /** Number of click points */
   clickPointCount?: number;
+  /** Number of pending polygons accumulated */
+  pendingPolygonCount?: number;
+  /** Add current preview to pending polygons */
+  onAddToPending?: () => void;
+  /** Whether we can add current preview to pending */
+  canAddToPending?: boolean;
 }
 
 const displayModes: { value: DisplayMode; label: string }[] = [
@@ -323,6 +329,9 @@ export function ImageEditorToolbar({
   onUndoClick,
   isSavingMask = false,
   clickPointCount = 0,
+  pendingPolygonCount = 0,
+  onAddToPending,
+  canAddToPending = false,
 }: ImageEditorToolbarProps) {
   const t = useTranslations("editor");
   const toolbarRef = useRef<HTMLDivElement>(null);
@@ -705,6 +714,23 @@ export function ImageEditorToolbar({
             title={t("clearSegmentation")}
           />
 
+          {/* Add to pending (accumulate multiple before save) */}
+          {canAddToPending && (
+            <ToolbarIconButton
+              onClick={onAddToPending}
+              icon={Plus}
+              variant="default"
+              title={t("addToPending")}
+            />
+          )}
+
+          {/* Pending count badge */}
+          {pendingPolygonCount > 0 && (
+            <div className="flex items-center justify-center min-w-[24px] h-6 px-1.5 bg-primary-500/20 text-primary-400 text-xs font-medium rounded-md">
+              {pendingPolygonCount}
+            </div>
+          )}
+
           {/* Save mask */}
           <ToolbarIconButton
             onClick={onSaveMask}
@@ -712,7 +738,7 @@ export function ImageEditorToolbar({
             icon={Save}
             variant="primary"
             isLoading={isSavingMask}
-            title={t("saveMask")}
+            title={pendingPolygonCount > 0 ? t("saveAllMasks", { count: pendingPolygonCount }) : t("saveMask")}
           />
         </>
       )}

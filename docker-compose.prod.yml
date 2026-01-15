@@ -9,13 +9,17 @@ services:
       context: ./frontend
       dockerfile: Dockerfile
       args:
-        - NEXT_PUBLIC_API_URL=/api
+        # Empty string - paths already include /api/ prefix
+        - NEXT_PUBLIC_API_URL=
     container_name: maptimize-frontend
     ports:
       - "7000:3000"
     environment:
       - NODE_ENV=production
-      - NEXT_PUBLIC_API_URL=/api
+      # Empty string - paths already include /api/ prefix
+      - NEXT_PUBLIC_API_URL=
+      # Internal backend URL for server-side rewrites (uses Docker network)
+      - INTERNAL_API_URL=http://maptimize-backend:8000
     depends_on:
       - maptimize-backend
     networks:

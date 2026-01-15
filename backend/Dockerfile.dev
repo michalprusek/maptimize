@@ -1,12 +1,15 @@
 # Backend Development Dockerfile
-# Hot-reload enabled for development (CPU mode - no GPU in dev)
-FROM python:3.11-slim
+# GPU-enabled for SAM 3 testing with hot-reload
+# Requires: docker run --runtime=nvidia
+
+FROM python:3.12-slim
 
 WORKDIR /app
 
 # Install system dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
+    git \
     libgomp1 \
     libglib2.0-0 \
     libsm6 \
@@ -23,19 +26,24 @@ RUN pip install uv
 # Copy pyproject.toml for dependency installation
 COPY pyproject.toml ./
 
-# Install dependencies (CPU versions for dev - faster build)
-RUN uv pip install --system torch torchvision --index-url https://download.pytorch.org/whl/cpu
+# Install PyTorch with CUDA 12.6 support (required for SAM 3)
+RUN uv pip install --system \
+    torch torchvision \
+    --index-url https://download.pytorch.org/whl/cu126
 
 # Install all ML dependencies explicitly
 RUN uv pip install --system \
     pgvector \
     opencv-python-headless \
     ultralytics \
-    transformers \
+    "transformers>=4.56" \
     timm \
     umap-learn \
     numba \
     scikit-learn
+
+# Install SAM 3 from Facebook Research
+RUN uv pip install --system git+https://github.com/facebookresearch/sam3.git
 
 # Install all project dependencies (including ml extras)
 RUN uv pip install --system -e ".[ml]"
@@ -56,10 +64,13 @@ ENV PYTHONUNBUFFERED=1
 ENV PORT=8000
 ENV HF_HOME=/app/.cache/huggingface
 
+# GPU memory optimization
+ENV PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:512,expandable_segments:True
+
 EXPOSE 8000
 
 # Health check
-HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
     CMD curl -f http://localhost:8000/health || exit 1
 
 # Use entrypoint script to check/download weights

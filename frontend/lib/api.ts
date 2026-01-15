@@ -1,8 +1,15 @@
 /**
  * API client for MAPtimize backend
+ *
+ * API_URL configuration:
+ * - Production: empty string "" (all paths include /api/ prefix, nginx proxies)
+ * - Development: "http://localhost:8000" (direct backend access)
+ *
+ * Note: Using ?? instead of || because empty string is a valid value
+ * that should NOT fall back to localhost.
  */
 
-export const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+export const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
 interface ApiError {
   detail: string;
@@ -420,6 +427,45 @@ class ApiClient {
     });
   }
 
+  /**
+   * Update MAP protein for a FOV image.
+   * Also updates all cell crops from this image.
+   */
+  async updateImageProtein(imageId: number, mapProteinId: number | null) {
+    const params = new URLSearchParams();
+    if (mapProteinId !== null) {
+      params.set("map_protein_id", mapProteinId.toString());
+    }
+    return this.request<{
+      id: number;
+      map_protein_id: number | null;
+      map_protein_name: string | null;
+      map_protein_color: string | null;
+    }>(`/api/images/${imageId}/protein?${params.toString()}`, {
+      method: "PATCH",
+    });
+  }
+
+  /**
+   * Batch update MAP protein for multiple FOV images.
+   * Also updates all cell crops from these images.
+   */
+  async batchUpdateImageProtein(imageIds: number[], mapProteinId: number | null) {
+    const params = new URLSearchParams();
+    if (mapProteinId !== null) {
+      params.set("map_protein_id", mapProteinId.toString());
+    }
+    imageIds.forEach(id => params.append("image_ids", id.toString()));
+    return this.request<{
+      updated_count: number;
+      map_protein_id: number | null;
+      map_protein_name: string | null;
+      map_protein_color: string | null;
+    }>(`/api/images/batch-protein?${params.toString()}`, {
+      method: "PATCH",
+    });
+  }
+
   // Crop Editor API methods
 
   /**
@@ -708,12 +754,38 @@ class ApiClient {
   }
 
   /**
+   * Save FOV-level segmentation mask with union support.
+   * Accepts multiple polygons and merges them with existing mask.
+   * Returns all saved polygons (preserves separate instances).
+   */
+  async saveFOVSegmentationMaskWithUnion(data: {
+    image_id: number;
+    polygons: [number, number][][];
+    iou_score: number;
+    prompt_count: number;
+  }) {
+    return this.request<{
+      success: boolean;
+      image_id: number;
+      area_pixels: number;
+      polygons: [number, number][][];
+      polygon_count: number;
+    }>(
+      "/api/segmentation/save-fov-mask-union",
+      {
+        method: "POST",
+        body: JSON.stringify(data),
+      }
+    );
+  }
+
+  /**
    * Get FOV-level segmentation mask for an image.
    */
   async getFOVSegmentationMask(imageId: number) {
     return this.request<{
       has_mask: boolean;
-      polygon?: [number, number][];
+      polygon?: [number, number][] | [number, number][][]; // Single or multi-polygon format
       iou_score?: number;
       area_pixels?: number;
       creation_method?: string;

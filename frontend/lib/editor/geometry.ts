@@ -344,3 +344,54 @@ export function calculateCenterOffset(
     y: (containerHeight - scaledHeight) / 2,
   };
 }
+
+/**
+ * Object-cover transformation parameters for fitting content into a container.
+ * Uses the smaller dimension to fill the container (like CSS object-cover).
+ */
+export interface ObjectCoverTransform {
+  scale: number;
+  offsetX: number;
+  offsetY: number;
+}
+
+/**
+ * Calculate object-cover transformation for fitting a bbox into a square container.
+ * The smaller bbox dimension fills the container, larger dimension overflows and is centered.
+ */
+export function calculateObjectCoverTransform(
+  bboxWidth: number,
+  bboxHeight: number,
+  containerSize: number
+): ObjectCoverTransform {
+  const scale = containerSize / Math.min(bboxWidth, bboxHeight);
+  const offsetX = (containerSize - bboxWidth * scale) / 2;
+  const offsetY = (containerSize - bboxHeight * scale) / 2;
+  return { scale, offsetX, offsetY };
+}
+
+/**
+ * Build an SVG path from polygon points, transforming to percentage coordinates.
+ * Used for polygon overlays on thumbnails with object-cover behavior.
+ *
+ * @param points - Polygon points in source coordinates
+ * @param transform - Object-cover transformation parameters
+ * @param containerSize - Container size for percentage calculation
+ * @param originOffset - Optional offset to subtract from points (for FOV to bbox-relative conversion)
+ */
+export function buildPolygonSvgPath(
+  points: [number, number][],
+  transform: ObjectCoverTransform,
+  containerSize: number,
+  originOffset: { x: number; y: number } = { x: 0, y: 0 }
+): string {
+  return points
+    .map((p, i) => {
+      const rawX = (p[0] - originOffset.x) * transform.scale + transform.offsetX;
+      const rawY = (p[1] - originOffset.y) * transform.scale + transform.offsetY;
+      const pctX = (rawX / containerSize) * 100;
+      const pctY = (rawY / containerSize) * 100;
+      return `${i === 0 ? "M" : "L"} ${pctX} ${pctY}`;
+    })
+    .join(" ") + " Z";
+}

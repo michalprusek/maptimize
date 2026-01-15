@@ -116,8 +116,16 @@ class SAM3Encoder:
         """
         self._load_model()
 
-        # Check if same image is already loaded
-        if self._current_image_path == image_path and self._current_state is not None:
+        # Validate image_path is a string (not numpy array or other type)
+        if not isinstance(image_path, str):
+            raise TypeError(f"image_path must be a string, got {type(image_path).__name__}")
+
+        # Check if same image is already loaded (safe comparison with string type)
+        if (
+            isinstance(self._current_image_path, str)
+            and self._current_image_path == image_path
+            and self._current_state is not None
+        ):
             logger.debug(f"Using cached state for {image_path}")
             return self._current_state
 

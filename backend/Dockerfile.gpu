@@ -1,32 +1,33 @@
 # GPU-enabled Backend Dockerfile for Maptimize
-# Uses python:3.11-slim base with PyTorch CUDA wheels (cu118)
+# Uses python:3.12-slim base with PyTorch CUDA 12.6 (for SAM 3 support)
 # Requires nvidia runtime at container start: docker run --runtime=nvidia
 
 # Stage 1: Build wheels
-FROM python:3.11-slim AS wheel-builder
+FROM python:3.12-slim AS wheel-builder
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     cmake \
     gcc \
     g++ \
+    git \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /wheels
 
 COPY pyproject.toml ./
 
-# Build PyTorch with CUDA support
+# Build PyTorch with CUDA 12.6 support (required for SAM 3)
 RUN --mount=type=cache,target=/root/.cache/pip \
     pip wheel --no-cache-dir --wheel-dir /wheels \
-    torch torchvision --extra-index-url https://download.pytorch.org/whl/cu118
+    torch torchvision --extra-index-url https://download.pytorch.org/whl/cu126
 
 # Build other ML dependencies
 RUN --mount=type=cache,target=/root/.cache/pip \
     pip install uv && \
     pip wheel --no-cache-dir --wheel-dir /wheels \
     ultralytics>=8.1.0 \
-    transformers>=4.37.0 \
+    "transformers>=4.56.0" \
     timm>=0.9.12 \
     pgvector>=0.3.0 \
     umap-learn>=0.5.7 \
@@ -34,7 +35,7 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     scikit-learn>=1.4.0
 
 # Stage 2: Runtime base
-FROM python:3.11-slim AS runtime-base
+FROM python:3.12-slim AS runtime-base
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libgomp1 \
@@ -44,6 +45,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libxrender-dev \
     libgl1 \
     curl \
+    git \
     && rm -rf /var/lib/apt/lists/* \
     && apt-get clean
 
@@ -69,6 +71,12 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     pip install --no-cache-dir --find-links /wheels \
     ultralytics transformers timm pgvector umap-learn numba scikit-learn && \
     rm -rf /wheels
+
+# Install SAM 3 dependencies first (required: numpy<2, einops, decord, pycocotools)
+RUN pip install --no-cache-dir "numpy>=1.26,<2" einops decord pycocotools supervision
+
+# Install SAM 3 from Facebook Research
+RUN pip install --no-cache-dir git+https://github.com/facebookresearch/sam3.git
 
 # Install remaining dependencies
 RUN uv pip install --system -e "."
@@ -97,6 +105,8 @@ if cuda:
     print(f'GPU: {torch.cuda.get_device_name(0)}')
     mem = torch.cuda.get_device_properties(0).total_memory / 1024**3
     print(f'Memory: {mem:.1f} GB')
+    print(f'PyTorch version: {torch.__version__}')
+    print(f'CUDA version: {torch.version.cuda}')
 else:
     print('WARNING: Running in CPU mode - ML inference will be slow')
 " 2>&1) || {
@@ -105,6 +115,16 @@ else:
     echo "WARNING: Continuing with potentially degraded performance"
 }
 echo "$GPU_STATUS"
+
+# Check SAM 3 availability
+SAM3_STATUS=$(python -c "
+try:
+    import sam3
+    print('✓ SAM 3 installed')
+except ImportError:
+    print('⚠ SAM 3 not available')
+" 2>&1) || true
+echo "$SAM3_STATUS"
 
 # Check YOLOv8 weights - these are REQUIRED for cell detection
 YOLO_PATH="${YOLO_MODEL_PATH:-/app/weights/best.pt}"
@@ -135,8 +155,8 @@ LABEL maintainer="Maptimize"
 LABEL service="maptimize-backend"
 
 # Cleanup
-RUN find /usr/local/lib/python3.11 -name "*.pyc" -delete 2>/dev/null || true && \
-    find /usr/local/lib/python3.11 -name "__pycache__" -type d -delete 2>/dev/null || true && \
+RUN find /usr/local/lib/python3.12 -name "*.pyc" -delete 2>/dev/null || true && \
+    find /usr/local/lib/python3.12 -name "__pycache__" -type d -delete 2>/dev/null || true && \
     rm -rf /root/.cache/pip
 
 # Switch to non-root user
@@ -150,6 +170,7 @@ ENV PORT=8000
 ENV OMP_NUM_THREADS=4
 ENV MKL_NUM_THREADS=4
 ENV HF_HOME=/app/.cache/huggingface
+ENV PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:512,expandable_segments:True
 
 EXPOSE 8000
 

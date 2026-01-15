@@ -194,6 +194,38 @@ export default function ExperimentDetailPage(): JSX.Element {
     },
   });
 
+  // Update FOV protein mutation
+  const updateFovProteinMutation = useMutation({
+    mutationFn: ({ imageId, proteinId }: { imageId: number; proteinId: number | null }) =>
+      api.updateImageProtein(imageId, proteinId),
+    onSuccess: () => {
+      setMutationError(null);
+      queryClient.invalidateQueries({ queryKey: ["fovs", experimentId] });
+      queryClient.invalidateQueries({ queryKey: ["crops", experimentId] });
+    },
+    onError: (err: Error) => {
+      console.error("Failed to update FOV protein:", err);
+      setMutationError(err.message || "Failed to update protein assignment");
+    },
+  });
+
+  // Bulk update FOV protein mutation
+  const bulkUpdateFovProteinMutation = useMutation({
+    mutationFn: async ({ ids, proteinId }: { ids: number[]; proteinId: number | null }) => {
+      return api.batchUpdateImageProtein(ids, proteinId);
+    },
+    onSuccess: () => {
+      setSelectedFovIds(new Set());
+      setMutationError(null);
+      queryClient.invalidateQueries({ queryKey: ["fovs", experimentId] });
+      queryClient.invalidateQueries({ queryKey: ["crops", experimentId] });
+    },
+    onError: (err: Error) => {
+      console.error("Bulk update FOV protein failed:", err);
+      setMutationError(err.message);
+    },
+  });
+
   // Bulk update protein mutation with partial failure handling
   const bulkUpdateProteinMutation = useMutation({
     mutationFn: async ({ ids, proteinId }: { ids: number[]; proteinId: number | null }) => {
@@ -602,6 +634,13 @@ export default function ExperimentDetailPage(): JSX.Element {
           selectedIds={selectedFovIds}
           onToggleSelect={toggleSelect}
           onFovClick={handleOpenEditorFromFov}
+          proteins={proteins}
+          onProteinChange={(imageId, proteinId) =>
+            updateFovProteinMutation.mutate({ imageId, proteinId })
+          }
+          onBatchProteinChange={(imageIds, proteinId) =>
+            bulkUpdateFovProteinMutation.mutate({ ids: imageIds, proteinId })
+          }
         />
       ) : (
         <>

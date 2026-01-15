@@ -21,7 +21,7 @@ from models.segmentation import SegmentationMask, UserSegmentationPrompt, FOVSeg
 from models.cell_crop import CellCrop
 from ml.segmentation.sam_encoder import get_sam_encoder
 from ml.segmentation.sam_decoder import get_sam_decoder
-from ml.segmentation.utils import mask_to_polygon, calculate_polygon_area
+from ml.segmentation.utils import mask_to_polygon, mask_to_polygons, calculate_polygon_area
 
 logger = logging.getLogger(__name__)
 
@@ -530,6 +530,121 @@ async def save_fov_segmentation_mask(
     logger.info(f"Saved FOV segmentation mask for image {image_id}: {len(polygon)} points")
 
     return {"success": True, "image_id": image_id, "area_pixels": area}
+
+
+async def save_fov_segmentation_mask_union(
+    image_id: int,
+    polygons: List[List[Tuple[int, int]]],
+    iou_score: float,
+    prompt_count: int,
+    db: AsyncSession,
+    creation_method: str = "interactive_union",
+) -> Dict[str, Any]:
+    """
+    Save FOV-level segmentation mask with union support.
+
+    Accepts multiple polygons and merges them with any existing mask.
+    Uses OpenCV to create masks, union them, then extract ALL contours.
+    Stores as list of polygons to preserve separate instances.
+
+    Args:
+        image_id: Database ID of the image
+        polygons: List of polygons, each a list of (x, y) points
+        iou_score: Average IoU score
+        prompt_count: Total number of prompts used
+        db: Async database session
+        creation_method: How the mask was created
+
+    Returns:
+        Dict with success status and all polygons
+    """
+    import cv2
+
+    # Get image to know dimensions
+    result = await db.execute(select(Image).where(Image.id == image_id))
+    image = result.scalar_one_or_none()
+
+    if not image:
+        logger.warning(f"Image not found for FOV mask union: image_id={image_id}")
+        return {"success": False, "error": "Image not found"}
+
+    # Get image dimensions
+    img_width = image.width or 2048
+    img_height = image.height or 2048
+
+    # Create combined mask from all new polygons
+    combined_mask = np.zeros((img_height, img_width), dtype=np.uint8)
+
+    for polygon in polygons:
+        if len(polygon) >= 3:
+            pts = np.array([[int(p[0]), int(p[1])] for p in polygon], dtype=np.int32)
+            cv2.fillPoly(combined_mask, [pts], 1)
+
+    # Check for existing mask and union with it
+    existing_result = await db.execute(
+        select(FOVSegmentationMask).where(FOVSegmentationMask.image_id == image_id)
+    )
+    existing_mask = existing_result.scalar_one_or_none()
+
+    if existing_mask and existing_mask.polygon_points:
+        existing_data = existing_mask.polygon_points
+        # Handle both formats: single polygon [[x,y],...] or multi [[poly1], [poly2],...]
+        if existing_data and len(existing_data) > 0:
+            # Check if it's multi-polygon format (list of lists of lists)
+            if isinstance(existing_data[0], list) and len(existing_data[0]) > 0 and isinstance(existing_data[0][0], list):
+                # Multi-polygon format
+                for poly in existing_data:
+                    if len(poly) >= 3:
+                        pts = np.array([[int(p[0]), int(p[1])] for p in poly], dtype=np.int32)
+                        cv2.fillPoly(combined_mask, [pts], 1)
+            else:
+                # Single polygon format
+                if len(existing_data) >= 3:
+                    pts = np.array([[int(p[0]), int(p[1])] for p in existing_data], dtype=np.int32)
+                    cv2.fillPoly(combined_mask, [pts], 1)
+
+    # Convert combined mask back to ALL polygons (not just largest)
+    all_polygons = mask_to_polygons(combined_mask, simplify_tolerance=2.0, min_area=50)
+
+    if len(all_polygons) == 0:
+        logger.warning(f"Union resulted in no valid polygons")
+        return {"success": False, "error": "Union resulted in no valid polygons"}
+
+    # Calculate total area
+    total_area = sum(calculate_polygon_area(poly) for poly in all_polygons)
+
+    # Store as list of polygons (multi-polygon format)
+    polygon_data = [[list(p) for p in poly] for poly in all_polygons]
+
+    # Save all polygons
+    if existing_mask:
+        existing_mask.polygon_points = polygon_data
+        existing_mask.area_pixels = total_area
+        existing_mask.iou_score = iou_score
+        existing_mask.prompt_count = prompt_count
+        existing_mask.creation_method = creation_method
+    else:
+        mask = FOVSegmentationMask(
+            image_id=image_id,
+            polygon_points=polygon_data,
+            area_pixels=total_area,
+            iou_score=iou_score,
+            creation_method=creation_method,
+            prompt_count=prompt_count,
+        )
+        db.add(mask)
+
+    await db.commit()
+
+    logger.info(f"Saved FOV segmentation mask union for image {image_id}: {len(all_polygons)} polygons from {len(polygons)} input polygons")
+
+    return {
+        "success": True,
+        "image_id": image_id,
+        "area_pixels": total_area,
+        "polygons": polygon_data,
+        "polygon_count": len(all_polygons),
+    }
 
 
 async def get_fov_segmentation_mask(

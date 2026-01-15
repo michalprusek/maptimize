@@ -1329,3 +1329,143 @@ async def reprocess_image(
     )
 
     return ImageResponse.model_validate(image)
+
+
+# =============================================================================
+# FOV Protein Assignment Endpoints
+# =============================================================================
+
+
+@router.patch("/{image_id}/protein")
+async def update_image_protein(
+    image_id: int,
+    map_protein_id: Optional[int] = None,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Update the MAP protein assignment for a FOV image.
+
+    This also updates all cell crops from this image to have the same protein.
+    """
+    result = await db.execute(
+        select(Image)
+        .options(selectinload(Image.experiment))
+        .where(Image.id == image_id)
+    )
+    image = result.scalar_one_or_none()
+
+    if not image or image.experiment.user_id != current_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Image not found"
+        )
+
+    # Verify protein exists if provided
+    protein = None
+    if map_protein_id is not None:
+        protein_result = await db.execute(
+            select(MapProtein).where(MapProtein.id == map_protein_id)
+        )
+        protein = protein_result.scalar_one_or_none()
+        if not protein:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="MAP protein not found"
+            )
+
+    # Update image protein
+    image.map_protein_id = map_protein_id
+    await db.commit()
+
+    # Also update all cell crops from this image
+    from sqlalchemy import update
+    await db.execute(
+        update(CellCrop)
+        .where(CellCrop.image_id == image_id)
+        .values(map_protein_id=map_protein_id)
+    )
+    await db.commit()
+
+    return {
+        "id": image.id,
+        "map_protein_id": image.map_protein_id,
+        "map_protein_name": protein.name if protein else None,
+        "map_protein_color": protein.color if protein else None,
+    }
+
+
+@router.patch("/batch-protein")
+async def batch_update_image_protein(
+    image_ids: List[int],
+    map_protein_id: Optional[int] = None,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Batch update MAP protein for multiple FOV images.
+
+    This also updates all cell crops from these images.
+    """
+    if not image_ids:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No image IDs provided"
+        )
+
+    # Verify all images belong to user
+    result = await db.execute(
+        select(Image)
+        .options(selectinload(Image.experiment))
+        .where(Image.id.in_(image_ids))
+    )
+    images = result.scalars().all()
+
+    # Filter to only images owned by user
+    owned_image_ids = [
+        img.id for img in images
+        if img.experiment.user_id == current_user.id
+    ]
+
+    if not owned_image_ids:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="No images found"
+        )
+
+    # Verify protein exists if provided
+    protein = None
+    if map_protein_id is not None:
+        protein_result = await db.execute(
+            select(MapProtein).where(MapProtein.id == map_protein_id)
+        )
+        protein = protein_result.scalar_one_or_none()
+        if not protein:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="MAP protein not found"
+            )
+
+    # Update images
+    from sqlalchemy import update
+    await db.execute(
+        update(Image)
+        .where(Image.id.in_(owned_image_ids))
+        .values(map_protein_id=map_protein_id)
+    )
+
+    # Update all cell crops from these images
+    await db.execute(
+        update(CellCrop)
+        .where(CellCrop.image_id.in_(owned_image_ids))
+        .values(map_protein_id=map_protein_id)
+    )
+
+    await db.commit()
+
+    return {
+        "updated_count": len(owned_image_ids),
+        "map_protein_id": map_protein_id,
+        "map_protein_name": protein.name if protein else None,
+        "map_protein_color": protein.color if protein else None,
+    }

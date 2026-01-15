@@ -1,9 +1,9 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useRef, useEffect } from "react";
 import { motion } from "framer-motion";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { api, FOVImage } from "@/lib/api";
+import { useMutation, useQueryClient, useQuery } from "@tanstack/react-query";
+import { api, FOVImage, MapProtein } from "@/lib/api";
 import { ConfirmModal, MicroscopyImage } from "@/components/ui";
 import { SelectionCheckbox, DeleteOverlayButton } from "@/components/shared";
 import {
@@ -12,6 +12,8 @@ import {
   ImageIcon,
   Layers,
   AlertCircle,
+  Dna,
+  ChevronDown,
 } from "lucide-react";
 
 interface FOVGalleryProps {
@@ -26,6 +28,12 @@ interface FOVGalleryProps {
   onToggleSelect: (id: number) => void;
   /** Callback when clicking on FOV image to open editor */
   onFovClick?: (fov: FOVImage) => void;
+  /** Available proteins for selection */
+  proteins?: MapProtein[];
+  /** Callback when protein is changed for a single FOV */
+  onProteinChange?: (imageId: number, proteinId: number | null) => void;
+  /** Callback when protein is changed for multiple FOVs */
+  onBatchProteinChange?: (imageIds: number[], proteinId: number | null) => void;
 }
 
 export function FOVGallery({
@@ -37,6 +45,9 @@ export function FOVGallery({
   selectedIds,
   onToggleSelect,
   onFovClick,
+  proteins,
+  onProteinChange,
+  onBatchProteinChange,
 }: FOVGalleryProps): JSX.Element {
   // Derive hasActiveFilters from props for consistency
   const hasActiveFilters = fovs !== undefined &&
@@ -50,6 +61,10 @@ export function FOVGallery({
   // Delete state
   const [fovToDelete, setFovToDelete] = useState<{ id: number; name: string } | null>(null);
   const [deleteError, setDeleteError] = useState<string | null>(null);
+
+  // Protein dropdown state
+  const [openProteinDropdown, setOpenProteinDropdown] = useState<number | null>(null);
+  const [batchProteinDropdownOpen, setBatchProteinDropdownOpen] = useState(false);
 
   const deleteFovMutation = useMutation({
     mutationFn: (imageId: number) => api.deleteImage(imageId),
@@ -90,6 +105,54 @@ export function FOVGallery({
 
   return (
     <div className="space-y-4">
+      {/* Batch actions bar when items are selected */}
+      {selectedIds.size > 0 && proteins && onBatchProteinChange && (
+        <div className="flex items-center gap-4 p-3 bg-primary-500/10 border border-primary-500/20 rounded-lg">
+          <span className="text-sm text-primary-400">
+            {selectedIds.size} selected
+          </span>
+          <div className="relative">
+            <button
+              onClick={() => setBatchProteinDropdownOpen(!batchProteinDropdownOpen)}
+              className="flex items-center gap-2 px-3 py-1.5 bg-bg-secondary border border-white/10 rounded-lg hover:bg-bg-hover transition-colors text-sm"
+            >
+              <Dna className="w-4 h-4 text-text-muted" />
+              <span className="text-text-secondary">Set protein</span>
+              <ChevronDown className={`w-3 h-3 text-text-muted transition-transform ${batchProteinDropdownOpen ? "rotate-180" : ""}`} />
+            </button>
+            {batchProteinDropdownOpen && (
+              <div className="absolute top-full mt-1 left-0 z-50 min-w-[180px] bg-bg-elevated border border-white/10 rounded-lg shadow-xl overflow-hidden">
+                <button
+                  onClick={() => {
+                    onBatchProteinChange(Array.from(selectedIds), null);
+                    setBatchProteinDropdownOpen(false);
+                  }}
+                  className="w-full px-3 py-2 text-left hover:bg-white/5 transition-colors text-sm text-text-muted"
+                >
+                  No protein
+                </button>
+                {proteins.map((protein) => (
+                  <button
+                    key={protein.id}
+                    onClick={() => {
+                      onBatchProteinChange(Array.from(selectedIds), protein.id);
+                      setBatchProteinDropdownOpen(false);
+                    }}
+                    className="w-full px-3 py-2 text-left hover:bg-white/5 transition-colors flex items-center gap-2 text-sm"
+                  >
+                    <span
+                      className="w-3 h-3 rounded-full flex-shrink-0"
+                      style={{ backgroundColor: protein.color || "#888" }}
+                    />
+                    <span className="text-text-primary">{protein.name}</span>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
       {/* Results count */}
       {hasActiveFilters && fovs && (
         <p className="text-sm text-text-muted">
@@ -175,8 +238,74 @@ export function FOVGallery({
                 )}
 
 
-                {/* MAP Protein */}
-                {fov.map_protein && (
+                {/* MAP Protein Selector */}
+                {proteins && onProteinChange ? (
+                  <div className="relative">
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setOpenProteinDropdown(openProteinDropdown === fov.id ? null : fov.id);
+                      }}
+                      className={`flex items-center gap-1.5 text-xs px-2 py-1 rounded transition-colors ${
+                        fov.map_protein
+                          ? ""
+                          : "bg-white/5 hover:bg-white/10 text-text-muted"
+                      }`}
+                      style={fov.map_protein ? {
+                        backgroundColor: `${fov.map_protein.color}20`,
+                        color: fov.map_protein.color,
+                      } : undefined}
+                    >
+                      {fov.map_protein ? (
+                        <>
+                          <span className="w-2 h-2 rounded-full" style={{ backgroundColor: fov.map_protein.color }} />
+                          {fov.map_protein.name}
+                        </>
+                      ) : (
+                        <>
+                          <Dna className="w-3 h-3" />
+                          <span>Set protein</span>
+                        </>
+                      )}
+                      <ChevronDown className="w-3 h-3 ml-0.5" />
+                    </button>
+                    {openProteinDropdown === fov.id && (
+                      <div className="absolute top-full mt-1 left-0 z-50 min-w-[150px] bg-bg-elevated border border-white/10 rounded-lg shadow-xl overflow-hidden">
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            onProteinChange(fov.id, null);
+                            setOpenProteinDropdown(null);
+                          }}
+                          className={`w-full px-3 py-1.5 text-left hover:bg-white/5 transition-colors text-xs ${
+                            !fov.map_protein ? "bg-primary-500/10" : ""
+                          }`}
+                        >
+                          <span className="text-text-muted">No protein</span>
+                        </button>
+                        {proteins.map((protein) => (
+                          <button
+                            key={protein.id}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              onProteinChange(fov.id, protein.id);
+                              setOpenProteinDropdown(null);
+                            }}
+                            className={`w-full px-3 py-1.5 text-left hover:bg-white/5 transition-colors flex items-center gap-2 text-xs ${
+                              fov.map_protein?.id === protein.id ? "bg-primary-500/10" : ""
+                            }`}
+                          >
+                            <span
+                              className="w-2.5 h-2.5 rounded-full flex-shrink-0"
+                              style={{ backgroundColor: protein.color || "#888" }}
+                            />
+                            <span className="text-text-primary">{protein.name}</span>
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                ) : fov.map_protein ? (
                   <div
                     className="text-xs px-2 py-1 rounded w-fit"
                     style={{
@@ -186,7 +315,7 @@ export function FOVGallery({
                   >
                     {fov.map_protein.name}
                   </div>
-                )}
+                ) : null}
               </div>
             </motion.div>
           ))}

@@ -178,9 +178,6 @@ function SegmentationPanel({
             onSubmit={onTextQuery}
             isLoading={isQuerying}
             detectedInstances={detectedInstances}
-            selectedInstanceIndex={selectedInstanceIndex}
-            onSelectInstance={onSelectInstance}
-            onSaveInstance={onSaveInstance}
             onClear={onClearText}
             error={textError}
           />
@@ -363,8 +360,8 @@ export function ImageEditorPage({
   // Saved polygons for all crops
   const [savedPolygons, setSavedPolygons] = useState<CellPolygon[]>([]);
 
-  // FOV-level segmentation mask (covers entire image)
-  const [fovMaskPolygon, setFovMaskPolygon] = useState<[number, number][] | null>(null);
+  // FOV-level segmentation masks (multiple polygons covering entire image)
+  const [fovMaskPolygons, setFovMaskPolygons] = useState<[number, number][][] | null>(null);
 
   // Container dimensions for segmentation overlay
   const [containerDimensions, setContainerDimensions] = useState({ width: 0, height: 0 });
@@ -379,9 +376,9 @@ export function ImageEditorPage({
   // Segmentation hook
   const segmentation = useSegmentation({
     imageId: fovImage.id,
-    onFOVMaskSaved: useCallback((_imageId: number, polygon: [number, number][], _iouScore: number) => {
-      // Update local FOV mask state and notify parent component
-      setFovMaskPolygon(polygon);
+    onFOVMaskSaved: useCallback((_imageId: number, polygons: [number, number][][], _iouScore: number) => {
+      // Update local FOV masks state and notify parent component
+      setFovMaskPolygons(polygons);
       onDataChanged?.();
     }, [onDataChanged]),
   });
@@ -391,8 +388,26 @@ export function ImageEditorPage({
     const loadFOVMask = async () => {
       try {
         const result = await api.getFOVSegmentationMask(fovImage.id);
-        if (result.has_mask && result.polygon && result.polygon.length >= 3) {
-          setFovMaskPolygon(result.polygon);
+        if (result.has_mask && result.polygon) {
+          // Handle both single polygon and multi-polygon formats
+          const polyData = result.polygon;
+          if (polyData.length > 0) {
+            // Check if it's multi-polygon format (list of lists of [x,y])
+            // Multi-polygon: [[[x,y], ...], ...] - first element is an array of arrays
+            // Single polygon: [[x,y], ...] - first element is a tuple [number, number]
+            const firstElement = polyData[0];
+            const isMultiPolygon = Array.isArray(firstElement) &&
+              firstElement.length > 0 &&
+              Array.isArray(firstElement[0]);
+
+            if (isMultiPolygon) {
+              // Multi-polygon format: [[[x,y], ...], [[x,y], ...]]
+              setFovMaskPolygons(polyData as unknown as [number, number][][]);
+            } else {
+              // Single polygon format: [[x,y], ...]
+              setFovMaskPolygons([polyData as unknown as [number, number][]]);
+            }
+          }
         }
       } catch (err) {
         console.error("[Editor] Failed to load FOV mask:", err);
@@ -1287,6 +1302,8 @@ export function ImageEditorPage({
           <SegmentationOverlay
             clickPoints={segmentation.state.clickPoints}
             previewPolygon={segmentation.state.previewPolygon}
+            pendingPolygons={segmentation.state.pendingPolygons}
+            fovMaskPolygons={fovMaskPolygons}
             savedPolygons={savedPolygons}
             zoom={editorState.zoom}
             panOffset={editorState.panOffset}
@@ -1311,7 +1328,7 @@ export function ImageEditorPage({
             liveBboxRect={liveBboxRect}
             displayMode={displayMode}
             savedPolygons={savedPolygons}
-            fovMaskPolygon={fovMaskPolygon}
+            fovMaskPolygons={fovMaskPolygons}
           />
         )}
       </div>
@@ -1344,12 +1361,16 @@ export function ImageEditorPage({
         samEmbeddingStatus={segmentation.embeddingStatus}
         onComputeEmbedding={segmentation.computeEmbedding}
         hasClickPoints={segmentation.state.clickPoints.length > 0}
-        hasPreviewPolygon={!!segmentation.state.previewPolygon}
+        hasPreviewPolygon={!!segmentation.state.previewPolygon || segmentation.hasPendingPolygons}
         onClearSegmentation={segmentation.clearSegmentation}
         onSaveMask={handleSaveMask}
         onUndoClick={segmentation.undoLastClick}
         isSavingMask={false}
         clickPointCount={segmentation.state.clickPoints.length}
+        // Pending polygon props
+        pendingPolygonCount={segmentation.state.pendingPolygons.length}
+        onAddToPending={segmentation.addPreviewToPending}
+        canAddToPending={!!segmentation.state.previewPolygon}
       />
 
       {/* Context menu */}

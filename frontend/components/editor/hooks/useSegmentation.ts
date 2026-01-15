@@ -9,19 +9,24 @@
  * SAM 3 Text Prompting:
  * - When CUDA GPU is available, SAM 3 provides text-based segmentation
  * - Users can type descriptions like "cell" or "nucleus" to find objects
- * - Text queries can be refined with additional point clicks
+ * - Text queries return all instances directly rendered on canvas
+ *
+ * Accumulated Polygons:
+ * - Both point and text segmentation add to pendingPolygons
+ * - User saves all at once via toolbar
+ * - Saving merges (union) with existing FOV mask
  */
 
 import { useState, useCallback, useRef, useEffect } from "react";
 import { api, type SegmentClickPoint, type SAMEmbeddingStatus, type SegmentationCapabilitiesResponse, type TextSegmentInstance } from "@/lib/api";
-import type { SegmentationState, TextSegmentationState, DetectedInstance, SegmentPromptMode, SegmentationCapabilities } from "@/lib/editor/types";
+import type { SegmentationState, TextSegmentationState, DetectedInstance, SegmentPromptMode, SegmentationCapabilities, PendingPolygon } from "@/lib/editor/types";
 import { INITIAL_SEGMENTATION_STATE, INITIAL_TEXT_SEGMENTATION_STATE } from "@/lib/editor/types";
 
 interface UseSegmentationOptions {
   /** Image ID for segmentation */
   imageId: number;
-  /** Callback when FOV mask is saved successfully */
-  onFOVMaskSaved?: (imageId: number, polygon: [number, number][], iouScore: number) => void;
+  /** Callback when FOV masks are saved successfully (multiple polygons) */
+  onFOVMaskSaved?: (imageId: number, polygons: [number, number][][], iouScore: number) => void;
   /** Debounce delay for API calls (ms) */
   debounceMs?: number;
 }
@@ -39,12 +44,20 @@ interface UseSegmentationReturn {
   undoLastClick: () => void;
   /** Clear all click points and preview */
   clearSegmentation: () => void;
-  /** Save the current mask to the FOV image */
+  /** Save all pending polygons to the FOV image (union with existing) */
   saveFOVMask: () => Promise<{ success: boolean; error?: string }>;
   /** Trigger embedding computation */
   computeEmbedding: () => Promise<void>;
   /** Refresh embedding status */
   refreshStatus: () => Promise<void>;
+  /** Add current preview polygon to pending list */
+  addPreviewToPending: () => void;
+  /** Remove a pending polygon by ID */
+  removePendingPolygon: (id: string) => void;
+  /** Clear all pending polygons */
+  clearPendingPolygons: () => void;
+  /** Whether there are pending polygons to save */
+  hasPendingPolygons: boolean;
 
   // SAM 3 Text Prompting
   /** Segmentation capabilities (device, text support) */
@@ -59,9 +72,9 @@ interface UseSegmentationReturn {
   textState: TextSegmentationState;
   /** Set text prompt value */
   setTextPrompt: (prompt: string) => void;
-  /** Run text-based segmentation query */
+  /** Run text-based segmentation query - adds all instances to pending */
   queryTextSegmentation: (confidenceThreshold?: number) => Promise<void>;
-  /** Select a detected instance */
+  /** Select a detected instance (for highlighting) */
   selectInstance: (index: number | null) => void;
   /** Clear text segmentation results */
   clearTextSegmentation: () => void;
@@ -84,6 +97,13 @@ export function useSegmentation({
 
   const debounceTimerRef = useRef<NodeJS.Timeout | null>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
+  const pendingIdCounterRef = useRef(0);
+
+  // Generate unique ID for pending polygons
+  const generatePendingId = useCallback(() => {
+    pendingIdCounterRef.current += 1;
+    return `pending-${Date.now()}-${pendingIdCounterRef.current}`;
+  }, []);
 
   // Fetch capabilities on mount
   useEffect(() => {
@@ -263,22 +283,73 @@ export function useSegmentation({
     setState(INITIAL_SEGMENTATION_STATE);
   }, []);
 
+  // Add current preview polygon to pending list
+  const addPreviewToPending = useCallback(() => {
+    if (!state.previewPolygon || state.previewIoU === null) return;
+
+    const newPending: PendingPolygon = {
+      id: generatePendingId(),
+      points: state.previewPolygon,
+      score: state.previewIoU,
+      source: "point",
+      colorIndex: state.pendingPolygons.length,
+    };
+
+    setState((prev) => ({
+      ...prev,
+      pendingPolygons: [...prev.pendingPolygons, newPending],
+      // Clear preview and click points for next segmentation
+      clickPoints: [],
+      previewPolygon: null,
+      previewIoU: null,
+    }));
+  }, [state.previewPolygon, state.previewIoU, state.pendingPolygons.length, generatePendingId]);
+
+  // Remove a pending polygon by ID
+  const removePendingPolygon = useCallback((id: string) => {
+    setState((prev) => ({
+      ...prev,
+      pendingPolygons: prev.pendingPolygons.filter((p) => p.id !== id),
+    }));
+  }, []);
+
+  // Clear all pending polygons
+  const clearPendingPolygons = useCallback(() => {
+    setState((prev) => ({
+      ...prev,
+      pendingPolygons: [],
+    }));
+  }, []);
+
   const saveFOVMask = useCallback(
     async (): Promise<{ success: boolean; error?: string }> => {
-      if (!state.previewPolygon || state.previewIoU === null) {
+      // Collect all polygons to save: pending + current preview (if any)
+      const polygonsToSave: [number, number][][] = [
+        ...state.pendingPolygons.map((p) => p.points),
+      ];
+
+      // Add current preview if exists
+      if (state.previewPolygon && state.previewPolygon.length >= 3) {
+        polygonsToSave.push(state.previewPolygon);
+      }
+
+      if (polygonsToSave.length === 0) {
         return { success: false, error: "No mask to save" };
       }
 
       try {
-        const result = await api.saveFOVSegmentationMask({
+        // Save with union flag to merge with existing mask
+        const result = await api.saveFOVSegmentationMaskWithUnion({
           image_id: imageId,
-          polygon: state.previewPolygon,
-          iou_score: state.previewIoU,
-          prompt_count: state.clickPoints.length,
+          polygons: polygonsToSave,
+          iou_score: state.previewIoU ?? 0.9,
+          prompt_count: state.clickPoints.length + state.pendingPolygons.length,
         });
 
         if (result.success) {
-          onFOVMaskSaved?.(imageId, state.previewPolygon, state.previewIoU);
+          // Notify parent with all saved polygons (returned from backend)
+          const savedPolygons = result.polygons || [polygonsToSave[0]];
+          onFOVMaskSaved?.(imageId, savedPolygons, state.previewIoU ?? 0.9);
           clearSegmentation();
           return { success: true };
         }
@@ -324,7 +395,7 @@ export function useSegmentation({
       try {
         const result = await api.segmentWithText(imageId, prompt, confidenceThreshold);
 
-        if (result.success && result.instances) {
+        if (result.success && result.instances && result.instances.length > 0) {
           // Convert API response to DetectedInstance format
           const instances: DetectedInstance[] = result.instances.map((inst) => ({
             index: inst.index,
@@ -334,11 +405,27 @@ export function useSegmentation({
             areaPixels: inst.area_pixels,
           }));
 
+          // Add all instances directly to pending polygons
+          const currentPendingCount = state.pendingPolygons.length;
+          const newPendingPolygons: PendingPolygon[] = instances.map((inst, idx) => ({
+            id: generatePendingId(),
+            points: inst.polygon,
+            score: inst.score,
+            source: "text" as const,
+            colorIndex: currentPendingCount + idx,
+          }));
+
+          // Update both textState and main state
           setTextState((prev) => ({
             ...prev,
             isQuerying: false,
-            detectedInstances: instances,
+            detectedInstances: instances, // Keep for reference/highlighting
             error: null,
+          }));
+
+          setState((prev) => ({
+            ...prev,
+            pendingPolygons: [...prev.pendingPolygons, ...newPendingPolygons],
           }));
         } else {
           setTextState((prev) => ({
@@ -355,7 +442,7 @@ export function useSegmentation({
         }));
       }
     },
-    [imageId, textState.textPrompt]
+    [imageId, textState.textPrompt, state.pendingPolygons.length, generatePendingId]
   );
 
   const selectInstance = useCallback((index: number | null) => {
@@ -405,7 +492,8 @@ export function useSegmentation({
         });
 
         if (result.success) {
-          onFOVMaskSaved?.(imageId, instance.polygon, instance.score);
+          // Wrap single polygon in array for multi-polygon callback signature
+          onFOVMaskSaved?.(imageId, [instance.polygon], instance.score);
           clearTextSegmentation();
           return { success: true };
         }
@@ -443,6 +531,11 @@ export function useSegmentation({
     saveFOVMask,
     computeEmbedding,
     refreshStatus,
+    // Pending polygon management
+    addPreviewToPending,
+    removePendingPolygon,
+    clearPendingPolygons,
+    hasPendingPolygons: state.pendingPolygons.length > 0,
 
     // SAM 3 Text Prompting
     capabilities,

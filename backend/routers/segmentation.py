@@ -59,6 +59,14 @@ class SaveFOVMaskRequest(BaseModel):
     prompt_count: int = Field(..., ge=0, description="Number of click prompts used")
 
 
+class SaveFOVMaskUnionRequest(BaseModel):
+    """Request to save FOV mask with union - merges multiple polygons with existing."""
+    image_id: int = Field(..., description="ID of the FOV image")
+    polygons: List[List[List[float]]] = Field(..., min_length=1, description="List of polygons to merge")
+    iou_score: float = Field(default=0.9, ge=0, le=1, description="Average IoU score")
+    prompt_count: int = Field(default=1, ge=0, description="Number of prompts used")
+
+
 class EmbeddingStatusResponse(BaseModel):
     """SAM embedding status for an image."""
     image_id: int
@@ -322,6 +330,41 @@ async def save_fov_mask(
     result = await segmentation_service.save_fov_segmentation_mask(
         image_id=request.image_id,
         polygon=[tuple(p) for p in request.polygon],
+        iou_score=request.iou_score,
+        prompt_count=request.prompt_count,
+        db=db,
+    )
+
+    if not result["success"]:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=result.get("error")
+        )
+
+    return result
+
+
+@router.post("/save-fov-mask-union")
+async def save_fov_mask_union(
+    request: SaveFOVMaskUnionRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Save FOV-level segmentation mask with union support.
+
+    Accepts multiple polygons and merges them with any existing mask.
+    This is useful for accumulating segmentation results before saving.
+    """
+    # Convert polygon points to tuples
+    polygons = [
+        [tuple(p) for p in polygon]
+        for polygon in request.polygons
+    ]
+
+    result = await segmentation_service.save_fov_segmentation_mask_union(
+        image_id=request.image_id,
+        polygons=polygons,
         iou_score=request.iou_score,
         prompt_count=request.prompt_count,
         db=db,

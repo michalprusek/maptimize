@@ -6,17 +6,37 @@
  * SVG overlay for the image editor canvas that renders:
  * - Click points (green + for foreground, red - for background)
  * - Preview polygon (dashed green during active segmentation)
+ * - Pending polygons (accumulated before save, various colors)
+ * - Existing FOV mask (semi-transparent blue)
  * - Saved polygons for crops (solid blue in segmentation mode)
  */
 
 import { useMemo } from "react";
-import type { SegmentClickPoint, CellPolygon } from "@/lib/editor/types";
+import type { SegmentClickPoint, CellPolygon, PendingPolygon } from "@/lib/editor/types";
+import {
+  calculateObjectCoverTransform,
+  buildPolygonSvgPath,
+} from "@/lib/editor/geometry";
+
+// Colors for pending polygons
+const PENDING_COLORS = [
+  { fill: "rgba(34, 197, 94, 0.25)", stroke: "#22c55e" },   // Green
+  { fill: "rgba(59, 130, 246, 0.25)", stroke: "#3b82f6" },  // Blue
+  { fill: "rgba(168, 85, 247, 0.25)", stroke: "#a855f7" },  // Purple
+  { fill: "rgba(249, 115, 22, 0.25)", stroke: "#f97316" },  // Orange
+  { fill: "rgba(236, 72, 153, 0.25)", stroke: "#ec4899" },  // Pink
+  { fill: "rgba(6, 182, 212, 0.25)", stroke: "#06b6d4" },   // Cyan
+];
 
 interface SegmentationOverlayProps {
   /** Current click points for active segmentation */
   clickPoints: SegmentClickPoint[];
   /** Preview polygon from SAM inference */
   previewPolygon: [number, number][] | null;
+  /** Pending polygons accumulated before save */
+  pendingPolygons?: PendingPolygon[];
+  /** Existing FOV mask polygons (multiple separate instances) */
+  fovMaskPolygons?: [number, number][][] | null;
   /** Saved polygons for all crops (shown in segment mode) */
   savedPolygons: CellPolygon[];
   /** Current zoom level */
@@ -35,6 +55,8 @@ interface SegmentationOverlayProps {
 export function SegmentationOverlay({
   clickPoints,
   previewPolygon,
+  pendingPolygons = [],
+  fovMaskPolygons,
   savedPolygons,
   zoom,
   panOffset,
@@ -71,6 +93,24 @@ export function SegmentationOverlay({
     }));
   }, [savedPolygons, zoom, panOffset.x, panOffset.y]);
 
+  // Memoize pending polygon paths
+  const pendingPolygonPaths = useMemo(() => {
+    return pendingPolygons.map((poly) => ({
+      id: poly.id,
+      path: buildPath(poly.points),
+      colorIndex: poly.colorIndex,
+      source: poly.source,
+    }));
+  }, [pendingPolygons, zoom, panOffset.x, panOffset.y]);
+
+  // Memoize FOV mask paths (multiple polygons)
+  const fovMaskPaths = useMemo(() => {
+    if (!fovMaskPolygons || fovMaskPolygons.length === 0) return [];
+    return fovMaskPolygons
+      .filter(poly => poly && poly.length >= 3)
+      .map(poly => buildPath(poly));
+  }, [fovMaskPolygons, zoom, panOffset.x, panOffset.y]);
+
   // Build preview polygon path
   const previewPath = useMemo(() => {
     if (!previewPolygon || previewPolygon.length < 3) return null;
@@ -78,7 +118,7 @@ export function SegmentationOverlay({
   }, [previewPolygon, zoom, panOffset.x, panOffset.y]);
 
   // Don't render if no content
-  if (!isActive && savedPolygons.length === 0) {
+  if (!isActive && savedPolygons.length === 0 && pendingPolygons.length === 0) {
     return null;
   }
 
@@ -93,6 +133,20 @@ export function SegmentationOverlay({
         {/* Reserved for future patterns/gradients */}
       </defs>
 
+      {/* Existing FOV masks - show as base layer (multiple polygons) */}
+      {isActive && fovMaskPaths.map((path, index) => (
+        path && (
+          <path
+            key={`fov-mask-${index}`}
+            d={path}
+            fill="rgba(59, 130, 246, 0.1)"
+            stroke="rgba(59, 130, 246, 0.4)"
+            strokeWidth={1}
+            strokeDasharray="8 4"
+          />
+        )
+      ))}
+
       {/* Saved polygons - only show in segment mode */}
       {isActive &&
         savedPolygonPaths.map(({ cropId, path }) =>
@@ -106,6 +160,22 @@ export function SegmentationOverlay({
             />
           ) : null
         )}
+
+      {/* Pending polygons - accumulated before save */}
+      {isActive &&
+        pendingPolygonPaths.map(({ id, path, colorIndex }) => {
+          if (!path) return null;
+          const colors = PENDING_COLORS[colorIndex % PENDING_COLORS.length];
+          return (
+            <path
+              key={`pending-${id}`}
+              d={path}
+              fill={colors.fill}
+              stroke={colors.stroke}
+              strokeWidth={2}
+            />
+          );
+        })}
 
       {/* Preview polygon - dashed green */}
       {isActive && previewPath && (
@@ -266,34 +336,26 @@ export function CropPolygonOverlay({
   bbox,
   thumbnailSize,
 }: CropPolygonOverlayProps) {
-  // Scale factor from original to thumbnail
-  const scale = thumbnailSize / Math.max(bbox.width, bbox.height);
-
-  // Offset for centering (if bbox is not square)
-  const offsetX = (thumbnailSize - bbox.width * scale) / 2;
-  const offsetY = (thumbnailSize - bbox.height * scale) / 2;
-
-  // Convert polygon points to thumbnail coordinates
-  const path = polygon
-    .map((p, i) => {
-      // Transform from image coords to bbox-relative coords, then scale
-      const x = (p[0] - bbox.x) * scale + offsetX;
-      const y = (p[1] - bbox.y) * scale + offsetY;
-      return `${i === 0 ? "M" : "L"} ${x} ${y}`;
-    })
-    .join(" ") + " Z";
+  const transform = calculateObjectCoverTransform(bbox.width, bbox.height, thumbnailSize);
+  const scaledPath = buildPolygonSvgPath(
+    polygon,
+    transform,
+    thumbnailSize,
+    { x: bbox.x, y: bbox.y }
+  );
 
   return (
     <svg
-      className="absolute inset-0 pointer-events-none"
-      width={thumbnailSize}
-      height={thumbnailSize}
+      className="absolute inset-0 w-full h-full pointer-events-none overflow-hidden"
+      viewBox="0 0 100 100"
+      preserveAspectRatio="none"
     >
       <path
-        d={path}
+        d={scaledPath}
         fill="rgba(59, 130, 246, 0.2)"
         stroke="rgba(59, 130, 246, 0.8)"
-        strokeWidth={1}
+        strokeWidth={0.5}
+        vectorEffect="non-scaling-stroke"
       />
     </svg>
   );

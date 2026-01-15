@@ -1,5 +1,6 @@
 # Maptimize Development - Full Docker Stack
-# Podobné produkci ale s hot-reload pro vývoj
+# GPU-enabled for SAM 3 testing with hot-reload
+# Uses PRODUCTION DATABASE for testing on real data
 #
 # Použití:
 #   docker compose -f docker-compose.dev.yml up -d
@@ -8,7 +9,7 @@
 # Porty:
 #   Frontend: http://localhost:3000
 #   Backend:  http://localhost:8000
-#   DB:       localhost:5433
+#   DB:       Uses production DB (maptimize-db:5432)
 #   Redis:    localhost:6379
 
 services:
@@ -34,7 +35,7 @@ services:
       - maptimize-dev-network
     restart: unless-stopped
 
-  # Backend (FastAPI s hot-reload)
+  # Backend (FastAPI s hot-reload + GPU pro SAM 3)
   backend:
     build:
       context: ./backend
@@ -43,9 +44,10 @@ services:
     ports:
       - "8000:8000"
     environment:
-      - DATABASE_URL=postgresql://maptimize:maptimize@db:5432/maptimize
+      # USE PRODUCTION DATABASE!
+      - DATABASE_URL=postgresql://maptimize:maptimize_secure_2024@maptimize-db:5432/maptimize
       - REDIS_URL=redis://redis:6379
-      - JWT_SECRET=dev-secret-key-change-in-production
+      - JWT_SECRET=maptimize_jwt_secret_change_in_production_2024
       - JWT_ALGORITHM=HS256
       - JWT_EXPIRE_MINUTES=1440
       - DEBUG=true
@@ -61,44 +63,31 @@ services:
       - HF_HOME=/app/.cache/huggingface
       - HF_TOKEN=${HF_TOKEN:-}
       # Admin
-      - DEFAULT_ADMIN_EMAIL=admin@localhost
-      - DEFAULT_ADMIN_PASSWORD=admin123
+      - DEFAULT_ADMIN_EMAIL=admin@utia.cas.cz
+      - DEFAULT_ADMIN_PASSWORD=maptimize_admin_2024
+      # GPU
+      - CUDA_VISIBLE_DEVICES=0
+      - ML_MEMORY_LIMIT_GB=16
+      - GPU_MEMORY_FRACTION=0.65
     volumes:
       - ./backend:/app
       - ./data/uploads:/app/data/uploads
       - ./weights:/app/weights
-      - huggingface_dev_cache:/app/.cache/huggingface
-    depends_on:
-      db:
-        condition: service_healthy
-      redis:
-        condition: service_started
+      - huggingface_cache:/app/.cache/huggingface
     networks:
       - maptimize-dev-network
+      - maptimize-network  # Connect to production network for DB access
+    # GPU support for SAM 3
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
     restart: unless-stopped
 
-  # PostgreSQL with pgvector
-  db:
-    image: pgvector/pgvector:pg16
-    container_name: maptimize-dev-db
-    ports:
-      - "5433:5432"
-    environment:
-      - POSTGRES_USER=maptimize
-      - POSTGRES_PASSWORD=maptimize
-      - POSTGRES_DB=maptimize
-    volumes:
-      - maptimize_dev_postgres:/var/lib/postgresql/data
-    networks:
-      - maptimize-dev-network
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U maptimize -d maptimize"]
-      interval: 5s
-      timeout: 5s
-      retries: 5
-    restart: unless-stopped
-
-  # Redis
+  # Redis (local for dev session isolation)
   redis:
     image: redis:7-alpine
     container_name: maptimize-dev-redis
@@ -120,11 +109,14 @@ networks:
   maptimize-dev-network:
     driver: bridge
     name: maptimize-dev-network
+  # External production network for DB access
+  maptimize-network:
+    external: true
 
 volumes:
-  maptimize_dev_postgres:
-    name: maptimize_dev_postgres
   maptimize_dev_redis:
     name: maptimize_dev_redis
-  huggingface_dev_cache:
-    name: maptimize_dev_huggingface_cache
+  # Use production HuggingFace cache to share downloaded models
+  huggingface_cache:
+    external: true
+    name: maptimize_huggingface_cache

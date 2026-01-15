@@ -14,6 +14,10 @@ import { motion } from "framer-motion";
 import { Sparkles, Edit2, Hexagon } from "lucide-react";
 import type { EditorBbox, Rect, CellPolygon } from "@/lib/editor/types";
 import { getDisplayModeFilter } from "@/lib/editor/display";
+import {
+  calculateObjectCoverTransform,
+  buildPolygonSvgPath,
+} from "@/lib/editor/geometry";
 import { api, type DisplayMode } from "@/lib/api";
 import { extractCropFromImage } from "@/lib/editor/canvasUtils";
 import { CropPolygonOverlay } from "./SegmentationOverlay";
@@ -30,31 +34,25 @@ function ClippedFOVPolygonOverlay({
   polygon: [number, number][];
   bboxSize: { width: number; height: number };
   thumbnailSize: number;
-}) {
+}): React.ReactElement | null {
   if (polygon.length < 3) return null;
 
-  // Calculate scale factor (thumbnail maintains aspect ratio)
-  const scale = thumbnailSize / Math.max(bboxSize.width, bboxSize.height);
-
-  // Scale polygon points to thumbnail coordinates
-  const scaledPoints = polygon.map(([x, y]) => [x * scale, y * scale] as [number, number]);
-
-  // Build SVG path
-  const pathD = scaledPoints.reduce((d, [x, y], i) => {
-    return d + (i === 0 ? `M ${x} ${y}` : ` L ${x} ${y}`);
-  }, "") + " Z";
+  const transform = calculateObjectCoverTransform(bboxSize.width, bboxSize.height, thumbnailSize);
+  const pathD = buildPolygonSvgPath(polygon, transform, thumbnailSize);
 
   return (
     <svg
-      className="absolute inset-0 w-full h-full pointer-events-none"
-      preserveAspectRatio="xMidYMid meet"
+      className="absolute inset-0 w-full h-full pointer-events-none overflow-hidden"
+      viewBox="0 0 100 100"
+      preserveAspectRatio="none"
     >
       <path
         d={pathD}
         fill="rgba(251, 191, 36, 0.2)"
         stroke="rgba(251, 191, 36, 0.7)"
-        strokeWidth={1.5}
-        strokeDasharray="4 2"
+        strokeWidth={0.5}
+        strokeDasharray="3 1.5"
+        vectorEffect="non-scaling-stroke"
       />
     </svg>
   );
@@ -78,8 +76,8 @@ interface ImageEditorCropPreviewProps {
   displayMode: DisplayMode;
   /** Saved segmentation polygons for crops */
   savedPolygons?: CellPolygon[];
-  /** FOV-level segmentation mask polygon (in FOV coordinates) */
-  fovMaskPolygon?: [number, number][] | null;
+  /** FOV-level segmentation mask polygons (multiple, in FOV coordinates) */
+  fovMaskPolygons?: [number, number][][] | null;
 }
 
 // Thumbnail size for polygon overlay calculation
@@ -186,7 +184,7 @@ export function ImageEditorCropPreview({
   onBboxHover,
   displayMode,
   savedPolygons = [],
-  fovMaskPolygon,
+  fovMaskPolygons,
 }: ImageEditorCropPreviewProps) {
   const t = useTranslations("editor");
 
@@ -332,21 +330,35 @@ export function ImageEditorCropPreview({
                     );
                   }
 
-                  // Fall back to FOV mask clipped to this crop's bbox
-                  if (fovMaskPolygon && fovMaskPolygon.length >= 3) {
-                    const clippedPolygon = clipPolygonToBbox(fovMaskPolygon, {
-                      x: bbox.x,
-                      y: bbox.y,
-                      width: bbox.width,
-                      height: bbox.height,
-                    });
-                    if (clippedPolygon.length >= 3) {
+                  // Fall back to FOV masks clipped to this crop's bbox (multiple polygons)
+                  if (fovMaskPolygons && fovMaskPolygons.length > 0) {
+                    const clippedPolygons: [number, number][][] = [];
+                    for (const fovPoly of fovMaskPolygons) {
+                      if (fovPoly && fovPoly.length >= 3) {
+                        const clipped = clipPolygonToBbox(fovPoly, {
+                          x: bbox.x,
+                          y: bbox.y,
+                          width: bbox.width,
+                          height: bbox.height,
+                        });
+                        if (clipped.length >= 3) {
+                          clippedPolygons.push(clipped);
+                        }
+                      }
+                    }
+                    if (clippedPolygons.length > 0) {
+                      // Render all clipped polygons
                       return (
-                        <ClippedFOVPolygonOverlay
-                          polygon={clippedPolygon}
-                          bboxSize={{ width: bbox.width, height: bbox.height }}
-                          thumbnailSize={THUMBNAIL_SIZE}
-                        />
+                        <>
+                          {clippedPolygons.map((clippedPolygon, idx) => (
+                            <ClippedFOVPolygonOverlay
+                              key={idx}
+                              polygon={clippedPolygon}
+                              bboxSize={{ width: bbox.width, height: bbox.height }}
+                              thumbnailSize={THUMBNAIL_SIZE}
+                            />
+                          ))}
+                        </>
                       );
                     }
                   }
@@ -376,8 +388,11 @@ export function ImageEditorCropPreview({
                   {/* Segmentation indicator */}
                   {(() => {
                     const hasCropMask = savedPolygons.some(p => p.cropId === bbox.cropId);
-                    const hasFOVMask = fovMaskPolygon && fovMaskPolygon.length >= 3 &&
-                      clipPolygonToBbox(fovMaskPolygon, { x: bbox.x, y: bbox.y, width: bbox.width, height: bbox.height }).length >= 3;
+                    // Check if any FOV mask polygon clips to this bbox
+                    const hasFOVMask = fovMaskPolygons && fovMaskPolygons.some(fovPoly =>
+                      fovPoly && fovPoly.length >= 3 &&
+                      clipPolygonToBbox(fovPoly, { x: bbox.x, y: bbox.y, width: bbox.width, height: bbox.height }).length >= 3
+                    );
 
                     if (hasCropMask) {
                       return (

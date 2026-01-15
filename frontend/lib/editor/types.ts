@@ -72,6 +72,23 @@ export interface SegmentClickPoint {
 }
 
 /**
+ * A pending polygon waiting to be saved.
+ * Accumulated from point or text segmentation before committing.
+ */
+export interface PendingPolygon {
+  /** Unique ID for this pending polygon */
+  id: string;
+  /** Polygon points [[x, y], ...] */
+  points: [number, number][];
+  /** Confidence/IoU score */
+  score: number;
+  /** Source of this polygon */
+  source: "point" | "text";
+  /** Color index for rendering */
+  colorIndex: number;
+}
+
+/**
  * Segmentation state for the editor.
  */
 export interface SegmentationState {
@@ -87,6 +104,8 @@ export interface SegmentationState {
   error: string | null;
   /** Target crop ID for saving the mask */
   targetCropId: number | null;
+  /** Accumulated pending polygons before save */
+  pendingPolygons: PendingPolygon[];
 }
 
 /**
@@ -121,6 +140,7 @@ export const INITIAL_SEGMENTATION_STATE: SegmentationState = {
   isLoading: false,
   error: null,
   targetCropId: null,
+  pendingPolygons: [],
 };
 
 // ============================================================================

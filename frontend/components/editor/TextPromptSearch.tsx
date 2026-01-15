@@ -25,14 +25,8 @@ interface TextPromptSearchProps {
   placeholder?: string;
   /** Quick suggestion prompts */
   suggestions?: string[];
-  /** Detected instances (to show count) */
+  /** Detected instances count (polygons shown directly on canvas) */
   detectedInstances?: DetectedInstance[];
-  /** Selected instance index */
-  selectedInstanceIndex?: number | null;
-  /** Called when instance is selected */
-  onSelectInstance?: (index: number) => void;
-  /** Called when instance is saved */
-  onSaveInstance?: (index: number) => void;
   /** Called to clear results */
   onClear?: () => void;
   /** Error message */
@@ -47,9 +41,6 @@ export function TextPromptSearch({
   placeholder,
   suggestions = ["cell", "nucleus", "membrane", "organelle"],
   detectedInstances = [],
-  selectedInstanceIndex,
-  onSelectInstance,
-  onSaveInstance,
   onClear,
   error,
 }: TextPromptSearchProps) {
@@ -64,6 +55,9 @@ export function TextPromptSearch({
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
+      // Stop propagation to prevent editor keyboard shortcuts from triggering
+      e.stopPropagation();
+
       if (e.key === "Enter" && value.trim()) {
         e.preventDefault();
         onSubmit();
@@ -161,27 +155,10 @@ export function TextPromptSearch({
         </div>
       )}
 
-      {/* Results count */}
+      {/* Results count - shown briefly, polygons appear on canvas */}
       {detectedInstances.length > 0 && !isLoading && (
         <div className="text-xs text-text-secondary px-1">
-          {t("foundInstances", { count: detectedInstances.length })}
-        </div>
-      )}
-
-      {/* Instance list */}
-      {detectedInstances.length > 0 && (
-        <div className="bg-bg-secondary/80 backdrop-blur-sm rounded-xl border border-white/10 overflow-hidden">
-          <div className="max-h-48 overflow-y-auto">
-            {detectedInstances.map((instance) => (
-              <InstanceItem
-                key={instance.index}
-                instance={instance}
-                isSelected={selectedInstanceIndex === instance.index}
-                onSelect={() => onSelectInstance?.(instance.index)}
-                onSave={() => onSaveInstance?.(instance.index)}
-              />
-            ))}
-          </div>
+          {t("foundInstances", { count: detectedInstances.length })} • {t("shownOnCanvas")}
         </div>
       )}
 
@@ -191,66 +168,6 @@ export function TextPromptSearch({
           {t("noInstancesFound")}
         </div>
       )}
-    </div>
-  );
-}
-
-/**
- * Single instance item in the list.
- */
-interface InstanceItemProps {
-  instance: DetectedInstance;
-  isSelected: boolean;
-  onSelect: () => void;
-  onSave: () => void;
-}
-
-function InstanceItem({ instance, isSelected, onSelect, onSave }: InstanceItemProps) {
-  const t = useTranslations("editor");
-
-  // Color based on index for visual distinction
-  const colors = [
-    "bg-emerald-500",
-    "bg-blue-500",
-    "bg-purple-500",
-    "bg-orange-500",
-    "bg-pink-500",
-    "bg-cyan-500",
-  ];
-  const colorClass = colors[instance.index % colors.length];
-
-  return (
-    <div
-      onClick={onSelect}
-      className={`flex items-center justify-between px-3 py-2 cursor-pointer transition-colors border-b border-white/5 last:border-b-0 ${
-        isSelected
-          ? "bg-primary-500/20"
-          : "hover:bg-white/5"
-      }`}
-    >
-      <div className="flex items-center gap-2.5">
-        {/* Color indicator */}
-        <div className={`w-3 h-3 rounded-full ${colorClass}`} />
-        {/* Instance number */}
-        <span className="text-sm text-text-primary font-medium">
-          #{instance.index + 1}
-        </span>
-        {/* Confidence */}
-        <span className="text-xs text-text-secondary">
-          {Math.round(instance.score * 100)}%
-        </span>
-      </div>
-
-      {/* Save button */}
-      <button
-        onClick={(e) => {
-          e.stopPropagation();
-          onSave();
-        }}
-        className="px-2 py-1 text-xs bg-primary-500/20 hover:bg-primary-500/30 text-primary-400 rounded transition-colors"
-      >
-        {t("saveInstance")}
-      </button>
     </div>
   );
 }

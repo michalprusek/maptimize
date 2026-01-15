@@ -34,6 +34,22 @@ def mask_to_polygon(
     Returns:
         List of (x, y) polygon points, or empty list if no contours found.
     """
+    # Ensure mask is 2D - squeeze extra dimensions
+    if mask.ndim > 2:
+        mask = np.squeeze(mask)
+    if mask.ndim != 2:
+        logger.warning(f"Invalid mask dimensions: {mask.shape}, expected 2D")
+        return []
+
+    # Ensure mask is contiguous and valid
+    if mask.size == 0:
+        logger.warning("Empty mask received")
+        return []
+
+    # Make contiguous copy if needed
+    if not mask.flags['C_CONTIGUOUS']:
+        mask = np.ascontiguousarray(mask)
+
     # Ensure mask is binary uint8
     if mask.dtype == bool:
         mask_uint8 = mask.astype(np.uint8) * 255
@@ -44,12 +60,19 @@ def mask_to_polygon(
         if mask_uint8.max() == 1:
             mask_uint8 = mask_uint8 * 255
 
+    # Ensure contiguous after conversion
+    mask_uint8 = np.ascontiguousarray(mask_uint8)
+
     # Find contours
-    contours, _ = cv2.findContours(
-        mask_uint8,
-        cv2.RETR_EXTERNAL,
-        cv2.CHAIN_APPROX_SIMPLE
-    )
+    try:
+        contours, _ = cv2.findContours(
+            mask_uint8,
+            cv2.RETR_EXTERNAL,
+            cv2.CHAIN_APPROX_SIMPLE
+        )
+    except cv2.error as e:
+        logger.error(f"OpenCV findContours failed: {e}, mask shape: {mask_uint8.shape}, dtype: {mask_uint8.dtype}")
+        return []
 
     if not contours:
         logger.warning("No contours found in mask")
@@ -74,6 +97,93 @@ def mask_to_polygon(
     logger.debug(f"Polygon: {len(largest)} -> {len(points)} points (epsilon={epsilon})")
 
     return points
+
+
+def mask_to_polygons(
+    mask: np.ndarray,
+    simplify_tolerance: float = 1.5,
+    min_area: int = 100,
+) -> List[List[Tuple[int, int]]]:
+    """
+    Convert binary mask to multiple polygon points (all contours).
+
+    Unlike mask_to_polygon which returns only the largest contour,
+    this function returns ALL contours above the minimum area threshold.
+
+    Args:
+        mask: Binary mask array (H, W)
+        simplify_tolerance: Douglas-Peucker simplification tolerance in pixels.
+        min_area: Minimum contour area in pixels to include.
+
+    Returns:
+        List of polygons, each polygon is a list of (x, y) points.
+    """
+    # Ensure mask is 2D - squeeze extra dimensions
+    if mask.ndim > 2:
+        mask = np.squeeze(mask)
+    if mask.ndim != 2:
+        logger.warning(f"Invalid mask dimensions: {mask.shape}, expected 2D")
+        return []
+
+    # Ensure mask is contiguous and valid
+    if mask.size == 0:
+        logger.warning("Empty mask received")
+        return []
+
+    # Make contiguous copy if needed
+    if not mask.flags['C_CONTIGUOUS']:
+        mask = np.ascontiguousarray(mask)
+
+    # Ensure mask is binary uint8
+    if mask.dtype == bool:
+        mask_uint8 = mask.astype(np.uint8) * 255
+    elif mask.dtype in (np.float32, np.float64):
+        mask_uint8 = (mask > 0.5).astype(np.uint8) * 255
+    else:
+        mask_uint8 = mask.astype(np.uint8)
+        if mask_uint8.max() == 1:
+            mask_uint8 = mask_uint8 * 255
+
+    # Ensure contiguous after conversion
+    mask_uint8 = np.ascontiguousarray(mask_uint8)
+
+    # Find contours
+    try:
+        contours, _ = cv2.findContours(
+            mask_uint8,
+            cv2.RETR_EXTERNAL,
+            cv2.CHAIN_APPROX_SIMPLE
+        )
+    except cv2.error as e:
+        logger.error(f"OpenCV findContours failed: {e}, mask shape: {mask_uint8.shape}, dtype: {mask_uint8.dtype}")
+        return []
+
+    if not contours:
+        logger.warning("No contours found in mask")
+        return []
+
+    # Process ALL contours above minimum area
+    polygons = []
+    for contour in contours:
+        area = cv2.contourArea(contour)
+        if area < min_area:
+            continue
+
+        # Simplify polygon
+        epsilon = simplify_tolerance
+        simplified = cv2.approxPolyDP(contour, epsilon, closed=True)
+
+        # Need at least 3 points for a polygon
+        if len(simplified) < 3:
+            continue
+
+        # Convert to list of (x, y) tuples
+        points = [(int(p[0][0]), int(p[0][1])) for p in simplified]
+        polygons.append(points)
+
+    logger.debug(f"Found {len(polygons)} polygons from {len(contours)} contours")
+
+    return polygons
 
 
 def polygon_to_mask(
