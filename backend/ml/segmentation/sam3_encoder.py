@@ -101,6 +101,23 @@ class SAM3Encoder:
                 f"Error: {e}"
             ) from e
 
+        except torch.cuda.OutOfMemoryError as e:
+            raise RuntimeError(
+                f"Not enough GPU memory to load SAM 3 model. "
+                f"Required: ~4GB VRAM. Error: {e}"
+            ) from e
+
+        except (OSError, IOError) as e:
+            raise RuntimeError(
+                f"Failed to load SAM 3 model weights: {e}"
+            ) from e
+
+        except Exception as e:
+            logger.exception("Unexpected error loading SAM 3 model")
+            raise RuntimeError(
+                f"Failed to initialize SAM 3 model: {type(e).__name__}: {e}"
+            ) from e
+
     def set_image(self, image_path: str) -> Dict[str, Any]:
         """
         Load image and extract backbone features.
@@ -198,15 +215,28 @@ class SAM3Encoder:
         if isinstance(scores, torch.Tensor):
             scores = scores.cpu().numpy()
 
-        # Convert masks to polygons
+        # Convert masks to polygons, filtering empty results
         polygons = []
         areas = []
-        for mask in masks:
+        valid_boxes = []
+        valid_scores = []
+        for i, mask in enumerate(masks):
             polygon = mask_to_polygon(mask)
+            if not polygon or len(polygon) < 3:
+                logger.warning(f"Failed to convert mask {i} to polygon, skipping")
+                continue
             polygons.append(polygon)
             areas.append(int(np.sum(mask)))
+            if i < len(boxes):
+                valid_boxes.append(boxes[i])
+            if i < len(scores):
+                valid_scores.append(scores[i])
 
-        logger.info(f"Found {len(masks)} instances for '{text_prompt}'")
+        # Update boxes and scores to only valid ones
+        boxes = np.array(valid_boxes) if valid_boxes else boxes
+        scores = np.array(valid_scores) if valid_scores else scores
+
+        logger.info(f"Found {len(polygons)} valid instances for '{text_prompt}' (filtered from {len(masks)} masks)")
 
         return {
             "success": True,
@@ -298,9 +328,30 @@ class SAM3Encoder:
                 "area_pixels": area,
             }
 
-        except Exception as e:
+        except torch.cuda.OutOfMemoryError as e:
+            logger.error(f"GPU out of memory during point segmentation: {e}")
+            torch.cuda.empty_cache()
+            return {
+                "success": False,
+                "error": "GPU out of memory. Try closing other applications or using a smaller image.",
+                "error_type": "gpu_oom",
+            }
+
+        except KeyError as e:
+            logger.error(f"Missing key in SAM3 response: {e}")
+            return {
+                "success": False,
+                "error": f"Model returned unexpected response format: {e}",
+                "error_type": "response_format",
+            }
+
+        except (RuntimeError, ValueError) as e:
             logger.exception("Point-based segmentation failed")
-            return {"success": False, "error": str(e)}
+            return {"success": False, "error": str(e), "error_type": "runtime"}
+
+        except Exception as e:
+            logger.exception("Unexpected error in point-based segmentation")
+            return {"success": False, "error": str(e), "error_type": "unknown"}
 
     def refine_with_points(
         self,
@@ -378,17 +429,25 @@ class SAM3Encoder:
                 "area": area,
             }
 
-        except Exception as e:
-            logger.exception(f"Point refinement failed, returning unrefined result")
-            # Return initial result with warning flag so UI can inform user
+        except torch.cuda.OutOfMemoryError as e:
+            logger.error(f"GPU out of memory during point refinement: {e}")
+            torch.cuda.empty_cache()
             return {
-                "success": True,
-                "refinement_failed": True,
-                "warning": f"Point refinement failed ({e}), showing initial text result",
-                "mask": initial_mask,
-                "polygon": text_results["polygons"][instance_index],
-                "score": text_results["scores"][instance_index],
-                "area": text_results["areas"][instance_index],
+                "success": False,
+                "error": "GPU out of memory. Try closing other applications or using a smaller image.",
+                "error_type": "gpu_oom",
+            }
+
+        except Exception as e:
+            logger.exception(f"Point refinement failed")
+            # Return failure with fallback option for UI
+            return {
+                "success": False,
+                "error": f"Point refinement failed: {e}",
+                "fallback_available": True,
+                "fallback_polygon": text_results["polygons"][instance_index],
+                "fallback_score": text_results["scores"][instance_index],
+                "fallback_area": text_results["areas"][instance_index],
             }
 
     def ensure_loaded(self) -> None:

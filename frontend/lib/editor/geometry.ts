@@ -395,3 +395,35 @@ export function buildPolygonSvgPath(
     })
     .join(" ") + " Z";
 }
+
+/**
+ * Normalize polygon data from API to consistent multi-polygon format.
+ *
+ * API can return either:
+ * - Single polygon: [[x,y], [x,y], ...]
+ * - Multi-polygon: [[[x,y], ...], [[x,y], ...], ...]
+ *
+ * This function always returns the multi-polygon format.
+ */
+export function normalizePolygonData(
+  data: unknown
+): [number, number][][] | null {
+  if (!data || !Array.isArray(data) || data.length === 0) {
+    return null;
+  }
+
+  const firstElement = data[0];
+
+  // Check if it's multi-polygon format (first element is an array of arrays)
+  const isMultiPolygon = Array.isArray(firstElement) &&
+    firstElement.length > 0 &&
+    Array.isArray(firstElement[0]);
+
+  if (isMultiPolygon) {
+    // Already multi-polygon format
+    return data as [number, number][][];
+  }
+
+  // Single polygon format - wrap in array
+  return [data as [number, number][]];
+}

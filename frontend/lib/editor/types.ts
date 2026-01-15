@@ -201,13 +201,15 @@ export const INITIAL_TEXT_SEGMENTATION_STATE: TextSegmentationState = {
  */
 export interface SegmentationCapabilities {
   /** Current compute device */
-  device: "cuda" | "mps" | "cpu";
+  device: "cuda" | "mps" | "cpu" | "unknown";
   /** SAM variant in use */
-  variant: "mobilesam" | "sam3";
+  variant: "mobilesam" | "sam3" | "unknown";
   /** Whether text prompting is available */
   supportsTextPrompts: boolean;
   /** Human-readable model name */
   modelName: string;
+  /** Error message if capabilities check failed */
+  loadError?: string;
 }
 
 /**

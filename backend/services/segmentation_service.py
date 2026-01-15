@@ -21,7 +21,7 @@ from models.segmentation import SegmentationMask, UserSegmentationPrompt, FOVSeg
 from models.cell_crop import CellCrop
 from ml.segmentation.sam_encoder import get_sam_encoder
 from ml.segmentation.sam_decoder import get_sam_decoder
-from ml.segmentation.utils import mask_to_polygon, mask_to_polygons, calculate_polygon_area
+from ml.segmentation.utils import mask_to_polygon, mask_to_polygons, calculate_polygon_area, normalize_polygon_data
 
 logger = logging.getLogger(__name__)
 
@@ -112,7 +112,21 @@ async def compute_sam_embedding(
         logger.exception(f"Failed to compute SAM embedding for image {image_id}")
         image.sam_embedding_status = "error"
         await db.commit()
-        return {"success": False, "error": str(e)}
+
+        # Categorize error for better user feedback
+        error_type = "unknown"
+        error_msg = str(e)
+
+        if "cuda" in error_msg.lower() or "gpu" in error_msg.lower():
+            error_type = "gpu_error"
+            if "memory" in error_msg.lower() or "oom" in error_msg.lower():
+                error_type = "gpu_oom"
+                error_msg = "GPU out of memory. Try again later or use a smaller image."
+        elif "timeout" in error_msg.lower() or "connection" in error_msg.lower():
+            error_type = "network"
+            error_msg = "Network or database connection error. Please try again."
+
+        return {"success": False, "error": error_msg, "error_type": error_type}
 
 
 async def get_embedding_status(
@@ -453,16 +467,36 @@ async def queue_sam_embedding(image_id: int) -> None:
             await compute_sam_embedding(image_id, db)
     except Exception as e:
         logger.exception(f"Background SAM embedding task failed for image {image_id}")
-        # Try to update status to error
-        try:
-            async with get_db_context() as db:
-                result = await db.execute(select(Image).where(Image.id == image_id))
-                image = result.scalar_one_or_none()
-                if image:
-                    image.sam_embedding_status = "error"
-                    await db.commit()
-        except Exception:
-            logger.exception(f"Failed to update error status for image {image_id}")
+
+        # Categorize the error for logging
+        error_msg = str(e).lower()
+        if "cuda" in error_msg or "gpu" in error_msg:
+            logger.error(f"GPU error for image {image_id}: likely CUDA/memory issue")
+        elif "timeout" in error_msg or "connection" in error_msg:
+            logger.error(f"Network/DB error for image {image_id}: connection issue")
+
+        # Try to update status to error - with retry logic
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                async with get_db_context() as db:
+                    result = await db.execute(select(Image).where(Image.id == image_id))
+                    image = result.scalar_one_or_none()
+                    if image:
+                        image.sam_embedding_status = "error"
+                        await db.commit()
+                        logger.info(f"Successfully marked image {image_id} as error status")
+                        break
+            except Exception as db_error:
+                if attempt < max_retries - 1:
+                    logger.warning(f"Retry {attempt + 1}/{max_retries} updating error status for image {image_id}")
+                    import asyncio
+                    await asyncio.sleep(1)  # Brief delay before retry
+                else:
+                    logger.error(
+                        f"CRITICAL: Failed to update error status for image {image_id} after {max_retries} attempts. "
+                        f"Image may remain in stale 'pending' or 'computing' state. Error: {db_error}"
+                    )
 
 
 # ============================================================================
@@ -587,21 +621,11 @@ async def save_fov_segmentation_mask_union(
     existing_mask = existing_result.scalar_one_or_none()
 
     if existing_mask and existing_mask.polygon_points:
-        existing_data = existing_mask.polygon_points
-        # Handle both formats: single polygon [[x,y],...] or multi [[poly1], [poly2],...]
-        if existing_data and len(existing_data) > 0:
-            # Check if it's multi-polygon format (list of lists of lists)
-            if isinstance(existing_data[0], list) and len(existing_data[0]) > 0 and isinstance(existing_data[0][0], list):
-                # Multi-polygon format
-                for poly in existing_data:
-                    if len(poly) >= 3:
-                        pts = np.array([[int(p[0]), int(p[1])] for p in poly], dtype=np.int32)
-                        cv2.fillPoly(combined_mask, [pts], 1)
-            else:
-                # Single polygon format
-                if len(existing_data) >= 3:
-                    pts = np.array([[int(p[0]), int(p[1])] for p in existing_data], dtype=np.int32)
-                    cv2.fillPoly(combined_mask, [pts], 1)
+        # Normalize to multi-polygon format and add to combined mask
+        for poly in normalize_polygon_data(existing_mask.polygon_points):
+            if len(poly) >= 3:
+                pts = np.array([[int(p[0]), int(p[1])] for p in poly], dtype=np.int32)
+                cv2.fillPoly(combined_mask, [pts], 1)
 
     # Convert combined mask back to ALL polygons (not just largest)
     all_polygons = mask_to_polygons(combined_mask, simplify_tolerance=2.0, min_area=50)
@@ -807,7 +831,21 @@ async def segment_from_text(
 
     except Exception as e:
         logger.exception(f"Text segmentation failed for image {image_id}")
-        return {"success": False, "error": str(e)}
+
+        # Categorize error for better user feedback
+        error_type = "unknown"
+        error_msg = str(e)
+
+        if "cuda" in error_msg.lower() or "gpu" in error_msg.lower():
+            error_type = "gpu_error"
+            if "memory" in error_msg.lower() or "oom" in error_msg.lower():
+                error_type = "gpu_oom"
+                error_msg = "GPU out of memory. Try again later or use a smaller image."
+        elif "timeout" in error_msg.lower():
+            error_type = "timeout"
+            error_msg = "Request timed out. Please try again."
+
+        return {"success": False, "error": error_msg, "error_type": error_type}
 
 
 async def refine_text_segmentation(
@@ -880,4 +918,15 @@ async def refine_text_segmentation(
 
     except Exception as e:
         logger.exception(f"Text refinement failed for image {image_id}")
-        return {"success": False, "error": str(e)}
+
+        # Categorize error for better user feedback
+        error_type = "unknown"
+        error_msg = str(e)
+
+        if "cuda" in error_msg.lower() or "gpu" in error_msg.lower():
+            error_type = "gpu_error"
+            if "memory" in error_msg.lower() or "oom" in error_msg.lower():
+                error_type = "gpu_oom"
+                error_msg = "GPU out of memory. Try again later or use a smaller image."
+
+        return {"success": False, "error": error_msg, "error_type": error_type}

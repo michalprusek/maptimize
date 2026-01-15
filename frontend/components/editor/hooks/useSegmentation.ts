@@ -118,6 +118,14 @@ export function useSegmentation({
         });
       } catch (error) {
         console.error("[useSegmentation] Failed to get capabilities:", error);
+        // Set fallback capabilities so UI can show appropriate feedback
+        setCapabilities({
+          device: "unknown",
+          variant: "unknown",
+          supportsTextPrompts: false,
+          modelName: "unavailable",
+          loadError: error instanceof Error ? error.message : "Failed to check capabilities",
+        });
       }
     };
     fetchCapabilities();
@@ -435,10 +443,30 @@ export function useSegmentation({
           }));
         }
       } catch (error) {
+        // Categorize error for better user feedback
+        let errorMessage = "Text segmentation failed";
+
+        if (error instanceof Error) {
+          const msg = error.message.toLowerCase();
+          if (msg.includes("cuda") || msg.includes("gpu")) {
+            errorMessage = "Text segmentation requires a CUDA GPU (not available on this server)";
+          } else if (msg.includes("not found") || msg.includes("404")) {
+            errorMessage = "Image not found. It may have been deleted.";
+          } else if (msg.includes("401") || msg.includes("unauthorized") || msg.includes("session")) {
+            errorMessage = "Your session has expired. Please refresh the page.";
+          } else if (msg.includes("timeout") || msg.includes("network")) {
+            errorMessage = "Network timeout. Please check your connection and try again.";
+          } else if (msg.includes("memory") || msg.includes("oom")) {
+            errorMessage = "Server out of memory. Try again with a smaller image.";
+          } else {
+            errorMessage = error.message;
+          }
+        }
+
         setTextState((prev) => ({
           ...prev,
           isQuerying: false,
-          error: error instanceof Error ? error.message : "Query failed",
+          error: errorMessage,
         }));
       }
     },

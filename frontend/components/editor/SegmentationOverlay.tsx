@@ -11,7 +11,7 @@
  * - Saved polygons for crops (solid blue in segmentation mode)
  */
 
-import { useMemo } from "react";
+import { useMemo, useCallback } from "react";
 import type { SegmentClickPoint, CellPolygon, PendingPolygon } from "@/lib/editor/types";
 import {
   calculateObjectCoverTransform,
@@ -66,13 +66,13 @@ export function SegmentationOverlay({
   containerHeight = 0,
 }: SegmentationOverlayProps) {
   // Convert image coordinates to canvas coordinates
-  const toCanvas = (x: number, y: number) => ({
+  const toCanvas = useCallback((x: number, y: number) => ({
     x: x * zoom + panOffset.x,
     y: y * zoom + panOffset.y,
-  });
+  }), [zoom, panOffset.x, panOffset.y]);
 
-  // Build SVG path from polygon points
-  const buildPath = (points: [number, number][]) => {
+  // Build SVG path from polygon points - memoized for proper dependency tracking
+  const buildPath = useCallback((points: [number, number][]) => {
     if (points.length < 3) return "";
     return (
       points
@@ -82,7 +82,7 @@ export function SegmentationOverlay({
         })
         .join(" ") + " Z"
     );
-  };
+  }, [toCanvas]);
 
   // Memoize saved polygon paths
   const savedPolygonPaths = useMemo(() => {
@@ -91,7 +91,7 @@ export function SegmentationOverlay({
       path: buildPath(poly.points),
       iouScore: poly.iouScore,
     }));
-  }, [savedPolygons, zoom, panOffset.x, panOffset.y]);
+  }, [savedPolygons, buildPath]);
 
   // Memoize pending polygon paths
   const pendingPolygonPaths = useMemo(() => {
@@ -101,7 +101,7 @@ export function SegmentationOverlay({
       colorIndex: poly.colorIndex,
       source: poly.source,
     }));
-  }, [pendingPolygons, zoom, panOffset.x, panOffset.y]);
+  }, [pendingPolygons, buildPath]);
 
   // Memoize FOV mask paths (multiple polygons)
   const fovMaskPaths = useMemo(() => {
@@ -109,13 +109,13 @@ export function SegmentationOverlay({
     return fovMaskPolygons
       .filter(poly => poly && poly.length >= 3)
       .map(poly => buildPath(poly));
-  }, [fovMaskPolygons, zoom, panOffset.x, panOffset.y]);
+  }, [fovMaskPolygons, buildPath]);
 
   // Build preview polygon path
   const previewPath = useMemo(() => {
     if (!previewPolygon || previewPolygon.length < 3) return null;
     return buildPath(previewPolygon);
-  }, [previewPolygon, zoom, panOffset.x, panOffset.y]);
+  }, [previewPolygon, buildPath]);
 
   // Don't render if no content
   if (!isActive && savedPolygons.length === 0 && pendingPolygons.length === 0) {

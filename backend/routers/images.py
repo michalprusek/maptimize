@@ -13,7 +13,7 @@ import aiofiles
 from PIL import Image as PILImage
 from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Form, Query, BackgroundTasks
 from fastapi.responses import FileResponse, Response
-from sqlalchemy import select, func, delete, or_
+from sqlalchemy import select, func, delete, or_, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -1307,7 +1307,6 @@ async def reprocess_image(
     image.detect_cells = should_detect
 
     # Delete existing cell crops
-    from sqlalchemy import delete
     await db.execute(
         delete(CellCrop).where(CellCrop.image_id == image_id)
     )
@@ -1379,7 +1378,6 @@ async def update_image_protein(
     await db.commit()
 
     # Also update all cell crops from this image
-    from sqlalchemy import update
     await db.execute(
         update(CellCrop)
         .where(CellCrop.image_id == image_id)
@@ -1397,8 +1395,8 @@ async def update_image_protein(
 
 @router.patch("/batch-protein")
 async def batch_update_image_protein(
-    image_ids: List[int],
-    map_protein_id: Optional[int] = None,
+    image_ids: List[int] = Query(..., description="List of image IDs to update"),
+    map_protein_id: Optional[int] = Query(default=None, description="MAP protein ID to assign"),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
@@ -1447,7 +1445,6 @@ async def batch_update_image_protein(
             )
 
     # Update images
-    from sqlalchemy import update
     await db.execute(
         update(Image)
         .where(Image.id.in_(owned_image_ids))

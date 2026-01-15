@@ -356,6 +356,25 @@ async def save_fov_mask_union(
     Accepts multiple polygons and merges them with any existing mask.
     This is useful for accumulating segmentation results before saving.
     """
+    from sqlalchemy import select
+    from sqlalchemy.orm import selectinload
+    from models.image import Image
+    from models.experiment import Experiment
+
+    # Verify ownership - user must own the image to save segmentation
+    result = await db.execute(
+        select(Image)
+        .options(selectinload(Image.experiment))
+        .where(Image.id == request.image_id)
+    )
+    image = result.scalar_one_or_none()
+
+    if not image or image.experiment.user_id != current_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Image not found or access denied"
+        )
+
     # Convert polygon points to tuples
     polygons = [
         [tuple(p) for p in polygon]

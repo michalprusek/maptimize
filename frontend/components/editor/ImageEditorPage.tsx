@@ -37,6 +37,7 @@ import {
 import {
   calculateFitScale,
   calculateCenterOffset,
+  normalizePolygonData,
 } from "@/lib/editor/geometry";
 
 import { ImageEditorCanvas } from "./ImageEditorCanvas";
@@ -113,9 +114,6 @@ interface SegmentationPanelProps {
   onTextQuery: () => void;
   isQuerying: boolean;
   detectedInstances: DetectedInstance[];
-  selectedInstanceIndex: number | null;
-  onSelectInstance: (index: number) => void;
-  onSaveInstance: (index: number) => void;
   onClearText: () => void;
   textError: string | null;
 }
@@ -129,9 +127,6 @@ function SegmentationPanel({
   onTextQuery,
   isQuerying,
   detectedInstances,
-  selectedInstanceIndex,
-  onSelectInstance,
-  onSaveInstance,
   onClearText,
   textError,
 }: SegmentationPanelProps): React.ReactElement {
@@ -389,24 +384,9 @@ export function ImageEditorPage({
       try {
         const result = await api.getFOVSegmentationMask(fovImage.id);
         if (result.has_mask && result.polygon) {
-          // Handle both single polygon and multi-polygon formats
-          const polyData = result.polygon;
-          if (polyData.length > 0) {
-            // Check if it's multi-polygon format (list of lists of [x,y])
-            // Multi-polygon: [[[x,y], ...], ...] - first element is an array of arrays
-            // Single polygon: [[x,y], ...] - first element is a tuple [number, number]
-            const firstElement = polyData[0];
-            const isMultiPolygon = Array.isArray(firstElement) &&
-              firstElement.length > 0 &&
-              Array.isArray(firstElement[0]);
-
-            if (isMultiPolygon) {
-              // Multi-polygon format: [[[x,y], ...], [[x,y], ...]]
-              setFovMaskPolygons(polyData as unknown as [number, number][][]);
-            } else {
-              // Single polygon format: [[x,y], ...]
-              setFovMaskPolygons([polyData as unknown as [number, number][]]);
-            }
+          const normalized = normalizePolygonData(result.polygon);
+          if (normalized) {
+            setFovMaskPolygons(normalized);
           }
         }
       } catch (err) {
@@ -993,14 +973,6 @@ export function ImageEditorPage({
     }
   }, [segmentation, showError]);
 
-  // Save a text-detected instance to FOV
-  const handleSaveTextInstance = useCallback(async (instanceIndex: number) => {
-    const result = await segmentation.saveTextInstanceToFOV(instanceIndex);
-    if (!result.success && result.error) {
-      showError(result.error);
-    }
-  }, [segmentation, showError]);
-
   // Track panning state for segment mode Shift+drag
   const [segmentPanning, setSegmentPanning] = useState<{ startX: number; startY: number; startPanX: number; startPanY: number } | null>(null);
 
@@ -1217,9 +1189,6 @@ export function ImageEditorPage({
                 onTextQuery={segmentation.queryTextSegmentation}
                 isQuerying={segmentation.textState.isQuerying}
                 detectedInstances={segmentation.textState.detectedInstances}
-                selectedInstanceIndex={segmentation.textState.selectedInstanceIndex}
-                onSelectInstance={segmentation.selectInstance}
-                onSaveInstance={handleSaveTextInstance}
                 onClearText={segmentation.clearTextSegmentation}
                 textError={segmentation.textState.error}
               />
@@ -1239,9 +1208,6 @@ export function ImageEditorPage({
               onTextQuery={segmentation.queryTextSegmentation}
               isQuerying={segmentation.textState.isQuerying}
               detectedInstances={segmentation.textState.detectedInstances}
-              selectedInstanceIndex={segmentation.textState.selectedInstanceIndex}
-              onSelectInstance={segmentation.selectInstance}
-              onSaveInstance={handleSaveTextInstance}
               onClearText={segmentation.clearTextSegmentation}
               textError={segmentation.textState.error}
             />
