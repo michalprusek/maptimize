@@ -187,8 +187,27 @@ async def segment_interactive(
     Points with label=1 indicate foreground (object to segment).
     Points with label=0 indicate background (exclude from mask).
     """
-    # Convert points to tuples (round floats to int for SAM)
-    point_coords = [(int(round(p.x)), int(round(p.y))) for p in request.points]
+    from sqlalchemy import select
+    from models.image import Image
+
+    # Get image dimensions for bounds validation
+    image_result = await db.execute(
+        select(Image).where(Image.id == request.image_id)
+    )
+    image = image_result.scalar_one_or_none()
+
+    if not image:
+        return SegmentResponse(success=False, error="Image not found")
+
+    # Convert points to tuples with bounds validation
+    img_width = image.width or 2048
+    img_height = image.height or 2048
+    point_coords = []
+    for p in request.points:
+        # Clamp coordinates to image bounds
+        x = max(0, min(int(round(p.x)), img_width - 1))
+        y = max(0, min(int(round(p.y)), img_height - 1))
+        point_coords.append((x, y))
     point_labels = [p.label for p in request.points]
 
     result = await segmentation_service.segment_from_prompts(

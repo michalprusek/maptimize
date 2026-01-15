@@ -280,6 +280,14 @@
     "saveInstance": "Save",
     "clear": "Clear",
     "search": "Search",
-    "fovMaskSaved": "FOV mask saved successfully"
+    "fovMaskSaved": "FOV mask saved successfully",
+    "errors": {
+      "gpuRequired": "Text segmentation requires a CUDA GPU (not available on this server)",
+      "imageNotFound": "Image not found. It may have been deleted.",
+      "sessionExpired": "Your session has expired. Please refresh the page.",
+      "networkTimeout": "Network timeout. Please check your connection and try again.",
+      "outOfMemory": "Server out of memory. Try again with a smaller image.",
+      "segmentationFailed": "Text segmentation failed"
+    }
   }
 }

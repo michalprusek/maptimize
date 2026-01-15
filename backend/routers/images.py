@@ -1373,17 +1373,22 @@ async def update_image_protein(
                 detail="MAP protein not found"
             )
 
-    # Update image protein
-    image.map_protein_id = map_protein_id
-    await db.commit()
-
-    # Also update all cell crops from this image
-    await db.execute(
-        update(CellCrop)
-        .where(CellCrop.image_id == image_id)
-        .values(map_protein_id=map_protein_id)
-    )
-    await db.commit()
+    # Update image protein and all cell crops in a single transaction
+    try:
+        image.map_protein_id = map_protein_id
+        await db.execute(
+            update(CellCrop)
+            .where(CellCrop.image_id == image_id)
+            .values(map_protein_id=map_protein_id)
+        )
+        await db.commit()
+    except Exception as e:
+        await db.rollback()
+        logger.exception(f"Failed to update protein for image {image_id}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to update protein assignment. Please try again."
+        )
 
     return {
         "id": image.id,
@@ -1419,11 +1424,24 @@ async def batch_update_image_protein(
     )
     images = result.scalars().all()
 
-    # Filter to only images owned by user
+    # Track which images were found vs not found vs access denied
+    found_ids = {img.id for img in images}
+    not_found_ids = list(set(image_ids) - found_ids)
+    access_denied_ids = [
+        img.id for img in images
+        if img.experiment.user_id != current_user.id
+    ]
     owned_image_ids = [
         img.id for img in images
         if img.experiment.user_id == current_user.id
     ]
+
+    # Log any skipped images
+    if not_found_ids or access_denied_ids:
+        logger.warning(
+            f"Batch protein update: user {current_user.id} requested {len(image_ids)} images, "
+            f"not_found={not_found_ids}, access_denied={access_denied_ids}"
+        )
 
     if not owned_image_ids:
         raise HTTPException(
@@ -1465,4 +1483,6 @@ async def batch_update_image_protein(
         "map_protein_id": map_protein_id,
         "map_protein_name": protein.name if protein else None,
         "map_protein_color": protein.color if protein else None,
+        "skipped_not_found": not_found_ids,
+        "skipped_access_denied": access_denied_ids,
     }

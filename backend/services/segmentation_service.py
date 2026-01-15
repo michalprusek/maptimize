@@ -26,6 +26,38 @@ from ml.segmentation.utils import mask_to_polygon, mask_to_polygons, calculate_p
 logger = logging.getLogger(__name__)
 
 
+# ============================================================================
+# Error Categorization Utility (DRY - used by multiple functions)
+# ============================================================================
+
+def categorize_segmentation_error(error: Exception) -> Tuple[str, str]:
+    """
+    Categorize segmentation errors for user-friendly feedback.
+
+    This is a shared utility to avoid duplicating error categorization logic.
+
+    Args:
+        error: The exception that occurred
+
+    Returns:
+        Tuple of (error_type, user_friendly_message)
+    """
+    error_msg = str(error).lower()
+
+    if "cuda" in error_msg or "gpu" in error_msg:
+        if "memory" in error_msg or "oom" in error_msg:
+            return "gpu_oom", "GPU out of memory. Try again later or use a smaller image."
+        return "gpu_error", str(error)
+
+    if "timeout" in error_msg:
+        return "timeout", "Request timed out. Please try again."
+
+    if "connection" in error_msg:
+        return "network", "Network or database connection error. Please try again."
+
+    return "unknown", str(error)
+
+
 async def compute_sam_embedding(
     image_id: int,
     db: AsyncSession,
@@ -113,19 +145,7 @@ async def compute_sam_embedding(
         image.sam_embedding_status = "error"
         await db.commit()
 
-        # Categorize error for better user feedback
-        error_type = "unknown"
-        error_msg = str(e)
-
-        if "cuda" in error_msg.lower() or "gpu" in error_msg.lower():
-            error_type = "gpu_error"
-            if "memory" in error_msg.lower() or "oom" in error_msg.lower():
-                error_type = "gpu_oom"
-                error_msg = "GPU out of memory. Try again later or use a smaller image."
-        elif "timeout" in error_msg.lower() or "connection" in error_msg.lower():
-            error_type = "network"
-            error_msg = "Network or database connection error. Please try again."
-
+        error_type, error_msg = categorize_segmentation_error(e)
         return {"success": False, "error": error_msg, "error_type": error_type}
 
 
@@ -469,10 +489,10 @@ async def queue_sam_embedding(image_id: int) -> None:
         logger.exception(f"Background SAM embedding task failed for image {image_id}")
 
         # Categorize the error for logging
-        error_msg = str(e).lower()
-        if "cuda" in error_msg or "gpu" in error_msg:
+        error_type, _ = categorize_segmentation_error(e)
+        if error_type in ("gpu_error", "gpu_oom"):
             logger.error(f"GPU error for image {image_id}: likely CUDA/memory issue")
-        elif "timeout" in error_msg or "connection" in error_msg:
+        elif error_type in ("network", "timeout"):
             logger.error(f"Network/DB error for image {image_id}: connection issue")
 
         # Try to update status to error - with retry logic
@@ -602,73 +622,87 @@ async def save_fov_segmentation_mask_union(
         logger.warning(f"Image not found for FOV mask union: image_id={image_id}")
         return {"success": False, "error": "Image not found"}
 
-    # Get image dimensions
-    img_width = image.width or 2048
-    img_height = image.height or 2048
+    try:
+        # Get image dimensions
+        img_width = image.width or 2048
+        img_height = image.height or 2048
 
-    # Create combined mask from all new polygons
-    combined_mask = np.zeros((img_height, img_width), dtype=np.uint8)
+        # Create combined mask from all new polygons
+        combined_mask = np.zeros((img_height, img_width), dtype=np.uint8)
 
-    for polygon in polygons:
-        if len(polygon) >= 3:
-            pts = np.array([[int(p[0]), int(p[1])] for p in polygon], dtype=np.int32)
-            cv2.fillPoly(combined_mask, [pts], 1)
-
-    # Check for existing mask and union with it
-    existing_result = await db.execute(
-        select(FOVSegmentationMask).where(FOVSegmentationMask.image_id == image_id)
-    )
-    existing_mask = existing_result.scalar_one_or_none()
-
-    if existing_mask and existing_mask.polygon_points:
-        # Normalize to multi-polygon format and add to combined mask
-        for poly in normalize_polygon_data(existing_mask.polygon_points):
-            if len(poly) >= 3:
-                pts = np.array([[int(p[0]), int(p[1])] for p in poly], dtype=np.int32)
+        for polygon in polygons:
+            if len(polygon) >= 3:
+                pts = np.array([[int(p[0]), int(p[1])] for p in polygon], dtype=np.int32)
                 cv2.fillPoly(combined_mask, [pts], 1)
 
-    # Convert combined mask back to ALL polygons (not just largest)
-    all_polygons = mask_to_polygons(combined_mask, simplify_tolerance=2.0, min_area=50)
-
-    if len(all_polygons) == 0:
-        logger.warning(f"Union resulted in no valid polygons")
-        return {"success": False, "error": "Union resulted in no valid polygons"}
-
-    # Calculate total area
-    total_area = sum(calculate_polygon_area(poly) for poly in all_polygons)
-
-    # Store as list of polygons (multi-polygon format)
-    polygon_data = [[list(p) for p in poly] for poly in all_polygons]
-
-    # Save all polygons
-    if existing_mask:
-        existing_mask.polygon_points = polygon_data
-        existing_mask.area_pixels = total_area
-        existing_mask.iou_score = iou_score
-        existing_mask.prompt_count = prompt_count
-        existing_mask.creation_method = creation_method
-    else:
-        mask = FOVSegmentationMask(
-            image_id=image_id,
-            polygon_points=polygon_data,
-            area_pixels=total_area,
-            iou_score=iou_score,
-            creation_method=creation_method,
-            prompt_count=prompt_count,
+        # Check for existing mask and union with it
+        existing_result = await db.execute(
+            select(FOVSegmentationMask).where(FOVSegmentationMask.image_id == image_id)
         )
-        db.add(mask)
+        existing_mask = existing_result.scalar_one_or_none()
 
-    await db.commit()
+        if existing_mask and existing_mask.polygon_points:
+            # Normalize to multi-polygon format and add to combined mask
+            for poly in normalize_polygon_data(existing_mask.polygon_points):
+                if len(poly) >= 3:
+                    pts = np.array([[int(p[0]), int(p[1])] for p in poly], dtype=np.int32)
+                    cv2.fillPoly(combined_mask, [pts], 1)
 
-    logger.info(f"Saved FOV segmentation mask union for image {image_id}: {len(all_polygons)} polygons from {len(polygons)} input polygons")
+        # Convert combined mask back to ALL polygons (not just largest)
+        all_polygons = mask_to_polygons(combined_mask, simplify_tolerance=2.0, min_area=50)
 
-    return {
-        "success": True,
-        "image_id": image_id,
-        "area_pixels": total_area,
-        "polygons": polygon_data,
-        "polygon_count": len(all_polygons),
-    }
+        if len(all_polygons) == 0:
+            logger.warning(f"Union resulted in no valid polygons")
+            return {"success": False, "error": "Union resulted in no valid polygons"}
+
+        # Calculate total area
+        total_area = sum(calculate_polygon_area(poly) for poly in all_polygons)
+
+        # Store as list of polygons (multi-polygon format)
+        polygon_data = [[list(p) for p in poly] for poly in all_polygons]
+
+        # Save all polygons
+        if existing_mask:
+            existing_mask.polygon_points = polygon_data
+            existing_mask.area_pixels = total_area
+            existing_mask.iou_score = iou_score
+            existing_mask.prompt_count = prompt_count
+            existing_mask.creation_method = creation_method
+        else:
+            mask = FOVSegmentationMask(
+                image_id=image_id,
+                polygon_points=polygon_data,
+                area_pixels=total_area,
+                iou_score=iou_score,
+                creation_method=creation_method,
+                prompt_count=prompt_count,
+            )
+            db.add(mask)
+
+        await db.commit()
+
+        logger.info(f"Saved FOV segmentation mask union for image {image_id}: {len(all_polygons)} polygons from {len(polygons)} input polygons")
+
+        return {
+            "success": True,
+            "image_id": image_id,
+            "area_pixels": total_area,
+            "polygons": polygon_data,
+            "polygon_count": len(all_polygons),
+        }
+
+    except cv2.error as e:
+        logger.exception(f"OpenCV error in FOV mask union for image {image_id}")
+        return {"success": False, "error": "Failed to process polygon geometry", "error_type": "opencv"}
+
+    except (ValueError, TypeError) as e:
+        logger.exception(f"Invalid polygon data for image {image_id}")
+        return {"success": False, "error": f"Invalid polygon data: {e}", "error_type": "validation"}
+
+    except Exception as e:
+        logger.exception(f"Unexpected error in FOV mask union for image {image_id}")
+        error_type, error_msg = categorize_segmentation_error(e)
+        return {"success": False, "error": error_msg, "error_type": error_type}
 
 
 async def get_fov_segmentation_mask(
@@ -832,19 +866,7 @@ async def segment_from_text(
     except Exception as e:
         logger.exception(f"Text segmentation failed for image {image_id}")
 
-        # Categorize error for better user feedback
-        error_type = "unknown"
-        error_msg = str(e)
-
-        if "cuda" in error_msg.lower() or "gpu" in error_msg.lower():
-            error_type = "gpu_error"
-            if "memory" in error_msg.lower() or "oom" in error_msg.lower():
-                error_type = "gpu_oom"
-                error_msg = "GPU out of memory. Try again later or use a smaller image."
-        elif "timeout" in error_msg.lower():
-            error_type = "timeout"
-            error_msg = "Request timed out. Please try again."
-
+        error_type, error_msg = categorize_segmentation_error(e)
         return {"success": False, "error": error_msg, "error_type": error_type}
 
 
@@ -919,14 +941,5 @@ async def refine_text_segmentation(
     except Exception as e:
         logger.exception(f"Text refinement failed for image {image_id}")
 
-        # Categorize error for better user feedback
-        error_type = "unknown"
-        error_msg = str(e)
-
-        if "cuda" in error_msg.lower() or "gpu" in error_msg.lower():
-            error_type = "gpu_error"
-            if "memory" in error_msg.lower() or "oom" in error_msg.lower():
-                error_type = "gpu_oom"
-                error_msg = "GPU out of memory. Try again later or use a smaller image."
-
+        error_type, error_msg = categorize_segmentation_error(e)
         return {"success": False, "error": error_msg, "error_type": error_type}

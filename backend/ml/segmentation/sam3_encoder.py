@@ -429,6 +429,14 @@ class SAM3Encoder:
                 "area": area,
             }
 
+        except ImportError as e:
+            logger.error(f"SAM 3 library API incompatibility: {e}")
+            return {
+                "success": False,
+                "error": "SAM 3 model version incompatible. Please contact administrator.",
+                "error_type": "version_error",
+            }
+
         except torch.cuda.OutOfMemoryError as e:
             logger.error(f"GPU out of memory during point refinement: {e}")
             torch.cuda.empty_cache()
