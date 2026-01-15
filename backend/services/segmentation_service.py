@@ -510,7 +510,6 @@ async def queue_sam_embedding(image_id: int) -> None:
             except Exception as db_error:
                 if attempt < max_retries - 1:
                     logger.warning(f"Retry {attempt + 1}/{max_retries} updating error status for image {image_id}")
-                    import asyncio
                     await asyncio.sleep(1)  # Brief delay before retry
                 else:
                     logger.error(

@@ -485,24 +485,7 @@ async def list_cell_crops(
     result = await db.execute(query)
     crops = result.scalars().all()
 
-    return [
-        CellCropGalleryResponse(
-            id=c.id,
-            image_id=c.image_id,
-            parent_filename=c.image.original_filename,
-            bbox_x=c.bbox_x,
-            bbox_y=c.bbox_y,
-            bbox_w=c.bbox_w,
-            bbox_h=c.bbox_h,
-            bundleness_score=c.bundleness_score,
-            detection_confidence=c.detection_confidence,
-            excluded=c.excluded,
-            created_at=c.created_at,
-            map_protein_name=c.map_protein.name if c.map_protein else None,
-            map_protein_color=c.map_protein.color if c.map_protein else None,
-        )
-        for c in crops
-    ]
+    return [CellCropGalleryResponse.from_crop(c) for c in crops]
 
 
 @router.get("/{fov_id}/crops", response_model=List[CellCropGalleryResponse])
@@ -546,24 +529,7 @@ async def list_fov_crops(
     result = await db.execute(query)
     crops = result.scalars().all()
 
-    return [
-        CellCropGalleryResponse(
-            id=c.id,
-            image_id=c.image_id,
-            parent_filename=c.image.original_filename,
-            bbox_x=c.bbox_x,
-            bbox_y=c.bbox_y,
-            bbox_w=c.bbox_w,
-            bbox_h=c.bbox_h,
-            bundleness_score=c.bundleness_score,
-            detection_confidence=c.detection_confidence,
-            excluded=c.excluded,
-            created_at=c.created_at,
-            map_protein_name=c.map_protein.name if c.map_protein else None,
-            map_protein_color=c.map_protein.color if c.map_protein else None,
-        )
-        for c in crops
-    ]
+    return [CellCropGalleryResponse.from_crop(c) for c in crops]
 
 
 @router.get("/crops/{crop_id}/image")

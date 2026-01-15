@@ -373,6 +373,40 @@ async def create_manual_crop(
     return crop, None
 
 
+async def verify_experiment_ownership(
+    experiment_id: int,
+    user_id: int,
+    db: AsyncSession,
+) -> Tuple[bool, Optional[str]]:
+    """
+    Verify user owns an experiment.
+
+    DRY: Common ownership check pattern used across multiple routers.
+
+    Args:
+        experiment_id: ID of the experiment
+        user_id: ID of the user
+        db: Database session
+
+    Returns:
+        Tuple of (is_owner, error message or None)
+    """
+    from models.experiment import Experiment
+
+    result = await db.execute(
+        select(Experiment).where(
+            Experiment.id == experiment_id,
+            Experiment.user_id == user_id
+        )
+    )
+    experiment = result.scalar_one_or_none()
+
+    if not experiment:
+        return False, "Experiment not found"
+
+    return True, None
+
+
 async def get_image_with_ownership_check(
     image_id: int,
     user_id: int,

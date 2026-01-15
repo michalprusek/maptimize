@@ -61,6 +61,30 @@ class CellCropGalleryResponse(BaseModel):
     class Config:
         from_attributes = True
 
+    @classmethod
+    def from_crop(cls, crop) -> "CellCropGalleryResponse":
+        """
+        Create response from CellCrop model instance.
+
+        DRY: Single source of truth for CellCrop -> GalleryResponse conversion.
+        Requires CellCrop.image and CellCrop.map_protein to be loaded.
+        """
+        return cls(
+            id=crop.id,
+            image_id=crop.image_id,
+            parent_filename=crop.image.original_filename,
+            bbox_x=crop.bbox_x,
+            bbox_y=crop.bbox_y,
+            bbox_w=crop.bbox_w,
+            bbox_h=crop.bbox_h,
+            bundleness_score=crop.bundleness_score,
+            detection_confidence=crop.detection_confidence,
+            excluded=crop.excluded,
+            created_at=crop.created_at,
+            map_protein_name=crop.map_protein.name if crop.map_protein else None,
+            map_protein_color=crop.map_protein.color if crop.map_protein else None,
+        )
+
 
 class ImageResponse(BaseModel):
     """Schema for image response."""
