@@ -109,6 +109,25 @@ async def ensure_schema_updates():
             ("users", "avatar_url", "VARCHAR(500)"),
             # SAM embedding status for interactive segmentation
             ("images", "sam_embedding_status", "VARCHAR(20)"),
+            # MAP protein assignment at experiment level
+            ("experiments", "map_protein_id", "INTEGER REFERENCES map_proteins(id)"),
+            # FASTA sequence storage for protein reference
+            ("experiments", "fasta_sequence", "TEXT"),
+            # MAP protein extended fields for protein page
+            ("map_proteins", "uniprot_id", "VARCHAR(20)"),
+            ("map_proteins", "fasta_sequence", "TEXT"),
+            ("map_proteins", "gene_name", "VARCHAR(100)"),
+            ("map_proteins", "organism", "VARCHAR(100)"),
+            ("map_proteins", "sequence_length", "INTEGER"),
+            # ESM-C 600M embedding for proteins (1152-dim)
+            ("map_proteins", "embedding", "vector(1152)"),
+            ("map_proteins", "embedding_model", "VARCHAR(100)"),
+            ("map_proteins", "embedding_computed_at", "TIMESTAMP WITH TIME ZONE"),
+            # Pre-computed UMAP coordinates for proteins
+            ("map_proteins", "umap_x", "FLOAT"),
+            ("map_proteins", "umap_y", "FLOAT"),
+            ("map_proteins", "umap_computed_at", "TIMESTAMP WITH TIME ZONE"),
+            ("map_proteins", "created_at", "TIMESTAMP WITH TIME ZONE DEFAULT NOW()"),
         ]
 
         for table, column, col_type in updates:

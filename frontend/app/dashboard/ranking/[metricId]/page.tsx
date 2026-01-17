@@ -7,6 +7,11 @@ import { motion, AnimatePresence } from "framer-motion";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useTranslations } from "next-intl";
 import { api, API_URL, MetricImage, MetricImageForRanking } from "@/lib/api";
+import {
+  staggerContainerVariants,
+  staggerItemVariants,
+  cardHoverProps,
+} from "@/lib/animations";
 import { ImportDialog } from "@/components/metric/ImportDialog";
 import { ConfirmModal, MicroscopyImage } from "@/components/ui";
 import {
@@ -14,6 +19,8 @@ import {
   SortOrder,
   SortOption,
   ProteinInfo,
+  SelectionCheckbox,
+  DeleteOverlayButton,
 } from "@/components/shared";
 import {
   ArrowLeft,
@@ -158,6 +165,11 @@ export default function MetricDetailPage(): JSX.Element {
   const [searchQuery, setSearchQuery] = useState("");
   const [sortField, setSortField] = useState<ImageSortField>("date");
   const [sortOrder, setSortOrder] = useState<SortOrder>("desc");
+  const [proteinFilter, setProteinFilter] = useState<string | null>(null);
+
+  // Selection state for images tab
+  const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
+  const [showBulkDeleteConfirm, setShowBulkDeleteConfirm] = useState(false);
 
   const { data: metric, isLoading: metricLoading } = useQuery({
     queryKey: ["metric", metricId],
@@ -188,6 +200,21 @@ export default function MetricDetailPage(): JSX.Element {
     enabled: activeTab === "leaderboard",
   });
 
+  // Get unique proteins from images for filter
+  const availableProteins = useMemo((): ProteinInfo[] => {
+    if (!images) return [];
+    const proteinSet = new Set<string>();
+    images.forEach((img) => {
+      if (img.map_protein_name) {
+        proteinSet.add(img.map_protein_name);
+      }
+    });
+    return Array.from(proteinSet).map((name) => {
+      const img = images.find((i) => i.map_protein_name === name);
+      return { name, color: img?.map_protein_color };
+    });
+  }, [images]);
+
   // Filter and sort images
   const filteredImages = useMemo(() => {
     if (!images) return [];
@@ -200,6 +227,11 @@ export default function MetricDetailPage(): JSX.Element {
       result = result.filter((img) =>
         img.original_filename?.toLowerCase().includes(query)
       );
+    }
+
+    // Protein filter
+    if (proteinFilter !== null) {
+      result = result.filter((img) => img.map_protein_name === proteinFilter);
     }
 
     // Sort
@@ -223,13 +255,37 @@ export default function MetricDetailPage(): JSX.Element {
     });
 
     return result;
-  }, [images, searchQuery, sortField, sortOrder]);
+  }, [images, searchQuery, sortField, sortOrder, proteinFilter]);
+
+  // Selection helpers
+  const toggleSelect = (id: number) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) {
+        next.delete(id);
+      } else {
+        next.add(id);
+      }
+      return next;
+    });
+  };
+
+  const selectAll = () => {
+    if (filteredImages.length === selectedIds.size) {
+      setSelectedIds(new Set());
+    } else {
+      setSelectedIds(new Set(filteredImages.map((img) => img.id)));
+    }
+  };
+
+  const clearSelection = () => setSelectedIds(new Set());
 
   const clearFilters = () => {
     setSearchQuery("");
+    setProteinFilter(null);
   };
 
-  const hasActiveFilters = !!searchQuery;
+  const hasActiveFilters = !!searchQuery || proteinFilter !== null;
 
   const deleteImageMutation = useMutation({
     mutationFn: (imageId: number) => api.deleteMetricImage(metricId, imageId),
@@ -247,6 +303,31 @@ export default function MetricDetailPage(): JSX.Element {
     },
   });
 
+  // Bulk delete mutation
+  const bulkDeleteMutation = useMutation({
+    mutationFn: async (ids: number[]) => {
+      const results = await Promise.allSettled(ids.map((id) => api.deleteMetricImage(metricId, id)));
+      const failures = results.filter((r) => r.status === "rejected");
+      if (failures.length > 0) {
+        const successCount = results.length - failures.length;
+        throw new Error(`Deleted ${successCount} of ${ids.length} images. ${failures.length} failed.`);
+      }
+    },
+    onSuccess: () => {
+      setSelectedIds(new Set());
+      setShowBulkDeleteConfirm(false);
+      setMutationError(null);
+      queryClient.invalidateQueries({ queryKey: ["metric-images", metricId] });
+      queryClient.invalidateQueries({ queryKey: ["metric", metricId] });
+      queryClient.invalidateQueries({ queryKey: ["metric-pair", metricId] });
+      queryClient.invalidateQueries({ queryKey: ["metric-leaderboard", metricId] });
+    },
+    onError: (err: Error) => {
+      console.error("Bulk delete failed:", err);
+      setMutationError(err.message);
+      queryClient.invalidateQueries({ queryKey: ["metric-images", metricId] });
+    },
+  });
 
   const handleDeleteClick = (id: number, name: string) => {
     setImageToDelete({ id, name });
@@ -462,8 +543,58 @@ export default function MetricDetailPage(): JSX.Element {
             sortOrder={sortOrder}
             onSortOrderChange={setSortOrder}
             sortOptions={IMAGE_SORT_OPTIONS}
+            proteinFilter={proteinFilter}
+            onProteinFilterChange={setProteinFilter}
+            availableProteins={availableProteins}
             onClearFilters={clearFilters}
             hasActiveFilters={hasActiveFilters}
+            leftSlot={
+              <div className="flex items-center gap-3 flex-shrink-0">
+                {/* Select All Checkbox */}
+                <button
+                  onClick={selectAll}
+                  className={`flex items-center justify-center w-6 h-6 rounded border-2 transition-all ${
+                    filteredImages.length > 0 && selectedIds.size === filteredImages.length
+                      ? "bg-primary-500 border-primary-500"
+                      : selectedIds.size > 0
+                      ? "bg-primary-500/50 border-primary-500"
+                      : "border-white/20 hover:border-white/40"
+                  }`}
+                  title={selectedIds.size === filteredImages.length ? "Deselect all" : "Select all"}
+                >
+                  {selectedIds.size > 0 && (
+                    <Check className="w-4 h-4 text-white" />
+                  )}
+                </button>
+
+                {/* Bulk Actions - show when items are selected */}
+                {selectedIds.size > 0 && (
+                  <>
+                    <span className="text-sm text-primary-400 font-medium whitespace-nowrap">
+                      {selectedIds.size} selected
+                    </span>
+
+                    {/* Bulk Delete */}
+                    <button
+                      onClick={() => setShowBulkDeleteConfirm(true)}
+                      className="btn-secondary text-sm py-1.5 text-accent-red hover:bg-accent-red/10"
+                    >
+                      <Trash2 className="w-4 h-4 mr-1" />
+                      Delete
+                    </button>
+
+                    {/* Clear Selection */}
+                    <button
+                      onClick={clearSelection}
+                      className="p-1.5 hover:bg-white/5 rounded-lg transition-colors"
+                      title="Clear selection"
+                    >
+                      <X className="w-4 h-4 text-text-muted" />
+                    </button>
+                  </>
+                )}
+              </div>
+            }
           />
 
           {/* Images grid */}
@@ -480,29 +611,59 @@ export default function MetricDetailPage(): JSX.Element {
                 </p>
               )}
 
-              <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4">
+              <motion.div
+                className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4"
+                variants={staggerContainerVariants}
+                initial="hidden"
+                animate="visible"
+              >
+                <AnimatePresence mode="popLayout">
                 {filteredImages.map((img) => (
                   <motion.div
                     key={img.id}
-                    initial={{ opacity: 0, scale: 0.9 }}
-                    animate={{ opacity: 1, scale: 1 }}
-                    className="aspect-square rounded-2xl overflow-hidden relative group bg-bg-secondary"
+                    variants={staggerItemVariants}
+                    exit={{ opacity: 0, scale: 0.9, transition: { duration: 0.2 } }}
+                    layout
+                    className={`aspect-square rounded-2xl overflow-hidden relative group bg-bg-secondary ${
+                      selectedIds.has(img.id) ? "ring-2 ring-primary-500" : ""
+                    }`}
+                    {...cardHoverProps}
                   >
                     <MicroscopyImage
                       src={getImageUrl(img)}
                       alt={`Image ${img.id}`}
                       className="w-full h-full object-cover"
                     />
-                    <button
-                      onClick={() => handleDeleteClick(img.id, `Image #${img.id}`)}
-                      className="absolute top-2 right-2 p-1.5 bg-black/50 hover:bg-accent-red/80 rounded-lg opacity-0 group-hover:opacity-100 transition-all"
+                    <SelectionCheckbox
+                      isSelected={selectedIds.has(img.id)}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        toggleSelect(img.id);
+                      }}
+                    />
+                    <DeleteOverlayButton
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleDeleteClick(img.id, `Image #${img.id}`);
+                      }}
                       title="Remove from metric"
-                    >
-                      <Trash2 className="w-4 h-4 text-white" />
-                    </button>
+                    />
+                    {/* Protein badge */}
+                    {img.map_protein_name && (
+                      <div
+                        className="absolute bottom-2 left-2 px-2 py-0.5 rounded text-xs font-medium"
+                        style={{
+                          backgroundColor: `${img.map_protein_color}20`,
+                          color: img.map_protein_color,
+                        }}
+                      >
+                        {img.map_protein_name}
+                      </div>
+                    )}
                   </motion.div>
                 ))}
-              </div>
+                </AnimatePresence>
+              </motion.div>
             </>
           ) : images && images.length > 0 ? (
             <div className="glass-card p-12 text-center">
@@ -817,6 +978,19 @@ export default function MetricDetailPage(): JSX.Element {
         confirmLabel="Remove"
         cancelLabel="Cancel"
         isLoading={deleteImageMutation.isPending}
+        variant="danger"
+      />
+
+      {/* Bulk Delete Confirmation Modal */}
+      <ConfirmModal
+        isOpen={showBulkDeleteConfirm}
+        onClose={() => setShowBulkDeleteConfirm(false)}
+        onConfirm={() => bulkDeleteMutation.mutate(Array.from(selectedIds))}
+        title="Remove Selected Images"
+        message={`Are you sure you want to remove ${selectedIds.size} selected image${selectedIds.size !== 1 ? "s" : ""} from this metric? This will also delete any associated comparisons.`}
+        confirmLabel="Remove All"
+        cancelLabel="Cancel"
+        isLoading={bulkDeleteMutation.isPending}
         variant="danger"
       />
 

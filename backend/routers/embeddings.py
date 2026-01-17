@@ -25,7 +25,7 @@ from schemas.embeddings import (
 )
 from services.umap_service import (
     MIN_POINTS_FOR_UMAP,
-    compute_silhouette_from_umap_coords,
+    compute_silhouette,
     compute_umap_online,
 )
 from utils.security import get_current_user
@@ -112,16 +112,18 @@ async def _get_cropped_umap(
             detail=f"Need at least {MIN_POINTS_FOR_UMAP} crops with embeddings. Found: {len(crops)}",
         )
 
+    # Extract embeddings (needed for silhouette calculation on raw features)
+    embeddings = np.array([c.embedding for c in crops])
+
     # Check if we have pre-computed coordinates
     all_have_umap = all(c.umap_x is not None and c.umap_y is not None for c in crops)
 
     if all_have_umap:
         logger.info(f"Using pre-computed UMAP for {len(crops)} crops")
         projection = np.array([[c.umap_x, c.umap_y] for c in crops])
-        silhouette = compute_silhouette_from_umap_coords(crops)
+        silhouette = compute_silhouette(embeddings, crops)
     else:
         logger.info(f"Computing UMAP on-the-fly for {len(crops)} crops")
-        embeddings = np.array([c.embedding for c in crops])
         projection, silhouette = _compute_umap_with_error_handling(
             embeddings, crops, n_neighbors, min_dist
         )
@@ -181,6 +183,9 @@ async def _get_fov_umap(
             detail=f"Need at least {MIN_POINTS_FOR_UMAP} FOV images with embeddings. Found: {len(images)}",
         )
 
+    # Extract embeddings (needed for silhouette calculation on raw features)
+    embeddings = np.array([img.embedding for img in images])
+
     # Check if we have pre-computed coordinates
     all_have_umap = all(img.umap_x is not None and img.umap_y is not None for img in images)
     computed_at = None
@@ -188,12 +193,11 @@ async def _get_fov_umap(
     if all_have_umap:
         logger.info(f"Using pre-computed UMAP for {len(images)} FOV images")
         projection = np.array([[img.umap_x, img.umap_y] for img in images])
-        silhouette = compute_silhouette_from_umap_coords(images)
+        silhouette = compute_silhouette(embeddings, images)
         computed_times = [img.umap_computed_at for img in images if img.umap_computed_at]
         computed_at = min(computed_times) if computed_times else None
     else:
         logger.info(f"Computing FOV UMAP on-the-fly for {len(images)} images")
-        embeddings = np.array([img.embedding for img in images])
         projection, silhouette = _compute_umap_with_error_handling(
             embeddings, images, 15, 0.1
         )

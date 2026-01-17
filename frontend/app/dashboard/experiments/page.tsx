@@ -1,12 +1,12 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useRef, useEffect } from "react";
 import Link from "next/link";
 import { motion, AnimatePresence } from "framer-motion";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useTranslations } from "next-intl";
 import { api } from "@/lib/api";
-import { ConfirmModal, StatusBadge } from "@/components/ui";
+import { ConfirmModal } from "@/components/ui";
 import {
   Plus,
   FolderOpen,
@@ -17,31 +17,57 @@ import {
   Trash2,
   AlertCircle,
   Layers,
+  ChevronDown,
 } from "lucide-react";
 
 export default function ExperimentsPage(): JSX.Element {
   const t = useTranslations("experiments");
   const tCommon = useTranslations("common");
+  const tProteins = useTranslations("proteins");
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [newExpName, setNewExpName] = useState("");
   const [newExpDescription, setNewExpDescription] = useState("");
+  const [selectedProteinId, setSelectedProteinId] = useState<number | null>(null);
+  const [proteinDropdownOpen, setProteinDropdownOpen] = useState(false);
   const [experimentToDelete, setExperimentToDelete] = useState<{ id: number; name: string } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const queryClient = useQueryClient();
+  const proteinDropdownRef = useRef<HTMLDivElement>(null);
 
   const { data: experiments, isLoading } = useQuery({
     queryKey: ["experiments"],
     queryFn: () => api.getExperiments(),
   });
 
+  const { data: proteins } = useQuery({
+    queryKey: ["proteins"],
+    queryFn: () => api.getProteins(),
+  });
+
+  // Close protein dropdown when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (proteinDropdownRef.current && !proteinDropdownRef.current.contains(event.target as Node)) {
+        setProteinDropdownOpen(false);
+      }
+    };
+    if (proteinDropdownOpen) {
+      document.addEventListener("mousedown", handleClickOutside);
+      return () => document.removeEventListener("mousedown", handleClickOutside);
+    }
+  }, [proteinDropdownOpen]);
+
+  const selectedProtein = proteins?.find(p => p.id === selectedProteinId);
+
   const createMutation = useMutation({
-    mutationFn: (data: { name: string; description?: string }) =>
+    mutationFn: (data: { name: string; description?: string; map_protein_id?: number }) =>
       api.createExperiment(data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["experiments"] });
       setShowCreateModal(false);
       setNewExpName("");
       setNewExpDescription("");
+      setSelectedProteinId(null);
       setError(null);
     },
     onError: (err: Error) => {
@@ -69,6 +95,7 @@ export default function ExperimentsPage(): JSX.Element {
     createMutation.mutate({
       name: newExpName,
       description: newExpDescription || undefined,
+      map_protein_id: selectedProteinId ?? undefined,
     });
   };
 
@@ -135,20 +162,17 @@ export default function ExperimentsPage(): JSX.Element {
                     <div className="p-3 bg-primary-500/10 rounded-xl">
                       <FolderOpen className="w-6 h-6 text-primary-400" />
                     </div>
-                    <div className="flex items-center gap-2">
-                      <StatusBadge status={exp.status} />
-                      <button
-                        onClick={(e) => {
-                          e.preventDefault();
-                          e.stopPropagation();
-                          setExperimentToDelete({ id: exp.id, name: exp.name });
-                        }}
-                        className="p-1.5 hover:bg-accent-red/20 text-text-muted hover:text-accent-red rounded-lg transition-colors opacity-0 group-hover:opacity-100"
-                        title="Delete experiment"
-                      >
-                        <Trash2 className="w-4 h-4" />
-                      </button>
-                    </div>
+                    <button
+                      onClick={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        setExperimentToDelete({ id: exp.id, name: exp.name });
+                      }}
+                      className="p-1.5 hover:bg-accent-red/20 text-text-muted hover:text-accent-red rounded-lg transition-colors opacity-0 group-hover:opacity-100"
+                      title="Delete experiment"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </button>
                   </div>
 
                   <h3 className="font-display font-semibold text-lg text-text-primary mb-2 group-hover:text-primary-400 transition-colors">
@@ -255,8 +279,72 @@ export default function ExperimentsPage(): JSX.Element {
                   <textarea
                     value={newExpDescription}
                     onChange={(e) => setNewExpDescription(e.target.value)}
-                    className="input-field min-h-[100px] resize-none"
+                    className="input-field min-h-[80px] resize-none"
                   />
+                </div>
+
+                {/* Protein selector */}
+                <div>
+                  <label className="block text-sm font-medium text-text-secondary mb-2">
+                    {t("assignProtein")}
+                  </label>
+                  <div ref={proteinDropdownRef} className="relative">
+                    <button
+                      type="button"
+                      onClick={() => setProteinDropdownOpen(!proteinDropdownOpen)}
+                      className="input-field w-full flex items-center justify-between text-left"
+                    >
+                      <span className="flex items-center gap-2">
+                        {selectedProtein ? (
+                          <>
+                            <span
+                              className="w-3 h-3 rounded-full"
+                              style={{ backgroundColor: selectedProtein.color || "#888" }}
+                            />
+                            {selectedProtein.name}
+                          </>
+                        ) : (
+                          <span className="text-text-muted">{tProteins("unassigned")}</span>
+                        )}
+                      </span>
+                      <ChevronDown className={`w-4 h-4 text-text-muted transition-transform ${proteinDropdownOpen ? "rotate-180" : ""}`} />
+                    </button>
+                    {proteinDropdownOpen && (
+                      <div className="absolute top-full left-0 right-0 mt-1 bg-bg-elevated border border-white/10 rounded-lg shadow-xl z-50 py-1 max-h-48 overflow-y-auto">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setSelectedProteinId(null);
+                            setProteinDropdownOpen(false);
+                          }}
+                          className="w-full px-3 py-2 text-left hover:bg-white/5 transition-colors flex items-center gap-2"
+                        >
+                          <span className="w-3 h-3 rounded-full bg-text-muted/30" />
+                          <span className="text-text-muted">{tProteins("unassigned")}</span>
+                        </button>
+                        {proteins?.map((protein) => (
+                          <button
+                            key={protein.id}
+                            type="button"
+                            onClick={() => {
+                              setSelectedProteinId(protein.id);
+                              setProteinDropdownOpen(false);
+                            }}
+                            className="w-full px-3 py-2 text-left hover:bg-white/5 transition-colors flex items-center gap-2"
+                          >
+                            <span
+                              className="w-3 h-3 rounded-full"
+                              style={{ backgroundColor: protein.color || "#888" }}
+                            />
+                            <span className="text-text-primary">{protein.name}</span>
+                            {protein.full_name && (
+                              <span className="text-xs text-text-muted ml-1">({protein.full_name})</span>
+                            )}
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
                 </div>
 
                 <div className="flex gap-3 pt-4">
@@ -275,10 +363,7 @@ export default function ExperimentsPage(): JSX.Element {
                     {createMutation.isPending ? (
                       <Loader2 className="w-5 h-5 animate-spin" />
                     ) : (
-                      <>
-                        <Plus className="w-5 h-5" />
-                        {t("create")}
-                      </>
+                      tCommon("create")
                     )}
                   </button>
                 </div>

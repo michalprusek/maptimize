@@ -13,10 +13,27 @@ class MapProteinCreate(BaseModel):
     full_name: Optional[str] = None
     description: Optional[str] = None
     color: Optional[str] = Field(None, pattern=r"^#[0-9A-Fa-f]{6}$")
+    # Extended fields for protein page
+    uniprot_id: Optional[str] = Field(None, max_length=20)
+    fasta_sequence: Optional[str] = None
+    gene_name: Optional[str] = Field(None, max_length=100)
+    organism: Optional[str] = Field(None, max_length=100)
+
+
+class MapProteinUpdate(BaseModel):
+    """Schema for updating a MAP protein."""
+    name: Optional[str] = Field(None, min_length=1, max_length=100)
+    full_name: Optional[str] = None
+    description: Optional[str] = None
+    color: Optional[str] = Field(None, pattern=r"^#[0-9A-Fa-f]{6}$")
+    uniprot_id: Optional[str] = Field(None, max_length=20)
+    fasta_sequence: Optional[str] = None
+    gene_name: Optional[str] = Field(None, max_length=100)
+    organism: Optional[str] = Field(None, max_length=100)
 
 
 class MapProteinResponse(BaseModel):
-    """Schema for MAP protein response."""
+    """Schema for MAP protein response (basic)."""
     id: int
     name: str
     full_name: Optional[str] = None
@@ -25,6 +42,72 @@ class MapProteinResponse(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+class MapProteinDetailedResponse(BaseModel):
+    """Schema for detailed MAP protein response with all fields."""
+    id: int
+    name: str
+    full_name: Optional[str] = None
+    description: Optional[str] = None
+    color: Optional[str] = None
+    # Extended fields
+    uniprot_id: Optional[str] = None
+    fasta_sequence: Optional[str] = None
+    gene_name: Optional[str] = None
+    organism: Optional[str] = None
+    sequence_length: Optional[int] = None
+    # Embedding info
+    has_embedding: bool = False
+    embedding_model: Optional[str] = None
+    embedding_computed_at: Optional[datetime] = None
+    # Stats
+    image_count: int = 0
+    created_at: Optional[datetime] = None
+
+    class Config:
+        from_attributes = True
+
+    @classmethod
+    def from_protein(cls, protein, image_count: int = 0) -> "MapProteinDetailedResponse":
+        """Create response from MapProtein model with image count."""
+        return cls(
+            id=protein.id,
+            name=protein.name,
+            full_name=protein.full_name,
+            description=protein.description,
+            color=protein.color,
+            uniprot_id=protein.uniprot_id,
+            fasta_sequence=protein.fasta_sequence,
+            gene_name=protein.gene_name,
+            organism=protein.organism,
+            sequence_length=protein.sequence_length,
+            has_embedding=protein.embedding is not None,
+            embedding_model=protein.embedding_model,
+            embedding_computed_at=protein.embedding_computed_at,
+            image_count=image_count,
+            created_at=protein.created_at,
+        )
+
+
+class UmapProteinPointResponse(BaseModel):
+    """UMAP point for protein visualization."""
+    protein_id: int
+    name: str
+    x: float
+    y: float
+    color: str
+    sequence_length: Optional[int] = None
+    image_count: int = 0
+
+
+class UmapProteinDataResponse(BaseModel):
+    """Response for protein UMAP visualization."""
+    points: List[UmapProteinPointResponse]
+    total_proteins: int
+    silhouette_score: Optional[float] = None
+    is_precomputed: bool = False
+    computed_at: Optional[str] = None
 
 
 class CellCropSummary(BaseModel):
@@ -120,7 +203,7 @@ class BatchProcessRequest(BaseModel):
     """Request schema for batch processing images."""
     image_ids: List[int] = Field(..., min_length=1, max_length=1000, description="List of image IDs to process")
     detect_cells: bool = Field(True, description="Whether to run YOLO detection")
-    map_protein_id: Optional[int] = Field(None, description="Optional MAP protein to assign to all images")
+    # Note: Protein assignment is now managed at experiment level, not during batch processing
 
     @field_validator("image_ids")
     @classmethod

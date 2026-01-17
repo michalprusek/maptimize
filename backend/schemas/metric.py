@@ -57,6 +57,10 @@ class MetricImageResponse(BaseModel):
     ordinal_score: Optional[float] = None
     comparison_count: int = 0
 
+    # Protein info (from cell_crop)
+    map_protein_name: Optional[str] = None
+    map_protein_color: Optional[str] = None
+
     class Config:
         from_attributes = True
 

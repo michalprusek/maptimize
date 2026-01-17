@@ -76,12 +76,12 @@ export function Dialog({
           <motion.div
             {...CONTENT_ANIMATION}
             onClick={(e) => e.stopPropagation()}
-            className={`glass-card p-6 w-full ${MAX_WIDTH_CLASSES[maxWidth]}`}
+            className={`glass-card p-6 w-full ${MAX_WIDTH_CLASSES[maxWidth]} max-h-[90vh] flex flex-col`}
             role="dialog"
             aria-modal="true"
             aria-labelledby="dialog-title"
           >
-            <div className="flex items-center justify-between mb-6">
+            <div className="flex items-center justify-between mb-6 flex-shrink-0">
               <div className="flex items-center gap-3">
                 {icon && (
                   <div className="p-2 bg-primary-500/20 rounded-lg">{icon}</div>
@@ -101,7 +101,9 @@ export function Dialog({
                 <X className="w-5 h-5 text-text-muted" />
               </button>
             </div>
-            {children}
+            <div className="overflow-y-auto flex-1 -mr-2 pr-2">
+              {children}
+            </div>
           </motion.div>
         </motion.div>
       )}

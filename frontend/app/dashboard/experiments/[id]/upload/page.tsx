@@ -8,7 +8,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useDropzone } from "react-dropzone";
 import { useTranslations } from "next-intl";
 import { api, Image as ApiImage } from "@/lib/api";
-import { Dialog, MicroscopyImage } from "@/components/ui";
+import { MicroscopyImage } from "@/components/ui";
 import {
   ArrowLeft,
   Upload,
@@ -16,11 +16,8 @@ import {
   Scan,
   CheckCircle,
   AlertCircle,
-  ChevronDown,
-  Dna,
   Play,
   ImageIcon,
-  Plus,
 } from "lucide-react";
 
 /**
@@ -58,58 +55,97 @@ export default function UploadPage(): JSX.Element {
 
   // Configuration state (Phase 2)
   const [detectCells, setDetectCells] = useState(true);
-  const [selectedProteinId, setSelectedProteinId] = useState<number | undefined>(undefined);
-  const [proteinDropdownOpen, setProteinDropdownOpen] = useState(false);
-
-  // Add new protein modal state
-  const [showAddProteinModal, setShowAddProteinModal] = useState(false);
-  const [newProteinName, setNewProteinName] = useState("");
-  const [newProteinFullName, setNewProteinFullName] = useState("");
-  const [newProteinColor, setNewProteinColor] = useState("#6366F1");
 
   const { data: experiment, isLoading: expLoading } = useQuery({
     queryKey: ["experiment", experimentId],
     queryFn: () => api.getExperiment(experimentId),
   });
 
-  const { data: proteins, error: proteinsError } = useQuery({
-    queryKey: ["proteins"],
-    queryFn: () => api.getProteins(),
-    retry: 3,
-    retryDelay: (attemptIndex) => Math.min(1000 * 2 ** attemptIndex, 10000),
-  });
+  // Cache for already-fetched images (won't re-fetch completed ones)
+  const [imageCache, setImageCache] = useState<Map<number, ApiImage>>(new Map());
 
-  const selectedProtein = proteins?.find((p) => p.id === selectedProteinId);
+  // Track last fetched IDs count to detect new uploads
+  const [lastFetchedCount, setLastFetchedCount] = useState(0);
 
-  // Query uploaded images to show thumbnails
-  const { data: uploadedImages, error: uploadedImagesError } = useQuery({
-    queryKey: ["uploaded-images", uploadedImageIds],
-    queryFn: async () => {
-      if (uploadedImageIds.length === 0) return [];
-      // Use allSettled to handle partial failures gracefully
+  // Fetch new images incrementally when uploadedImageIds changes
+  useEffect(() => {
+    const fetchNewImages = async () => {
+      if (uploadedImageIds.length === 0) return;
+      if (uploadedImageIds.length === lastFetchedCount) return;
+
+      // Only fetch images that are new (not in cache)
+      const newIds = uploadedImageIds.filter((id) => !imageCache.has(id));
+      if (newIds.length === 0) {
+        setLastFetchedCount(uploadedImageIds.length);
+        return;
+      }
+
       const results = await Promise.allSettled(
-        uploadedImageIds.map((id) => api.getImage(id))
+        newIds.map((id) => api.getImage(id))
       );
-      const images = results
+
+      const newImages = results
         .filter((r): r is PromiseFulfilledResult<ApiImage> => r.status === "fulfilled")
         .map((r) => r.value);
-      const failed = results.filter((r) => r.status === "rejected").length;
-      if (failed > 0) {
-        console.warn(`[Upload] Failed to fetch ${failed} of ${uploadedImageIds.length} images`);
+
+      if (newImages.length > 0) {
+        setImageCache((prev) => {
+          const next = new Map(prev);
+          newImages.forEach((img) => next.set(img.id, img));
+          return next;
+        });
       }
-      return images;
+
+      setLastFetchedCount(uploadedImageIds.length);
+    };
+
+    fetchNewImages();
+  }, [uploadedImageIds, lastFetchedCount, imageCache]);
+
+  // Poll for status updates on processing images only
+  const { data: uploadedImages, error: uploadedImagesError } = useQuery({
+    queryKey: ["uploaded-images-status", experimentId],
+    queryFn: async () => {
+      if (imageCache.size === 0) return [];
+
+      // Find images that need status updates (still processing)
+      const processingIds = Array.from(imageCache.values())
+        .filter((img) => img.status === "UPLOADING" || img.status === "PROCESSING")
+        .map((img) => img.id);
+
+      // If no processing images, just return cached data
+      if (processingIds.length === 0) {
+        return uploadedImageIds.map((id) => imageCache.get(id)).filter(Boolean) as ApiImage[];
+      }
+
+      // Fetch only processing images for status update
+      const results = await Promise.allSettled(
+        processingIds.map((id) => api.getImage(id))
+      );
+
+      const updatedImages = results
+        .filter((r): r is PromiseFulfilledResult<ApiImage> => r.status === "fulfilled")
+        .map((r) => r.value);
+
+      // Update cache with new statuses
+      if (updatedImages.length > 0) {
+        setImageCache((prev) => {
+          const next = new Map(prev);
+          updatedImages.forEach((img) => next.set(img.id, img));
+          return next;
+        });
+      }
+
+      // Return all images in upload order
+      return uploadedImageIds.map((id) => imageCache.get(id)).filter(Boolean) as ApiImage[];
     },
-    enabled: uploadedImageIds.length > 0,
-    retry: 3,
-    retryDelay: (attemptIndex) => Math.min(1000 * 2 ** attemptIndex, 10000),
-    refetchInterval: (query) => {
+    enabled: imageCache.size > 0,
+    refetchInterval: () => {
       // Poll while any image is still processing Phase 1
-      const images = query.state.data;
-      if (!images) return STATUS_POLLING_INTERVAL_MS;
-      const stillProcessing = images.some(
+      const hasProcessing = Array.from(imageCache.values()).some(
         (img) => img.status === "UPLOADING" || img.status === "PROCESSING"
       );
-      return stillProcessing ? 2000 : false;
+      return hasProcessing ? STATUS_POLLING_INTERVAL_MS : false;
     },
   });
 
@@ -191,39 +227,16 @@ export default function UploadPage(): JSX.Element {
   });
 
   // Batch process mutation (Phase 2)
+  // Note: Images inherit protein from experiment, set via experiment protein selector
   const batchProcessMutation = useMutation({
     mutationFn: async () => {
-      return api.batchProcessImages(uploadedImageIds, detectCells, selectedProteinId);
+      return api.batchProcessImages(uploadedImageIds, detectCells);
     },
     onSuccess: () => {
       setPhase("processing");
     },
     onError: (err: Error) => {
       console.error("Batch process failed:", err);
-    },
-  });
-
-  // Create protein mutation
-  const createProteinMutation = useMutation({
-    mutationFn: async () => {
-      return api.createProtein({
-        name: newProteinName,
-        full_name: newProteinFullName || undefined,
-        color: newProteinColor,
-      });
-    },
-    onSuccess: (newProtein) => {
-      // Refresh proteins list and select the new protein
-      queryClient.invalidateQueries({ queryKey: ["proteins"] });
-      setSelectedProteinId(newProtein.id);
-      // Reset form and close modal
-      setNewProteinName("");
-      setNewProteinFullName("");
-      setNewProteinColor("#6366F1");
-      setShowAddProteinModal(false);
-    },
-    onError: (err: Error) => {
-      console.error("Failed to create protein:", err);
     },
   });
 
@@ -247,14 +260,28 @@ export default function UploadPage(): JSX.Element {
       setPhase("uploading");
       setTotalFilesToUpload((prev) => prev + acceptedFiles.length);
 
-      for (const file of acceptedFiles) {
-        const fileId = `${file.name}-${Date.now()}`;
+      // Parallel upload with semaphore-based concurrency control
+      // Higher limit for better throughput with 20-200 images
+      const CONCURRENCY_LIMIT = 8;
+
+      // Use atomic index counter to avoid race conditions
+      let currentIndex = 0;
+      const files = acceptedFiles;
+
+      const getNextFile = (): { file: File; index: number } | null => {
+        const index = currentIndex++;
+        if (index >= files.length) return null;
+        return { file: files[index], index };
+      };
+
+      const uploadFile = async (file: File, index: number) => {
+        const fileId = `upload-${index}-${file.name}`;
         setUploadingFiles((prev) => new Map(prev).set(fileId, 0));
 
         try {
           await uploadMutation.mutateAsync(file);
         } catch (err) {
-          console.error("Upload failed:", err);
+          console.error(`Upload failed for ${file.name}:`, err);
           const errorMessage = err instanceof Error ? err.message : "Unknown error";
           setFailedUploads((prev) => [...prev, { name: file.name, error: errorMessage }]);
         } finally {
@@ -265,7 +292,22 @@ export default function UploadPage(): JSX.Element {
             return next;
           });
         }
-      }
+      };
+
+      // Worker function that processes files until none remain
+      const worker = async () => {
+        let next = getNextFile();
+        while (next) {
+          await uploadFile(next.file, next.index);
+          next = getNextFile();
+        }
+      };
+
+      // Start workers up to concurrency limit
+      const workerCount = Math.min(CONCURRENCY_LIMIT, files.length);
+      const workers = Array(workerCount).fill(null).map(() => worker());
+
+      await Promise.all(workers);
     },
     [uploadMutation]
   );
@@ -283,13 +325,6 @@ export default function UploadPage(): JSX.Element {
 
   const handleProcess = () => {
     batchProcessMutation.mutate();
-  };
-
-  const handleCreateProtein = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (newProteinName.trim()) {
-      createProteinMutation.mutate();
-    }
   };
 
   const handleViewImages = () => {
@@ -398,7 +433,7 @@ export default function UploadPage(): JSX.Element {
               <div className="flex items-center gap-2">
                 <Loader2 className="w-4 h-4 text-primary-500 animate-spin" />
                 <span className="text-text-primary">
-                  Uploading files...
+                  Uploading {uploadingFiles.size > 1 ? `${uploadingFiles.size} files in parallel` : "file"}...
                 </span>
               </div>
               <span className="text-text-muted">
@@ -414,10 +449,18 @@ export default function UploadPage(): JSX.Element {
                 className="absolute inset-y-0 left-0 bg-gradient-to-r from-primary-500 to-primary-400 rounded-full"
               />
             </div>
-            {/* Currently uploading file */}
+            {/* Currently uploading files */}
             {uploadingFiles.size > 0 && (
-              <div className="text-xs text-text-muted truncate">
-                Current: {Array.from(uploadingFiles.keys())[0]?.split("-")[0]}
+              <div className="text-xs text-text-muted">
+                {uploadingFiles.size <= 3 ? (
+                  <span>
+                    Current: {Array.from(uploadingFiles.keys()).map(k => k.split("-").slice(2).join("-")).join(", ")}
+                  </span>
+                ) : (
+                  <span>
+                    {uploadingFiles.size} concurrent uploads active
+                  </span>
+                )}
               </div>
             )}
           </motion.div>
@@ -456,8 +499,8 @@ export default function UploadPage(): JSX.Element {
         )}
       </motion.div>
 
-      {/* Configuration Section - visible as soon as uploads start */}
-      {uploadedImageIds.length > 0 && phase !== "processing" && phase !== "done" && (
+      {/* Configuration Section - visible after all file uploads complete */}
+      {phase === "uploaded" && (
         <motion.div
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
@@ -508,101 +551,6 @@ export default function UploadPage(): JSX.Element {
                 </p>
               </div>
             </button>
-
-            {/* MAP Protein selector */}
-            <div className="relative z-30">
-              <label className="block text-sm text-text-secondary mb-2">
-                MAP Protein (applied to all images)
-              </label>
-              {proteinsError ? (
-                <div className="p-3 bg-accent-red/10 border border-accent-red/20 rounded-lg">
-                  <p className="text-accent-red text-sm">
-                    Failed to load proteins: {proteinsError.message}
-                  </p>
-                </div>
-              ) : (
-              <button
-                onClick={() => setProteinDropdownOpen(!proteinDropdownOpen)}
-                className="flex items-center justify-between w-full px-4 py-3 bg-bg-secondary border border-white/10 rounded-lg hover:bg-bg-hover transition-colors"
-              >
-                <div className="flex items-center gap-3">
-                  <Dna className="w-5 h-5 text-text-muted" />
-                  {selectedProtein ? (
-                    <div className="flex items-center gap-2">
-                      <span
-                        className="w-3 h-3 rounded-full"
-                        style={{ backgroundColor: selectedProtein.color || "#888" }}
-                      />
-                      <span className="text-text-primary">{selectedProtein.name}</span>
-                    </div>
-                  ) : (
-                    <span className="text-text-muted">No protein selected</span>
-                  )}
-                </div>
-                <ChevronDown
-                  className={`w-4 h-4 text-text-muted transition-transform ${
-                    proteinDropdownOpen ? "rotate-180" : ""
-                  }`}
-                />
-              </button>
-              )}
-
-              {!proteinsError && proteinDropdownOpen && (
-                <motion.div
-                  initial={{ opacity: 0, y: -10 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  className="absolute z-50 mt-1 w-full bg-bg-elevated border border-white/10 rounded-lg shadow-xl overflow-hidden"
-                >
-                  <button
-                    onClick={() => {
-                      setSelectedProteinId(undefined);
-                      setProteinDropdownOpen(false);
-                    }}
-                    className={`w-full px-4 py-2 text-left hover:bg-white/5 transition-colors ${
-                      !selectedProteinId ? "bg-primary-500/10" : ""
-                    }`}
-                  >
-                    <span className="text-text-muted">No protein</span>
-                  </button>
-                  {proteins?.map((protein) => (
-                    <button
-                      key={protein.id}
-                      onClick={() => {
-                        setSelectedProteinId(protein.id);
-                        setProteinDropdownOpen(false);
-                      }}
-                      className={`w-full px-4 py-2 text-left hover:bg-white/5 transition-colors flex items-center gap-2 ${
-                        selectedProteinId === protein.id ? "bg-primary-500/10" : ""
-                      }`}
-                    >
-                      <span
-                        className="w-3 h-3 rounded-full"
-                        style={{ backgroundColor: protein.color || "#888" }}
-                      />
-                      <span className="text-text-primary">{protein.name}</span>
-                      {protein.full_name && (
-                        <span className="text-text-muted text-xs ml-auto">
-                          {protein.full_name}
-                        </span>
-                      )}
-                    </button>
-                  ))}
-                  {/* Add new protein button */}
-                  <div className="border-t border-white/10 mt-1 pt-1">
-                    <button
-                      onClick={() => {
-                        setProteinDropdownOpen(false);
-                        setShowAddProteinModal(true);
-                      }}
-                      className="w-full px-4 py-2 text-left hover:bg-white/5 transition-colors flex items-center gap-2 text-primary-400"
-                    >
-                      <Plus className="w-4 h-4" />
-                      <span>Add new protein</span>
-                    </button>
-                  </div>
-                </motion.div>
-              )}
-            </div>
 
             {/* Process button */}
             {allPhase1Complete && (
@@ -806,106 +754,6 @@ export default function UploadPage(): JSX.Element {
         </Link>
       </div>
 
-      {/* Add new protein modal */}
-      <Dialog
-        isOpen={showAddProteinModal}
-        onClose={() => setShowAddProteinModal(false)}
-        title="Add New Protein"
-        icon={<Dna className="w-5 h-5 text-primary-400" />}
-      >
-        <form onSubmit={handleCreateProtein} className="space-y-4">
-          {/* Protein name */}
-          <div>
-            <label className="block text-sm text-text-secondary mb-1">
-              Name <span className="text-accent-red">*</span>
-            </label>
-            <input
-              type="text"
-              value={newProteinName}
-              onChange={(e) => setNewProteinName(e.target.value)}
-              placeholder="e.g., PRC1"
-              className="w-full px-4 py-2 bg-bg-secondary border border-white/10 rounded-lg focus:outline-none focus:border-primary-500 text-text-primary placeholder:text-text-muted"
-              required
-              autoFocus
-            />
-          </div>
-
-          {/* Full name / Description */}
-          <div>
-            <label className="block text-sm text-text-secondary mb-1">
-              Full Name / Description
-            </label>
-            <input
-              type="text"
-              value={newProteinFullName}
-              onChange={(e) => setNewProteinFullName(e.target.value)}
-              placeholder="e.g., Protein Regulator of Cytokinesis 1"
-              className="w-full px-4 py-2 bg-bg-secondary border border-white/10 rounded-lg focus:outline-none focus:border-primary-500 text-text-primary placeholder:text-text-muted"
-            />
-          </div>
-
-          {/* Color picker */}
-          <div>
-            <label className="block text-sm text-text-secondary mb-2">
-              Color
-            </label>
-            <div className="flex items-center gap-3">
-              <div className="flex gap-2">
-                {["#6366F1", "#22D3EE", "#10B981", "#F59E0B", "#EF4444", "#EC4899", "#8B5CF6"].map((color) => (
-                  <button
-                    key={color}
-                    type="button"
-                    onClick={() => setNewProteinColor(color)}
-                    className={`w-8 h-8 rounded-full transition-all ${
-                      newProteinColor === color ? "ring-2 ring-white ring-offset-2 ring-offset-bg-primary" : ""
-                    }`}
-                    style={{ backgroundColor: color }}
-                  />
-                ))}
-              </div>
-              <input
-                type="color"
-                value={newProteinColor}
-                onChange={(e) => setNewProteinColor(e.target.value)}
-                className="w-8 h-8 rounded cursor-pointer"
-                title="Custom color"
-              />
-            </div>
-          </div>
-
-          {/* Error message */}
-          {createProteinMutation.isError && (
-            <div className="p-3 bg-accent-red/10 border border-accent-red/20 rounded-lg">
-              <p className="text-accent-red text-sm">
-                {createProteinMutation.error?.message || "Failed to create protein. Please try again."}
-              </p>
-            </div>
-          )}
-
-          {/* Actions */}
-          <div className="flex justify-end gap-3 pt-4">
-            <button
-              type="button"
-              onClick={() => setShowAddProteinModal(false)}
-              className="px-4 py-2 text-text-secondary hover:text-text-primary transition-colors"
-            >
-              Cancel
-            </button>
-            <button
-              type="submit"
-              disabled={!newProteinName.trim() || createProteinMutation.isPending}
-              className="btn-primary flex items-center gap-2"
-            >
-              {createProteinMutation.isPending ? (
-                <Loader2 className="w-4 h-4 animate-spin" />
-              ) : (
-                <Plus className="w-4 h-4" />
-              )}
-              Create Protein
-            </button>
-          </div>
-        </form>
-      </Dialog>
     </div>
   );
 }

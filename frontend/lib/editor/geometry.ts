@@ -4,7 +4,7 @@
  * Functions for bbox hit testing, handle positions, and coordinate transformations.
  */
 
-import type { EditorBbox, HandlePosition, Point, Rect } from "./types";
+import type { EditorBbox, HandlePosition, Point, Rect, PolygonWithHoles } from "./types";
 import { HANDLE_SIZE, HANDLE_HIT_PADDING, MIN_BBOX_SIZE } from "./constants";
 
 /**
@@ -426,4 +426,101 @@ export function normalizePolygonData(
 
   // Single polygon format - wrap in array
   return [data as [number, number][]];
+}
+
+
+// ============================================================================
+// Polygon with Holes Support
+// ============================================================================
+
+/**
+ * Calculate polygon area using shoelace formula.
+ *
+ * @param points - Polygon points [[x, y], ...]
+ * @returns Area in pixels (always positive)
+ */
+export function calculatePolygonArea(points: [number, number][]): number {
+  const n = points.length;
+  if (n < 3) return 0;
+
+  let area = 0;
+  for (let i = 0; i < n; i++) {
+    const j = (i + 1) % n;
+    area += points[i][0] * points[j][1];
+    area -= points[j][0] * points[i][1];
+  }
+
+  return Math.abs(area) / 2;
+}
+
+/**
+ * Calculate polygon area accounting for holes.
+ *
+ * Net area = outer boundary area - sum of hole areas.
+ *
+ * @param polygon - Polygon with outer boundary and holes
+ * @returns Net area in pixels
+ */
+export function calculatePolygonAreaWithHoles(polygon: PolygonWithHoles): number {
+  const outerArea = calculatePolygonArea(polygon.outer);
+  const holesArea = polygon.holes.reduce(
+    (sum, hole) => sum + calculatePolygonArea(hole),
+    0
+  );
+  return Math.max(0, outerArea - holesArea);
+}
+
+/**
+ * Build an SVG path string from polygon points.
+ *
+ * @param points - Polygon points [[x, y], ...]
+ * @param transform - Coordinate transform function
+ * @returns SVG path string (e.g., "M 10 20 L 30 40 L 50 60 Z")
+ */
+export function buildPolygonPath(
+  points: [number, number][],
+  transform: (x: number, y: number) => { x: number; y: number }
+): string {
+  if (points.length < 3) return "";
+
+  return (
+    points
+      .map((p, i) => {
+        const { x, y } = transform(p[0], p[1]);
+        return `${i === 0 ? "M" : "L"} ${x} ${y}`;
+      })
+      .join(" ") + " Z"
+  );
+}
+
+/**
+ * Build an SVG path string from polygon with holes.
+ *
+ * Uses the evenodd fill rule: the outer boundary is drawn first,
+ * then each hole is drawn. Areas enclosed an odd number of times
+ * are filled, creating the visual effect of holes.
+ *
+ * @param polygon - Polygon with outer boundary and holes
+ * @param transform - Coordinate transform function
+ * @returns SVG path string with holes (use with fill-rule="evenodd")
+ */
+export function buildPolygonPathWithHoles(
+  polygon: PolygonWithHoles,
+  transform: (x: number, y: number) => { x: number; y: number }
+): string {
+  const paths: string[] = [];
+
+  // Outer boundary
+  if (polygon.outer.length >= 3) {
+    paths.push(buildPolygonPath(polygon.outer, transform));
+  }
+
+  // Holes (each hole creates a cutout with evenodd fill rule)
+  for (const hole of polygon.holes) {
+    if (hole.length >= 3) {
+      paths.push(buildPolygonPath(hole, transform));
+    }
+  }
+
+  return paths.join(" ");
 }

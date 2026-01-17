@@ -10,7 +10,7 @@ from database import Base
 
 if TYPE_CHECKING:
     from .user import User
-    from .image import Image
+    from .image import Image, MapProtein
 
 
 class ExperimentStatus(str, PyEnum):
@@ -30,6 +30,11 @@ class Experiment(Base):
     name: Mapped[str] = mapped_column(String(255))
     description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
+    map_protein_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("map_proteins.id"),
+        nullable=True
+    )
+    fasta_sequence: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     status: Mapped[ExperimentStatus] = mapped_column(
         Enum(ExperimentStatus),
         default=ExperimentStatus.DRAFT
@@ -46,6 +51,7 @@ class Experiment(Base):
 
     # Relationships
     user: Mapped["User"] = relationship(back_populates="experiments")
+    map_protein: Mapped[Optional["MapProtein"]] = relationship()
     images: Mapped[List["Image"]] = relationship(
         back_populates="experiment",
         cascade="all, delete-orphan"

@@ -1,5 +1,8 @@
 "use client";
 
+import { motion } from "framer-motion";
+import { pulseVariants } from "@/lib/animations";
+
 /**
  * All known status values. The component gracefully handles unknown statuses
  * with fallback styling, but known statuses get specific styling.
@@ -51,17 +54,39 @@ const statusStyles: Record<string, string> = {
   EXTRACTING_FEATURES: "bg-accent-amber/20 text-accent-amber",
 };
 
+/** Statuses that should pulse to indicate active processing */
+const processingStatuses = new Set([
+  "processing",
+  "detecting",
+  "extracting_features",
+  "UPLOADING",
+  "PROCESSING",
+  "DETECTING",
+  "EXTRACTING_FEATURES",
+]);
+
 export function getStatusStyles(status: Status): string {
   return statusStyles[status] ?? "bg-text-muted/20 text-text-muted";
 }
 
 export function StatusBadge({ status, className = "" }: StatusBadgeProps): JSX.Element {
   const displayStatus = status.replace(/_/g, " ").toLowerCase();
+  const isProcessing = processingStatuses.has(status);
+
   return (
-    <span
-      className={`px-2 py-1 rounded-full text-xs font-medium capitalize ${getStatusStyles(status)} ${className}`}
+    <motion.span
+      className={`inline-flex items-center gap-1.5 px-2 py-1 rounded-full text-xs font-medium capitalize ${getStatusStyles(status)} ${className}`}
+      variants={isProcessing ? pulseVariants : undefined}
+      initial={isProcessing ? "initial" : undefined}
+      animate={isProcessing ? "animate" : undefined}
     >
+      {isProcessing && (
+        <span className="relative flex h-2 w-2">
+          <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-current opacity-75" />
+          <span className="relative inline-flex rounded-full h-2 w-2 bg-current" />
+        </span>
+      )}
       {displayStatus}
-    </span>
+    </motion.span>
   );
 }

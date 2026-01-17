@@ -39,6 +39,7 @@ ml = [
     "numba>=0.59.0",
     "scikit-learn>=1.4.0",
     "opencv-python-headless>=4.9.0",
+    "esm>=3.0.0",  # EvolutionaryScale ESM-C for protein embeddings
 ]
 dev = [
     "pytest>=7.4.0",

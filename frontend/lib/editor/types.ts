@@ -59,6 +59,54 @@ export type EditorMode = "view" | "draw" | "edit" | "segment";
 // ============================================================================
 
 /**
+ * Polygon with internal holes.
+ *
+ * Used for ring-shaped structures (e.g., cell membranes with hollow centers).
+ * The outer boundary defines the external edge, and holes define internal
+ * regions to be excluded from the mask.
+ */
+export interface PolygonWithHoles {
+  /** Outer boundary points [[x, y], ...] - external edge */
+  outer: [number, number][];
+  /** List of hole boundaries - each hole is a list of [[x, y], ...] points */
+  holes: [number, number][][];
+}
+
+/**
+ * Type guard to check if polygon data is in the new holes format.
+ */
+export function isPolygonWithHoles(data: unknown): data is PolygonWithHoles {
+  return (
+    typeof data === "object" &&
+    data !== null &&
+    "outer" in data &&
+    Array.isArray((data as PolygonWithHoles).outer)
+  );
+}
+
+/**
+ * Normalize any polygon format to the new holes format.
+ *
+ * Handles:
+ * - New format: {outer: [...], holes: [...]} - returned as-is
+ * - Legacy format: [[x,y], ...] - converted to {outer: [...], holes: []}
+ */
+export function normalizePolygonFormat(
+  data: [number, number][] | PolygonWithHoles | null | undefined
+): PolygonWithHoles {
+  if (!data) {
+    return { outer: [], holes: [] };
+  }
+
+  if (isPolygonWithHoles(data)) {
+    return data;
+  }
+
+  // Legacy format - simple array of points
+  return { outer: data, holes: [] };
+}
+
+/**
  * Click point for SAM segmentation.
  * Left click = positive (foreground), Right click = negative (background)
  */
@@ -78,8 +126,10 @@ export interface SegmentClickPoint {
 export interface PendingPolygon {
   /** Unique ID for this pending polygon */
   id: string;
-  /** Polygon points [[x, y], ...] */
+  /** Polygon points [[x, y], ...] - outer boundary (legacy format) */
   points: [number, number][];
+  /** Full polygon with holes support (new format) */
+  polygonWithHoles?: PolygonWithHoles;
   /** Confidence/IoU score */
   score: number;
   /** Source of this polygon */
@@ -94,8 +144,10 @@ export interface PendingPolygon {
 export interface SegmentationState {
   /** Current click points for active segmentation */
   clickPoints: SegmentClickPoint[];
-  /** Preview polygon from SAM inference (live update) */
+  /** Preview polygon from SAM inference (live update) - outer boundary only */
   previewPolygon: [number, number][] | null;
+  /** Preview polygon with holes support (new format) */
+  previewPolygonWithHoles: PolygonWithHoles | null;
   /** IoU score of current preview (confidence) */
   previewIoU: number | null;
   /** Whether segmentation API is loading */
@@ -114,8 +166,10 @@ export interface SegmentationState {
 export interface CellPolygon {
   /** Cell crop database ID */
   cropId: number;
-  /** Polygon points [[x, y], ...] */
+  /** Polygon points [[x, y], ...] - outer boundary (legacy format) */
   points: [number, number][];
+  /** Full polygon with holes support (new format) */
+  polygonWithHoles?: PolygonWithHoles;
   /** SAM IoU prediction score */
   iouScore: number;
 }
@@ -136,6 +190,7 @@ export type SAMEmbeddingStatus =
 export const INITIAL_SEGMENTATION_STATE: SegmentationState = {
   clickPoints: [],
   previewPolygon: null,
+  previewPolygonWithHoles: null,
   previewIoU: null,
   isLoading: false,
   error: null,

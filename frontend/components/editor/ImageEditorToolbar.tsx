@@ -29,6 +29,7 @@ import {
   Loader2,
   AlertCircle,
   CheckCircle2,
+  RefreshCw,
 } from "lucide-react";
 import type { ImageFilters, EditorMode, SAMEmbeddingStatus } from "@/lib/editor/types";
 import type { DisplayMode } from "@/lib/api";
@@ -81,6 +82,10 @@ interface ImageEditorToolbarProps {
   onAddToPending?: () => void;
   /** Whether we can add current preview to pending */
   canAddToPending?: boolean;
+  /** Trigger re-detection of cells on current image */
+  onRedetect?: () => void;
+  /** Whether re-detection is currently running */
+  isRedetecting?: boolean;
 }
 
 const displayModes: { value: DisplayMode; label: string }[] = [
@@ -332,6 +337,9 @@ export function ImageEditorToolbar({
   pendingPolygonCount = 0,
   onAddToPending,
   canAddToPending = false,
+  // Re-detect props
+  onRedetect,
+  isRedetecting = false,
 }: ImageEditorToolbarProps) {
   const t = useTranslations("editor");
   const toolbarRef = useRef<HTMLDivElement>(null);
@@ -670,12 +678,25 @@ export function ImageEditorToolbar({
 
       {/* Draw mode - only show when not in segment mode */}
       {editorMode !== "segment" && (
-        <ToolbarIconButton
-          onClick={() => onEditorModeChange(editorMode === "draw" ? "view" : "draw")}
-          icon={Plus}
-          variant={editorMode === "draw" ? "active" : "default"}
-          title={t("addBbox")}
-        />
+        <>
+          <ToolbarIconButton
+            onClick={() => onEditorModeChange(editorMode === "draw" ? "view" : "draw")}
+            icon={Plus}
+            variant={editorMode === "draw" ? "active" : "default"}
+            title={t("addBbox")}
+          />
+
+          {/* Re-detect button */}
+          {onRedetect && (
+            <ToolbarIconButton
+              onClick={onRedetect}
+              disabled={isRedetecting}
+              icon={RefreshCw}
+              title={t("redetect")}
+              isLoading={isRedetecting}
+            />
+          )}
+        </>
       )}
 
       {/* Segment mode controls - only show when in segment mode */}

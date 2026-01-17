@@ -1,15 +1,16 @@
 """Experiment routes."""
-from typing import List
+import logging
+from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status, Query
-from sqlalchemy import select, func, distinct
+from sqlalchemy import select, func, distinct, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from database import get_db
 from models.user import User
 from models.experiment import Experiment
-from models.image import Image
+from models.image import Image, MapProtein
 from models.cell_crop import CellCrop
 from schemas.experiment import (
     ExperimentCreate,
@@ -18,6 +19,8 @@ from schemas.experiment import (
     ExperimentDetailResponse,
 )
 from utils.security import get_current_user
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -37,6 +40,7 @@ async def list_experiments(
             func.count(distinct(Image.id)).label("image_count"),
             func.count(CellCrop.id).label("cell_count")
         )
+        .options(selectinload(Experiment.map_protein))
         .outerjoin(Image, Experiment.id == Image.experiment_id)
         .outerjoin(CellCrop, Image.id == CellCrop.image_id)
         .where(Experiment.user_id == current_user.id)
@@ -45,7 +49,7 @@ async def list_experiments(
         .offset(skip)
         .limit(limit)
     )
-    rows = result.all()
+    rows = result.unique().all()
 
     response = []
     for exp, image_count, cell_count in rows:
@@ -64,14 +68,27 @@ async def create_experiment(
     db: AsyncSession = Depends(get_db)
 ):
     """Create a new experiment."""
+    # Verify protein exists if provided
+    if data.map_protein_id is not None:
+        protein_result = await db.execute(
+            select(MapProtein).where(MapProtein.id == data.map_protein_id)
+        )
+        if not protein_result.scalar_one_or_none():
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="MAP protein not found"
+            )
+
     experiment = Experiment(
         name=data.name,
         description=data.description,
         user_id=current_user.id,
+        map_protein_id=data.map_protein_id,
+        fasta_sequence=data.fasta_sequence,
     )
     db.add(experiment)
     await db.commit()
-    await db.refresh(experiment)
+    await db.refresh(experiment, attribute_names=["map_protein"])
 
     return ExperimentResponse.model_validate(experiment)
 
@@ -85,7 +102,10 @@ async def get_experiment(
     """Get experiment details with images."""
     result = await db.execute(
         select(Experiment)
-        .options(selectinload(Experiment.images))
+        .options(
+            selectinload(Experiment.images),
+            selectinload(Experiment.map_protein)
+        )
         .where(
             Experiment.id == experiment_id,
             Experiment.user_id == current_user.id
@@ -170,3 +190,92 @@ async def delete_experiment(
 
     await db.delete(experiment)
     await db.commit()
+
+
+@router.patch("/{experiment_id}/protein")
+async def update_experiment_protein(
+    experiment_id: int,
+    map_protein_id: Optional[int] = Query(default=None, description="MAP protein ID to assign"),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Update the MAP protein assignment for an experiment.
+
+    This cascades the protein assignment to all images and cell crops in the experiment.
+    """
+    result = await db.execute(
+        select(Experiment).where(
+            Experiment.id == experiment_id,
+            Experiment.user_id == current_user.id
+        )
+    )
+    experiment = result.scalar_one_or_none()
+
+    if not experiment:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Experiment not found"
+        )
+
+    # Verify protein exists if provided
+    protein = None
+    if map_protein_id is not None:
+        protein_result = await db.execute(
+            select(MapProtein).where(MapProtein.id == map_protein_id)
+        )
+        protein = protein_result.scalar_one_or_none()
+        if not protein:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="MAP protein not found"
+            )
+
+    # Update experiment, all images, and all cell crops in a single transaction
+    try:
+        # Update experiment
+        experiment.map_protein_id = map_protein_id
+
+        # Get all image IDs for this experiment
+        image_ids_result = await db.execute(
+            select(Image.id).where(Image.experiment_id == experiment_id)
+        )
+        image_ids = [row[0] for row in image_ids_result.all()]
+
+        if image_ids:
+            # Update all images
+            await db.execute(
+                update(Image)
+                .where(Image.experiment_id == experiment_id)
+                .values(map_protein_id=map_protein_id)
+            )
+
+            # Update all cell crops from these images
+            await db.execute(
+                update(CellCrop)
+                .where(CellCrop.image_id.in_(image_ids))
+                .values(map_protein_id=map_protein_id)
+            )
+
+        await db.commit()
+
+        logger.info(
+            f"Updated protein for experiment {experiment_id} to {map_protein_id}, "
+            f"cascaded to {len(image_ids)} images"
+        )
+
+    except Exception as e:
+        await db.rollback()
+        logger.exception(f"Failed to update protein for experiment {experiment_id}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to update protein assignment. Please try again."
+        )
+
+    return {
+        "id": experiment.id,
+        "map_protein_id": experiment.map_protein_id,
+        "map_protein_name": protein.name if protein else None,
+        "map_protein_color": protein.color if protein else None,
+        "images_updated": len(image_ids) if image_ids else 0,
+    }

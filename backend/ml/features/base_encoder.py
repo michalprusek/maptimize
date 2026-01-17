@@ -9,11 +9,11 @@ PoolingMode = Literal["cls", "mean", "max", "cls_mean"]
 
 
 def get_device() -> torch.device:
-    """Auto-detect the best available device."""
+    """Auto-detect the best available device (CUDA preferred for ML workloads)."""
+    if torch.cuda.is_available():
+        return torch.device("cuda")
     if torch.backends.mps.is_available():
         return torch.device("mps")
-    elif torch.cuda.is_available():
-        return torch.device("cuda")
     return torch.device("cpu")
 
 

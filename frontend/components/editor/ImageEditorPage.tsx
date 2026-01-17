@@ -10,8 +10,10 @@
 import { useState, useCallback, useEffect, useRef } from "react";
 import { useTranslations } from "next-intl";
 import { AnimatePresence, motion } from "framer-motion";
-import { ChevronRight, ChevronLeft, ArrowLeft, AlertCircle, X, ScanSearch, Wand2, Loader2, Type, MousePointer2 } from "lucide-react";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { ChevronRight, ChevronLeft, ArrowLeft, AlertCircle, X, ScanSearch, Wand2, Loader2, Type, MousePointer2, Keyboard } from "lucide-react";
 import { useSettingsStore } from "@/stores/settingsStore";
+import { ConfirmModal } from "@/components/ui";
 import { api, type CellCropGallery, type FOVImage } from "@/lib/api";
 import { AppSidebar } from "@/components/layout";
 import type {
@@ -49,6 +51,7 @@ import { TextPromptSearch } from "./TextPromptSearch";
 import { useBboxInteraction } from "./hooks/useBboxInteraction";
 import { useUndoHistory } from "./hooks/useUndoHistory";
 import { useSegmentation } from "./hooks/useSegmentation";
+import { KeyboardShortcutsModal } from "./KeyboardShortcutsModal";
 
 // localStorage key for persisting toolbar position
 const TOOLBAR_POSITION_KEY = "maptimize:editor:toolbarPosition";
@@ -313,6 +316,9 @@ export function ImageEditorPage({
   // Navigation sidebar state
   const [showNavigation, setShowNavigation] = useState(false);
 
+  // Keyboard shortcuts modal state
+  const [showShortcutsModal, setShowShortcutsModal] = useState(false);
+
   // Convert crops to editor bboxes
   const [bboxes, setBboxes] = useState<EditorBbox[]>(() =>
     crops.map(cropToEditorBbox)
@@ -351,6 +357,27 @@ export function ImageEditorPage({
 
   // Error state for user feedback
   const [error, setError] = useState<string | null>(null);
+
+  // Re-detect state
+  const queryClient = useQueryClient();
+  const [showRedetectConfirm, setShowRedetectConfirm] = useState(false);
+
+  const redetectMutation = useMutation({
+    mutationFn: () => api.reprocessImage(fovImage.id, true),
+    onSuccess: () => {
+      setShowRedetectConfirm(false);
+      // Invalidate queries to refresh data
+      queryClient.invalidateQueries({ queryKey: ["fovs", experimentId] });
+      queryClient.invalidateQueries({ queryKey: ["crops", experimentId] });
+      queryClient.invalidateQueries({ queryKey: ["fov-crops", fovImage.id] });
+      // Notify parent component to refresh data
+      onDataChanged?.();
+    },
+    onError: (err: Error) => {
+      console.error("[Editor] Re-detect failed:", err);
+      setError(t("redetectError"));
+    },
+  });
 
   // Saved polygons for all crops
   const [savedPolygons, setSavedPolygons] = useState<CellPolygon[]>([]);
@@ -829,24 +856,61 @@ export function ImageEditorPage({
   // Keyboard shortcuts
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      // Delete = delete selected bbox
-      if ((e.key === "Delete" || e.key === "Backspace") && editorState.selectedBboxId) {
-        const bbox = bboxes.find((b) => b.id === editorState.selectedBboxId);
-        if (bbox) {
-          handleBboxDeleteLocal(bbox);
+      // Don't trigger shortcuts when typing in input fields
+      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) {
+        return;
+      }
+
+      // ? = open keyboard shortcuts modal
+      if (e.key === "?") {
+        e.preventDefault();
+        setShowShortcutsModal(true);
+        return;
+      }
+
+      // Escape = close modal or clear segmentation points
+      if (e.key === "Escape") {
+        if (showShortcutsModal) {
+          setShowShortcutsModal(false);
+          return;
+        }
+        if (editorState.mode === "segment") {
+          segmentation.clearSegmentation();
+          return;
+        }
+      }
+
+      // Don't process other shortcuts when modal is open
+      if (showShortcutsModal) {
+        return;
+      }
+
+      // Delete / D = delete hovered or selected bbox
+      if (e.key === "Delete" || e.key === "Backspace" || e.key === "d" || e.key === "D") {
+        // D key only works without modifiers
+        if ((e.key === "d" || e.key === "D") && (e.ctrlKey || e.metaKey || e.altKey)) {
+          return;
+        }
+        // Use hovered bbox if available, otherwise use selected
+        const targetId = editorState.hoveredBboxId ?? editorState.selectedBboxId;
+        if (targetId) {
+          const bbox = bboxes.find((b) => b.id === targetId);
+          if (bbox) {
+            handleBboxDeleteLocal(bbox);
+          }
         }
         return;
       }
 
-      // Ctrl+Z = undo
-      if ((e.ctrlKey || e.metaKey) && e.key === "z") {
+      // Z = undo (with or without Ctrl)
+      if (e.key === "z" || e.key === "Z") {
         e.preventDefault();
         undoHistory.undo();
         return;
       }
 
-      // N = toggle draw mode
-      if (e.key === "n" || e.key === "N") {
+      // A / N = toggle draw mode
+      if (e.key === "n" || e.key === "N" || e.key === "a" || e.key === "A") {
         setEditorState((prev) => ({
           ...prev,
           mode: prev.mode === "draw" ? "view" : "draw",
@@ -865,9 +929,43 @@ export function ImageEditorPage({
         return;
       }
 
-      // Escape = clear segmentation points (when in segment mode)
-      if (e.key === "Escape" && editorState.mode === "segment") {
-        segmentation.clearSegmentation();
+      // F = fit to view
+      if (e.key === "f" || e.key === "F") {
+        handleResetView();
+        return;
+      }
+
+      // Arrow left = previous image
+      if (e.key === "ArrowLeft" && hasPrevImage && onNavigatePrev) {
+        e.preventDefault();
+        onNavigatePrev();
+        return;
+      }
+
+      // Arrow right = next image
+      if (e.key === "ArrowRight" && hasNextImage && onNavigateNext) {
+        e.preventDefault();
+        onNavigateNext();
+        return;
+      }
+
+      // Arrow up = zoom in
+      if (e.key === "ArrowUp") {
+        e.preventDefault();
+        setEditorState((prev) => ({
+          ...prev,
+          zoom: Math.min(MAX_ZOOM, prev.zoom * 1.2),
+        }));
+        return;
+      }
+
+      // Arrow down = zoom out
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        setEditorState((prev) => ({
+          ...prev,
+          zoom: Math.max(MIN_ZOOM, prev.zoom / 1.2),
+        }));
         return;
       }
 
@@ -911,7 +1009,7 @@ export function ImageEditorPage({
       window.removeEventListener("keydown", handleKeyDown);
       window.removeEventListener("keyup", handleKeyUp);
     };
-  }, [bboxes, editorState.selectedBboxId, editorState.isSpacePressed, editorState.isShiftPressed, editorState.mode, handleBboxDeleteLocal, undoHistory, segmentation]);
+  }, [bboxes, editorState.selectedBboxId, editorState.hoveredBboxId, editorState.isSpacePressed, editorState.isShiftPressed, editorState.mode, handleBboxDeleteLocal, undoHistory, segmentation, showShortcutsModal, handleResetView, hasPrevImage, hasNextImage, onNavigatePrev, onNavigateNext]);
 
   // Bbox interaction hook
   const {
@@ -1138,6 +1236,15 @@ export function ImageEditorPage({
               label={t("segmentation")}
               title={t("segmentMode")}
             />
+
+            {/* Keyboard shortcuts button */}
+            <button
+              onClick={() => setShowShortcutsModal(true)}
+              className="p-1.5 rounded-lg text-text-muted hover:text-text-primary hover:bg-white/10 transition-all"
+              title={t("keyboardShortcuts")}
+            >
+              <Keyboard className="w-4 h-4" />
+            </button>
           </div>
         </div>
 
@@ -1337,6 +1444,9 @@ export function ImageEditorPage({
         pendingPolygonCount={segmentation.state.pendingPolygons.length}
         onAddToPending={segmentation.addPreviewToPending}
         canAddToPending={!!segmentation.state.previewPolygon}
+        // Re-detect props
+        onRedetect={() => setShowRedetectConfirm(true)}
+        isRedetecting={redetectMutation.isPending}
       />
 
       {/* Context menu */}
@@ -1371,6 +1481,24 @@ export function ImageEditorPage({
           </motion.div>
         )}
       </AnimatePresence>
+
+      {/* Re-detect confirmation modal */}
+      <ConfirmModal
+        isOpen={showRedetectConfirm}
+        onClose={() => setShowRedetectConfirm(false)}
+        onConfirm={() => redetectMutation.mutate()}
+        title={t("redetectConfirmTitle")}
+        message={t("redetectConfirmMessage")}
+        confirmLabel={t("redetect")}
+        isLoading={redetectMutation.isPending}
+        variant="warning"
+      />
+
+      {/* Keyboard shortcuts modal */}
+      <KeyboardShortcutsModal
+        isOpen={showShortcutsModal}
+        onClose={() => setShowShortcutsModal(false)}
+      />
     </div>
   );
 }

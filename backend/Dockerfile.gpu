@@ -78,6 +78,9 @@ RUN pip install --no-cache-dir "numpy>=1.26,<2" einops decord pycocotools superv
 # Install SAM 3 from Facebook Research
 RUN pip install --no-cache-dir git+https://github.com/facebookresearch/sam3.git
 
+# Install ESM-C for protein embeddings
+RUN pip install --no-cache-dir "esm>=3.0.0"
+
 # Install remaining dependencies
 RUN uv pip install --system -e "."
 
@@ -125,6 +128,16 @@ except ImportError:
     print('⚠ SAM 3 not available')
 " 2>&1) || true
 echo "$SAM3_STATUS"
+
+# Check ESM-C availability
+ESM_STATUS=$(python -c "
+try:
+    from esm.models.esmc import ESMC
+    print('✓ ESM-C installed')
+except ImportError:
+    print('⚠ ESM-C not available (protein embeddings disabled)')
+" 2>&1) || true
+echo "$ESM_STATUS"
 
 # Check YOLOv8 weights - these are REQUIRED for cell detection
 YOLO_PATH="${YOLO_MODEL_PATH:-/app/weights/best.pt}"

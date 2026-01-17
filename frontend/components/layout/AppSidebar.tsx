@@ -14,6 +14,11 @@ import { useQueryClient } from "@tanstack/react-query";
 import Link from "next/link";
 import { motion } from "framer-motion";
 import { useTranslations } from "next-intl";
+import {
+  navStaggerContainerVariants,
+  navItemVariants,
+  layoutTransition,
+} from "@/lib/animations";
 import { useAuthStore } from "@/stores/authStore";
 import { api } from "@/lib/api";
 import {
@@ -25,6 +30,7 @@ import {
   ChevronRight,
   Settings,
   Bug,
+  Dna,
 } from "lucide-react";
 import { Logo, BugReportModal } from "@/components/ui";
 import { clsx } from "clsx";
@@ -65,6 +71,7 @@ export function AppSidebar({
   const navigation = [
     { name: t("dashboard"), href: "/dashboard", icon: LayoutDashboard },
     { name: t("experiments"), href: "/dashboard/experiments", icon: FolderOpen },
+    { name: t("proteins"), href: "/dashboard/proteins", icon: Dna },
     { name: t("metrics"), href: "/dashboard/ranking", icon: Scale },
   ];
 
@@ -102,48 +109,70 @@ export function AppSidebar({
       </div>
 
       {/* Navigation */}
-      <nav className="flex-1 p-4 space-y-1">
+      <motion.nav
+        className="flex-1 p-4 space-y-1"
+        variants={navStaggerContainerVariants}
+        initial="hidden"
+        animate="visible"
+      >
         {navigation.map((item) => {
           const isActive = currentPath === item.href ||
             (item.href !== "/dashboard" && currentPath.startsWith(item.href));
 
           if (isFixed) {
             return (
-              <Link
-                key={item.name}
-                href={item.href}
+              <motion.div key={item.name} variants={navItemVariants} className="relative">
+                {/* Sliding active background */}
+                {isActive && (
+                  <motion.div
+                    layoutId="nav-active-bg"
+                    className="absolute inset-0 bg-primary-500/10 rounded-xl"
+                    transition={layoutTransition}
+                  />
+                )}
+                <Link
+                  href={item.href}
+                  className={clsx(
+                    "relative flex items-center gap-3 px-4 py-3 rounded-xl transition-colors duration-200",
+                    isActive
+                      ? "text-primary-400"
+                      : "text-text-secondary hover:bg-white/5 hover:text-text-primary"
+                  )}
+                >
+                  <item.icon className="w-5 h-5" />
+                  <span className="font-medium">{item.name}</span>
+                  {isActive && <ChevronRight className="w-4 h-4 ml-auto" />}
+                </Link>
+              </motion.div>
+            );
+          }
+
+          return (
+            <motion.div key={item.name} variants={navItemVariants} className="relative">
+              {isActive && (
+                <motion.div
+                  layoutId="nav-active-bg-overlay"
+                  className="absolute inset-0 bg-primary-500/10 rounded-xl"
+                  transition={layoutTransition}
+                />
+              )}
+              <button
+                onClick={() => handleNavClick(item.href)}
                 className={clsx(
-                  "flex items-center gap-3 px-4 py-3 rounded-xl transition-all duration-200",
+                  "relative w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-colors duration-200",
                   isActive
-                    ? "bg-primary-500/10 text-primary-400"
+                    ? "text-primary-400"
                     : "text-text-secondary hover:bg-white/5 hover:text-text-primary"
                 )}
               >
                 <item.icon className="w-5 h-5" />
                 <span className="font-medium">{item.name}</span>
                 {isActive && <ChevronRight className="w-4 h-4 ml-auto" />}
-              </Link>
-            );
-          }
-
-          return (
-            <button
-              key={item.name}
-              onClick={() => handleNavClick(item.href)}
-              className={clsx(
-                "w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all duration-200",
-                isActive
-                  ? "bg-primary-500/10 text-primary-400"
-                  : "text-text-secondary hover:bg-white/5 hover:text-text-primary"
-              )}
-            >
-              <item.icon className="w-5 h-5" />
-              <span className="font-medium">{item.name}</span>
-              {isActive && <ChevronRight className="w-4 h-4 ml-auto" />}
-            </button>
+              </button>
+            </motion.div>
           );
         })}
-      </nav>
+      </motion.nav>
 
       {/* User section */}
       <div className="p-4 border-t border-white/5">

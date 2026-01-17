@@ -3,11 +3,16 @@
 import { useState, useMemo, useEffect, useRef, useCallback } from "react";
 import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
-import { motion } from "framer-motion";
+import { motion, AnimatePresence } from "framer-motion";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useTranslations } from "next-intl";
 import { api, CellCropGallery, FOVImage } from "@/lib/api";
-import { ConfirmModal, MicroscopyImage } from "@/components/ui";
+import {
+  staggerContainerVariants,
+  staggerItemVariants,
+  cardHoverProps,
+} from "@/lib/animations";
+import { ConfirmModal, MicroscopyImage, Pagination } from "@/components/ui";
 import { FOVGallery } from "@/components/experiment";
 import {
   ImageGalleryFilters,
@@ -28,6 +33,7 @@ import {
   AlertCircle,
   Layers,
   ImageIcon,
+  Pencil,
 } from "lucide-react";
 
 type ViewMode = "fovs" | "crops";
@@ -76,7 +82,19 @@ export default function ExperimentDetailPage(): JSX.Element {
   const [selectedCropIds, setSelectedCropIds] = useState<Set<number>>(new Set());
   const [selectedFovIds, setSelectedFovIds] = useState<Set<number>>(new Set());
   const [showBulkDeleteConfirm, setShowBulkDeleteConfirm] = useState(false);
-  const [bulkProteinDropdownOpen, setBulkProteinDropdownOpen] = useState(false);
+  const [experimentProteinDropdownOpen, setExperimentProteinDropdownOpen] = useState(false);
+
+  // Pagination state for crops
+  const [cropPage, setCropPage] = useState(1);
+  const [cropsPerPage, setCropsPerPage] = useState(48);
+
+  // Inline editing state
+  const [isEditingName, setIsEditingName] = useState(false);
+  const [isEditingDescription, setIsEditingDescription] = useState(false);
+  const [editedName, setEditedName] = useState("");
+  const [editedDescription, setEditedDescription] = useState("");
+  const nameInputRef = useRef<HTMLInputElement>(null);
+  const descInputRef = useRef<HTMLTextAreaElement>(null);
 
   // Current view's selected IDs (derived) - default to crops if viewMode not set yet
   const effectiveViewMode = viewMode ?? "crops";
@@ -118,12 +136,19 @@ export default function ExperimentDetailPage(): JSX.Element {
   // Mutation error state for user feedback
   const [mutationError, setMutationError] = useState<string | null>(null);
 
+  // Helper to invalidate experiment-related queries (DRY)
+  const invalidateExperimentQueries = useCallback(() => {
+    queryClient.invalidateQueries({ queryKey: ["experiment", experimentId] });
+    queryClient.invalidateQueries({ queryKey: ["fovs", experimentId] });
+    queryClient.invalidateQueries({ queryKey: ["crops", experimentId] });
+  }, [queryClient, experimentId]);
+
   const deleteCropMutation = useMutation({
     mutationFn: (cropId: number) => api.deleteCellCrop(cropId),
     onSuccess: () => {
       setCropToDelete(null);
       setMutationError(null);
-      queryClient.invalidateQueries({ queryKey: ["crops", experimentId] });
+      invalidateExperimentQueries();
     },
     onError: (err: Error) => {
       console.error("Failed to delete cell crop:", err);
@@ -131,19 +156,75 @@ export default function ExperimentDetailPage(): JSX.Element {
     },
   });
 
-  const updateProteinMutation = useMutation({
-    mutationFn: ({ cropId, proteinId }: { cropId: number; proteinId: number | null }) =>
-      api.updateCellCropProtein(cropId, proteinId),
+  // Update experiment protein mutation (cascades to all images and crops)
+  const updateExperimentProteinMutation = useMutation({
+    mutationFn: ({ proteinId }: { proteinId: number | null }) =>
+      api.updateExperimentProtein(experimentId, proteinId),
     onSuccess: () => {
       setMutationError(null);
-      queryClient.invalidateQueries({ queryKey: ["crops", experimentId] });
-      setProteinDropdownCropId(null);
+      invalidateExperimentQueries();
     },
     onError: (err: Error) => {
-      console.error("Failed to update protein:", err);
+      console.error("Failed to update experiment protein:", err);
       setMutationError(err.message || "Failed to update protein assignment");
     },
   });
+
+  // Update experiment name/description mutation
+  const updateExperimentMutation = useMutation({
+    mutationFn: (data: { name?: string; description?: string }) =>
+      api.updateExperiment(experimentId, data),
+    onSuccess: () => {
+      setMutationError(null);
+      setIsEditingName(false);
+      setIsEditingDescription(false);
+      invalidateExperimentQueries();
+    },
+    onError: (err: Error) => {
+      console.error("Failed to update experiment:", err);
+      setMutationError(err.message || "Failed to update experiment");
+    },
+  });
+
+  // Inline editing handlers
+  const startEditingName = () => {
+    setEditedName(experiment?.name || "");
+    setIsEditingName(true);
+    setTimeout(() => nameInputRef.current?.focus(), 0);
+  };
+
+  const startEditingDescription = () => {
+    setEditedDescription(experiment?.description || "");
+    setIsEditingDescription(true);
+    setTimeout(() => descInputRef.current?.focus(), 0);
+  };
+
+  const saveName = () => {
+    if (editedName.trim() && editedName !== experiment?.name) {
+      updateExperimentMutation.mutate({ name: editedName.trim() });
+    } else {
+      setIsEditingName(false);
+    }
+  };
+
+  const saveDescription = () => {
+    const newDesc = editedDescription.trim() || undefined;
+    if (newDesc !== (experiment?.description || undefined)) {
+      updateExperimentMutation.mutate({ description: newDesc || "" });
+    } else {
+      setIsEditingDescription(false);
+    }
+  };
+
+  const cancelEditingName = () => {
+    setIsEditingName(false);
+    setEditedName(experiment?.name || "");
+  };
+
+  const cancelEditingDescription = () => {
+    setIsEditingDescription(false);
+    setEditedDescription(experiment?.description || "");
+  };
 
   // Bulk delete crops mutation
   const bulkDeleteCropsMutation = useMutation({
@@ -159,8 +240,7 @@ export default function ExperimentDetailPage(): JSX.Element {
       setSelectedCropIds(new Set());
       setShowBulkDeleteConfirm(false);
       setMutationError(null);
-      queryClient.invalidateQueries({ queryKey: ["crops", experimentId] });
-      queryClient.invalidateQueries({ queryKey: ["experiment", experimentId] });
+      invalidateExperimentQueries();
     },
     onError: (err: Error) => {
       console.error("Bulk delete crops failed:", err);
@@ -183,68 +263,12 @@ export default function ExperimentDetailPage(): JSX.Element {
       setSelectedFovIds(new Set());
       setShowBulkDeleteConfirm(false);
       setMutationError(null);
-      queryClient.invalidateQueries({ queryKey: ["fovs", experimentId] });
-      queryClient.invalidateQueries({ queryKey: ["crops", experimentId] });
-      queryClient.invalidateQueries({ queryKey: ["experiment", experimentId] });
+      invalidateExperimentQueries();
     },
     onError: (err: Error) => {
       console.error("Bulk delete FOVs failed:", err);
       setMutationError(err.message);
       queryClient.invalidateQueries({ queryKey: ["fovs", experimentId] });
-    },
-  });
-
-  // Update FOV protein mutation
-  const updateFovProteinMutation = useMutation({
-    mutationFn: ({ imageId, proteinId }: { imageId: number; proteinId: number | null }) =>
-      api.updateImageProtein(imageId, proteinId),
-    onSuccess: () => {
-      setMutationError(null);
-      queryClient.invalidateQueries({ queryKey: ["fovs", experimentId] });
-      queryClient.invalidateQueries({ queryKey: ["crops", experimentId] });
-    },
-    onError: (err: Error) => {
-      console.error("Failed to update FOV protein:", err);
-      setMutationError(err.message || "Failed to update protein assignment");
-    },
-  });
-
-  // Bulk update FOV protein mutation
-  const bulkUpdateFovProteinMutation = useMutation({
-    mutationFn: async ({ ids, proteinId }: { ids: number[]; proteinId: number | null }) => {
-      return api.batchUpdateImageProtein(ids, proteinId);
-    },
-    onSuccess: () => {
-      setSelectedFovIds(new Set());
-      setMutationError(null);
-      queryClient.invalidateQueries({ queryKey: ["fovs", experimentId] });
-      queryClient.invalidateQueries({ queryKey: ["crops", experimentId] });
-    },
-    onError: (err: Error) => {
-      console.error("Bulk update FOV protein failed:", err);
-      setMutationError(err.message);
-    },
-  });
-
-  // Bulk update protein mutation with partial failure handling
-  const bulkUpdateProteinMutation = useMutation({
-    mutationFn: async ({ ids, proteinId }: { ids: number[]; proteinId: number | null }) => {
-      const results = await Promise.allSettled(ids.map((id) => api.updateCellCropProtein(id, proteinId)));
-      const failures = results.filter((r) => r.status === "rejected");
-      if (failures.length > 0) {
-        const successCount = results.length - failures.length;
-        throw new Error(`Updated ${successCount} of ${ids.length} items. ${failures.length} failed.`);
-      }
-    },
-    onSuccess: () => {
-      setBulkProteinDropdownOpen(false);
-      setMutationError(null);
-      queryClient.invalidateQueries({ queryKey: ["crops", experimentId] });
-    },
-    onError: (err: Error) => {
-      console.error("Bulk protein update failed:", err);
-      setMutationError(err.message);
-      queryClient.invalidateQueries({ queryKey: ["crops", experimentId] });
     },
   });
 
@@ -258,24 +282,22 @@ export default function ExperimentDetailPage(): JSX.Element {
     router.push(`/editor/${experimentId}/${crop.image_id}`);
   }, [router, experimentId]);
 
-  // State for protein dropdown
-  const [proteinDropdownCropId, setProteinDropdownCropId] = useState<number | null>(null);
-  const dropdownRef = useRef<HTMLDivElement>(null);
+  // State for experiment protein dropdown
+  const experimentProteinRef = useRef<HTMLDivElement>(null);
 
   // Close dropdown when clicking outside
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
-      if (dropdownRef.current && !dropdownRef.current.contains(event.target as Node)) {
-        setProteinDropdownCropId(null);
-        setBulkProteinDropdownOpen(false);
+      if (experimentProteinRef.current && !experimentProteinRef.current.contains(event.target as Node)) {
+        setExperimentProteinDropdownOpen(false);
       }
     };
 
-    if (proteinDropdownCropId !== null || bulkProteinDropdownOpen) {
+    if (experimentProteinDropdownOpen) {
       document.addEventListener("mousedown", handleClickOutside);
       return () => document.removeEventListener("mousedown", handleClickOutside);
     }
-  }, [proteinDropdownCropId, bulkProteinDropdownOpen]);
+  }, [experimentProteinDropdownOpen]);
 
   // Selection helpers
   const toggleSelect = (id: number) => {
@@ -314,7 +336,7 @@ export default function ExperimentDetailPage(): JSX.Element {
       const protein = proteins?.find((p) => p.name === name);
       return { name, color: protein?.color };
     });
-  }, [viewMode, crops, fovs, proteins]);
+  }, [effectiveViewMode, crops, fovs, proteins]);
 
   // Filter and sort crops
   const filteredCrops = useMemo(() => {
@@ -397,6 +419,26 @@ export default function ExperimentDetailPage(): JSX.Element {
     return result;
   }, [fovs, searchQuery, fovSortField, sortOrder, proteinFilter]);
 
+  // Pagination for crops
+  const cropTotalPages = Math.ceil(filteredCrops.length / cropsPerPage);
+  const cropStartIndex = (cropPage - 1) * cropsPerPage;
+  const paginatedCrops = filteredCrops.slice(cropStartIndex, cropStartIndex + cropsPerPage);
+
+  // Reset crop page when filters change
+  useEffect(() => {
+    setCropPage(1);
+  }, [filteredCrops.length, cropSortField, sortOrder, proteinFilter, searchQuery]);
+
+  const handleCropPageChange = (page: number) => {
+    setCropPage(page);
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  };
+
+  const handleCropsPerPageChange = (size: number) => {
+    setCropsPerPage(size);
+    setCropPage(1);
+  };
+
   // Get current view's filtered items (must be after filteredFovs and filteredCrops)
   const currentFilteredItems = effectiveViewMode === "fovs" ? filteredFovs : filteredCrops;
 
@@ -444,12 +486,105 @@ export default function ExperimentDetailPage(): JSX.Element {
         >
           <ArrowLeft className="w-5 h-5 text-text-secondary" />
         </Link>
-        <div className="flex-1">
-          <h1 className="text-3xl font-display font-bold text-text-primary">
-            {experiment.name}
-          </h1>
-          {experiment.description && (
-            <p className="text-text-secondary mt-1">{experiment.description}</p>
+        <div className="flex-1 min-w-0">
+          {/* Editable Name */}
+          {isEditingName ? (
+            <div className="flex items-center gap-2">
+              <input
+                ref={nameInputRef}
+                type="text"
+                value={editedName}
+                onChange={(e) => setEditedName(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") saveName();
+                  if (e.key === "Escape") cancelEditingName();
+                }}
+                className="text-3xl font-display font-bold text-text-primary bg-transparent border-b-2 border-primary-500 outline-none w-full"
+              />
+              <button
+                onClick={saveName}
+                className="p-1.5 text-accent-green hover:bg-accent-green/20 rounded-lg transition-colors"
+                disabled={updateExperimentMutation.isPending}
+              >
+                {updateExperimentMutation.isPending ? (
+                  <Loader2 className="w-5 h-5 animate-spin" />
+                ) : (
+                  <Check className="w-5 h-5" />
+                )}
+              </button>
+              <button
+                onClick={cancelEditingName}
+                className="p-1.5 text-text-muted hover:bg-white/10 rounded-lg transition-colors"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+          ) : (
+            <div className="group flex items-center gap-2">
+              <h1 className="text-3xl font-display font-bold text-text-primary truncate">
+                {experiment.name}
+              </h1>
+              <button
+                onClick={startEditingName}
+                className="p-1.5 text-text-muted hover:text-primary-400 hover:bg-white/10 rounded-lg transition-all opacity-0 group-hover:opacity-100"
+                title="Edit name"
+              >
+                <Pencil className="w-4 h-4" />
+              </button>
+            </div>
+          )}
+
+          {/* Editable Description */}
+          {isEditingDescription ? (
+            <div className="flex items-start gap-2 mt-1">
+              <textarea
+                ref={descInputRef}
+                value={editedDescription}
+                onChange={(e) => setEditedDescription(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && !e.shiftKey) {
+                    e.preventDefault();
+                    saveDescription();
+                  }
+                  if (e.key === "Escape") cancelEditingDescription();
+                }}
+                className="text-text-secondary bg-transparent border-b-2 border-primary-500 outline-none w-full resize-none"
+                rows={2}
+                placeholder="Add description..."
+              />
+              <button
+                onClick={saveDescription}
+                className="p-1.5 text-accent-green hover:bg-accent-green/20 rounded-lg transition-colors"
+                disabled={updateExperimentMutation.isPending}
+              >
+                {updateExperimentMutation.isPending ? (
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                ) : (
+                  <Check className="w-4 h-4" />
+                )}
+              </button>
+              <button
+                onClick={cancelEditingDescription}
+                className="p-1.5 text-text-muted hover:bg-white/10 rounded-lg transition-colors"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+          ) : (
+            <div className="group flex items-center gap-2 mt-1">
+              {experiment.description ? (
+                <p className="text-text-secondary">{experiment.description}</p>
+              ) : (
+                <p className="text-text-muted italic">No description</p>
+              )}
+              <button
+                onClick={startEditingDescription}
+                className="p-1 text-text-muted hover:text-primary-400 hover:bg-white/10 rounded-lg transition-all opacity-0 group-hover:opacity-100"
+                title="Edit description"
+              >
+                <Pencil className="w-3 h-3" />
+              </button>
+            </div>
           )}
         </div>
         <div className="flex items-center gap-3">
@@ -472,8 +607,8 @@ export default function ExperimentDetailPage(): JSX.Element {
         </div>
       </div>
 
-      {/* View Mode Toggle */}
-      <div className="flex items-center gap-2">
+      {/* View Mode Toggle and Experiment Protein Selector */}
+      <div className="flex items-center justify-between gap-4">
         <div className="flex items-center bg-bg-secondary rounded-lg p-1">
           <button
             onClick={() => setViewMode("fovs")}
@@ -503,6 +638,85 @@ export default function ExperimentDetailPage(): JSX.Element {
               ({experiment.cell_count})
             </span>
           </button>
+        </div>
+
+        {/* Experiment Protein Selector */}
+        <div className="relative" ref={experimentProteinRef}>
+          <button
+            onClick={() => setExperimentProteinDropdownOpen(!experimentProteinDropdownOpen)}
+            className={`flex items-center gap-2 px-4 py-2 rounded-lg transition-all ${
+              experiment.map_protein
+                ? "border border-white/10 hover:border-white/20"
+                : "bg-bg-secondary hover:bg-bg-hover"
+            }`}
+            style={experiment.map_protein ? {
+              backgroundColor: `${experiment.map_protein.color}15`,
+              borderColor: `${experiment.map_protein.color}40`,
+            } : undefined}
+          >
+            {experiment.map_protein ? (
+              <>
+                <span
+                  className="w-3 h-3 rounded-full"
+                  style={{ backgroundColor: experiment.map_protein.color }}
+                />
+                <span
+                  className="font-medium"
+                  style={{ color: experiment.map_protein.color }}
+                >
+                  {experiment.map_protein.name}
+                </span>
+              </>
+            ) : (
+              <span className="text-text-muted">{t("assignProtein")}</span>
+            )}
+            <svg
+              className={`w-4 h-4 text-text-muted transition-transform ${experimentProteinDropdownOpen ? "rotate-180" : ""}`}
+              fill="none"
+              viewBox="0 0 24 24"
+              stroke="currentColor"
+            >
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+            </svg>
+          </button>
+
+          {experimentProteinDropdownOpen && (
+            <div className="absolute top-full right-0 mt-1 w-56 bg-bg-elevated border border-white/10 rounded-lg shadow-xl z-50">
+              <div className="px-3 py-2 text-xs text-text-muted border-b border-white/10">
+                {t("experimentProteinHint")}
+              </div>
+              <button
+                onClick={() => {
+                  updateExperimentProteinMutation.mutate({ proteinId: null });
+                  setExperimentProteinDropdownOpen(false);
+                }}
+                className={`w-full px-3 py-2 text-left text-sm hover:bg-white/5 ${
+                  !experiment.map_protein ? "text-primary-400" : "text-text-muted"
+                }`}
+              >
+                {tCommon("none")}
+              </button>
+              {proteins?.map((p) => (
+                <button
+                  key={p.id}
+                  onClick={() => {
+                    updateExperimentProteinMutation.mutate({ proteinId: p.id });
+                    setExperimentProteinDropdownOpen(false);
+                  }}
+                  className={`w-full px-3 py-2 text-left text-sm hover:bg-white/5 flex items-center gap-2 ${
+                    experiment.map_protein?.id === p.id ? "bg-white/5" : ""
+                  }`}
+                  style={{ color: p.color }}
+                >
+                  <span className="w-3 h-3 rounded-full" style={{ backgroundColor: p.color }} />
+                  {p.name}
+                  {experiment.map_protein?.id === p.id && (
+                    <Check className="w-4 h-4 ml-auto" />
+                  )}
+                </button>
+              ))}
+            </div>
+          )}
         </div>
       </div>
 
@@ -567,39 +781,6 @@ export default function ExperimentDetailPage(): JSX.Element {
                   {selectedIds.size} selected
                 </span>
 
-                {/* Bulk Assign MAP - only for crops */}
-                {effectiveViewMode === "crops" && (
-                  <div className="relative" ref={dropdownRef}>
-                    <button
-                      onClick={() => setBulkProteinDropdownOpen(!bulkProteinDropdownOpen)}
-                      className="btn-secondary text-sm py-1.5"
-                    >
-                      Assign MAP
-                    </button>
-                    {bulkProteinDropdownOpen && (
-                      <div className="absolute top-full left-0 mt-1 w-48 bg-bg-elevated border border-white/10 rounded-lg shadow-xl z-50">
-                        <button
-                          onClick={() => bulkUpdateProteinMutation.mutate({ ids: Array.from(selectedIds), proteinId: null })}
-                          className="w-full px-3 py-2 text-left text-sm text-text-muted hover:bg-white/5"
-                        >
-                          None
-                        </button>
-                        {proteins?.map((p) => (
-                          <button
-                            key={p.id}
-                            onClick={() => bulkUpdateProteinMutation.mutate({ ids: Array.from(selectedIds), proteinId: p.id })}
-                            className="w-full px-3 py-2 text-left text-sm hover:bg-white/5 flex items-center gap-2"
-                            style={{ color: p.color }}
-                          >
-                            <span className="w-2 h-2 rounded-full" style={{ backgroundColor: p.color }} />
-                            {p.name}
-                          </button>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                )}
-
                 {/* Bulk Delete */}
                 <button
                   onClick={() => setShowBulkDeleteConfirm(true)}
@@ -634,13 +815,6 @@ export default function ExperimentDetailPage(): JSX.Element {
           selectedIds={selectedFovIds}
           onToggleSelect={toggleSelect}
           onFovClick={handleOpenEditorFromFov}
-          proteins={proteins}
-          onProteinChange={(imageId, proteinId) =>
-            updateFovProteinMutation.mutate({ imageId, proteinId })
-          }
-          onBatchProteinChange={(imageIds, proteinId) =>
-            bulkUpdateFovProteinMutation.mutate({ ids: imageIds, proteinId })
-          }
         />
       ) : (
         <>
@@ -659,14 +833,22 @@ export default function ExperimentDetailPage(): JSX.Element {
                 </p>
               )}
 
-              <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6 gap-4">
-                {filteredCrops.map((crop, i) => (
+              <motion.div
+                className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6 gap-4"
+                variants={staggerContainerVariants}
+                initial="hidden"
+                animate="visible"
+                key={cropPage}
+              >
+                <AnimatePresence mode="popLayout">
+                {paginatedCrops.map((crop) => (
                   <motion.div
                     key={crop.id}
-                    initial={{ opacity: 0, scale: 0.95 }}
-                    animate={{ opacity: 1, scale: 1 }}
-                    transition={{ delay: i * 0.01 }}
+                    variants={staggerItemVariants}
+                    exit={{ opacity: 0, scale: 0.9, transition: { duration: 0.2 } }}
+                    layout
                     className="glass-card group"
+                    {...cardHoverProps}
                   >
                     {/* Cell crop preview */}
                     <div
@@ -708,49 +890,18 @@ export default function ExperimentDetailPage(): JSX.Element {
                         {crop.parent_filename}
                       </p>
 
-                      {/* MAP protein selector */}
-                      <div className="relative">
-                        <button
-                          onClick={() => setProteinDropdownCropId(proteinDropdownCropId === crop.id ? null : crop.id)}
-                          className={`px-2 py-1 rounded text-xs font-medium transition-all w-full text-left ${
-                            crop.map_protein_name
-                              ? ""
-                              : "bg-bg-secondary text-text-muted hover:bg-bg-hover"
-                          }`}
-                          style={crop.map_protein_name ? {
+                      {/* MAP protein badge (inherited from experiment) */}
+                      {crop.map_protein_name && (
+                        <div
+                          className="px-2 py-1 rounded text-xs font-medium"
+                          style={{
                             backgroundColor: `${crop.map_protein_color}20`,
                             color: crop.map_protein_color,
-                          } : undefined}
+                          }}
                         >
-                          {crop.map_protein_name || "+ Assign MAP"}
-                        </button>
-
-                        {/* Dropdown - opens upward to avoid overflow clipping */}
-                        {proteinDropdownCropId === crop.id && (
-                          <div className="absolute bottom-full left-0 right-0 mb-1 bg-bg-elevated border border-white/10 rounded-lg shadow-xl z-50">
-                            <button
-                              onClick={() => updateProteinMutation.mutate({ cropId: crop.id, proteinId: null })}
-                              className="w-full px-3 py-2 text-left text-xs text-text-muted hover:bg-white/5"
-                            >
-                              None
-                            </button>
-                            {proteins?.map((p) => (
-                              <button
-                                key={p.id}
-                                onClick={() => updateProteinMutation.mutate({ cropId: crop.id, proteinId: p.id })}
-                                className="w-full px-3 py-2 text-left text-xs hover:bg-white/5 flex items-center gap-2"
-                                style={{ color: p.color }}
-                              >
-                                <span
-                                  className="w-2 h-2 rounded-full"
-                                  style={{ backgroundColor: p.color }}
-                                />
-                                {p.name}
-                              </button>
-                            ))}
-                          </div>
-                        )}
-                      </div>
+                          {crop.map_protein_name}
+                        </div>
+                      )}
 
                       {/* Size info */}
                       <div className="text-xs text-text-muted">
@@ -759,7 +910,19 @@ export default function ExperimentDetailPage(): JSX.Element {
                     </div>
                   </motion.div>
                 ))}
-              </div>
+                </AnimatePresence>
+              </motion.div>
+
+              {/* Pagination */}
+              <Pagination
+                currentPage={cropPage}
+                totalPages={cropTotalPages}
+                onPageChange={handleCropPageChange}
+                totalItems={filteredCrops.length}
+                itemsPerPage={cropsPerPage}
+                showPageSizeSelector
+                onPageSizeChange={handleCropsPerPageChange}
+              />
             </>
           ) : crops && crops.length > 0 ? (
             <div className="glass-card p-12 text-center">

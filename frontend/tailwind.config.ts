@@ -63,6 +63,14 @@ const config: Config = {
       animation: {
         "glow-pulse": "glow-pulse 2s ease-in-out infinite",
         "float": "float 6s ease-in-out infinite",
+        // New micro-interaction animations
+        "pulse-soft": "pulse-soft 2s ease-in-out infinite",
+        "shimmer": "shimmer 2s linear infinite",
+        "check-bounce": "check-bounce 0.3s cubic-bezier(0.68, -0.55, 0.265, 1.55)",
+        "slide-in-up": "slide-in-up 0.3s ease-out",
+        "slide-in-left": "slide-in-left 0.3s ease-out",
+        "fade-in": "fade-in 0.2s ease-out",
+        "scale-in": "scale-in 0.2s ease-out",
       },
       keyframes: {
         "glow-pulse": {
@@ -72,6 +80,39 @@ const config: Config = {
         float: {
           "0%, 100%": { transform: "translateY(0px)" },
           "50%": { transform: "translateY(-10px)" },
+        },
+        // Subtle pulse for status badges (processing states)
+        "pulse-soft": {
+          "0%, 100%": { opacity: "1", transform: "scale(1)" },
+          "50%": { opacity: "0.8", transform: "scale(1.02)" },
+        },
+        // Loading skeleton shimmer effect
+        "shimmer": {
+          "0%": { backgroundPosition: "-200% 0" },
+          "100%": { backgroundPosition: "200% 0" },
+        },
+        // Checkbox bounce animation
+        "check-bounce": {
+          "0%": { transform: "scale(0)", opacity: "0" },
+          "50%": { transform: "scale(1.2)" },
+          "100%": { transform: "scale(1)", opacity: "1" },
+        },
+        // Entrance animations
+        "slide-in-up": {
+          "0%": { transform: "translateY(10px)", opacity: "0" },
+          "100%": { transform: "translateY(0)", opacity: "1" },
+        },
+        "slide-in-left": {
+          "0%": { transform: "translateX(-10px)", opacity: "0" },
+          "100%": { transform: "translateX(0)", opacity: "1" },
+        },
+        "fade-in": {
+          "0%": { opacity: "0" },
+          "100%": { opacity: "1" },
+        },
+        "scale-in": {
+          "0%": { transform: "scale(0.95)", opacity: "0" },
+          "100%": { transform: "scale(1)", opacity: "1" },
         },
       },
     },

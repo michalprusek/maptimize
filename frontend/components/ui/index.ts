@@ -6,3 +6,4 @@ export { Spinner, LoadingContainer } from "./Spinner";
 export { EmptyState } from "./EmptyState";
 export { StatusBadge, getStatusStyles } from "./StatusBadge";
 export { MicroscopyImage } from "./MicroscopyImage";
+export { Pagination } from "./Pagination";

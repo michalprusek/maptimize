@@ -141,6 +141,49 @@
       --tw-shadow-color: color-mix(in srgb, var(--color-primary-500) 5%, transparent);
     }
   }
+
+  /* Enhanced card with lift and glow on hover */
+  .card-interactive {
+    @apply transition-all duration-200 ease-out;
+    &:hover {
+      transform: translateY(-2px) scale(1.01);
+      box-shadow: 0 10px 40px -10px rgba(0, 212, 170, 0.15),
+                  0 4px 20px -5px rgba(0, 0, 0, 0.3);
+    }
+    &:active {
+      transform: scale(0.99);
+    }
+  }
+
+  /* Button with glow effect on hover */
+  .btn-glow {
+    @apply relative overflow-hidden;
+    &::after {
+      content: '';
+      position: absolute;
+      inset: 0;
+      opacity: 0;
+      transition: opacity 0.2s ease-out;
+      box-shadow: inset 0 0 20px rgba(0, 212, 170, 0.3);
+      border-radius: inherit;
+      pointer-events: none;
+    }
+    &:hover::after {
+      opacity: 1;
+    }
+  }
+
+  /* Shimmer loading skeleton */
+  .shimmer {
+    background: linear-gradient(
+      90deg,
+      var(--color-bg-elevated) 0%,
+      var(--color-bg-hover) 50%,
+      var(--color-bg-elevated) 100%
+    );
+    background-size: 200% 100%;
+    @apply animate-shimmer;
+  }
 }
 
 @layer utilities {
@@ -194,5 +237,40 @@
   .lut-fire {
     filter: sepia(1) saturate(10) hue-rotate(-10deg) brightness(1.1) contrast(1.1);
   }
+}
 
+/* =============================================================================
+ * ACCESSIBILITY: Reduced Motion Support
+ * Respects user's OS-level motion preferences
+ * ============================================================================= */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+
+  /* Preserve essential visual feedback */
+  .btn-primary,
+  .btn-secondary,
+  .btn-ghost {
+    transition: background-color 0.01ms, color 0.01ms;
+  }
+
+  /* Disable decorative animations */
+  .animate-glow-pulse,
+  .animate-float,
+  .animate-pulse-soft,
+  .animate-shimmer {
+    animation: none !important;
+  }
+
+  /* Disable transform effects */
+  .card-interactive:hover,
+  .card-hover:hover {
+    transform: none !important;
+  }
 }

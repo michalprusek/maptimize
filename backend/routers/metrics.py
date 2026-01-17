@@ -267,12 +267,14 @@ async def list_metric_images(
     db: AsyncSession = Depends(get_db)
 ):
     """List all images in a metric."""
+    from models.image import MapProtein
+
     metric = await get_metric_for_user(db, metric_id, current_user.id)
 
     result = await db.execute(
         select(MetricImage)
         .options(
-            selectinload(MetricImage.cell_crop),
+            selectinload(MetricImage.cell_crop).selectinload(CellCrop.map_protein),
             selectinload(MetricImage.rating)
         )
         .where(MetricImage.metric_id == metric_id)
@@ -283,6 +285,13 @@ async def list_metric_images(
     response = []
     for img in images:
         rating = img.rating
+        # Get protein info from cell_crop if available
+        protein_name = None
+        protein_color = None
+        if img.cell_crop and img.cell_crop.map_protein:
+            protein_name = img.cell_crop.map_protein.name
+            protein_color = img.cell_crop.map_protein.color
+
         response.append(MetricImageResponse(
             id=img.id,
             metric_id=img.metric_id,
@@ -295,6 +304,8 @@ async def list_metric_images(
             sigma=rating.sigma if rating else None,
             ordinal_score=rating.ordinal_score if rating else None,
             comparison_count=rating.comparison_count if rating else 0,
+            map_protein_name=protein_name,
+            map_protein_color=protein_color,
         ))
 
     return response

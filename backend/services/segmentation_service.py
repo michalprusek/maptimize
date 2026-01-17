@@ -9,7 +9,7 @@ This service provides the main API for:
 
 import asyncio
 import logging
-from typing import List, Optional, Tuple, Dict, Any
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 from sqlalchemy import select
@@ -21,7 +21,16 @@ from models.segmentation import SegmentationMask, UserSegmentationPrompt, FOVSeg
 from models.cell_crop import CellCrop
 from ml.segmentation.sam_encoder import get_sam_encoder
 from ml.segmentation.sam_decoder import get_sam_decoder
-from ml.segmentation.utils import mask_to_polygon, mask_to_polygons, calculate_polygon_area, normalize_polygon_data
+from ml.segmentation.utils import (
+    mask_to_polygon,
+    mask_to_polygon_with_holes,
+    mask_to_polygons,
+    calculate_polygon_area,
+    calculate_polygon_area_with_holes,
+    normalize_polygon_data,
+    is_polygon_with_holes,
+    normalize_polygon_format,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +38,32 @@ logger = logging.getLogger(__name__)
 # ============================================================================
 # Error Categorization Utility (DRY - used by multiple functions)
 # ============================================================================
+
+def _normalize_polygon_response(polygon_data: Any) -> Tuple[Any, Any, bool]:
+    """
+    Normalize stored polygon data for API response.
+
+    Returns both legacy and new formats for backward compatibility.
+
+    Args:
+        polygon_data: Polygon data from database (may be old or new format)
+
+    Returns:
+        Tuple of (simple_polygon, polygon_with_holes, has_holes)
+    """
+    if is_polygon_with_holes(polygon_data):
+        # New format stored
+        polygon_with_holes = polygon_data
+        simple_polygon = polygon_data.get("outer", [])
+        has_holes = len(polygon_data.get("holes", [])) > 0
+    else:
+        # Legacy format stored - convert for new clients
+        polygon_with_holes = normalize_polygon_format(polygon_data)
+        simple_polygon = polygon_data
+        has_holes = False
+
+    return simple_polygon, polygon_with_holes, has_holes
+
 
 def categorize_segmentation_error(error: Exception) -> Tuple[str, str]:
     """
@@ -245,18 +280,25 @@ async def segment_from_prompts(
 
     mask, iou_score, _ = await loop.run_in_executor(None, run_inference)
 
-    # Convert mask to polygon using utility function
-    polygon = await loop.run_in_executor(
+    # Convert mask to polygon with holes using utility function
+    # This properly handles ring-shaped masks (e.g., cell membranes)
+    polygon_with_holes = await loop.run_in_executor(
         None,
-        lambda: mask_to_polygon(mask)
+        lambda: mask_to_polygon_with_holes(mask)
     )
 
-    # Calculate area from mask (count True pixels)
+    # Calculate area from mask (count True pixels for most accurate area)
     area = int(np.sum(mask))
+
+    # For backward compatibility, also compute simple polygon (legacy clients)
+    # New clients should use polygon_with_holes
+    simple_polygon = polygon_with_holes.get("outer", [])
 
     return {
         "success": True,
-        "polygon": polygon,
+        "polygon": simple_polygon,  # Legacy format for backward compat
+        "polygon_with_holes": polygon_with_holes,  # New format with holes
+        "has_holes": len(polygon_with_holes.get("holes", [])) > 0,
         "iou_score": float(iou_score),
         "area_pixels": area,
         "mask_shape": list(mask.shape),
@@ -265,7 +307,7 @@ async def segment_from_prompts(
 
 async def save_segmentation_mask(
     crop_id: int,
-    polygon: List[Tuple[int, int]],
+    polygon: Any,  # Can be List[Tuple] (legacy) or Dict with outer/holes (new)
     iou_score: float,
     prompt_count: int,
     db: AsyncSession,
@@ -274,9 +316,13 @@ async def save_segmentation_mask(
     """
     Save finalized segmentation mask for a cell crop.
 
+    Supports both legacy simple polygon format and new holes format:
+    - Legacy: [[x,y], [x,y], ...] - list of points
+    - New: {"outer": [[x,y], ...], "holes": [[[x,y], ...], ...]} - with holes
+
     Args:
         crop_id: Database ID of the cell crop
-        polygon: List of (x, y) polygon points
+        polygon: Polygon points (simple list or dict with outer/holes)
         iou_score: SAM's IoU prediction score
         prompt_count: Number of click prompts used
         db: Async database session
@@ -293,8 +339,19 @@ async def save_segmentation_mask(
         logger.warning(f"Crop not found: crop_id={crop_id}")
         return {"success": False, "error": "Crop not found"}
 
-    # Calculate area using shoelace formula
-    area = calculate_polygon_area(polygon)
+    # Normalize polygon format and calculate area
+    if is_polygon_with_holes(polygon):
+        # New format with holes
+        polygon_data = polygon
+        area = calculate_polygon_area_with_holes(polygon_data)
+        points_count = len(polygon_data.get("outer", []))
+        holes_count = len(polygon_data.get("holes", []))
+    else:
+        # Legacy format - convert to new format for storage
+        polygon_data = normalize_polygon_format(polygon)
+        area = calculate_polygon_area(polygon)
+        points_count = len(polygon) if isinstance(polygon, list) else 0
+        holes_count = 0
 
     # Create or update mask
     existing = await db.execute(
@@ -303,7 +360,7 @@ async def save_segmentation_mask(
     existing_mask = existing.scalar_one_or_none()
 
     if existing_mask:
-        existing_mask.polygon_points = [list(p) for p in polygon]
+        existing_mask.polygon_points = polygon_data
         existing_mask.area_pixels = area
         existing_mask.iou_score = iou_score
         existing_mask.prompt_count = prompt_count
@@ -311,7 +368,7 @@ async def save_segmentation_mask(
     else:
         mask = SegmentationMask(
             cell_crop_id=crop_id,
-            polygon_points=[list(p) for p in polygon],
+            polygon_points=polygon_data,
             area_pixels=area,
             iou_score=iou_score,
             creation_method=creation_method,
@@ -321,9 +378,12 @@ async def save_segmentation_mask(
 
     await db.commit()
 
-    logger.info(f"Saved segmentation mask for crop {crop_id}: {len(polygon)} points")
+    logger.info(
+        f"Saved segmentation mask for crop {crop_id}: "
+        f"{points_count} outer points, {holes_count} holes"
+    )
 
-    return {"success": True, "crop_id": crop_id, "area_pixels": area}
+    return {"success": True, "crop_id": crop_id, "area_pixels": area, "has_holes": holes_count > 0}
 
 
 async def get_segmentation_mask(
@@ -332,6 +392,10 @@ async def get_segmentation_mask(
 ) -> Dict[str, Any]:
     """
     Get segmentation mask for a cell crop.
+
+    Returns both legacy and new polygon formats for compatibility:
+    - polygon: Simple list of points (legacy format, outer boundary only)
+    - polygon_with_holes: Dict with outer/holes (new format)
 
     Args:
         crop_id: Database ID of the cell crop
@@ -348,9 +412,14 @@ async def get_segmentation_mask(
     if not mask:
         return {"has_mask": False}
 
+    # Normalize polygon data for response (DRY helper)
+    simple_polygon, polygon_with_holes, has_holes = _normalize_polygon_response(mask.polygon_points)
+
     return {
         "has_mask": True,
-        "polygon": mask.polygon_points,
+        "polygon": simple_polygon,  # Legacy format
+        "polygon_with_holes": polygon_with_holes,  # New format
+        "has_holes": has_holes,
         "iou_score": mask.iou_score,
         "area_pixels": mask.area_pixels,
         "creation_method": mask.creation_method,
@@ -364,6 +433,8 @@ async def get_segmentation_masks_batch(
 ) -> Dict[int, Dict[str, Any]]:
     """
     Get segmentation masks for multiple crops at once.
+
+    Returns both legacy and new polygon formats for each mask.
 
     Args:
         crop_ids: List of cell crop IDs
@@ -380,15 +451,21 @@ async def get_segmentation_masks_batch(
     )
     masks = result.scalars().all()
 
-    return {
-        mask.cell_crop_id: {
-            "polygon": mask.polygon_points,
+    batch_result = {}
+    for mask in masks:
+        # Normalize polygon data for response (DRY helper)
+        simple_polygon, polygon_with_holes, has_holes = _normalize_polygon_response(mask.polygon_points)
+
+        batch_result[mask.cell_crop_id] = {
+            "polygon": simple_polygon,
+            "polygon_with_holes": polygon_with_holes,
+            "has_holes": has_holes,
             "iou_score": mask.iou_score,
             "area_pixels": mask.area_pixels,
             "creation_method": mask.creation_method,
         }
-        for mask in masks
-    }
+
+    return batch_result
 
 
 async def delete_segmentation_mask(
@@ -594,75 +671,67 @@ async def save_fov_segmentation_mask_union(
     creation_method: str = "interactive_union",
 ) -> Dict[str, Any]:
     """
-    Save FOV-level segmentation mask with union support.
+    Save FOV-level segmentation masks as separate instances.
 
-    Accepts multiple polygons and merges them with any existing mask.
-    Uses OpenCV to create masks, union them, then extract ALL contours.
-    Stores as list of polygons to preserve separate instances.
+    Each polygon is stored as a distinct instance - no binary mask union
+    is performed. This preserves instance segmentation where each connected
+    object remains separate even if adjacent/overlapping.
 
     Args:
         image_id: Database ID of the image
-        polygons: List of polygons, each a list of (x, y) points
+        polygons: List of polygons, each a list of (x, y) points - each becomes a separate instance
         iou_score: Average IoU score
         prompt_count: Total number of prompts used
         db: Async database session
         creation_method: How the mask was created
 
     Returns:
-        Dict with success status and all polygons
+        Dict with success status and all polygons (preserving instance separation)
     """
-    import cv2
-
-    # Get image to know dimensions
+    # Get image to verify it exists
     result = await db.execute(select(Image).where(Image.id == image_id))
     image = result.scalar_one_or_none()
 
     if not image:
-        logger.warning(f"Image not found for FOV mask union: image_id={image_id}")
+        logger.warning(f"Image not found for FOV mask save: image_id={image_id}")
         return {"success": False, "error": "Image not found"}
 
     try:
-        # Get image dimensions
-        img_width = image.width or 2048
-        img_height = image.height or 2048
+        # Filter valid polygons (at least 3 points)
+        valid_new_polygons = [
+            [[int(p[0]), int(p[1])] for p in poly]
+            for poly in polygons
+            if len(poly) >= 3
+        ]
 
-        # Create combined mask from all new polygons
-        combined_mask = np.zeros((img_height, img_width), dtype=np.uint8)
+        if len(valid_new_polygons) == 0:
+            logger.warning(f"No valid polygons provided for image {image_id}")
+            return {"success": False, "error": "No valid polygons provided"}
 
-        for polygon in polygons:
-            if len(polygon) >= 3:
-                pts = np.array([[int(p[0]), int(p[1])] for p in polygon], dtype=np.int32)
-                cv2.fillPoly(combined_mask, [pts], 1)
-
-        # Check for existing mask and union with it
+        # Check for existing mask
         existing_result = await db.execute(
             select(FOVSegmentationMask).where(FOVSegmentationMask.image_id == image_id)
         )
         existing_mask = existing_result.scalar_one_or_none()
 
+        # Collect all instances: existing + new (no union, preserve each instance)
+        all_instances: List[List[List[int]]] = []
+
         if existing_mask and existing_mask.polygon_points:
-            # Normalize to multi-polygon format and add to combined mask
+            # Add existing instances
             for poly in normalize_polygon_data(existing_mask.polygon_points):
                 if len(poly) >= 3:
-                    pts = np.array([[int(p[0]), int(p[1])] for p in poly], dtype=np.int32)
-                    cv2.fillPoly(combined_mask, [pts], 1)
+                    all_instances.append([[int(p[0]), int(p[1])] for p in poly])
 
-        # Convert combined mask back to ALL polygons (not just largest)
-        all_polygons = mask_to_polygons(combined_mask, simplify_tolerance=2.0, min_area=50)
+        # Add new instances (each polygon is a separate instance)
+        all_instances.extend(valid_new_polygons)
 
-        if len(all_polygons) == 0:
-            logger.warning(f"Union resulted in no valid polygons")
-            return {"success": False, "error": "Union resulted in no valid polygons"}
+        # Calculate total area of all instances
+        total_area = sum(calculate_polygon_area(poly) for poly in all_instances)
 
-        # Calculate total area
-        total_area = sum(calculate_polygon_area(poly) for poly in all_polygons)
-
-        # Store as list of polygons (multi-polygon format)
-        polygon_data = [[list(p) for p in poly] for poly in all_polygons]
-
-        # Save all polygons
+        # Save all instances as separate polygons
         if existing_mask:
-            existing_mask.polygon_points = polygon_data
+            existing_mask.polygon_points = all_instances
             existing_mask.area_pixels = total_area
             existing_mask.iou_score = iou_score
             existing_mask.prompt_count = prompt_count
@@ -670,7 +739,7 @@ async def save_fov_segmentation_mask_union(
         else:
             mask = FOVSegmentationMask(
                 image_id=image_id,
-                polygon_points=polygon_data,
+                polygon_points=all_instances,
                 area_pixels=total_area,
                 iou_score=iou_score,
                 creation_method=creation_method,
@@ -680,26 +749,22 @@ async def save_fov_segmentation_mask_union(
 
         await db.commit()
 
-        logger.info(f"Saved FOV segmentation mask union for image {image_id}: {len(all_polygons)} polygons from {len(polygons)} input polygons")
+        logger.info(f"Saved FOV segmentation instances for image {image_id}: {len(all_instances)} instances ({len(valid_new_polygons)} new)")
 
         return {
             "success": True,
             "image_id": image_id,
             "area_pixels": total_area,
-            "polygons": polygon_data,
-            "polygon_count": len(all_polygons),
+            "polygons": all_instances,
+            "polygon_count": len(all_instances),
         }
-
-    except cv2.error as e:
-        logger.exception(f"OpenCV error in FOV mask union for image {image_id}")
-        return {"success": False, "error": "Failed to process polygon geometry", "error_type": "opencv"}
 
     except (ValueError, TypeError) as e:
         logger.exception(f"Invalid polygon data for image {image_id}")
         return {"success": False, "error": f"Invalid polygon data: {e}", "error_type": "validation"}
 
     except Exception as e:
-        logger.exception(f"Unexpected error in FOV mask union for image {image_id}")
+        logger.exception(f"Unexpected error saving FOV masks for image {image_id}")
         error_type, error_msg = categorize_segmentation_error(e)
         return {"success": False, "error": error_msg, "error_type": error_type}
 

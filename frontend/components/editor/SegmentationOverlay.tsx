@@ -9,10 +9,17 @@
  * - Pending polygons (accumulated before save, various colors)
  * - Existing FOV mask (semi-transparent blue)
  * - Saved polygons for crops (solid blue in segmentation mode)
+ *
+ * Supports polygons with holes using SVG fill-rule="evenodd" for ring-shaped structures.
  */
 
 import { useMemo, useCallback } from "react";
-import type { SegmentClickPoint, CellPolygon, PendingPolygon } from "@/lib/editor/types";
+import type {
+  SegmentClickPoint,
+  CellPolygon,
+  PendingPolygon,
+  PolygonWithHoles,
+} from "@/lib/editor/types";
 import {
   calculateObjectCoverTransform,
   buildPolygonSvgPath,
@@ -31,8 +38,10 @@ const PENDING_COLORS = [
 interface SegmentationOverlayProps {
   /** Current click points for active segmentation */
   clickPoints: SegmentClickPoint[];
-  /** Preview polygon from SAM inference */
+  /** Preview polygon from SAM inference (outer boundary only - legacy) */
   previewPolygon: [number, number][] | null;
+  /** Preview polygon with holes support (new format) */
+  previewPolygonWithHoles?: PolygonWithHoles | null;
   /** Pending polygons accumulated before save */
   pendingPolygons?: PendingPolygon[];
   /** Existing FOV mask polygons (multiple separate instances) */
@@ -55,6 +64,7 @@ interface SegmentationOverlayProps {
 export function SegmentationOverlay({
   clickPoints,
   previewPolygon,
+  previewPolygonWithHoles,
   pendingPolygons = [],
   fovMaskPolygons,
   savedPolygons,
@@ -84,24 +94,62 @@ export function SegmentationOverlay({
     );
   }, [toCanvas]);
 
-  // Memoize saved polygon paths
-  const savedPolygonPaths = useMemo(() => {
-    return savedPolygons.map((poly) => ({
-      cropId: poly.cropId,
-      path: buildPath(poly.points),
-      iouScore: poly.iouScore,
-    }));
-  }, [savedPolygons, buildPath]);
+  // Build SVG path from polygon with holes - uses evenodd fill rule
+  const buildPathWithHoles = useCallback((polygon: PolygonWithHoles) => {
+    const paths: string[] = [];
 
-  // Memoize pending polygon paths
+    // Outer boundary
+    if (polygon.outer.length >= 3) {
+      paths.push(buildPath(polygon.outer));
+    }
+
+    // Holes (each hole creates a cutout with evenodd fill rule)
+    for (const hole of polygon.holes) {
+      if (hole.length >= 3) {
+        paths.push(buildPath(hole));
+      }
+    }
+
+    return paths.join(" ");
+  }, [buildPath]);
+
+  // DRY helper: Build path from polygon data, supporting both formats
+  const buildPolygonPathFromData = useCallback(
+    (points: [number, number][], polygonWithHoles?: PolygonWithHoles) => {
+      if (polygonWithHoles && polygonWithHoles.holes.length > 0) {
+        return { path: buildPathWithHoles(polygonWithHoles), hasHoles: true };
+      }
+      return { path: buildPath(points), hasHoles: false };
+    },
+    [buildPath, buildPathWithHoles]
+  );
+
+  // Memoize saved polygon paths - supports both legacy and hole formats
+  const savedPolygonPaths = useMemo(() => {
+    return savedPolygons.map((poly) => {
+      const { path, hasHoles } = buildPolygonPathFromData(poly.points, poly.polygonWithHoles);
+      return {
+        cropId: poly.cropId,
+        path,
+        iouScore: poly.iouScore,
+        hasHoles,
+      };
+    });
+  }, [savedPolygons, buildPolygonPathFromData]);
+
+  // Memoize pending polygon paths - supports both legacy and hole formats
   const pendingPolygonPaths = useMemo(() => {
-    return pendingPolygons.map((poly) => ({
-      id: poly.id,
-      path: buildPath(poly.points),
-      colorIndex: poly.colorIndex,
-      source: poly.source,
-    }));
-  }, [pendingPolygons, buildPath]);
+    return pendingPolygons.map((poly) => {
+      const { path, hasHoles } = buildPolygonPathFromData(poly.points, poly.polygonWithHoles);
+      return {
+        id: poly.id,
+        path,
+        colorIndex: poly.colorIndex,
+        source: poly.source,
+        hasHoles,
+      };
+    });
+  }, [pendingPolygons, buildPolygonPathFromData]);
 
   // Memoize FOV mask paths (multiple polygons)
   const fovMaskPaths = useMemo(() => {
@@ -111,11 +159,22 @@ export function SegmentationOverlay({
       .map(poly => buildPath(poly));
   }, [fovMaskPolygons, buildPath]);
 
-  // Build preview polygon path
-  const previewPath = useMemo(() => {
-    if (!previewPolygon || previewPolygon.length < 3) return null;
-    return buildPath(previewPolygon);
-  }, [previewPolygon, buildPath]);
+  // Build preview polygon path - supports holes
+  const { previewPath, previewHasHoles } = useMemo(() => {
+    // Prefer new holes format if available
+    if (previewPolygonWithHoles && previewPolygonWithHoles.outer.length >= 3) {
+      return {
+        previewPath: buildPathWithHoles(previewPolygonWithHoles),
+        previewHasHoles: previewPolygonWithHoles.holes.length > 0,
+      };
+    }
+
+    // Fall back to legacy format
+    if (!previewPolygon || previewPolygon.length < 3) {
+      return { previewPath: null, previewHasHoles: false };
+    }
+    return { previewPath: buildPath(previewPolygon), previewHasHoles: false };
+  }, [previewPolygon, previewPolygonWithHoles, buildPath, buildPathWithHoles]);
 
   // Don't render if no content
   if (!isActive && savedPolygons.length === 0 && pendingPolygons.length === 0) {
@@ -149,7 +208,7 @@ export function SegmentationOverlay({
 
       {/* Saved polygons - only show in segment mode */}
       {isActive &&
-        savedPolygonPaths.map(({ cropId, path }) =>
+        savedPolygonPaths.map(({ cropId, path, hasHoles }) =>
           path ? (
             <path
               key={`saved-${cropId}`}
@@ -157,13 +216,14 @@ export function SegmentationOverlay({
               fill="rgba(59, 130, 246, 0.15)"
               stroke="rgba(59, 130, 246, 0.6)"
               strokeWidth={1.5}
+              fillRule={hasHoles ? "evenodd" : undefined}
             />
           ) : null
         )}
 
       {/* Pending polygons - accumulated before save */}
       {isActive &&
-        pendingPolygonPaths.map(({ id, path, colorIndex }) => {
+        pendingPolygonPaths.map(({ id, path, colorIndex, hasHoles }) => {
           if (!path) return null;
           const colors = PENDING_COLORS[colorIndex % PENDING_COLORS.length];
           return (
@@ -173,6 +233,7 @@ export function SegmentationOverlay({
               fill={colors.fill}
               stroke={colors.stroke}
               strokeWidth={2}
+              fillRule={hasHoles ? "evenodd" : undefined}
             />
           );
         })}
@@ -180,11 +241,12 @@ export function SegmentationOverlay({
       {/* Preview polygon - dashed green */}
       {isActive && previewPath && (
         <g>
-          {/* Fill */}
+          {/* Fill - use evenodd for holes */}
           <path
             d={previewPath}
             fill="rgba(34, 197, 94, 0.25)"
             stroke="none"
+            fillRule={previewHasHoles ? "evenodd" : undefined}
           />
           {/* Dashed outline */}
           <path

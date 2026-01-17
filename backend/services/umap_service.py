@@ -1,7 +1,7 @@
 """UMAP computation service for pre-computing 2D projections.
 
 This service handles deterministic UMAP computation and storage of
-coordinates for both cell crops and FOV images.
+coordinates for cell crops, FOV images, and proteins.
 
 SSOT for UMAP-related constants and computation functions.
 """
@@ -17,7 +17,7 @@ from sqlalchemy.orm import selectinload
 
 from models.cell_crop import CellCrop
 from models.experiment import Experiment
-from models.image import Image
+from models.image import Image, MapProtein
 
 logger = logging.getLogger(__name__)
 
@@ -35,15 +35,18 @@ RANDOM_STATE = 42
 # =============================================================================
 
 
-def _compute_silhouette(
+def compute_silhouette(
     embeddings: np.ndarray,
     items: list,
 ) -> Optional[float]:
     """
-    Compute silhouette score based on protein labels.
+    Compute silhouette score on raw embeddings based on protein labels.
+
+    Uses cosine metric on full-dimensional embeddings (not UMAP projections)
+    to measure cluster quality in the original feature space.
 
     Args:
-        embeddings: Normalized embedding vectors
+        embeddings: Raw embedding vectors (N x D)
         items: List of CellCrop or Image objects with map_protein attribute
 
     Returns:
@@ -119,40 +122,9 @@ def compute_umap_online(
         random_state=RANDOM_STATE,
     )
     projection = reducer.fit_transform(embeddings_norm)
-    silhouette = _compute_silhouette(embeddings_norm, items)
+    silhouette = compute_silhouette(embeddings_norm, items)
 
     return projection, silhouette
-
-
-def compute_silhouette_from_umap_coords(items: list) -> Optional[float]:
-    """
-    Compute silhouette score from pre-computed UMAP coordinates.
-
-    Works with both CellCrop and Image objects that have umap_x, umap_y,
-    and map_protein attributes.
-
-    Args:
-        items: List of objects with umap_x, umap_y, and map_protein attributes
-
-    Returns:
-        Silhouette score (-1 to 1) or None if not computable
-    """
-    labeled = [
-        (item.umap_x, item.umap_y, item.map_protein.id)
-        for item in items
-        if item.map_protein is not None
-    ]
-
-    if len(labeled) < 10 or len(set(l[2] for l in labeled)) < 2:
-        return None
-
-    try:
-        from sklearn.metrics import silhouette_score
-        coords = np.array([[l[0], l[1]] for l in labeled])
-        labels = [l[2] for l in labeled]
-        return float(silhouette_score(coords, labels, metric="euclidean"))
-    except (ValueError, ImportError):
-        return None
 
 
 # =============================================================================
@@ -360,6 +332,127 @@ async def invalidate_fov_umap(
         stmt = stmt.where(Image.id == image_id)
     elif experiment_id:
         stmt = stmt.where(Image.experiment_id == experiment_id)
+
+    result = await db.execute(stmt)
+    return result.rowcount
+
+
+# =============================================================================
+# Protein UMAP Functions
+# =============================================================================
+
+
+def compute_protein_umap_online(
+    embeddings: np.ndarray,
+    n_neighbors: int = DEFAULT_N_NEIGHBORS,
+    min_dist: float = DEFAULT_MIN_DIST,
+) -> Tuple[np.ndarray, Optional[float]]:
+    """
+    Compute UMAP projection for protein embeddings on-the-fly.
+
+    Args:
+        embeddings: Array of protein embedding vectors (N x 1152)
+        n_neighbors: UMAP n_neighbors parameter
+        min_dist: UMAP min_dist parameter
+
+    Returns:
+        Tuple of (projection array N x 2, silhouette score or None)
+    """
+    import umap
+
+    np.random.seed(RANDOM_STATE)
+
+    n_samples = len(embeddings)
+    if n_samples < 3:
+        raise ValueError(f"Need at least 3 proteins for UMAP, got {n_samples}")
+
+    effective_n_neighbors = min(n_neighbors, n_samples - 1)
+    if effective_n_neighbors < 2:
+        effective_n_neighbors = 2
+
+    # L2 normalize for cosine similarity
+    norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
+    norms = np.where(norms == 0, 1, norms)
+    embeddings_norm = embeddings / norms
+
+    # Use random init for small datasets (spectral fails with k >= N)
+    init_method = "random" if n_samples < 10 else "spectral"
+
+    reducer = umap.UMAP(
+        n_neighbors=effective_n_neighbors,
+        min_dist=min_dist,
+        n_components=2,
+        metric="cosine",
+        random_state=RANDOM_STATE,
+        init=init_method,
+    )
+    projection = reducer.fit_transform(embeddings_norm)
+
+    # Silhouette score not applicable for proteins (no labels)
+    silhouette = None
+
+    return projection, silhouette
+
+
+async def compute_protein_umap(db: AsyncSession) -> dict:
+    """
+    Compute UMAP for all proteins with embeddings and store coordinates.
+
+    Args:
+        db: AsyncSession database connection
+
+    Returns:
+        dict with success count and computed_at
+    """
+    query = (
+        select(MapProtein)
+        .where(MapProtein.embedding.isnot(None))
+        .order_by(MapProtein.id)
+    )
+
+    result = await db.execute(query)
+    proteins = result.scalars().all()
+
+    if len(proteins) < MIN_POINTS_FOR_UMAP:
+        return {
+            "error": f"Need at least {MIN_POINTS_FOR_UMAP} proteins with embeddings",
+            "count": len(proteins),
+        }
+
+    embeddings = np.array([p.embedding for p in proteins])
+    projection, _ = compute_protein_umap_online(embeddings)
+
+    now = datetime.now(timezone.utc)
+    for i, protein in enumerate(proteins):
+        protein.umap_x = float(projection[i, 0])
+        protein.umap_y = float(projection[i, 1])
+        protein.umap_computed_at = now
+
+    await db.commit()
+
+    logger.info(f"Computed protein UMAP: {len(proteins)} proteins")
+
+    return {
+        "success": len(proteins),
+        "computed_at": now.isoformat(),
+    }
+
+
+async def invalidate_protein_umap(db: AsyncSession) -> int:
+    """
+    Invalidate pre-computed UMAP coordinates for all proteins.
+
+    Args:
+        db: AsyncSession database connection
+
+    Returns:
+        Number of proteins invalidated
+    """
+    stmt = update(MapProtein).values(
+        umap_x=None,
+        umap_y=None,
+        umap_computed_at=None,
+    )
 
     result = await db.execute(stmt)
     return result.rowcount

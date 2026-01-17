@@ -142,7 +142,12 @@ class ApiClient {
     return this.request<Experiment[]>("/api/experiments");
   }
 
-  async createExperiment(data: { name: string; description?: string }) {
+  async createExperiment(data: {
+    name: string;
+    description?: string;
+    map_protein_id?: number;
+    fasta_sequence?: string;
+  }) {
     return this.request<Experiment>("/api/experiments", {
       method: "POST",
       body: JSON.stringify(data),
@@ -159,23 +164,47 @@ class ApiClient {
     });
   }
 
+  /**
+   * Update experiment name and/or description.
+   */
+  async updateExperiment(id: number, data: { name?: string; description?: string }) {
+    return this.request<Experiment>(`/api/experiments/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(data),
+    });
+  }
+
+  /**
+   * Update MAP protein for an experiment.
+   * This cascades the protein to all images and cell crops in the experiment.
+   */
+  async updateExperimentProtein(experimentId: number, mapProteinId: number | null) {
+    const params = new URLSearchParams();
+    if (mapProteinId !== null) {
+      params.set("map_protein_id", mapProteinId.toString());
+    }
+    return this.request<{
+      id: number;
+      map_protein_id: number | null;
+      map_protein_name: string | null;
+      map_protein_color: string | null;
+      images_updated: number;
+    }>(`/api/experiments/${experimentId}/protein?${params.toString()}`, {
+      method: "PATCH",
+    });
+  }
+
   // Images
 
   /**
    * Upload a microscopy image (Phase 1 of two-phase workflow).
    * This creates projections and thumbnail. Use batchProcessImages for Phase 2.
+   * The image inherits protein assignment from its experiment.
    */
-  async uploadImage(
-    experimentId: number,
-    file: File,
-    mapProteinId?: number
-  ) {
+  async uploadImage(experimentId: number, file: File) {
     const formData = new FormData();
     formData.append("experiment_id", experimentId.toString());
     formData.append("file", file);
-    if (mapProteinId) {
-      formData.append("map_protein_id", mapProteinId.toString());
-    }
 
     return this.request<Image>("/api/images/upload", {
       method: "POST",
@@ -186,22 +215,36 @@ class ApiClient {
   /**
    * Start Phase 2 processing for multiple images (batch processing).
    * Configures detection settings and starts detection + feature extraction.
+   * Images inherit protein assignment from their experiment.
    */
-  async batchProcessImages(
-    imageIds: number[],
-    detectCells: boolean = true,
-    mapProteinId?: number
-  ) {
-    const body: { image_ids: number[]; detect_cells: boolean; map_protein_id?: number } = {
-      image_ids: imageIds,
-      detect_cells: detectCells,
-    };
-    if (mapProteinId !== undefined) {
-      body.map_protein_id = mapProteinId;
-    }
+  async batchProcessImages(imageIds: number[], detectCells: boolean = true) {
     return this.request<BatchProcessResponse>("/api/images/batch-process", {
       method: "POST",
-      body: JSON.stringify(body),
+      body: JSON.stringify({
+        image_ids: imageIds,
+        detect_cells: detectCells,
+      }),
+    });
+  }
+
+  /**
+   * Reprocess a single image (re-run detection).
+   * Deletes existing crops and runs YOLO detection again.
+   */
+  async reprocessImage(imageId: number, detectCells = true) {
+    return this.request<Image>(`/api/images/${imageId}/reprocess?detect_cells=${detectCells}`, {
+      method: "POST",
+    });
+  }
+
+  /**
+   * Batch re-detect cells on multiple images.
+   * Deletes existing crops and runs YOLO detection again.
+   */
+  async batchRedetect(imageIds: number[]) {
+    return this.request<BatchRedetectResponse>("/api/images/batch-redetect", {
+      method: "POST",
+      body: JSON.stringify({ image_ids: imageIds }),
     });
   }
 
@@ -256,11 +299,46 @@ class ApiClient {
     return this.request<MapProtein[]>("/api/proteins");
   }
 
-  async createProtein(data: { name: string; full_name?: string; color?: string }) {
-    return this.request<MapProtein>("/api/proteins", {
+  async getProteinsDetailed() {
+    return this.request<MapProteinDetailed[]>("/api/proteins");
+  }
+
+  async createProtein(data: MapProteinCreate) {
+    return this.request<MapProteinDetailed>("/api/proteins", {
       method: "POST",
       body: JSON.stringify(data),
     });
+  }
+
+  async updateProtein(id: number, data: MapProteinUpdate) {
+    return this.request<MapProteinDetailed>(`/api/proteins/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(data),
+    });
+  }
+
+  async deleteProtein(id: number) {
+    return this.request<void>(`/api/proteins/${id}`, {
+      method: "DELETE",
+    });
+  }
+
+  async computeProteinEmbedding(id: number) {
+    return this.request<{
+      success: boolean;
+      protein_id: number;
+      protein_name: string;
+      sequence_length: number;
+      embedding_dim: number;
+      embedding_model: string;
+      computed_at: string;
+    }>(`/api/proteins/${id}/compute-embedding`, {
+      method: "POST",
+    });
+  }
+
+  async getProteinUmap() {
+    return this.request<UmapProteinDataResponse>("/api/proteins/umap");
   }
 
   // Ranking
@@ -409,60 +487,6 @@ class ApiClient {
   async deleteCellCrop(cropId: number) {
     return this.request<void>(`/api/images/crops/${cropId}`, {
       method: "DELETE",
-    });
-  }
-
-  async updateCellCropProtein(cropId: number, mapProteinId: number | null) {
-    const params = new URLSearchParams();
-    if (mapProteinId !== null) {
-      params.set("map_protein_id", mapProteinId.toString());
-    }
-    return this.request<{
-      id: number;
-      map_protein_id: number | null;
-      map_protein_name: string | null;
-      map_protein_color: string | null;
-    }>(`/api/images/crops/${cropId}/protein?${params.toString()}`, {
-      method: "PATCH",
-    });
-  }
-
-  /**
-   * Update MAP protein for a FOV image.
-   * Also updates all cell crops from this image.
-   */
-  async updateImageProtein(imageId: number, mapProteinId: number | null) {
-    const params = new URLSearchParams();
-    if (mapProteinId !== null) {
-      params.set("map_protein_id", mapProteinId.toString());
-    }
-    return this.request<{
-      id: number;
-      map_protein_id: number | null;
-      map_protein_name: string | null;
-      map_protein_color: string | null;
-    }>(`/api/images/${imageId}/protein?${params.toString()}`, {
-      method: "PATCH",
-    });
-  }
-
-  /**
-   * Batch update MAP protein for multiple FOV images.
-   * Also updates all cell crops from these images.
-   */
-  async batchUpdateImageProtein(imageIds: number[], mapProteinId: number | null) {
-    const params = new URLSearchParams();
-    if (mapProteinId !== null) {
-      params.set("map_protein_id", mapProteinId.toString());
-    }
-    imageIds.forEach(id => params.append("image_ids", id.toString()));
-    return this.request<{
-      updated_count: number;
-      map_protein_id: number | null;
-      map_protein_name: string | null;
-      map_protein_color: string | null;
-    }>(`/api/images/batch-protein?${params.toString()}`, {
-      method: "PATCH",
     });
   }
 
@@ -895,6 +919,8 @@ export interface Experiment {
   name: string;
   description?: string;
   status: "draft" | "active" | "completed" | "archived";
+  map_protein?: MapProtein;
+  fasta_sequence?: string;
   created_at: string;
   updated_at: string;
   image_count: number;
@@ -907,6 +933,64 @@ export interface MapProtein {
   full_name?: string;
   description?: string;
   color?: string;
+}
+
+export interface MapProteinDetailed {
+  id: number;
+  name: string;
+  full_name?: string;
+  description?: string;
+  color?: string;
+  uniprot_id?: string;
+  fasta_sequence?: string;
+  gene_name?: string;
+  organism?: string;
+  sequence_length?: number;
+  has_embedding: boolean;
+  embedding_model?: string;
+  embedding_computed_at?: string;
+  image_count: number;
+  created_at?: string;
+}
+
+export interface MapProteinCreate {
+  name: string;
+  full_name?: string;
+  description?: string;
+  color?: string;
+  uniprot_id?: string;
+  fasta_sequence?: string;
+  gene_name?: string;
+  organism?: string;
+}
+
+export interface MapProteinUpdate {
+  name?: string;
+  full_name?: string;
+  description?: string;
+  color?: string;
+  uniprot_id?: string;
+  fasta_sequence?: string;
+  gene_name?: string;
+  organism?: string;
+}
+
+export interface UmapProteinPoint {
+  protein_id: number;
+  name: string;
+  x: number;
+  y: number;
+  color: string;
+  sequence_length?: number;
+  image_count: number;
+}
+
+export interface UmapProteinDataResponse {
+  points: UmapProteinPoint[];
+  total_proteins: number;
+  silhouette_score?: number;
+  is_precomputed: boolean;
+  computed_at?: string;
 }
 
 export type ImageStatus = "UPLOADING" | "UPLOADED" | "PROCESSING" | "DETECTING" | "EXTRACTING_FEATURES" | "READY" | "ERROR";
@@ -929,6 +1013,11 @@ export interface Image {
 
 export interface BatchProcessResponse {
   processing_count: number;
+  message: string;
+}
+
+export interface BatchRedetectResponse {
+  processed_count: number;
   message: string;
 }
 
@@ -1045,6 +1134,8 @@ export interface MetricImage {
   sigma?: number;
   ordinal_score?: number;
   comparison_count: number;
+  map_protein_name?: string;
+  map_protein_color?: string;
 }
 
 export interface MetricImageForRanking {

@@ -18,7 +18,7 @@ import numpy as np
 import torch
 from PIL import Image as PILImage
 
-from .utils import mask_to_polygon
+from .utils import mask_to_polygon, mask_to_polygon_with_holes
 
 logger = logging.getLogger(__name__)
 
@@ -215,17 +215,21 @@ class SAM3Encoder:
         if isinstance(scores, torch.Tensor):
             scores = scores.cpu().numpy()
 
-        # Convert masks to polygons, filtering empty results
+        # Convert masks to polygons with holes, filtering empty results
         polygons = []
+        polygons_with_holes = []
         areas = []
         valid_boxes = []
         valid_scores = []
         for i, mask in enumerate(masks):
-            polygon = mask_to_polygon(mask)
-            if not polygon or len(polygon) < 3:
+            # Use hole-aware conversion for accurate ring structure detection
+            polygon_data = mask_to_polygon_with_holes(mask)
+            outer = polygon_data.get("outer", [])
+            if not outer or len(outer) < 3:
                 logger.warning(f"Failed to convert mask {i} to polygon, skipping")
                 continue
-            polygons.append(polygon)
+            polygons.append(outer)  # Legacy format
+            polygons_with_holes.append(polygon_data)  # New format
             areas.append(int(np.sum(mask)))
             if i < len(boxes):
                 valid_boxes.append(boxes[i])
@@ -243,7 +247,8 @@ class SAM3Encoder:
             "masks": masks,
             "boxes": boxes.tolist() if len(boxes) > 0 else [],
             "scores": scores.tolist() if len(scores) > 0 else [],
-            "polygons": polygons,
+            "polygons": polygons,  # Legacy format (outer only)
+            "polygons_with_holes": polygons_with_holes,  # New format with holes
             "areas": areas,
             "prompt": text_prompt,
         }
@@ -317,13 +322,16 @@ class SAM3Encoder:
             else:
                 score = float(scores[0]) if len(scores) > 0 else 0.9
 
-            polygon = mask_to_polygon(mask)
+            # Use hole-aware conversion for accurate ring structure detection
+            polygon_data = mask_to_polygon_with_holes(mask)
             area = int(np.sum(mask))
 
             return {
                 "success": True,
                 "mask": mask,
-                "polygon": polygon,
+                "polygon": polygon_data.get("outer", []),  # Legacy format
+                "polygon_with_holes": polygon_data,  # New format with holes
+                "has_holes": len(polygon_data.get("holes", [])) > 0,
                 "iou_score": score,
                 "area_pixels": area,
             }
@@ -418,13 +426,16 @@ class SAM3Encoder:
             if isinstance(refined_mask, torch.Tensor):
                 refined_mask = refined_mask.cpu().numpy()
 
-            polygon = mask_to_polygon(refined_mask)
+            # Use hole-aware conversion for accurate ring structure detection
+            polygon_data = mask_to_polygon_with_holes(refined_mask)
             area = int(np.sum(refined_mask))
 
             return {
                 "success": True,
                 "mask": refined_mask,
-                "polygon": polygon,
+                "polygon": polygon_data.get("outer", []),  # Legacy format
+                "polygon_with_holes": polygon_data,  # New format with holes
+                "has_holes": len(polygon_data.get("holes", [])) > 0,
                 "score": refined_score,
                 "area": area,
             }

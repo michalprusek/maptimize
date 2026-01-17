@@ -7,6 +7,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Optional
 
+from pydantic import BaseModel
+
 logger = logging.getLogger(__name__)
 
 import aiofiles
@@ -21,7 +23,7 @@ from database import get_db
 from config import get_settings
 from models.user import User
 from models.experiment import Experiment
-from models.image import Image, MapProtein, UploadStatus
+from models.image import Image, UploadStatus
 from models.cell_crop import CellCrop
 from models.metric import MetricImage, MetricRating, MetricComparison
 from models.ranking import Comparison
@@ -162,7 +164,6 @@ def validate_image_token(token: Optional[str]) -> TokenPayload:
 async def upload_image(
     background_tasks: BackgroundTasks,
     experiment_id: int = Form(...),
-    map_protein_id: Optional[int] = Form(None),
     file: UploadFile = File(...),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
@@ -174,16 +175,16 @@ async def upload_image(
     - Saves the file to disk
     - Triggers background processing to create projections and thumbnail
     - Sets status to UPLOADED when Phase 1 is complete
+    - Inherits protein assignment from the experiment
 
     Detection is NOT triggered here. Use /batch-process endpoint after upload
     to configure detection settings and start Phase 2.
 
     Args:
         experiment_id: Target experiment ID
-        map_protein_id: Optional MAP protein association
         file: The image file (TIFF Z-stack, PNG, JPG)
     """
-    # Verify experiment ownership
+    # Verify experiment ownership and get experiment's protein assignment
     result = await db.execute(
         select(Experiment).where(
             Experiment.id == experiment_id,
@@ -221,10 +222,10 @@ async def upload_image(
         content = await file.read()
         await f.write(content)
 
-    # Create database record
+    # Create database record - inherit protein from experiment
     image = Image(
         experiment_id=experiment_id,
-        map_protein_id=map_protein_id,
+        map_protein_id=experiment.map_protein_id,  # Inherit from experiment
         original_filename=file.filename,
         file_path=str(file_path),
         file_size=len(content),
@@ -265,10 +266,10 @@ async def batch_process_images(
     - Validates that all images exist and are owned by the user
     - Validates that images are in UPLOADED status (Phase 1 complete)
     - Queues background processing for detection and feature extraction
-    - Updates detect_cells and map_protein_id settings
+    - Images inherit protein assignment from their experiment
 
     Args:
-        request: BatchProcessRequest with image_ids, detect_cells, and optional map_protein_id
+        request: BatchProcessRequest with image_ids and detect_cells
     """
     # Get all images and verify ownership
     result = await db.execute(
@@ -301,24 +302,13 @@ async def batch_process_images(
             detail=f"Images not ready for processing (still uploading?): {invalid_info}"
         )
 
-    # Verify MAP protein exists if provided
-    if request.map_protein_id is not None:
-        protein_result = await db.execute(
-            select(MapProtein).where(MapProtein.id == request.map_protein_id)
-        )
-        if not protein_result.scalar_one_or_none():
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="MAP protein not found"
-            )
-
-    # Queue background processing for each image
+    # Queue background processing for each image (protein is already set from experiment)
     for image in images:
         background_tasks.add_task(
             process_batch_background,
             image.id,
             request.detect_cells,
-            request.map_protein_id
+            None  # Protein is inherited from experiment, not passed here
         )
 
     return BatchProcessResponse(
@@ -331,7 +321,7 @@ async def batch_process_images(
 async def list_fovs(
     experiment_id: int = Query(...),
     skip: int = Query(0, ge=0),
-    limit: int = Query(50, ge=1, le=100),
+    limit: Optional[int] = Query(None, ge=1),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
@@ -340,6 +330,9 @@ async def list_fovs(
 
     Returns Image records representing the original uploaded images (FOVs),
     not the detected cell crops. Use this for the FOV gallery view.
+
+    Note: limit is optional. If not provided, all FOVs are returned.
+    Frontend handles pagination for display.
     """
     # Verify experiment ownership
     result = await db.execute(
@@ -355,7 +348,7 @@ async def list_fovs(
         )
 
     # Get images with protein info and cell counts
-    result = await db.execute(
+    query = (
         select(
             Image,
             func.count(CellCrop.id).label("cell_count")
@@ -366,8 +359,10 @@ async def list_fovs(
         .group_by(Image.id)
         .order_by(Image.created_at.desc())
         .offset(skip)
-        .limit(limit)
     )
+    if limit is not None:
+        query = query.limit(limit)
+    result = await db.execute(query)
     rows = result.all()
 
     response = []
@@ -402,7 +397,7 @@ async def list_fovs(
 async def list_images(
     experiment_id: int = Query(...),
     skip: int = Query(0, ge=0),
-    limit: int = Query(50, ge=1, le=100),
+    limit: Optional[int] = Query(None, ge=1),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
@@ -421,7 +416,7 @@ async def list_images(
         )
 
     # Get images with protein info and cell counts in a single query
-    result = await db.execute(
+    query = (
         select(
             Image,
             func.count(CellCrop.id).label("cell_count")
@@ -432,8 +427,10 @@ async def list_images(
         .group_by(Image.id)
         .order_by(Image.created_at.desc())
         .offset(skip)
-        .limit(limit)
     )
+    if limit is not None:
+        query = query.limit(limit)
+    result = await db.execute(query)
     rows = result.all()
 
     response = []
@@ -662,60 +659,6 @@ async def delete_cell_crop(
 
     await db.delete(crop)
     await db.commit()
-
-
-@router.patch("/crops/{crop_id}/protein")
-async def update_cell_crop_protein(
-    crop_id: int,
-    map_protein_id: Optional[int] = None,
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
-):
-    """Update the MAP protein assignment for a cell crop."""
-    result = await db.execute(
-        select(CellCrop)
-        .options(
-            selectinload(CellCrop.image).selectinload(Image.experiment)
-        )
-        .where(CellCrop.id == crop_id)
-    )
-    crop = result.scalar_one_or_none()
-
-    if not crop or crop.image.experiment.user_id != current_user.id:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Cell crop not found"
-        )
-
-    # Verify protein exists if provided
-    if map_protein_id is not None:
-        protein_result = await db.execute(
-            select(MapProtein).where(MapProtein.id == map_protein_id)
-        )
-        if not protein_result.scalar_one_or_none():
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="MAP protein not found"
-            )
-
-    crop.map_protein_id = map_protein_id
-    await db.commit()
-
-    # Reload with protein relationship
-    await db.refresh(crop)
-    result = await db.execute(
-        select(CellCrop)
-        .options(selectinload(CellCrop.map_protein))
-        .where(CellCrop.id == crop_id)
-    )
-    crop = result.scalar_one()
-
-    return {
-        "id": crop.id,
-        "map_protein_id": crop.map_protein_id,
-        "map_protein_name": crop.map_protein.name if crop.map_protein else None,
-        "map_protein_color": crop.map_protein.color if crop.map_protein else None,
-    }
 
 
 # =============================================================================
@@ -1296,159 +1239,86 @@ async def reprocess_image(
     return ImageResponse.model_validate(image)
 
 
-# =============================================================================
-# FOV Protein Assignment Endpoints
-# =============================================================================
+class BatchRedetectRequest(BaseModel):
+    """Request to batch re-detect cells on multiple images."""
+    image_ids: List[int]
 
 
-@router.patch("/{image_id}/protein")
-async def update_image_protein(
-    image_id: int,
-    map_protein_id: Optional[int] = None,
+class BatchRedetectResponse(BaseModel):
+    """Response from batch re-detect operation."""
+    processed_count: int
+    message: str
+
+
+@router.post("/batch-redetect", response_model=BatchRedetectResponse)
+async def batch_redetect_cells(
+    request: BatchRedetectRequest,
+    background_tasks: BackgroundTasks,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
     """
-    Update the MAP protein assignment for a FOV image.
+    Batch re-run YOLO cell detection on multiple images.
 
-    This also updates all cell crops from this image to have the same protein.
+    This deletes existing crops and runs detection again.
+    Useful when detection parameters have changed or user wants fresh detection.
     """
-    result = await db.execute(
-        select(Image)
-        .options(selectinload(Image.experiment))
-        .where(Image.id == image_id)
-    )
-    image = result.scalar_one_or_none()
-
-    if not image or image.experiment.user_id != current_user.id:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Image not found"
-        )
-
-    # Verify protein exists if provided
-    protein = None
-    if map_protein_id is not None:
-        protein_result = await db.execute(
-            select(MapProtein).where(MapProtein.id == map_protein_id)
-        )
-        protein = protein_result.scalar_one_or_none()
-        if not protein:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="MAP protein not found"
-            )
-
-    # Update image protein and all cell crops in a single transaction
-    try:
-        image.map_protein_id = map_protein_id
-        await db.execute(
-            update(CellCrop)
-            .where(CellCrop.image_id == image_id)
-            .values(map_protein_id=map_protein_id)
-        )
-        await db.commit()
-    except Exception as e:
-        await db.rollback()
-        logger.exception(f"Failed to update protein for image {image_id}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to update protein assignment. Please try again."
-        )
-
-    return {
-        "id": image.id,
-        "map_protein_id": image.map_protein_id,
-        "map_protein_name": protein.name if protein else None,
-        "map_protein_color": protein.color if protein else None,
-    }
-
-
-@router.patch("/batch-protein")
-async def batch_update_image_protein(
-    image_ids: List[int] = Query(..., description="List of image IDs to update"),
-    map_protein_id: Optional[int] = Query(default=None, description="MAP protein ID to assign"),
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
-):
-    """
-    Batch update MAP protein for multiple FOV images.
-
-    This also updates all cell crops from these images.
-    """
-    if not image_ids:
+    if not request.image_ids:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="No image IDs provided"
         )
 
-    # Verify all images belong to user
+    # Fetch all images and verify ownership
     result = await db.execute(
         select(Image)
-        .options(selectinload(Image.experiment))
-        .where(Image.id.in_(image_ids))
+        .options(selectinload(Image.experiment), selectinload(Image.map_protein))
+        .where(Image.id.in_(request.image_ids))
     )
     images = result.scalars().all()
 
-    # Track which images were found vs not found vs access denied
-    found_ids = {img.id for img in images}
-    not_found_ids = list(set(image_ids) - found_ids)
-    access_denied_ids = [
-        img.id for img in images
-        if img.experiment.user_id != current_user.id
-    ]
-    owned_image_ids = [
-        img.id for img in images
+    # Filter to only images owned by user
+    user_images = [
+        img for img in images
         if img.experiment.user_id == current_user.id
     ]
 
-    # Log any skipped images
-    if not_found_ids or access_denied_ids:
-        logger.warning(
-            f"Batch protein update: user {current_user.id} requested {len(image_ids)} images, "
-            f"not_found={not_found_ids}, access_denied={access_denied_ids}"
-        )
-
-    if not owned_image_ids:
+    if not user_images:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="No images found"
+            detail="No valid images found"
         )
 
-    # Verify protein exists if provided
-    protein = None
-    if map_protein_id is not None:
-        protein_result = await db.execute(
-            select(MapProtein).where(MapProtein.id == map_protein_id)
+    processed_count = 0
+
+    for image in user_images:
+        # Skip if source files were discarded
+        if image.source_discarded:
+            logger.warning(f"Skipping image {image.id}: source files discarded")
+            continue
+
+        # Reset status
+        image.status = UploadStatus.PROCESSING
+        image.detect_cells = True
+
+        # Delete existing cell crops
+        await db.execute(
+            delete(CellCrop).where(CellCrop.image_id == image.id)
         )
-        protein = protein_result.scalar_one_or_none()
-        if not protein:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="MAP protein not found"
-            )
 
-    # Update images
-    await db.execute(
-        update(Image)
-        .where(Image.id.in_(owned_image_ids))
-        .values(map_protein_id=map_protein_id)
-    )
-
-    # Update all cell crops from these images
-    await db.execute(
-        update(CellCrop)
-        .where(CellCrop.image_id.in_(owned_image_ids))
-        .values(map_protein_id=map_protein_id)
-    )
+        # Queue background processing
+        background_tasks.add_task(
+            process_image_background,
+            image.id,
+            True  # detect_cells
+        )
+        processed_count += 1
 
     await db.commit()
 
-    return {
-        "updated_count": len(owned_image_ids),
-        "map_protein_id": map_protein_id,
-        "map_protein_name": protein.name if protein else None,
-        "map_protein_color": protein.color if protein else None,
-        "skipped_not_found": not_found_ids,
-        "skipped_access_denied": access_denied_ids,
-    }
+    return BatchRedetectResponse(
+        processed_count=processed_count,
+        message=f"Started re-detection for {processed_count} image(s)"
+    )
+
+

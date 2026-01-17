@@ -38,7 +38,11 @@ class UploadStatus(str, PyEnum):
 
 
 class MapProtein(Base):
-    """MAP (Microtubule-Associated Protein) reference."""
+    """MAP (Microtubule-Associated Protein) reference.
+
+    Proteins are shared between all users - they serve as reference data
+    that can be associated with experiments and images.
+    """
 
     __tablename__ = "map_proteins"
 
@@ -47,6 +51,34 @@ class MapProtein(Base):
     full_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     color: Mapped[Optional[str]] = mapped_column(String(7), nullable=True)  # Hex color for UI
+
+    # Identifiers
+    uniprot_id: Mapped[Optional[str]] = mapped_column(String(20), nullable=True, index=True)
+    fasta_sequence: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+    # Metadata
+    gene_name: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    organism: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    sequence_length: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+
+    # ESM-C 600M embedding (1152-dim)
+    embedding: Mapped[Optional[list]] = mapped_column(Vector(1152), nullable=True)
+    embedding_model: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    embedding_computed_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    # Pre-computed UMAP coordinates
+    umap_x: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    umap_y: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    umap_computed_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    # Timestamps
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
 
     # Relationships
     images: Mapped[List["Image"]] = relationship(back_populates="map_protein")
