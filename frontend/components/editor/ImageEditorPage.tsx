@@ -991,7 +991,13 @@ export function ImageEditorPage({
       // Z = undo (with or without Ctrl)
       if (e.key === "z" || e.key === "Z") {
         e.preventDefault();
-        undoHistory.undo();
+        // In segment mode: undo last segmentation click
+        if (editorState.mode === "segment") {
+          segmentation.undoLastClick();
+        } else {
+          // In other modes: undo bbox changes
+          undoHistory.undo();
+        }
         return;
       }
 
@@ -1486,7 +1492,7 @@ export function ImageEditorPage({
             onMouseUp={handleMouseUpWithSegmentation}
             onMouseLeave={() => { setSegmentPanning(null); handleMouseLeave(); }}
             onContextMenu={handleContextMenuWithSegmentation}
-            cursor={editorState.mode === "segment" ? (segmentPanning ? "grabbing" : editorState.isShiftPressed ? "grab" : "crosshair") : cursor}
+            cursor={editorState.mode === "segment" ? (segmentPanning ? "grabbing" : (!editorState.isSegmentAddMode || editorState.isShiftPressed) ? "grab" : "crosshair") : cursor}
             containerRef={containerRef}
             onImageCanvasReady={(canvas) => {
               imageCanvasRef.current = canvas;
