@@ -3,7 +3,34 @@ from datetime import datetime
 from enum import Enum as PyEnum
 from typing import List, Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
+
+
+# ============================================================================
+# Shared Base Classes
+# ============================================================================
+
+
+class JobStatusBase(BaseModel):
+    """Base class for job status responses (shared fields)."""
+    job_id: str
+    progress_percent: float = Field(ge=0, le=100, default=0)
+    current_step: Optional[str] = None
+    error_message: Optional[str] = None
+    created_at: datetime
+    completed_at: Optional[datetime] = None
+
+
+class JobDataBase(BaseModel):
+    """Base class for internal job tracking data."""
+    job_id: str
+    user_id: int
+    status: str
+    progress_percent: float = 0
+    current_step: Optional[str] = None
+    error_message: Optional[str] = None
+    created_at: datetime
+    completed_at: Optional[datetime] = None
 
 
 # ============================================================================
@@ -31,7 +58,7 @@ class ExportOptions(BaseModel):
     )
     include_embeddings: bool = Field(
         default=True,
-        description="Include DINOv3 embeddings as NPY files"
+        description="Include DINO embeddings as NPY files"
     )
     include_masks: bool = Field(
         default=True,
@@ -41,6 +68,18 @@ class ExportOptions(BaseModel):
         default=BBoxFormat.COCO,
         description="Bounding box annotation format"
     )
+
+    @model_validator(mode="after")
+    def check_at_least_one_option(self) -> "ExportOptions":
+        """Ensure at least one export option is enabled."""
+        if not any([
+            self.include_fov_images,
+            self.include_crop_images,
+            self.include_embeddings,
+            self.include_masks
+        ]):
+            raise ValueError("At least one export option must be enabled")
+        return self
 
 
 class ExportPrepareRequest(BaseModel):
@@ -63,15 +102,9 @@ class ExportPrepareResponse(BaseModel):
     mask_count: int = Field(description="Number of segmentation masks")
 
 
-class ExportStatusResponse(BaseModel):
+class ExportStatusResponse(JobStatusBase):
     """Response for export job status."""
-    job_id: str
     status: Literal["preparing", "streaming", "completed", "error"]
-    progress_percent: float = Field(ge=0, le=100, default=0)
-    current_step: Optional[str] = None
-    error_message: Optional[str] = None
-    created_at: datetime
-    completed_at: Optional[datetime] = None
 
 
 # ============================================================================
@@ -119,21 +152,15 @@ class ImportExecuteRequest(BaseModel):
     )
 
 
-class ImportStatusResponse(BaseModel):
+class ImportStatusResponse(JobStatusBase):
     """Response for import job status."""
-    job_id: str
     status: Literal["validating", "importing", "processing", "completed", "error"]
-    progress_percent: float = Field(ge=0, le=100, default=0)
-    current_step: Optional[str] = None
-    error_message: Optional[str] = None
     experiment_id: Optional[int] = Field(
         None,
         description="ID of created experiment (when completed)"
     )
     images_imported: int = 0
     crops_created: int = 0
-    created_at: datetime
-    completed_at: Optional[datetime] = None
 
 
 # ============================================================================
@@ -144,26 +171,24 @@ class ImportStatusResponse(BaseModel):
 class CropImportData(BaseModel):
     """Internal data structure for importing a crop annotation."""
     image_filename: str
-    bbox_x: int
-    bbox_y: int
-    bbox_w: int
-    bbox_h: int
+    bbox_x: int = Field(ge=0, description="Bounding box X coordinate (non-negative)")
+    bbox_y: int = Field(ge=0, description="Bounding box Y coordinate (non-negative)")
+    bbox_w: int = Field(gt=0, description="Bounding box width (positive)")
+    bbox_h: int = Field(gt=0, description="Bounding box height (positive)")
     class_name: Optional[str] = None
-    confidence: Optional[float] = None
+    confidence: Optional[float] = Field(
+        default=None,
+        ge=0.0,
+        le=1.0,
+        description="Detection confidence (0.0-1.0)"
+    )
 
 
-class ExportJobData(BaseModel):
+class ExportJobData(JobDataBase):
     """Internal data structure for tracking export job."""
-    job_id: str
-    user_id: int
     experiment_ids: List[int]
     options: ExportOptions
     status: str = "preparing"
-    progress_percent: float = 0
-    current_step: Optional[str] = None
-    error_message: Optional[str] = None
-    created_at: datetime
-    completed_at: Optional[datetime] = None
     # Stats for UI
     experiment_count: int = 0
     image_count: int = 0
@@ -172,20 +197,13 @@ class ExportJobData(BaseModel):
     estimated_size_bytes: int = 0
 
 
-class ImportJobData(BaseModel):
+class ImportJobData(JobDataBase):
     """Internal data structure for tracking import job."""
-    job_id: str
-    user_id: int
     file_path: str
     detected_format: Optional[ImportFormat] = None
     validation_result: Optional[ImportValidationResult] = None
     experiment_name: Optional[str] = None
     experiment_id: Optional[int] = None
     status: str = "validating"
-    progress_percent: float = 0
-    current_step: Optional[str] = None
-    error_message: Optional[str] = None
     images_imported: int = 0
     crops_created: int = 0
-    created_at: datetime
-    completed_at: Optional[datetime] = None

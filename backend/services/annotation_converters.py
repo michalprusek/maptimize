@@ -22,9 +22,84 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from xml.dom import minidom
 
+from pydantic import ValidationError
+
 from schemas.export_import import CropImportData, ImportFormat
 
 logger = logging.getLogger(__name__)
+
+
+# ============================================================================
+# Shared Helpers (DRY)
+# ============================================================================
+
+
+def get_display_filename(image: Any) -> str:
+    """Get the display filename for an image, preferring MIP path if available."""
+    if image.mip_path:
+        return os.path.basename(image.mip_path)
+    return image.original_filename
+
+
+def get_class_name(crop: Any, default: str = "cell") -> str:
+    """Get the class name from a crop, using protein name if available."""
+    if crop.map_protein:
+        return crop.map_protein.name
+    return default
+
+
+def normalize_bbox(x: int, y: int, w: int, h: int) -> Tuple[int, int, int, int]:
+    """Normalize bbox values to ensure non-negative coordinates and positive dimensions."""
+    return max(0, x), max(0, y), max(1, w), max(1, h)
+
+
+def create_crop_import_data(
+    image_filename: str,
+    bbox_x: int,
+    bbox_y: int,
+    bbox_w: int,
+    bbox_h: int,
+    class_name: Optional[str],
+    confidence: Optional[float],
+    warnings: List[str],
+    context: str,
+) -> Optional[CropImportData]:
+    """
+    Create CropImportData with ValidationError handling.
+
+    Args:
+        image_filename: Image filename for the crop
+        bbox_x, bbox_y, bbox_w, bbox_h: Bounding box values (should be pre-normalized)
+        class_name: Optional class name
+        confidence: Optional detection confidence
+        warnings: List to append warnings to
+        context: Context string for error messages (e.g., "Row 5", "annotation 123")
+
+    Returns:
+        CropImportData if valid, None if validation failed
+    """
+    try:
+        return CropImportData(
+            image_filename=image_filename,
+            bbox_x=bbox_x,
+            bbox_y=bbox_y,
+            bbox_w=bbox_w,
+            bbox_h=bbox_h,
+            class_name=class_name,
+            confidence=confidence
+        )
+    except ValidationError as e:
+        warnings.append(f"{context}: invalid bbox - {e.errors()[0]['msg']}")
+        return None
+
+
+def decode_with_fallback(data: bytes, warnings: List[str]) -> str:
+    """Decode bytes to string, falling back to latin-1 if UTF-8 fails."""
+    try:
+        return data.decode("utf-8")
+    except UnicodeDecodeError:
+        warnings.append("File not UTF-8 encoded, using latin-1 fallback")
+        return data.decode("latin-1")
 
 
 # ============================================================================
@@ -62,16 +137,9 @@ def to_coco(
 
     for img in images:
         coco_img_id = image_id_map[img.id]
-
-        # Use original filename for COCO
-        filename = img.original_filename
-        if img.mip_path:
-            # Use MIP filename if available
-            filename = os.path.basename(img.mip_path)
-
         coco_images.append({
             "id": coco_img_id,
-            "file_name": filename,
+            "file_name": get_display_filename(img),
             "width": img.width or 0,
             "height": img.height or 0,
             "date_captured": img.created_at.isoformat() if img.created_at else None,
@@ -102,15 +170,11 @@ def to_coco(
                 "iscrowd": 0,
             }
 
-            # Add optional fields
             if crop.detection_confidence is not None:
                 annotation["score"] = crop.detection_confidence
 
-            # Add protein class if available
-            if crop.map_protein_id and crop.map_protein:
-                annotation["attributes"] = {
-                    "protein": crop.map_protein.name
-                }
+            if crop.map_protein:
+                annotation["attributes"] = {"protein": crop.map_protein.name}
 
             coco_annotations.append(annotation)
             annotation_id += 1
@@ -168,9 +232,8 @@ def to_yolo(
         height = crop.bbox_h / img_h
 
         # Determine class ID
-        class_id = 0  # Default to first class
-        if crop.map_protein and crop.map_protein.name in class_names:
-            class_id = class_names.index(crop.map_protein.name)
+        protein_name = get_class_name(crop)
+        class_id = class_names.index(protein_name) if protein_name in class_names else 0
 
         # YOLO format: class x_center y_center width height
         lines.append(f"{class_id} {x_center:.6f} {y_center:.6f} {width:.6f} {height:.6f}")
@@ -211,11 +274,7 @@ def to_voc(
     Returns:
         VOC XML string
     """
-    # Use MIP filename if available
-    filename = image.original_filename
-    if image.mip_path:
-        filename = os.path.basename(image.mip_path)
-
+    filename = get_display_filename(image)
     img_w = image.width or 512
     img_h = image.height or 512
 
@@ -237,12 +296,7 @@ def to_voc(
 
     for crop in crops:
         obj = ET.SubElement(root, "object")
-
-        # Class name
-        name = "cell"
-        if crop.map_protein:
-            name = crop.map_protein.name
-        ET.SubElement(obj, "name").text = name
+        ET.SubElement(obj, "name").text = get_class_name(crop)
 
         ET.SubElement(obj, "pose").text = "Unspecified"
         ET.SubElement(obj, "truncated").text = "0"
@@ -296,25 +350,15 @@ def to_csv(
         if not img:
             continue
 
-        filename = img.original_filename
-        if img.mip_path:
-            filename = os.path.basename(img.mip_path)
-
-        class_name = "cell"
-        if crop.map_protein:
-            class_name = crop.map_protein.name
-
-        confidence = crop.detection_confidence if crop.detection_confidence else ""
-
         writer.writerow([
             img.id,
-            filename,
+            get_display_filename(img),
             crop.bbox_x,
             crop.bbox_y,
             crop.bbox_w,
             crop.bbox_h,
-            class_name,
-            confidence
+            get_class_name(crop),
+            crop.detection_confidence or ""
         ])
 
     return output.getvalue()
@@ -425,22 +469,23 @@ def from_coco(
         # COCO bbox: [x, y, width, height]
         x, y, w, h = [int(round(v)) for v in bbox]
 
-        # Get class name
         category_id = ann.get("category_id", 0)
         class_name = categories.get(category_id, "cell")
-
-        # Get confidence
         confidence = ann.get("score")
 
-        crops.append(CropImportData(
+        crop = create_crop_import_data(
             image_filename=filename,
             bbox_x=x,
             bbox_y=y,
             bbox_w=w,
             bbox_h=h,
             class_name=class_name,
-            confidence=confidence
-        ))
+            confidence=confidence,
+            warnings=warnings,
+            context=f"Annotation {ann.get('id')}",
+        )
+        if crop:
+            crops.append(crop)
 
     return crops, errors, warnings
 
@@ -497,30 +542,28 @@ def from_yolo(
                 continue
 
             # Denormalize to absolute pixels
-            bbox_w = int(round(width * img_w))
-            bbox_h = int(round(height * img_h))
-            bbox_x = int(round(x_center * img_w - bbox_w / 2))
-            bbox_y = int(round(y_center * img_h - bbox_h / 2))
+            raw_w = int(round(width * img_w))
+            raw_h = int(round(height * img_h))
+            raw_x = int(round(x_center * img_w - raw_w / 2))
+            raw_y = int(round(y_center * img_h - raw_h / 2))
 
-            # Clamp to image bounds
-            bbox_x = max(0, bbox_x)
-            bbox_y = max(0, bbox_y)
-
-            # Get class name
+            bbox_x, bbox_y, bbox_w, bbox_h = normalize_bbox(raw_x, raw_y, raw_w, raw_h)
             class_name = classes[class_id] if class_id < len(classes) else "cell"
-
-            # Optional confidence (6th field)
             confidence = float(parts[5]) if len(parts) > 5 else None
 
-            crops.append(CropImportData(
+            crop = create_crop_import_data(
                 image_filename=image_filename,
                 bbox_x=bbox_x,
                 bbox_y=bbox_y,
                 bbox_w=bbox_w,
                 bbox_h=bbox_h,
                 class_name=class_name,
-                confidence=confidence
-            ))
+                confidence=confidence,
+                warnings=warnings,
+                context=f"{label_file}:{line_num}",
+            )
+            if crop:
+                crops.append(crop)
 
     return crops, errors, warnings
 
@@ -578,12 +621,10 @@ def from_voc(
                 continue
 
             # VOC uses xmin/ymin/xmax/ymax, convert to x/y/w/h
-            bbox_x = xmin
-            bbox_y = ymin
-            bbox_w = xmax - xmin
-            bbox_h = ymax - ymin
+            bbox_x, bbox_y, bbox_w, bbox_h = normalize_bbox(
+                xmin, ymin, xmax - xmin, ymax - ymin
+            )
 
-            # Optional confidence
             confidence = None
             conf_elem = obj.find("confidence")
             if conf_elem is not None and conf_elem.text:
@@ -592,15 +633,19 @@ def from_voc(
                 except ValueError:
                     pass
 
-            crops.append(CropImportData(
+            crop = create_crop_import_data(
                 image_filename=filename,
                 bbox_x=bbox_x,
                 bbox_y=bbox_y,
                 bbox_w=bbox_w,
                 bbox_h=bbox_h,
                 class_name=class_name,
-                confidence=confidence
-            ))
+                confidence=confidence,
+                warnings=warnings,
+                context=xml_file,
+            )
+            if crop:
+                crops.append(crop)
 
     return crops, errors, warnings
 
@@ -627,7 +672,7 @@ def from_csv(
     crops = []
 
     try:
-        content = csv_data.decode("utf-8")
+        content = decode_with_fallback(csv_data, warnings)
         reader = csv.DictReader(io.StringIO(content))
     except Exception as e:
         errors.append(f"Invalid CSV: {e}")
@@ -668,15 +713,21 @@ def from_csv(
             except ValueError:
                 pass
 
-        crops.append(CropImportData(
+        bbox_x, bbox_y, bbox_w, bbox_h = normalize_bbox(x, y, w, h)
+
+        crop = create_crop_import_data(
             image_filename=filename,
-            bbox_x=x,
-            bbox_y=y,
-            bbox_w=w,
-            bbox_h=h,
+            bbox_x=bbox_x,
+            bbox_y=bbox_y,
+            bbox_w=bbox_w,
+            bbox_h=bbox_h,
             class_name=class_name or "cell",
-            confidence=confidence
-        ))
+            confidence=confidence,
+            warnings=warnings,
+            context=f"Row {row_num}",
+        )
+        if crop:
+            crops.append(crop)
 
     return crops, errors, warnings
 

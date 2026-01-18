@@ -41,14 +41,19 @@ class BaseJobManager(Generic[T]):
     async def _get_redis(self) -> redis.Redis:
         """Get or create Redis connection."""
         if self._redis is None:
-            self._redis = redis.from_url(settings.redis_url)
+            try:
+                self._redis = redis.from_url(settings.redis_url)
+                # Test connection
+                await self._redis.ping()
+            except redis.ConnectionError as e:
+                logger.error(f"Failed to connect to Redis at {settings.redis_url}: {e}")
+                raise RuntimeError(f"Redis connection failed: {e}") from e
         return self._redis
 
     async def _save_job(self, job: T) -> None:
         """Save job data to Redis."""
         r = await self._get_redis()
-        job_id = getattr(job, "job_id")
-        key = f"{self._redis_key_prefix}{job_id}"
+        key = f"{self._redis_key_prefix}{job.job_id}"
         await r.setex(key, self._job_ttl, job.model_dump_json())
 
     async def _get_job(self, job_id: str) -> Optional[T]:
@@ -79,32 +84,35 @@ class BaseJobManager(Generic[T]):
 
     async def _mark_job_completed(self, job_id: str) -> Optional[T]:
         """Mark job as completed with timestamp."""
-        job = await self._get_job(job_id)
-        if job:
-            job.status = "completed"
-            job.completed_at = datetime.now(timezone.utc)
-            await self._save_job(job)
-        return job
+        return await self._update_job_status(
+            job_id,
+            status="completed",
+            completed_at=datetime.now(timezone.utc),
+        )
 
     async def _mark_job_error(self, job_id: str, error_message: str) -> Optional[T]:
         """Mark job as failed with error message."""
+        return await self._update_job_status(
+            job_id,
+            status="error",
+            error_message=error_message,
+        )
+
+    async def _update_job_status(self, job_id: str, **updates) -> Optional[T]:
+        """Update job with arbitrary fields and save."""
         job = await self._get_job(job_id)
-        if job:
-            job.status = "error"
-            job.error_message = error_message
-            await self._save_job(job)
+        if not job:
+            return None
+        for key, value in updates.items():
+            setattr(job, key, value)
+        await self._save_job(job)
         return job
 
     async def get_job_for_user(self, job_id: str, user_id: int) -> Optional[T]:
         """
         Get job data if it belongs to the specified user.
 
-        Args:
-            job_id: Job identifier
-            user_id: User ID to verify ownership
-
-        Returns:
-            Job data if found and owned by user, None otherwise
+        Returns job data if found and owned by user, None otherwise.
         """
         job = await self._get_job(job_id)
         if job and job.user_id == user_id:

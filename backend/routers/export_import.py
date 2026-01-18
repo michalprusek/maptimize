@@ -51,24 +51,55 @@ async def handle_service_call(
         )
 
 
-async def verify_export_job_ownership(job_id: str, user_id: int):
-    """Verify user owns the export job, raise HTTPException if not."""
-    job = await export_service.get_job_for_user(job_id, user_id)
-    if not job:
+def cleanup_temp_files(temp_path: str, temp_dir: str) -> None:
+    """Clean up temporary file and directory, logging warnings on failure."""
+    try:
+        os.unlink(temp_path)
+        os.rmdir(temp_dir)
+    except OSError as e:
+        logger.warning(f"Failed to clean up temp file {temp_path}: {e}")
+
+
+def validate_upload_file(file: UploadFile) -> None:
+    """Validate uploaded file has filename and is a ZIP file."""
+    if not file.filename:
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Export job not found or access denied"
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No filename provided"
         )
-    return job
+    if not file.filename.lower().endswith('.zip'):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Only ZIP files are supported"
+        )
 
 
-async def verify_import_job_ownership(job_id: str, user_id: int):
-    """Verify user owns the import job, raise HTTPException if not."""
-    job = await import_service.get_job_for_user(job_id, user_id)
+async def verify_job_ownership(
+    job_id: str,
+    user_id: int,
+    service: object,
+    job_type: str
+) -> dict:
+    """
+    Verify user owns a job, raise HTTPException if not.
+
+    Args:
+        job_id: ID of the job to verify
+        user_id: ID of the user
+        service: Service instance with get_job_for_user method
+        job_type: Type of job for error message (e.g., "Export", "Import")
+
+    Returns:
+        Job dict if found and owned
+
+    Raises:
+        HTTPException: 404 if job not found or access denied
+    """
+    job = await service.get_job_for_user(job_id, user_id)
     if not job:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Import job not found or access denied"
+            detail=f"{job_type} job not found or access denied"
         )
     return job
 
@@ -113,7 +144,7 @@ async def stream_export(
     Downloads the export as a streaming response to handle large files
     without loading everything into memory.
     """
-    await verify_export_job_ownership(job_id, current_user.id)
+    await verify_job_ownership(job_id, current_user.id, export_service, "Export")
 
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
     filename = f"maptimize_export_{timestamp}.zip"
@@ -134,7 +165,7 @@ async def get_export_status(
     current_user: User = Depends(get_current_user)
 ):
     """Get export job status. Poll this endpoint to track export progress."""
-    await verify_export_job_ownership(job_id, current_user.id)
+    await verify_job_ownership(job_id, current_user.id, export_service, "Export")
     return await export_service.get_export_status(job_id)
 
 
@@ -154,34 +185,26 @@ async def validate_import(
     Uploads the file, detects format, validates structure, and returns
     information about what will be imported.
     """
-    # Validate file type
-    if not file.filename:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="No filename provided"
-        )
+    validate_upload_file(file)
 
-    if not file.filename.lower().endswith('.zip'):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Only ZIP files are supported"
-        )
-
-    # Save to temp file
     temp_dir = tempfile.mkdtemp()
     temp_path = os.path.join(temp_dir, file.filename)
 
-    with open(temp_path, 'wb') as f:
-        content = await file.read()
-        f.write(content)
+    try:
+        with open(temp_path, 'wb') as f:
+            content = await file.read()
+            f.write(content)
 
-    return await handle_service_call(
-        lambda: import_service.validate_import(
-            file_path=temp_path,
-            user_id=current_user.id
-        ),
-        "Failed to validate import file"
-    )
+        return await handle_service_call(
+            lambda: import_service.validate_import(
+                file_path=temp_path,
+                user_id=current_user.id
+            ),
+            "Failed to validate import file"
+        )
+    except Exception:
+        cleanup_temp_files(temp_path, temp_dir)
+        raise
 
 
 @router.post("/import/execute", response_model=ImportStatusResponse)
@@ -214,5 +237,5 @@ async def get_import_status(
     current_user: User = Depends(get_current_user)
 ):
     """Get import job status. Poll this endpoint to track import progress."""
-    await verify_import_job_ownership(job_id, current_user.id)
+    await verify_job_ownership(job_id, current_user.id, import_service, "Import")
     return await import_service.get_import_status(job_id)

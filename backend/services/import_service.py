@@ -17,7 +17,7 @@ import uuid
 import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 import numpy as np
 from PIL import Image as PILImage
@@ -45,6 +45,11 @@ settings = get_settings()
 # File extension constants (SSOT)
 ANNOTATION_EXTENSIONS = ('.json', '.xml', '.txt', '.csv')
 IMAGE_EXTENSIONS = ('.tiff', '.tif', '.png', '.jpg', '.jpeg')
+
+# Security limits
+MAX_ANNOTATION_FILE_SIZE = 100 * 1024 * 1024  # 100MB per annotation file
+MAX_TOTAL_UNCOMPRESSED_SIZE = 10 * 1024 * 1024 * 1024  # 10GB total
+MAX_COMPRESSION_RATIO = 100  # Prevent ZIP bombs
 
 
 def is_annotation_file(filename: str) -> bool:
@@ -110,11 +115,33 @@ def write_file_from_zip(
     zf: zipfile.ZipFile,
     zip_path: str,
     save_path: Path,
-    file_list: list[str]
+    file_list: list[str],
+    base_dir: Path | None = None
 ) -> str | None:
-    """Extract a file from ZIP and save it. Returns the saved path or None."""
+    """
+    Extract a file from ZIP and save it.
+
+    Args:
+        zf: Open ZipFile object
+        zip_path: Path within the ZIP file
+        save_path: Destination path to save the file
+        file_list: List of valid files in the ZIP
+        base_dir: Optional base directory for path traversal protection
+
+    Returns:
+        The saved path as string, or None if file not found
+    """
     if zip_path not in file_list:
         return None
+
+    # Path traversal protection: ensure save_path stays within base_dir
+    if base_dir is not None:
+        resolved = save_path.resolve()
+        base_resolved = base_dir.resolve()
+        if not str(resolved).startswith(str(base_resolved)):
+            logger.warning(f"Path traversal attempt detected: {save_path} is outside {base_dir}")
+            return None
+
     save_path.parent.mkdir(parents=True, exist_ok=True)
     with open(save_path, 'wb') as f:
         f.write(zf.read(zip_path))
@@ -133,6 +160,37 @@ def load_embeddings_from_zip(
     embeddings = np.load(io.BytesIO(zf.read(embeddings_path)))
     ids = json.loads(zf.read(ids_path).decode('utf-8'))
     return embeddings, ids
+
+
+def extract_projections_from_zip(
+    zf: zipfile.ZipFile,
+    base_path: str,
+    upload_dir: Path,
+    file_id: str,
+    file_list: list[str]
+) -> tuple[str | None, str | None]:
+    """
+    Extract MIP and SUM projections from ZIP to storage directory.
+
+    Args:
+        zf: Open ZipFile object
+        base_path: Base path within ZIP (e.g., "experiments/1/images/2")
+        upload_dir: Target directory for extracted files
+        file_id: Unique identifier prefix for filenames
+        file_list: List of valid files in the ZIP
+
+    Returns:
+        Tuple of (mip_path, sum_path), either may be None if not found
+    """
+    mip_path = write_file_from_zip(
+        zf, f"{base_path}/mip.tiff",
+        upload_dir / f"{file_id}_mip.tiff", file_list
+    )
+    sum_path = write_file_from_zip(
+        zf, f"{base_path}/sum.tiff",
+        upload_dir / f"{file_id}_sum.tiff", file_list
+    )
+    return mip_path, sum_path
 
 
 class ImportService(BaseJobManager[ImportJobData]):
@@ -181,11 +239,42 @@ class ImportService(BaseJobManager[ImportJobData]):
                 file_list = zf.namelist()
                 zip_contents = {}
 
-                # Read annotation files (skip large image files)
+                # ZIP bomb protection: check total uncompressed size and compression ratio
+                total_uncompressed = sum(info.file_size for info in zf.filelist)
+                total_compressed = sum(info.compress_size for info in zf.filelist)
+
+                if total_uncompressed > MAX_TOTAL_UNCOMPRESSED_SIZE:
+                    errors.append(
+                        f"ZIP file too large: {total_uncompressed / (1024**3):.1f}GB "
+                        f"exceeds {MAX_TOTAL_UNCOMPRESSED_SIZE / (1024**3):.0f}GB limit"
+                    )
+                    return create_error_validation_result(job_id, errors, warnings)
+
+                if total_compressed > 0:
+                    compression_ratio = total_uncompressed / total_compressed
+                    if compression_ratio > MAX_COMPRESSION_RATIO:
+                        errors.append(
+                            f"Suspicious compression ratio ({compression_ratio:.0f}:1) - "
+                            "possible ZIP bomb detected"
+                        )
+                        return create_error_validation_result(job_id, errors, warnings)
+
+                # Read annotation files with size limits (skip large image files)
                 for name in file_list:
                     if is_annotation_file(name):
                         try:
+                            # Check file size before reading
+                            info = zf.getinfo(name)
+                            if info.file_size > MAX_ANNOTATION_FILE_SIZE:
+                                warnings.append(
+                                    f"Skipping {name}: file too large "
+                                    f"({info.file_size / (1024*1024):.1f}MB)"
+                                )
+                                continue
                             zip_contents[name] = zf.read(name)
+                        except MemoryError:
+                            errors.append(f"Out of memory reading {name}")
+                            return create_error_validation_result(job_id, errors, warnings)
                         except Exception as e:
                             warnings.append(f"Could not read {name}: {e}")
 
@@ -222,9 +311,11 @@ class ImportService(BaseJobManager[ImportJobData]):
                     warnings.extend(parse_warnings)
                     annotation_count = len(crops)
 
-                # Check for embeddings and masks
-                has_embeddings = any(".npy" in f for f in file_list)
-                has_masks = any("mask" in f.lower() and f.endswith(".png") for f in file_list)
+                # Check for embeddings and masks (if not already set by MAPtimize format)
+                if not has_embeddings:
+                    has_embeddings = any(".npy" in f for f in file_list)
+                if not has_masks:
+                    has_masks = any("mask" in f.lower() and f.endswith(".png") for f in file_list)
 
             # Validate
             is_valid = len(errors) == 0 and image_count > 0
@@ -341,8 +432,8 @@ class ImportService(BaseJobManager[ImportJobData]):
             try:
                 os.unlink(job.file_path)
                 shutil.rmtree(os.path.dirname(job.file_path), ignore_errors=True)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning(f"Failed to clean up temp file {job.file_path}: {e}")
 
             return ImportStatusResponse(
                 job_id=job_id,
@@ -404,10 +495,7 @@ class ImportService(BaseJobManager[ImportJobData]):
         # Group crops by image filename
         crops_by_filename: Dict[str, List[CropImportData]] = {}
         for crop in crops:
-            filename = crop.image_filename
-            if filename not in crops_by_filename:
-                crops_by_filename[filename] = []
-            crops_by_filename[filename].append(crop)
+            crops_by_filename.setdefault(crop.image_filename, []).append(crop)
 
         # Process images
         for idx, image_file in enumerate(image_files):
@@ -648,13 +736,8 @@ class ImportService(BaseJobManager[ImportJobData]):
             original_filename = img_meta.get("original_filename", "image.tiff")
 
             # Import projections and thumbnail
-            mip_path = write_file_from_zip(
-                zf, f"{img_base_path}/mip.tiff",
-                upload_dir / f"{file_id}_mip.tiff", file_list
-            )
-            sum_path = write_file_from_zip(
-                zf, f"{img_base_path}/sum.tiff",
-                upload_dir / f"{file_id}_sum.tiff", file_list
+            mip_path, sum_path = extract_projections_from_zip(
+                zf, img_base_path, upload_dir, file_id, file_list
             )
             thumb_path = write_file_from_zip(
                 zf, f"{img_base_path}/thumbnail.png",
@@ -701,13 +784,8 @@ class ImportService(BaseJobManager[ImportJobData]):
             file_id = str(uuid.uuid4())[:8]
 
             # Import crop images
-            mip_path = write_file_from_zip(
-                zf, f"{crop_base_path}/mip.tiff",
-                upload_dir / f"{file_id}_mip.tiff", file_list
-            )
-            sum_path = write_file_from_zip(
-                zf, f"{crop_base_path}/sum.tiff",
-                upload_dir / f"{file_id}_sum.tiff", file_list
+            mip_path, sum_path = extract_projections_from_zip(
+                zf, crop_base_path, upload_dir, file_id, file_list
             )
 
             # Find protein by name
@@ -824,37 +902,27 @@ class ImportService(BaseJobManager[ImportJobData]):
         db: AsyncSession
     ) -> None:
         """Import embeddings from MAPtimize format."""
-        # Import FOV embeddings
-        try:
-            embeddings, old_ids = load_embeddings_from_zip(
-                zf, "embeddings/fov_embeddings.npy", "embeddings/fov_ids.json", file_list
-            )
-            if embeddings is not None:
-                for i, old_id in enumerate(old_ids):
-                    new_id = old_to_new_image_ids.get(old_id)
-                    if new_id and i < len(embeddings):
-                        result = await db.execute(select(Image).where(Image.id == new_id))
-                        image = result.scalar_one_or_none()
-                        if image:
-                            image.embedding = embeddings[i].tolist()
-        except Exception as e:
-            logger.warning(f"Failed to import FOV embeddings: {e}")
+        # Define embedding sources to import
+        embedding_configs = [
+            ("fov", "embeddings/fov_embeddings.npy", "embeddings/fov_ids.json", old_to_new_image_ids, Image),
+            ("crop", "embeddings/crop_embeddings.npy", "embeddings/crop_ids.json", old_to_new_crop_ids, CellCrop),
+        ]
 
-        # Import crop embeddings
-        try:
-            embeddings, old_ids = load_embeddings_from_zip(
-                zf, "embeddings/crop_embeddings.npy", "embeddings/crop_ids.json", file_list
-            )
-            if embeddings is not None:
+        for name, emb_path, ids_path, id_mapping, model_class in embedding_configs:
+            try:
+                embeddings, old_ids = load_embeddings_from_zip(zf, emb_path, ids_path, file_list)
+                if embeddings is None:
+                    continue
+
                 for i, old_id in enumerate(old_ids):
-                    new_id = old_to_new_crop_ids.get(old_id)
+                    new_id = id_mapping.get(old_id)
                     if new_id and i < len(embeddings):
-                        result = await db.execute(select(CellCrop).where(CellCrop.id == new_id))
-                        crop = result.scalar_one_or_none()
-                        if crop:
-                            crop.embedding = embeddings[i].tolist()
-        except Exception as e:
-            logger.warning(f"Failed to import crop embeddings: {e}")
+                        result = await db.execute(select(model_class).where(model_class.id == new_id))
+                        record = result.scalar_one_or_none()
+                        if record:
+                            record.embedding = embeddings[i].tolist()
+            except Exception as e:
+                logger.warning(f"Failed to import {name} embeddings: {e}")
 
     async def _import_image(
         self,
@@ -871,7 +939,6 @@ class ImportService(BaseJobManager[ImportJobData]):
 
             # Generate unique filename
             file_id = str(uuid.uuid4())[:8]
-            extension = Path(original_filename).suffix or ".tiff"
             save_filename = f"{file_id}_{original_filename}"
             save_path = upload_dir / save_filename
 
