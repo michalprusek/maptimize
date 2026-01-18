@@ -1,8 +1,9 @@
 "use client";
 
-import { useState, useMemo } from "react";
+import { useState, useMemo, useCallback } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useTranslations } from "next-intl";
+import { useRouter } from "next/navigation";
 import {
   ScatterChart,
   Scatter,
@@ -153,6 +154,7 @@ export function UmapVisualization({
   preferFovMode = false,
 }: UmapVisualizationProps): JSX.Element {
   const t = useTranslations("umap");
+  const router = useRouter();
   const [viewMode, setViewMode] = useState<UmapType>(preferFovMode ? "fov" : "cropped");
 
   const { data, isLoading, error, refetch, isFetching } = useQuery({
@@ -161,6 +163,27 @@ export function UmapVisualization({
     staleTime: 1000 * 60 * 5, // Cache for 5 minutes
     retry: false,
   });
+
+  // Handle click on UMAP point - navigate to editor
+  const handleChartClick = useCallback((state: { activePayload?: Array<{ payload: UmapPoint | UmapFovPoint }> } | null) => {
+    // Early return if click missed a point (expected behavior)
+    if (!state?.activePayload?.[0]?.payload) return;
+
+    const pointData = state.activePayload[0].payload;
+    const expId = "experiment_id" in pointData ? pointData.experiment_id : experimentId;
+
+    // Validate required IDs for navigation
+    if (!expId) {
+      console.error("[UmapVisualization] Cannot navigate: missing experiment_id", { pointData, experimentId });
+      return;
+    }
+    if (!pointData.image_id) {
+      console.error("[UmapVisualization] Cannot navigate: missing image_id", { pointData });
+      return;
+    }
+
+    router.push(`/editor/${expId}/${pointData.image_id}`);
+  }, [router, experimentId]);
 
   // Group points by protein for legend
   const proteinGroups = useMemo(() => {
@@ -273,7 +296,10 @@ export function UmapVisualization({
       <>
         <div style={{ height: height - 100 }}>
           <ResponsiveContainer width="100%" height="100%">
-            <ScatterChart margin={{ top: 20, right: 20, bottom: 20, left: 20 }}>
+            <ScatterChart
+              margin={{ top: 20, right: 20, bottom: 20, left: 20 }}
+              onClick={handleChartClick}
+            >
               <XAxis
                 type="number"
                 dataKey="x"

@@ -742,58 +742,63 @@ export function ImageEditorToolbar({
             </div>
           )}
 
-          {divider}
+          {/* Only show undo/trash/save buttons when add mode is active */}
+          {isSegmentAddMode && (
+            <>
+              {divider}
 
-          {/* Click point count */}
-          {clickPointCount > 0 && (
-            <span className="text-xs text-text-muted">
-              {t("clickPoints", { count: clickPointCount })}
-            </span>
+              {/* Click point count */}
+              {clickPointCount > 0 && (
+                <span className="text-xs text-text-muted">
+                  {t("clickPoints", { count: clickPointCount })}
+                </span>
+              )}
+
+              {/* Undo last click */}
+              <ToolbarIconButton
+                onClick={onUndoClick}
+                disabled={!hasClickPoints}
+                icon={RotateCcw}
+                title={t("undoClick")}
+              />
+
+              {/* Clear segmentation */}
+              <ToolbarIconButton
+                onClick={onClearSegmentation}
+                disabled={!hasClickPoints}
+                icon={Trash2}
+                variant="danger"
+                title={t("clearSegmentation")}
+              />
+
+              {/* Add to pending (accumulate multiple before save) */}
+              {canAddToPending && (
+                <ToolbarIconButton
+                  onClick={onAddToPending}
+                  icon={Plus}
+                  variant="default"
+                  title={t("addToPending")}
+                />
+              )}
+
+              {/* Pending count badge */}
+              {pendingPolygonCount > 0 && (
+                <div className="flex items-center justify-center min-w-[24px] h-6 px-1.5 bg-primary-500/20 text-primary-400 text-xs font-medium rounded-md">
+                  {pendingPolygonCount}
+                </div>
+              )}
+
+              {/* Save mask */}
+              <ToolbarIconButton
+                onClick={onSaveMask}
+                disabled={!hasPreviewPolygon || isSavingMask}
+                icon={Save}
+                variant="primary"
+                isLoading={isSavingMask}
+                title={pendingPolygonCount > 0 ? t("saveAllMasks", { count: pendingPolygonCount }) : t("saveMask")}
+              />
+            </>
           )}
-
-          {/* Undo last click */}
-          <ToolbarIconButton
-            onClick={onUndoClick}
-            disabled={!hasClickPoints}
-            icon={RotateCcw}
-            title={t("undoClick")}
-          />
-
-          {/* Clear segmentation */}
-          <ToolbarIconButton
-            onClick={onClearSegmentation}
-            disabled={!hasClickPoints}
-            icon={Trash2}
-            variant="danger"
-            title={t("clearSegmentation")}
-          />
-
-          {/* Add to pending (accumulate multiple before save) */}
-          {canAddToPending && (
-            <ToolbarIconButton
-              onClick={onAddToPending}
-              icon={Plus}
-              variant="default"
-              title={t("addToPending")}
-            />
-          )}
-
-          {/* Pending count badge */}
-          {pendingPolygonCount > 0 && (
-            <div className="flex items-center justify-center min-w-[24px] h-6 px-1.5 bg-primary-500/20 text-primary-400 text-xs font-medium rounded-md">
-              {pendingPolygonCount}
-            </div>
-          )}
-
-          {/* Save mask */}
-          <ToolbarIconButton
-            onClick={onSaveMask}
-            disabled={!hasPreviewPolygon || isSavingMask}
-            icon={Save}
-            variant="primary"
-            isLoading={isSavingMask}
-            title={pendingPolygonCount > 0 ? t("saveAllMasks", { count: pendingPolygonCount }) : t("saveMask")}
-          />
         </>
       )}
 

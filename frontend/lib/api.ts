@@ -1184,6 +1184,7 @@ export type UmapType = "fov" | "cropped";
 export interface UmapPoint {
   crop_id: number;
   image_id: number;
+  experiment_id: number;
   x: number;
   y: number;
   protein_name: string | null;
