@@ -25,6 +25,14 @@ import {
 } from "@/lib/api";
 import { Spinner, MicroscopyImage } from "@/components/ui";
 import { RefreshCw, Info, AlertCircle, Grid, Layers } from "lucide-react";
+import {
+  DEFAULT_POINT_COLOR,
+  UMAP_AXIS_STYLE,
+  UMAP_AXIS_DOMAIN,
+  UMAP_TOOLTIP_CURSOR,
+  UMAP_SCATTER_ANIMATION,
+  formatAxisTick,
+} from "./chartConfig";
 
 interface UmapVisualizationProps {
   experimentId?: number;
@@ -32,8 +40,6 @@ interface UmapVisualizationProps {
   /** If true, start with FOV mode (useful when no crops exist) */
   preferFovMode?: boolean;
 }
-
-const DEFAULT_COLOR = "#888888";
 
 /** Build authenticated URL by appending token as query parameter */
 function buildAuthenticatedUrl(thumbnailUrl: string): string {
@@ -166,7 +172,7 @@ export function UmapVisualization({
 
     data.points.forEach((point) => {
       const name = point.protein_name || t("unassigned");
-      const color = point.protein_color || DEFAULT_COLOR;
+      const color = point.protein_color || DEFAULT_POINT_COLOR;
 
       if (!groups.has(name)) {
         groups.set(name, { name, color, count: 0 });
@@ -271,37 +277,35 @@ export function UmapVisualization({
                 type="number"
                 dataKey="x"
                 name="UMAP 1"
-                tick={{ fill: "#5a7285", fontSize: 10 }}
-                axisLine={{ stroke: "#2a3a4a" }}
-                tickLine={{ stroke: "#2a3a4a" }}
-                domain={["dataMin - 1", "dataMax + 1"]}
-                tickFormatter={(value) => Math.round(value).toString()}
+                tick={UMAP_AXIS_STYLE.tick}
+                axisLine={UMAP_AXIS_STYLE.axisLine}
+                tickLine={UMAP_AXIS_STYLE.tickLine}
+                domain={UMAP_AXIS_DOMAIN}
+                tickFormatter={formatAxisTick}
               />
               <YAxis
                 type="number"
                 dataKey="y"
                 name="UMAP 2"
-                tick={{ fill: "#5a7285", fontSize: 10 }}
-                axisLine={{ stroke: "#2a3a4a" }}
-                tickLine={{ stroke: "#2a3a4a" }}
-                domain={["dataMin - 1", "dataMax + 1"]}
-                tickFormatter={(value) => Math.round(value).toString()}
+                tick={UMAP_AXIS_STYLE.tick}
+                axisLine={UMAP_AXIS_STYLE.axisLine}
+                tickLine={UMAP_AXIS_STYLE.tickLine}
+                domain={UMAP_AXIS_DOMAIN}
+                tickFormatter={formatAxisTick}
               />
               <ZAxis range={[60, 60]} />
               <Tooltip
                 content={isFov ? <FovTooltip t={t} /> : <CroppedTooltip t={t} />}
-                cursor={{ strokeDasharray: "3 3", stroke: "#5a7285" }}
+                cursor={UMAP_TOOLTIP_CURSOR}
               />
               <Scatter
                 data={data.points}
-                isAnimationActive={true}
-                animationDuration={300}
-                animationEasing="ease-out"
+                {...UMAP_SCATTER_ANIMATION}
               >
                 {data.points.map((point, index) => (
                   <Cell
                     key={`cell-${index}`}
-                    fill={point.protein_color || DEFAULT_COLOR}
+                    fill={point.protein_color || DEFAULT_POINT_COLOR}
                     fillOpacity={0.75}
                     stroke="rgba(255,255,255,0.3)"
                     strokeWidth={1}

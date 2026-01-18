@@ -11,16 +11,18 @@ import { useState, useCallback, useEffect, useRef } from "react";
 import { useTranslations } from "next-intl";
 import { AnimatePresence, motion } from "framer-motion";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { ChevronRight, ChevronLeft, ArrowLeft, AlertCircle, X, ScanSearch, Wand2, Loader2, Type, MousePointer2, Keyboard } from "lucide-react";
+import { ChevronRight, ChevronLeft, ArrowLeft, AlertCircle, X, ScanSearch, Wand2, Loader2, Type, MousePointer2, Keyboard, Trash2 } from "lucide-react";
 import { useSettingsStore } from "@/stores/settingsStore";
 import { ConfirmModal } from "@/components/ui";
 import { api, type CellCropGallery, type FOVImage } from "@/lib/api";
 import { AppSidebar } from "@/components/layout";
 import type {
   EditorBbox,
+  EditorMode,
   EditorState,
   ImageFilters,
   ContextMenuState,
+  MaskContextMenuState,
   Rect,
   CellPolygon,
   SAMEmbeddingStatus,
@@ -52,61 +54,34 @@ import { useBboxInteraction } from "./hooks/useBboxInteraction";
 import { useUndoHistory } from "./hooks/useUndoHistory";
 import { useSegmentation } from "./hooks/useSegmentation";
 import { KeyboardShortcutsModal } from "./KeyboardShortcutsModal";
+import { useEditorModePersistence, useLocalStorage } from "@/hooks";
 
-// localStorage key for persisting toolbar position
+// localStorage keys for persisting editor settings
 const TOOLBAR_POSITION_KEY = "maptimize:editor:toolbarPosition";
+const MASK_OPACITY_KEY = "maptimize:editor:maskOpacity";
 const DEFAULT_TOOLBAR_POSITION: ToolbarPosition = { edge: "bottom", offset: 0.5 };
+const DEFAULT_MASK_OPACITY = 0.3;
 
-/** Mouse icon with highlighted button (left or right) */
-interface MouseIconProps {
-  className?: string;
-  button: "left" | "right";
+/** Type guard for mask opacity validation */
+function isValidMaskOpacity(value: unknown): value is number {
+  return typeof value === "number" && value >= 0 && value <= 1;
 }
 
-function MouseIcon({ className = "", button }: MouseIconProps): React.ReactElement {
-  const path = button === "left"
-    ? "M1.5 6 Q1.5 1.5 7 1.5 L7 7.5 L1.5 7.5 Z"
-    : "M12.5 6 Q12.5 1.5 7 1.5 L7 7.5 L12.5 7.5 Z";
-
+/** Type guard for ToolbarPosition validation */
+function isValidToolbarPosition(value: unknown): value is ToolbarPosition {
+  if (typeof value !== "object" || value === null) return false;
+  const obj = value as Record<string, unknown>;
   return (
-    <svg width="14" height="18" viewBox="0 0 14 18" fill="none" className={className}>
-      <rect x="1" y="1" width="12" height="16" rx="6" stroke="currentColor" strokeWidth="1.5" fill="none" />
-      <line x1="7" y1="1" x2="7" y2="8" stroke="currentColor" strokeWidth="1" />
-      <path d={path} fill="currentColor" />
-    </svg>
+    typeof obj.edge === "string" &&
+    ["top", "bottom", "left", "right"].includes(obj.edge) &&
+    typeof obj.offset === "number" &&
+    obj.offset >= 0 &&
+    obj.offset <= 1
   );
 }
 
-/** Point prompt help panel showing mouse controls */
-function PointPromptHelpPanel(): React.ReactElement {
-  const t = useTranslations("editor");
 
-  return (
-    <div className="bg-black/60 backdrop-blur-sm rounded-lg px-3 py-2 text-xs text-white/80 space-y-1">
-      <div className="flex items-center gap-2">
-        <MouseIcon button="left" className="text-emerald-400" />
-        <span>{t("addForeground")}</span>
-      </div>
-      <div className="flex items-center gap-2">
-        <MouseIcon button="right" className="text-red-400" />
-        <span>{t("addBackground")}</span>
-      </div>
-      <div className="border-t border-white/20 my-1" />
-      <div className="flex items-center gap-2">
-        <span className="text-yellow-400 font-medium text-[10px]">Shift+</span>
-        <MouseIcon button="left" className="text-yellow-400" />
-        <span>{t("panImage")}</span>
-      </div>
-      <div className="flex items-center gap-2">
-        <span className="text-yellow-400 font-medium text-[10px]">Shift+</span>
-        <MouseIcon button="right" className="text-yellow-400" />
-        <span>{t("undoPoint")}</span>
-      </div>
-    </div>
-  );
-}
-
-/** Segmentation panel with mode toggle (point/text) */
+/** Segmentation panel with mode toggle (point/text) - clean switch design */
 interface SegmentationPanelProps {
   promptMode: SegmentPromptMode;
   setPromptMode: (mode: SegmentPromptMode) => void;
@@ -135,41 +110,42 @@ function SegmentationPanel({
 }: SegmentationPanelProps): React.ReactElement {
   const t = useTranslations("editor");
 
-  return (
-    <div className="bg-black/60 backdrop-blur-sm rounded-lg overflow-hidden min-w-[220px]">
-      {/* Mode toggle - only show if text prompts are supported */}
-      {supportsTextPrompts && (
-        <div className="flex border-b border-white/10">
-          <button
-            onClick={() => setPromptMode("point")}
-            className={`flex-1 flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-medium transition-colors ${
-              promptMode === "point"
-                ? "bg-primary-500/20 text-primary-400"
-                : "text-white/60 hover:text-white/80 hover:bg-white/5"
-            }`}
-          >
-            <MousePointer2 className="w-3.5 h-3.5" />
-            <span>{t("pointPrompt")}</span>
-          </button>
-          <button
-            onClick={() => setPromptMode("text")}
-            className={`flex-1 flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-medium transition-colors ${
-              promptMode === "text"
-                ? "bg-primary-500/20 text-primary-400"
-                : "text-white/60 hover:text-white/80 hover:bg-white/5"
-            }`}
-          >
-            <Type className="w-3.5 h-3.5" />
-            <span>{t("textPrompt")}</span>
-          </button>
-        </div>
-      )}
+  // Don't render anything if text prompts not supported (point mode is default)
+  if (!supportsTextPrompts) {
+    return <></>;
+  }
 
-      {/* Content based on mode */}
-      <div className="p-2">
-        {promptMode === "point" ? (
-          <PointPromptHelpPanel />
-        ) : (
+  return (
+    <div className="bg-bg-secondary/80 backdrop-blur-sm rounded-xl border border-white/10 overflow-hidden">
+      {/* Clean toggle switch */}
+      <div className="flex items-center p-1 gap-1">
+        <button
+          onClick={() => setPromptMode("point")}
+          className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${
+            promptMode === "point"
+              ? "bg-primary-500 text-white"
+              : "text-text-secondary hover:bg-white/10"
+          }`}
+        >
+          <MousePointer2 className="w-3.5 h-3.5" />
+          <span>{t("pointPrompt")}</span>
+        </button>
+        <button
+          onClick={() => setPromptMode("text")}
+          className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${
+            promptMode === "text"
+              ? "bg-primary-500 text-white"
+              : "text-text-secondary hover:bg-white/10"
+          }`}
+        >
+          <Type className="w-3.5 h-3.5" />
+          <span>{t("textPrompt")}</span>
+        </button>
+      </div>
+
+      {/* Text search - only show in text mode */}
+      {promptMode === "text" && (
+        <div className="p-2 pt-0">
           <TextPromptSearch
             value={textPrompt}
             onChange={setTextPrompt}
@@ -179,15 +155,10 @@ function SegmentationPanel({
             onClear={onClearText}
             error={textError}
           />
-        )}
-      </div>
+        </div>
+      )}
     </div>
   );
-}
-
-/** Simple help panel for legacy mode (no text support) */
-function SegmentationHelpPanel(): React.ReactElement {
-  return <PointPromptHelpPanel />;
 }
 
 interface SegmentationModeButtonProps {
@@ -343,7 +314,36 @@ export function ImageEditorPage({
     isShiftPressed: false,
     zoom: 1,
     panOffset: { x: 0, y: 0 },
+    isSegmentAddMode: true, // Default to add mode when entering segment mode
   }));
+
+  // Persist editor mode across page refreshes (localStorage)
+  const setEditorMode = useCallback((mode: EditorMode) => {
+    setEditorState(prev => ({ ...prev, mode }));
+  }, []);
+  useEditorModePersistence(editorState.mode, setEditorMode);
+
+  // Ref to preserve mode when switching images
+  const preservedModeRef = useRef<EditorMode>(editorState.mode);
+  useEffect(() => {
+    preservedModeRef.current = editorState.mode;
+  }, [editorState.mode]);
+
+  // Restore mode when image changes (except on first mount)
+  const isFirstMount = useRef(true);
+  useEffect(() => {
+    if (isFirstMount.current) {
+      isFirstMount.current = false;
+      return;
+    }
+    // Restore the preserved mode when navigating to a new image
+    if (preservedModeRef.current !== editorState.mode) {
+      setEditorState(prev => ({ ...prev, mode: preservedModeRef.current }));
+    }
+    // Clear selected mask when switching images
+    setSelectedMaskIndex(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fovImage.id]);
 
   // Image filters
   const [filters, setFilters] = useState<ImageFilters>(DEFAULT_FILTERS);
@@ -353,6 +353,13 @@ export function ImageEditorPage({
     isOpen: false,
     position: null,
     targetBbox: null,
+  });
+
+  // Mask context menu state (for right-click on FOV masks)
+  const [maskContextMenu, setMaskContextMenu] = useState<MaskContextMenuState>({
+    isOpen: false,
+    position: null,
+    targetMaskIndex: null,
   });
 
   // Error state for user feedback
@@ -384,6 +391,15 @@ export function ImageEditorPage({
 
   // FOV-level segmentation masks (multiple polygons covering entire image)
   const [fovMaskPolygons, setFovMaskPolygons] = useState<[number, number][][] | null>(null);
+
+  // FOV mask UI state - opacity persisted to localStorage
+  const [maskOpacity, setMaskOpacity] = useLocalStorage<number>(
+    MASK_OPACITY_KEY,
+    DEFAULT_MASK_OPACITY,
+    { validate: isValidMaskOpacity }
+  );
+  const [hoveredMaskIndex, setHoveredMaskIndex] = useState<number | null>(null);
+  const [selectedMaskIndex, setSelectedMaskIndex] = useState<number | null>(null);
 
   // Container dimensions for segmentation overlay
   const [containerDimensions, setContainerDimensions] = useState({ width: 0, height: 0 });
@@ -475,32 +491,12 @@ export function ImageEditorPage({
     return () => window.removeEventListener("resize", updateDimensions);
   }, []);
 
-  // Toolbar position state - persisted in localStorage
-  const [toolbarPosition, setToolbarPosition] = useState<ToolbarPosition>(() => {
-    if (typeof window === "undefined") return DEFAULT_TOOLBAR_POSITION;
-    try {
-      const stored = localStorage.getItem(TOOLBAR_POSITION_KEY);
-      if (stored) {
-        const parsed = JSON.parse(stored);
-        if (parsed.edge && typeof parsed.offset === "number") {
-          return parsed as ToolbarPosition;
-        }
-      }
-    } catch (e) {
-      console.warn("[ImageEditor] Failed to load toolbar position from localStorage:", e);
-    }
-    return DEFAULT_TOOLBAR_POSITION;
-  });
-
-  // Persist toolbar position to localStorage
-  const handleToolbarPositionChange = useCallback((newPosition: ToolbarPosition) => {
-    setToolbarPosition(newPosition);
-    try {
-      localStorage.setItem(TOOLBAR_POSITION_KEY, JSON.stringify(newPosition));
-    } catch (e) {
-      console.warn("[ImageEditor] Failed to save toolbar position to localStorage:", e);
-    }
-  }, []);
+  // Toolbar position state - persisted in localStorage via useLocalStorage hook
+  const [toolbarPosition, setToolbarPosition] = useLocalStorage<ToolbarPosition>(
+    TOOLBAR_POSITION_KEY,
+    DEFAULT_TOOLBAR_POSITION,
+    { validate: isValidToolbarPosition }
+  );
 
   // API handlers
   const handleBboxCreate = useCallback(
@@ -689,7 +685,7 @@ export function ImageEditorPage({
       setEditorState((prev) => ({
         ...prev,
         selectedBboxId: tempId,
-        mode: "view",
+        // Don't reset mode - keep draw mode active for continuous adding
       }));
 
       // Create via API
@@ -742,6 +738,78 @@ export function ImageEditorPage({
       ...prev,
       hoveredBboxId: id,
     }));
+  }, []);
+
+  // Delete a specific FOV mask polygon by index
+  const deleteMaskPolygon = useCallback(async (index: number) => {
+    if (!fovMaskPolygons) return;
+
+    const newPolygons = fovMaskPolygons.filter((_, idx) => idx !== index);
+
+    // Step 1: Delete entire mask
+    try {
+      await api.deleteFOVSegmentationMask(fovImage.id);
+    } catch (deleteErr) {
+      console.error("[Editor] Failed to delete FOV mask:", { imageId: fovImage.id, error: deleteErr });
+      showError(t("deleteError"));
+      return;
+    }
+
+    // Step 2: Re-save remaining polygons if any
+    if (newPolygons.length > 0) {
+      try {
+        await api.saveFOVSegmentationMaskWithUnion({
+          image_id: fovImage.id,
+          polygons: newPolygons,
+          iou_score: 0.9,
+          prompt_count: 0,
+        });
+      } catch (saveErr) {
+        console.error("[Editor] Delete succeeded but re-save failed:", { imageId: fovImage.id, remainingCount: newPolygons.length, error: saveErr });
+        // Mask is deleted on server - update local state to match
+        setFovMaskPolygons(null);
+        setSelectedMaskIndex(null);
+        setHoveredMaskIndex(null);
+        showError(t("partialDeleteError"));
+        onDataChanged?.();
+        return;
+      }
+    }
+
+    // Success
+    setFovMaskPolygons(newPolygons.length > 0 ? newPolygons : null);
+    setSelectedMaskIndex(null);
+    setHoveredMaskIndex(null);
+    onDataChanged?.();
+  }, [fovMaskPolygons, fovImage.id, onDataChanged, showError, t]);
+
+  // Handle FOV mask polygon click - right-click shows context menu (when not in add mode)
+  const handleMaskClick = useCallback((index: number, e: React.MouseEvent) => {
+    e.stopPropagation();
+    e.preventDefault();
+
+    // Right-click = show context menu (only when not in add mode)
+    if (e.button === 2) {
+      // In add mode, ignore right-click on masks
+      if (editorState.isSegmentAddMode) return;
+
+      setMaskContextMenu({
+        isOpen: true,
+        position: { x: e.clientX, y: e.clientY },
+        targetMaskIndex: index,
+      });
+      return;
+    }
+
+    // Left-click = select/deselect for keyboard deletion (only when not in add mode)
+    if (!editorState.isSegmentAddMode) {
+      setSelectedMaskIndex(prev => prev === index ? null : index);
+    }
+  }, [editorState.isSegmentAddMode]);
+
+  // Handle FOV mask polygon hover
+  const handleMaskHover = useCallback((index: number | null) => {
+    setHoveredMaskIndex(index);
   }, []);
 
   // Handle bbox delete
@@ -885,10 +953,29 @@ export function ImageEditorPage({
         return;
       }
 
-      // Delete / D = delete hovered or selected bbox
-      if (e.key === "Delete" || e.key === "Backspace" || e.key === "d" || e.key === "D") {
-        // D key only works without modifiers
-        if ((e.key === "d" || e.key === "D") && (e.ctrlKey || e.metaKey || e.altKey)) {
+      // Delete / Backspace = delete hovered FOV mask polygon (in segment mode, not in add mode) or bbox
+      if (e.key === "Delete" || e.key === "Backspace") {
+        // In segment mode with hovered mask, delete the mask polygon (only when not in add mode)
+        if (editorState.mode === "segment" && !editorState.isSegmentAddMode && hoveredMaskIndex !== null && fovMaskPolygons) {
+          e.preventDefault();
+          deleteMaskPolygon(hoveredMaskIndex);
+          return;
+        }
+        // Otherwise, delete bbox
+        const targetId = editorState.hoveredBboxId ?? editorState.selectedBboxId;
+        if (targetId) {
+          const bbox = bboxes.find((b) => b.id === targetId);
+          if (bbox) {
+            handleBboxDeleteLocal(bbox);
+          }
+        }
+        return;
+      }
+
+      // D = delete hovered or selected bbox (not in segment mode)
+      if (e.key === "d" || e.key === "D") {
+        // D key only works without modifiers and not in segment mode
+        if ((e.ctrlKey || e.metaKey || e.altKey) || editorState.mode === "segment") {
           return;
         }
         // Use hovered bbox if available, otherwise use selected
@@ -909,8 +996,10 @@ export function ImageEditorPage({
         return;
       }
 
-      // A / N = toggle draw mode
+      // A / N = toggle draw mode (only when not in segment mode)
       if (e.key === "n" || e.key === "N" || e.key === "a" || e.key === "A") {
+        // Don't switch modes when in segment mode - let user stay in their chosen mode
+        if (editorState.mode === "segment") return;
         setEditorState((prev) => ({
           ...prev,
           mode: prev.mode === "draw" ? "view" : "draw",
@@ -918,13 +1007,34 @@ export function ImageEditorPage({
         return;
       }
 
-      // S = toggle segment mode
+      // S = toggle segment mode (only when not in draw mode)
       if (e.key === "s" || e.key === "S") {
+        // Don't switch modes when in draw mode - let user stay in their chosen mode
+        if (editorState.mode === "draw") return;
         if (segmentation.isReady || segmentation.embeddingStatus === "not_started") {
           setEditorState((prev) => ({
             ...prev,
             mode: prev.mode === "segment" ? "view" : "segment",
           }));
+        }
+        return;
+      }
+
+      // Enter = save mask (in segment mode with pending polygons or preview)
+      if (e.key === "Enter" && editorState.mode === "segment") {
+        if (segmentation.hasPendingPolygons || segmentation.state.previewPolygon) {
+          e.preventDefault();
+          segmentation.saveFOVMask()
+            .then((result) => {
+              if (!result.success && result.error) {
+                // Show error to user if the hook didn't handle it
+                showError(result.error);
+              }
+            })
+            .catch((err) => {
+              console.error("[Editor] Unexpected error saving mask on Enter:", err);
+              showError(t("saveError"));
+            });
         }
         return;
       }
@@ -1009,7 +1119,7 @@ export function ImageEditorPage({
       window.removeEventListener("keydown", handleKeyDown);
       window.removeEventListener("keyup", handleKeyUp);
     };
-  }, [bboxes, editorState.selectedBboxId, editorState.hoveredBboxId, editorState.isSpacePressed, editorState.isShiftPressed, editorState.mode, handleBboxDeleteLocal, undoHistory, segmentation, showShortcutsModal, handleResetView, hasPrevImage, hasNextImage, onNavigatePrev, onNavigateNext]);
+  }, [bboxes, editorState.selectedBboxId, editorState.hoveredBboxId, editorState.isSpacePressed, editorState.isShiftPressed, editorState.mode, handleBboxDeleteLocal, undoHistory, segmentation, showShortcutsModal, handleResetView, hasPrevImage, hasNextImage, onNavigatePrev, onNavigateNext, hoveredMaskIndex, fovMaskPolygons, fovImage.id, onDataChanged, showError, t]);
 
   // Bbox interaction hook
   const {
@@ -1384,6 +1494,11 @@ export function ImageEditorPage({
             isLoading={segmentation.state.isLoading}
             containerWidth={containerDimensions.width}
             containerHeight={containerDimensions.height}
+            maskOpacity={maskOpacity}
+            selectedMaskIndex={selectedMaskIndex}
+            hoveredMaskIndex={hoveredMaskIndex}
+            onMaskClick={handleMaskClick}
+            onMaskHover={handleMaskHover}
           />
         </div>
 
@@ -1428,7 +1543,7 @@ export function ImageEditorPage({
         onUndo={undoHistory.undo}
         isUndoing={undoHistory.isUndoing}
         position={toolbarPosition}
-        onPositionChange={handleToolbarPositionChange}
+        onPositionChange={setToolbarPosition}
         sidebarOpen={showNavigation}
         // Segmentation props
         samEmbeddingStatus={segmentation.embeddingStatus}
@@ -1444,12 +1559,18 @@ export function ImageEditorPage({
         pendingPolygonCount={segmentation.state.pendingPolygons.length}
         onAddToPending={segmentation.addPreviewToPending}
         canAddToPending={!!segmentation.state.previewPolygon}
+        // Mask opacity props
+        maskOpacity={maskOpacity}
+        onMaskOpacityChange={setMaskOpacity}
+        // Segment add mode props
+        isSegmentAddMode={editorState.isSegmentAddMode}
+        onToggleSegmentAddMode={() => setEditorState(prev => ({ ...prev, isSegmentAddMode: !prev.isSegmentAddMode }))}
         // Re-detect props
         onRedetect={() => setShowRedetectConfirm(true)}
         isRedetecting={redetectMutation.isPending}
       />
 
-      {/* Context menu */}
+      {/* Bbox context menu */}
       <ImageEditorContextMenu
         isOpen={contextMenu.isOpen}
         position={contextMenu.position}
@@ -1460,6 +1581,48 @@ export function ImageEditorPage({
           setContextMenu({ isOpen: false, position: null, targetBbox: null })
         }
       />
+
+      {/* Mask context menu with click-outside backdrop */}
+      <AnimatePresence>
+        {maskContextMenu.isOpen && maskContextMenu.position && maskContextMenu.targetMaskIndex !== null && (
+          <>
+            {/* Invisible backdrop to catch outside clicks */}
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="fixed inset-0 z-[99]"
+              onClick={() => setMaskContextMenu({ isOpen: false, position: null, targetMaskIndex: null })}
+            />
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.95 }}
+              transition={{ duration: 0.1 }}
+              style={{
+                position: "fixed",
+                left: maskContextMenu.position.x,
+                top: maskContextMenu.position.y,
+              }}
+              className="z-[100] bg-bg-elevated border border-white/10 rounded-lg shadow-xl py-1 min-w-[140px]"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <button
+                onClick={() => {
+                  if (maskContextMenu.targetMaskIndex !== null) {
+                    deleteMaskPolygon(maskContextMenu.targetMaskIndex);
+                  }
+                  setMaskContextMenu({ isOpen: false, position: null, targetMaskIndex: null });
+                }}
+                className="w-full px-3 py-2 text-left text-sm text-accent-red hover:bg-accent-red/10 flex items-center gap-2 transition-colors"
+              >
+                <Trash2 className="w-4 h-4" />
+                {t("deleteMask")}
+              </button>
+            </motion.div>
+          </>
+        )}
+      </AnimatePresence>
 
       {/* Error toast */}
       <AnimatePresence>

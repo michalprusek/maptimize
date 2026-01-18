@@ -35,6 +35,54 @@ RANDOM_STATE = 42
 # =============================================================================
 
 
+def _normalize_embeddings(embeddings: np.ndarray) -> np.ndarray:
+    """L2 normalize embeddings for cosine similarity."""
+    norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
+    norms = np.where(norms == 0, 1, norms)
+    return embeddings / norms
+
+
+def _compute_umap_projection(
+    embeddings_norm: np.ndarray,
+    n_neighbors: int,
+    min_dist: float,
+    use_random_init: bool = False,
+) -> np.ndarray:
+    """
+    Core UMAP projection computation.
+
+    Args:
+        embeddings_norm: L2-normalized embedding vectors (N x D)
+        n_neighbors: UMAP n_neighbors parameter
+        min_dist: UMAP min_dist parameter
+        use_random_init: Use random init (for small datasets < 10)
+
+    Returns:
+        2D projection array (N x 2)
+    """
+    import umap
+
+    np.random.seed(RANDOM_STATE)
+
+    n_samples = len(embeddings_norm)
+    effective_n_neighbors = min(n_neighbors, n_samples - 1)
+    if effective_n_neighbors < 2:
+        effective_n_neighbors = 2
+
+    # Use random init for small datasets (spectral fails with k >= N)
+    init_method = "random" if use_random_init or n_samples < 10 else "spectral"
+
+    reducer = umap.UMAP(
+        n_neighbors=effective_n_neighbors,
+        min_dist=min_dist,
+        n_components=2,
+        metric="cosine",
+        random_state=RANDOM_STATE,
+        init=init_method,
+    )
+    return reducer.fit_transform(embeddings_norm)
+
+
 def compute_silhouette(
     embeddings: np.ndarray,
     items: list,
@@ -99,29 +147,12 @@ def compute_umap_online(
         ValueError: If UMAP parameters are invalid
         MemoryError: If too many data points
     """
-    import umap
-
-    np.random.seed(RANDOM_STATE)
-
-    # Validate n_neighbors: UMAP requires n_neighbors < n_samples
     n_samples = len(embeddings)
-    effective_n_neighbors = min(n_neighbors, n_samples - 1)
-    if effective_n_neighbors < 2:
+    if n_samples < 3:
         raise ValueError(f"Need at least 3 samples for UMAP, got {n_samples}")
 
-    # L2 normalize for cosine similarity
-    norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
-    norms = np.where(norms == 0, 1, norms)
-    embeddings_norm = embeddings / norms
-
-    reducer = umap.UMAP(
-        n_neighbors=effective_n_neighbors,
-        min_dist=min_dist,
-        n_components=2,
-        metric="cosine",
-        random_state=RANDOM_STATE,
-    )
-    projection = reducer.fit_transform(embeddings_norm)
+    embeddings_norm = _normalize_embeddings(embeddings)
+    projection = _compute_umap_projection(embeddings_norm, n_neighbors, min_dist)
     silhouette = compute_silhouette(embeddings_norm, items)
 
     return projection, silhouette
@@ -358,40 +389,15 @@ def compute_protein_umap_online(
     Returns:
         Tuple of (projection array N x 2, silhouette score or None)
     """
-    import umap
-
-    np.random.seed(RANDOM_STATE)
-
     n_samples = len(embeddings)
     if n_samples < 3:
         raise ValueError(f"Need at least 3 proteins for UMAP, got {n_samples}")
 
-    effective_n_neighbors = min(n_neighbors, n_samples - 1)
-    if effective_n_neighbors < 2:
-        effective_n_neighbors = 2
-
-    # L2 normalize for cosine similarity
-    norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
-    norms = np.where(norms == 0, 1, norms)
-    embeddings_norm = embeddings / norms
-
-    # Use random init for small datasets (spectral fails with k >= N)
-    init_method = "random" if n_samples < 10 else "spectral"
-
-    reducer = umap.UMAP(
-        n_neighbors=effective_n_neighbors,
-        min_dist=min_dist,
-        n_components=2,
-        metric="cosine",
-        random_state=RANDOM_STATE,
-        init=init_method,
-    )
-    projection = reducer.fit_transform(embeddings_norm)
+    embeddings_norm = _normalize_embeddings(embeddings)
+    projection = _compute_umap_projection(embeddings_norm, n_neighbors, min_dist)
 
     # Silhouette score not applicable for proteins (no labels)
-    silhouette = None
-
-    return projection, silhouette
+    return projection, None
 
 
 async def compute_protein_umap(db: AsyncSession) -> dict:

@@ -96,7 +96,10 @@
     "uploadImages": "Telecharger des images",
     "redetect": "Re-detecter les cellules",
     "redetectConfirmTitle": "Re-detecter les cellules",
-    "redetectConfirmMessage": "Cela supprimera toutes les cellules detectees pour {count, plural, =1 {cette image} other {ces # images}} et relancera la detection. Les comparaisons de classement pour ces cellules seront egalement supprimees. Continuer ?"
+    "redetectConfirmMessage": "Cela supprimera toutes les cellules detectees pour {count, plural, =1 {cette image} other {ces # images}} et relancera la detection. Les comparaisons de classement pour ces cellules seront egalement supprimees. Continuer ?",
+    "redetectProgress": "Re-detection en cours: {current}/{total}",
+    "redetectComplete": "Re-detection terminee",
+    "dismiss": "Fermer"
   },
   "settings": {
     "title": "Parametres",
@@ -299,6 +302,7 @@
     "createError": "Echec de la creation de la cellule",
     "deleteError": "Echec de la suppression de la cellule",
     "updateError": "Echec de la mise a jour de la cellule",
+    "partialDeleteError": "Polygone supprime mais echec de sauvegarde des restants - veuillez rafraichir",
     "detection": "Détection",
     "segmentation": "Segmentation",
     "detectionMode": "Mode détection",
@@ -313,6 +317,8 @@
     "saveMask": "Enregistrer le masque",
     "saveAllMasks": "Enregistrer {count} masques",
     "addToPending": "Ajouter en attente",
+    "addMask": "Ajouter masque",
+    "maskOpacity": "Opacite du masque",
     "segmentHint": "Clic gauche: premier plan • Clic droit: arriere-plan",
     "noTargetCrop": "Selectionnez une cellule pour enregistrer le masque",
     "loadMasksError": "Échec du chargement des masques de segmentation",
@@ -340,6 +346,7 @@
     "redetectConfirmTitle": "Re-detecter les cellules",
     "redetectConfirmMessage": "Cela supprimera toutes les cellules detectees et relancera la detection YOLO. Les comparaisons de classement pour ces cellules seront egalement supprimees. Continuer ?",
     "redetectError": "Echec du demarrage de la re-detection. Veuillez reessayer.",
+    "deleteMask": "Supprimer le masque",
     "errors": {
       "gpuRequired": "La segmentation textuelle nécessite un GPU CUDA (non disponible sur ce serveur)",
       "imageNotFound": "Image non trouvée. Elle a peut-être été supprimée.",
@@ -368,6 +375,7 @@
       "toggleSegmentMode": "Basculer mode segment",
       "addForeground": "Ajouter point premier plan",
       "addBackground": "Ajouter point arriere-plan",
+      "saveMask": "Enregistrer masque",
       "panImage": "Deplacer l'image",
       "undoPoint": "Annuler dernier point",
       "helpTip": "Appuyez sur ? pour afficher ce panneau"

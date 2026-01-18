@@ -40,7 +40,10 @@ settings = get_settings()
 model = PlackettLuce()
 
 
-# Helper functions
+# =============================================================================
+# Helper Functions (DRY)
+# =============================================================================
+
 
 async def get_metric_for_user(
     db: AsyncSession,
@@ -60,6 +63,39 @@ async def get_metric_for_user(
             detail="Metric not found"
         )
     return metric
+
+
+async def get_metric_counts(db: AsyncSession, metric_id: int) -> tuple[int, int]:
+    """Get image and comparison counts for a metric."""
+    img_result = await db.execute(
+        select(func.count(MetricImage.id))
+        .where(MetricImage.metric_id == metric_id)
+    )
+    image_count = img_result.scalar() or 0
+
+    comp_result = await db.execute(
+        select(func.count(MetricComparison.id))
+        .where(
+            MetricComparison.metric_id == metric_id,
+            MetricComparison.undone == False
+        )
+    )
+    comparison_count = comp_result.scalar() or 0
+
+    return image_count, comparison_count
+
+
+def build_metric_response(metric: Metric, image_count: int, comparison_count: int) -> MetricResponse:
+    """Build MetricResponse from metric and counts."""
+    return MetricResponse(
+        id=metric.id,
+        name=metric.name,
+        description=metric.description,
+        image_count=image_count,
+        comparison_count=comparison_count,
+        created_at=metric.created_at,
+        updated_at=metric.updated_at,
+    )
 
 
 async def get_or_create_metric_rating(
@@ -115,7 +151,6 @@ async def list_metrics(
     db: AsyncSession = Depends(get_db)
 ):
     """List all metrics for current user."""
-    # Get metrics with counts
     result = await db.execute(
         select(Metric)
         .where(Metric.user_id == current_user.id)
@@ -125,32 +160,8 @@ async def list_metrics(
 
     items = []
     for metric in metrics:
-        # Count images
-        img_result = await db.execute(
-            select(func.count(MetricImage.id))
-            .where(MetricImage.metric_id == metric.id)
-        )
-        image_count = img_result.scalar() or 0
-
-        # Count comparisons
-        comp_result = await db.execute(
-            select(func.count(MetricComparison.id))
-            .where(
-                MetricComparison.metric_id == metric.id,
-                MetricComparison.undone == False
-            )
-        )
-        comparison_count = comp_result.scalar() or 0
-
-        items.append(MetricResponse(
-            id=metric.id,
-            name=metric.name,
-            description=metric.description,
-            image_count=image_count,
-            comparison_count=comparison_count,
-            created_at=metric.created_at,
-            updated_at=metric.updated_at,
-        ))
+        image_count, comparison_count = await get_metric_counts(db, metric.id)
+        items.append(build_metric_response(metric, image_count, comparison_count))
 
     return MetricListResponse(items=items, total=len(items))
 
@@ -171,15 +182,7 @@ async def create_metric(
     await db.commit()
     await db.refresh(metric)
 
-    return MetricResponse(
-        id=metric.id,
-        name=metric.name,
-        description=metric.description,
-        image_count=0,
-        comparison_count=0,
-        created_at=metric.created_at,
-        updated_at=metric.updated_at,
-    )
+    return build_metric_response(metric, 0, 0)
 
 
 @router.get("/{metric_id}", response_model=MetricResponse)
@@ -190,33 +193,8 @@ async def get_metric(
 ):
     """Get metric details."""
     metric = await get_metric_for_user(db, metric_id, current_user.id)
-
-    # Count images
-    img_result = await db.execute(
-        select(func.count(MetricImage.id))
-        .where(MetricImage.metric_id == metric.id)
-    )
-    image_count = img_result.scalar() or 0
-
-    # Count comparisons
-    comp_result = await db.execute(
-        select(func.count(MetricComparison.id))
-        .where(
-            MetricComparison.metric_id == metric.id,
-            MetricComparison.undone == False
-        )
-    )
-    comparison_count = comp_result.scalar() or 0
-
-    return MetricResponse(
-        id=metric.id,
-        name=metric.name,
-        description=metric.description,
-        image_count=image_count,
-        comparison_count=comparison_count,
-        created_at=metric.created_at,
-        updated_at=metric.updated_at,
-    )
+    image_count, comparison_count = await get_metric_counts(db, metric.id)
+    return build_metric_response(metric, image_count, comparison_count)
 
 
 @router.patch("/{metric_id}", response_model=MetricResponse)

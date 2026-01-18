@@ -59,6 +59,16 @@ interface SegmentationOverlayProps {
   /** Container dimensions for SVG sizing */
   containerWidth?: number;
   containerHeight?: number;
+  /** FOV mask opacity (0-1, default 0.3) */
+  maskOpacity?: number;
+  /** Selected FOV mask polygon index for deletion */
+  selectedMaskIndex?: number | null;
+  /** Hovered FOV mask polygon index for highlight */
+  hoveredMaskIndex?: number | null;
+  /** Callback when FOV mask polygon is clicked */
+  onMaskClick?: (index: number, e: React.MouseEvent) => void;
+  /** Callback when FOV mask polygon is hovered */
+  onMaskHover?: (index: number | null) => void;
 }
 
 export function SegmentationOverlay({
@@ -74,6 +84,11 @@ export function SegmentationOverlay({
   isLoading = false,
   containerWidth = 0,
   containerHeight = 0,
+  maskOpacity = 0.3,
+  selectedMaskIndex = null,
+  hoveredMaskIndex = null,
+  onMaskClick,
+  onMaskHover,
 }: SegmentationOverlayProps) {
   // Convert image coordinates to canvas coordinates
   const toCanvas = useCallback((x: number, y: number) => ({
@@ -176,8 +191,11 @@ export function SegmentationOverlay({
     return { previewPath: buildPath(previewPolygon), previewHasHoles: false };
   }, [previewPolygon, previewPolygonWithHoles, buildPath, buildPathWithHoles]);
 
-  // Don't render if no content
-  if (!isActive && savedPolygons.length === 0 && pendingPolygons.length === 0) {
+  // Check if we have any FOV masks to show
+  const hasFovMasks = fovMaskPolygons && fovMaskPolygons.length > 0;
+
+  // Don't render if no content at all
+  if (!isActive && savedPolygons.length === 0 && pendingPolygons.length === 0 && !hasFovMasks) {
     return null;
   }
 
@@ -192,19 +210,34 @@ export function SegmentationOverlay({
         {/* Reserved for future patterns/gradients */}
       </defs>
 
-      {/* Existing FOV masks - show as base layer (multiple polygons) */}
-      {isActive && fovMaskPaths.map((path, index) => (
-        path && (
+      {/* Existing FOV masks - always visible, clickable for deletion */}
+      {fovMaskPaths.map((path, index) => {
+        if (!path) return null;
+        const isSelected = selectedMaskIndex === index;
+        const isHovered = hoveredMaskIndex === index;
+        // Determine stroke color: red for selected/hovered (deletion preview), blue for default
+        const strokeColor = isSelected || isHovered ? "#ef4444" : "rgba(59, 130, 246, 0.6)";
+        const strokeW = isSelected ? 2.5 : isHovered ? 2 : 1.5;
+        return (
           <path
             key={`fov-mask-${index}`}
             d={path}
-            fill="rgba(59, 130, 246, 0.1)"
-            stroke="rgba(59, 130, 246, 0.4)"
-            strokeWidth={1}
-            strokeDasharray="8 4"
+            fill={`rgba(59, 130, 246, ${maskOpacity})`}
+            stroke={strokeColor}
+            strokeWidth={strokeW}
+            strokeDasharray={isActive ? undefined : "8 4"}
+            className={`${onMaskClick ? "cursor-pointer" : ""} transition-colors`}
+            style={{ pointerEvents: isActive && onMaskClick ? "auto" : "none" }}
+            onMouseEnter={() => onMaskHover?.(index)}
+            onMouseLeave={() => onMaskHover?.(null)}
+            onClick={(e) => onMaskClick?.(index, e)}
+            onContextMenu={(e) => {
+              e.preventDefault();
+              onMaskClick?.(index, e);
+            }}
           />
-        )
-      ))}
+        );
+      })}
 
       {/* Saved polygons - only show in segment mode */}
       {isActive &&

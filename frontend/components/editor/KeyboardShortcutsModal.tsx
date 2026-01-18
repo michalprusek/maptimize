@@ -143,6 +143,10 @@ export function KeyboardShortcutsModal({ isOpen, onClose }: KeyboardShortcutsMod
             action={t("addBackground")}
           />
           <ShortcutRow
+            keys={<KeyCap>Enter</KeyCap>}
+            action={t("saveMask")}
+          />
+          <ShortcutRow
             keys={<><KeyCap className="text-[10px]">Shift</KeyCap><span className="text-text-muted text-xs mx-0.5">+</span><MouseIcon button="left" className="text-yellow-400" /></>}
             action={t("panImage")}
           />

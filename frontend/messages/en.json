@@ -96,7 +96,10 @@
     "uploadImages": "Upload Images",
     "redetect": "Re-detect cells",
     "redetectConfirmTitle": "Re-detect Cells",
-    "redetectConfirmMessage": "This will delete all existing cell crops for {count, plural, =1 {this image} other {these # images}} and run detection again. Any ranking comparisons for these cells will also be deleted. Continue?"
+    "redetectConfirmMessage": "This will delete all existing cell crops for {count, plural, =1 {this image} other {these # images}} and run detection again. Any ranking comparisons for these cells will also be deleted. Continue?",
+    "redetectProgress": "Re-detecting cells: {current}/{total}",
+    "redetectComplete": "Re-detection complete",
+    "dismiss": "Dismiss"
   },
   "settings": {
     "title": "Settings",
@@ -299,6 +302,7 @@
     "createError": "Failed to create cell",
     "deleteError": "Failed to delete cell",
     "updateError": "Failed to update cell",
+    "partialDeleteError": "Polygon deleted but failed to save remaining - please refresh",
     "detection": "Detection",
     "segmentation": "Segmentation",
     "detectionMode": "Detection Mode",
@@ -313,6 +317,8 @@
     "saveMask": "Save mask",
     "saveAllMasks": "Save {count} masks",
     "addToPending": "Add to pending",
+    "addMask": "Add Mask",
+    "maskOpacity": "Mask opacity",
     "segmentHint": "Left-click: foreground • Right-click: background",
     "noTargetCrop": "Select a cell to save the mask",
     "loadMasksError": "Failed to load saved segmentation masks",
@@ -340,6 +346,7 @@
     "redetectConfirmTitle": "Re-detect Cells",
     "redetectConfirmMessage": "This will delete all existing cell crops and run YOLO detection again. Any ranking comparisons for these cells will also be deleted. Continue?",
     "redetectError": "Failed to start re-detection. Please try again.",
+    "deleteMask": "Delete mask",
     "errors": {
       "gpuRequired": "Text segmentation requires a CUDA GPU (not available on this server)",
       "imageNotFound": "Image not found. It may have been deleted.",
@@ -368,6 +375,7 @@
       "toggleSegmentMode": "Toggle segment mode",
       "addForeground": "Add foreground point",
       "addBackground": "Add background point",
+      "saveMask": "Save mask",
       "panImage": "Pan image",
       "undoPoint": "Undo last point",
       "helpTip": "Press ? anytime to show this panel"

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { api, FOVImage } from "@/lib/api";
@@ -19,9 +19,123 @@ import {
   AlertCircle,
   RefreshCw,
   Upload,
+  CheckCircle2,
+  XCircle,
 } from "lucide-react";
 import Link from "next/link";
 import { useTranslations } from "next-intl";
+
+/** Progress bar for tracking re-detection of multiple images */
+interface RedetectProgress {
+  imageIds: number[];
+  completed: number[];
+  failed: number[];
+  isActive: boolean;
+}
+
+function RedetectProgressBar({
+  progress,
+  onComplete,
+  onDismiss,
+}: {
+  progress: RedetectProgress;
+  onComplete: () => void;
+  onDismiss: () => void;
+}): JSX.Element | null {
+  const t = useTranslations("images");
+  const total = progress.imageIds.length;
+  const done = progress.completed.length + progress.failed.length;
+  const percentage = total > 0 ? Math.round((done / total) * 100) : 0;
+  const isComplete = done === total;
+
+  // Auto-complete callback when all images are done
+  useEffect(() => {
+    if (isComplete && progress.isActive) {
+      // Small delay to show 100% before completing
+      const timer = setTimeout(onComplete, 1000);
+      return () => clearTimeout(timer);
+    }
+  }, [isComplete, progress.isActive, onComplete]);
+
+  if (!progress.isActive && done === 0) return null;
+
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: -20 }}
+      animate={{ opacity: 1, y: 0 }}
+      exit={{ opacity: 0, y: -20 }}
+      className="mb-4 p-4 bg-bg-secondary border border-white/10 rounded-xl"
+    >
+      <div className="flex items-center justify-between mb-2">
+        <div className="flex items-center gap-2">
+          {isComplete ? (
+            progress.failed.length > 0 ? (
+              <AlertCircle className="w-4 h-4 text-amber-400" />
+            ) : (
+              <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+            )
+          ) : (
+            <Loader2 className="w-4 h-4 text-primary-400 animate-spin" />
+          )}
+          <span className="text-sm font-medium text-text-primary">
+            {isComplete
+              ? t("redetectComplete")
+              : t("redetectProgress", { current: done, total })}
+          </span>
+        </div>
+
+        <div className="flex items-center gap-3">
+          {/* Stats */}
+          <div className="flex items-center gap-2 text-xs">
+            {progress.completed.length > 0 && (
+              <span className="flex items-center gap-1 text-emerald-400">
+                <CheckCircle2 className="w-3 h-3" />
+                {progress.completed.length}
+              </span>
+            )}
+            {progress.failed.length > 0 && (
+              <span className="flex items-center gap-1 text-red-400">
+                <XCircle className="w-3 h-3" />
+                {progress.failed.length}
+              </span>
+            )}
+          </div>
+
+          {/* Dismiss button when complete */}
+          {isComplete && (
+            <button
+              onClick={onDismiss}
+              className="text-xs text-text-muted hover:text-text-secondary transition-colors"
+            >
+              {t("dismiss")}
+            </button>
+          )}
+        </div>
+      </div>
+
+      {/* Progress bar */}
+      <div className="h-2 bg-bg-tertiary rounded-full overflow-hidden">
+        <motion.div
+          className={`h-full rounded-full ${
+            isComplete
+              ? progress.failed.length > 0
+                ? "bg-amber-500"
+                : "bg-emerald-500"
+              : "bg-primary-500"
+          }`}
+          initial={{ width: 0 }}
+          animate={{ width: `${percentage}%` }}
+          transition={{ duration: 0.3, ease: "easeOut" }}
+        />
+      </div>
+
+      {/* Percentage */}
+      <div className="mt-1 text-right text-xs text-text-muted">
+        {percentage}%
+      </div>
+    </motion.div>
+  );
+}
 
 interface FOVGalleryProps {
   experimentId: number;
@@ -95,14 +209,118 @@ export function FOVGallery({
   const [fovToDelete, setFovToDelete] = useState<{ id: number; name: string } | null>(null);
   const [deleteError, setDeleteError] = useState<string | null>(null);
 
-  // Re-detect state
+  // Re-detect state with progress tracking
   const [showRedetectConfirm, setShowRedetectConfirm] = useState(false);
+  const [redetectProgress, setRedetectProgress] = useState<RedetectProgress>({
+    imageIds: [],
+    completed: [],
+    failed: [],
+    isActive: false,
+  });
+  const pollingIntervalRef = useRef<NodeJS.Timeout | null>(null);
+
+  // Poll for status updates during re-detection
+  const pollImageStatus = useCallback(async (imageIds: number[]) => {
+    if (imageIds.length === 0) return;
+
+    try {
+      // Fetch current status of all images being processed
+      const statuses = await Promise.all(
+        imageIds.map(async (id) => {
+          try {
+            const fov = await api.getFov(id);
+            return { id, status: fov.status, success: fov.status === "READY" || fov.status === "ready" };
+          } catch {
+            return { id, status: "error", success: false };
+          }
+        })
+      );
+
+      setRedetectProgress((prev) => {
+        const newCompleted = new Set(prev.completed);
+        const newFailed = new Set(prev.failed);
+
+        for (const { id, status, success } of statuses) {
+          // Skip if already tracked
+          if (newCompleted.has(id) || newFailed.has(id)) continue;
+
+          if (success) {
+            newCompleted.add(id);
+          } else if (status === "error" || status === "ERROR") {
+            newFailed.add(id);
+          }
+          // If still processing, don't add to either
+        }
+
+        return {
+          ...prev,
+          completed: Array.from(newCompleted),
+          failed: Array.from(newFailed),
+        };
+      });
+    } catch (err) {
+      console.error("Failed to poll image status:", err);
+    }
+  }, []);
+
+  // Start polling when re-detection begins
+  const startPolling = useCallback((imageIds: number[]) => {
+    // Clear any existing polling
+    if (pollingIntervalRef.current) {
+      clearInterval(pollingIntervalRef.current);
+    }
+
+    // Poll every 2 seconds
+    pollingIntervalRef.current = setInterval(() => {
+      pollImageStatus(imageIds);
+    }, 2000);
+
+    // Initial poll after short delay
+    setTimeout(() => pollImageStatus(imageIds), 1000);
+  }, [pollImageStatus]);
+
+  // Stop polling
+  const stopPolling = useCallback(() => {
+    if (pollingIntervalRef.current) {
+      clearInterval(pollingIntervalRef.current);
+      pollingIntervalRef.current = null;
+    }
+  }, []);
+
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => stopPolling();
+  }, [stopPolling]);
+
+  // Handle re-detection complete
+  const handleRedetectComplete = useCallback(() => {
+    stopPolling();
+    invalidateExperimentQueries();
+  }, [stopPolling, invalidateExperimentQueries]);
+
+  // Dismiss progress bar
+  const handleDismissProgress = useCallback(() => {
+    stopPolling();
+    setRedetectProgress({
+      imageIds: [],
+      completed: [],
+      failed: [],
+      isActive: false,
+    });
+  }, [stopPolling]);
 
   const batchRedetectMutation = useMutation({
     mutationFn: (imageIds: number[]) => api.batchRedetect(imageIds),
-    onSuccess: () => {
+    onSuccess: (_, imageIds) => {
       setShowRedetectConfirm(false);
-      invalidateExperimentQueries();
+      // Start progress tracking
+      setRedetectProgress({
+        imageIds,
+        completed: [],
+        failed: [],
+        isActive: true,
+      });
+      startPolling(imageIds);
     },
     onError: (err: Error) => {
       console.error("Failed to re-detect:", err);
@@ -152,6 +370,17 @@ export function FOVGallery({
 
   return (
     <div className="space-y-4">
+      {/* Re-detect progress bar */}
+      <AnimatePresence>
+        {(redetectProgress.isActive || redetectProgress.completed.length > 0 || redetectProgress.failed.length > 0) && (
+          <RedetectProgressBar
+            progress={redetectProgress}
+            onComplete={handleRedetectComplete}
+            onDismiss={handleDismissProgress}
+          />
+        )}
+      </AnimatePresence>
+
       {/* Batch actions bar when items are selected */}
       {selectedIds.size > 0 && (
         <div className="flex items-center gap-4 p-3 bg-primary-500/10 border border-primary-500/20 rounded-lg">

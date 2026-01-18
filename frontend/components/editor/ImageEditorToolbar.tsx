@@ -86,6 +86,14 @@ interface ImageEditorToolbarProps {
   onRedetect?: () => void;
   /** Whether re-detection is currently running */
   isRedetecting?: boolean;
+  /** FOV mask opacity (0-1) */
+  maskOpacity?: number;
+  /** Callback when mask opacity changes */
+  onMaskOpacityChange?: (opacity: number) => void;
+  /** Whether in "add mask" mode within segment mode */
+  isSegmentAddMode?: boolean;
+  /** Toggle add mask mode */
+  onToggleSegmentAddMode?: () => void;
 }
 
 const displayModes: { value: DisplayMode; label: string }[] = [
@@ -340,6 +348,12 @@ export function ImageEditorToolbar({
   // Re-detect props
   onRedetect,
   isRedetecting = false,
+  // Mask opacity props
+  maskOpacity = 0.3,
+  onMaskOpacityChange,
+  // Segment add mode props
+  isSegmentAddMode = true,
+  onToggleSegmentAddMode,
 }: ImageEditorToolbarProps) {
   const t = useTranslations("editor");
   const toolbarRef = useRef<HTMLDivElement>(null);
@@ -702,14 +716,33 @@ export function ImageEditorToolbar({
       {/* Segment mode controls - only show when in segment mode */}
       {editorMode === "segment" && (
         <>
+          {/* Add Mask mode toggle */}
+          <ToolbarIconButton
+            onClick={onToggleSegmentAddMode}
+            icon={Plus}
+            variant={isSegmentAddMode ? "active" : "default"}
+            title={t("addMask")}
+          />
+
           {divider}
 
-          {/* SAM status badge */}
-          <SAMStatusBadge
-            status={samEmbeddingStatus}
-            t={t}
-            onComputeEmbedding={onComputeEmbedding}
-          />
+          {/* Mask opacity slider */}
+          {onMaskOpacityChange && (
+            <div className={`flex ${isVertical ? "flex-col" : "flex-row"} items-center gap-1.5`} title={`${t("maskOpacity")}: ${Math.round(maskOpacity * 100)}%`}>
+              <span className="text-[10px] text-text-muted whitespace-nowrap">{t("maskOpacity")}</span>
+              <input
+                type="range"
+                min={0}
+                max={100}
+                value={maskOpacity * 100}
+                onChange={(e) => onMaskOpacityChange(Number(e.target.value) / 100)}
+                className="w-16 h-1.5 accent-blue-500 cursor-pointer"
+              />
+              <span className="text-[10px] text-text-muted w-7">{Math.round(maskOpacity * 100)}%</span>
+            </div>
+          )}
+
+          {divider}
 
           {/* Click point count */}
           {clickPointCount > 0 && (

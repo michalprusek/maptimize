@@ -17,12 +17,18 @@ import {
 import { api, UmapProteinPoint } from "@/lib/api";
 import { Spinner } from "@/components/ui";
 import { RefreshCw, Info, Dna } from "lucide-react";
+import {
+  DEFAULT_POINT_COLOR,
+  UMAP_AXIS_STYLE,
+  UMAP_AXIS_DOMAIN,
+  UMAP_TOOLTIP_CURSOR,
+  UMAP_SCATTER_ANIMATION,
+  formatAxisTick,
+} from "./chartConfig";
 
 interface ProteinUmapVisualizationProps {
   height?: number;
 }
-
-const DEFAULT_COLOR = "#888888";
 
 interface ProteinTooltipProps extends TooltipProps<number, string> {
   t: (key: string, values?: Record<string, string | number>) => string;
@@ -74,7 +80,7 @@ export function ProteinUmapVisualization({
 
     return data.points.map((point) => ({
       name: point.name,
-      color: point.color || DEFAULT_COLOR,
+      color: point.color || DEFAULT_POINT_COLOR,
       count: point.image_count,
     }));
   }, [data?.points]);
@@ -118,37 +124,35 @@ export function ProteinUmapVisualization({
                 type="number"
                 dataKey="x"
                 name="UMAP 1"
-                tick={{ fill: "#5a7285", fontSize: 10 }}
-                axisLine={{ stroke: "#2a3a4a" }}
-                tickLine={{ stroke: "#2a3a4a" }}
-                domain={["dataMin - 1", "dataMax + 1"]}
-                tickFormatter={(value) => Math.round(value).toString()}
+                tick={UMAP_AXIS_STYLE.tick}
+                axisLine={UMAP_AXIS_STYLE.axisLine}
+                tickLine={UMAP_AXIS_STYLE.tickLine}
+                domain={UMAP_AXIS_DOMAIN}
+                tickFormatter={formatAxisTick}
               />
               <YAxis
                 type="number"
                 dataKey="y"
                 name="UMAP 2"
-                tick={{ fill: "#5a7285", fontSize: 10 }}
-                axisLine={{ stroke: "#2a3a4a" }}
-                tickLine={{ stroke: "#2a3a4a" }}
-                domain={["dataMin - 1", "dataMax + 1"]}
-                tickFormatter={(value) => Math.round(value).toString()}
+                tick={UMAP_AXIS_STYLE.tick}
+                axisLine={UMAP_AXIS_STYLE.axisLine}
+                tickLine={UMAP_AXIS_STYLE.tickLine}
+                domain={UMAP_AXIS_DOMAIN}
+                tickFormatter={formatAxisTick}
               />
               <ZAxis range={[100, 100]} />
               <Tooltip
                 content={<ProteinTooltip t={t} />}
-                cursor={{ strokeDasharray: "3 3", stroke: "#5a7285" }}
+                cursor={UMAP_TOOLTIP_CURSOR}
               />
               <Scatter
                 data={data.points}
-                isAnimationActive={true}
-                animationDuration={300}
-                animationEasing="ease-out"
+                {...UMAP_SCATTER_ANIMATION}
               >
                 {data.points.map((point, index) => (
                   <Cell
                     key={`cell-${index}`}
-                    fill={point.color || DEFAULT_COLOR}
+                    fill={point.color || DEFAULT_POINT_COLOR}
                     fillOpacity={0.85}
                     stroke="rgba(255,255,255,0.4)"
                     strokeWidth={2}

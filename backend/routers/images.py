@@ -815,11 +815,12 @@ async def create_manual_crop(
             detail=error
         )
 
-    # Verify image is ready
-    if image.status != UploadStatus.READY:
+    # Verify image is ready for manual bbox creation
+    # Allow both UPLOADED (manual-only workflow) and READY (post-detection) statuses
+    if image.status not in [UploadStatus.UPLOADED, UploadStatus.READY]:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Image is not ready (status: {image.status.value})"
+            detail=f"Image is not ready for cell annotation (status: {image.status.value})"
         )
 
     # Create the crop

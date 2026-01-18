@@ -87,9 +87,11 @@ class MaskResponse(BaseModel):
 
 
 class FOVMaskResponse(BaseModel):
-    """FOV-level segmentation mask."""
+    """FOV-level segmentation mask with multiple instances."""
     has_mask: bool
-    polygon: Optional[List[List[float]]] = None
+    # List of polygons - each polygon is a list of [x, y] points
+    # Supports both single polygon [[x,y],...] and multiple [[x,y],...], [[x,y],...]]
+    polygon: Optional[List[List[List[float]]]] = None
     iou_score: Optional[float] = None
     area_pixels: Optional[int] = None
     creation_method: Optional[str] = None

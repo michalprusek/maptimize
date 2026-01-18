@@ -291,6 +291,17 @@ export interface EditorState {
   zoom: number;
   /** Pan offset */
   panOffset: { x: number; y: number };
+  /** Whether in "add mask" mode within segment mode (clicking adds points) */
+  isSegmentAddMode: boolean;
+}
+
+/**
+ * Context menu state for mask operations.
+ */
+export interface MaskContextMenuState {
+  isOpen: boolean;
+  position: { x: number; y: number } | null;
+  targetMaskIndex: number | null;
 }
 
 /**

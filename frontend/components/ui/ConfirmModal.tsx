@@ -1,6 +1,8 @@
 "use client";
 
-import { ReactNode } from "react";
+import type { ReactNode } from "react";
+import { useEffect, useState, useCallback } from "react";
+import { createPortal } from "react-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import { X, AlertTriangle, Loader2 } from "lucide-react";
 
@@ -18,6 +20,37 @@ interface ConfirmModalProps {
   icon?: ReactNode;
 }
 
+// Shared modal animation constants (SSOT for modal animations)
+const OVERLAY_ANIMATION = {
+  initial: { opacity: 0 },
+  animate: { opacity: 1 },
+  exit: { opacity: 0 },
+};
+
+const CONTENT_ANIMATION = {
+  initial: { scale: 0.95, opacity: 0 },
+  animate: { scale: 1, opacity: 1 },
+  exit: { scale: 0.95, opacity: 0 },
+};
+
+const VARIANT_STYLES = {
+  danger: {
+    button: "bg-accent-red hover:bg-accent-red/80",
+    iconBg: "bg-accent-red/20",
+    iconColor: "text-accent-red",
+  },
+  warning: {
+    button: "bg-accent-amber hover:bg-accent-amber/80",
+    iconBg: "bg-accent-amber/20",
+    iconColor: "text-accent-amber",
+  },
+  primary: {
+    button: "bg-primary-500 hover:bg-primary-600",
+    iconBg: "bg-primary-500/20",
+    iconColor: "text-primary-400",
+  },
+} as const;
+
 export function ConfirmModal({
   isOpen,
   onClose,
@@ -30,43 +63,52 @@ export function ConfirmModal({
   isLoading = false,
   variant = "danger",
   icon,
-}: ConfirmModalProps): JSX.Element | null {
-  const variantStyles = {
-    danger: {
-      button: "bg-accent-red hover:bg-accent-red/80",
-      iconBg: "bg-accent-red/20",
-      iconColor: "text-accent-red",
-    },
-    warning: {
-      button: "bg-accent-amber hover:bg-accent-amber/80",
-      iconBg: "bg-accent-amber/20",
-      iconColor: "text-accent-amber",
-    },
-    primary: {
-      button: "bg-primary-500 hover:bg-primary-600",
-      iconBg: "bg-primary-500/20",
-      iconColor: "text-primary-400",
-    },
-  };
+}: ConfirmModalProps): ReactNode {
+  const [mounted, setMounted] = useState(false);
+  const styles = VARIANT_STYLES[variant];
 
-  const styles = variantStyles[variant];
+  useEffect(() => {
+    setMounted(true);
+  }, []);
 
-  return (
+  // Keyboard handling: Escape to close, Enter to confirm
+  const handleKeyDown = useCallback(
+    (event: KeyboardEvent) => {
+      if (event.key === "Escape" && !isLoading) {
+        onClose();
+      }
+      if (event.key === "Enter" && !isLoading) {
+        onConfirm();
+      }
+    },
+    [onClose, onConfirm, isLoading]
+  );
+
+  useEffect(() => {
+    if (isOpen) {
+      document.addEventListener("keydown", handleKeyDown);
+      return () => document.removeEventListener("keydown", handleKeyDown);
+    }
+  }, [isOpen, handleKeyDown]);
+
+  if (!mounted) return null;
+
+  return createPortal(
     <AnimatePresence>
       {isOpen && (
         <motion.div
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          exit={{ opacity: 0 }}
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4"
+          {...OVERLAY_ANIMATION}
+          className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 backdrop-blur-sm p-4"
           onClick={onClose}
         >
           <motion.div
-            initial={{ scale: 0.95, opacity: 0 }}
-            animate={{ scale: 1, opacity: 1 }}
-            exit={{ scale: 0.95, opacity: 0 }}
+            {...CONTENT_ANIMATION}
             onClick={(e) => e.stopPropagation()}
             className="glass-card p-6 w-full max-w-md"
+            role="alertdialog"
+            aria-modal="true"
+            aria-labelledby="confirm-modal-title"
+            aria-describedby="confirm-modal-message"
           >
             <div className="flex items-start gap-4">
               <div className={`p-3 rounded-xl ${styles.iconBg}`}>
@@ -74,17 +116,24 @@ export function ConfirmModal({
               </div>
               <div className="flex-1">
                 <div className="flex items-center justify-between">
-                  <h3 className="text-lg font-display font-semibold text-text-primary">
+                  <h3
+                    id="confirm-modal-title"
+                    className="text-lg font-display font-semibold text-text-primary"
+                  >
                     {title}
                   </h3>
                   <button
                     onClick={onClose}
-                    className="p-1 hover:bg-white/10 rounded-lg transition-colors"
+                    disabled={isLoading}
+                    className="p-1 hover:bg-white/10 rounded-lg transition-colors disabled:opacity-50"
+                    aria-label="Close dialog"
                   >
                     <X className="w-5 h-5 text-text-muted" />
                   </button>
                 </div>
-                <p className="text-text-secondary mt-2">{message}</p>
+                <p id="confirm-modal-message" className="text-text-secondary mt-2">
+                  {message}
+                </p>
                 {detail && (
                   <p className="text-sm text-text-muted mt-2 font-mono bg-bg-secondary px-3 py-2 rounded">
                     {detail}
@@ -96,7 +145,8 @@ export function ConfirmModal({
             <div className="flex gap-3 justify-end mt-6 pt-4 border-t border-white/5">
               <button
                 onClick={onClose}
-                className="px-4 py-2 text-text-secondary hover:text-text-primary transition-colors"
+                disabled={isLoading}
+                className="px-4 py-2 text-text-secondary hover:text-text-primary transition-colors disabled:opacity-50"
               >
                 {cancelLabel}
               </button>
@@ -118,6 +168,7 @@ export function ConfirmModal({
           </motion.div>
         </motion.div>
       )}
-    </AnimatePresence>
+    </AnimatePresence>,
+    document.body
   );
 }
