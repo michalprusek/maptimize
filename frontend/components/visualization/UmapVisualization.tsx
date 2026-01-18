@@ -166,14 +166,23 @@ export function UmapVisualization({
 
   // Handle click on UMAP point - navigate to editor
   const handleChartClick = useCallback((state: { activePayload?: Array<{ payload: UmapPoint | UmapFovPoint }> } | null) => {
+    // Early return if click missed a point (expected behavior)
     if (!state?.activePayload?.[0]?.payload) return;
 
     const pointData = state.activePayload[0].payload;
     const expId = "experiment_id" in pointData ? pointData.experiment_id : experimentId;
 
-    if (expId && pointData.image_id) {
-      router.push(`/editor/${expId}/${pointData.image_id}`);
+    // Validate required IDs for navigation
+    if (!expId) {
+      console.error("[UmapVisualization] Cannot navigate: missing experiment_id", { pointData, experimentId });
+      return;
     }
+    if (!pointData.image_id) {
+      console.error("[UmapVisualization] Cannot navigate: missing image_id", { pointData });
+      return;
+    }
+
+    router.push(`/editor/${expId}/${pointData.image_id}`);
   }, [router, experimentId]);
 
   // Group points by protein for legend

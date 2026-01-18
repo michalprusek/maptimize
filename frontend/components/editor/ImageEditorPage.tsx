@@ -35,6 +35,7 @@ import {
 } from "@/lib/editor/types";
 import {
   DEFAULT_FILTERS,
+  FILTER_LIMITS,
   MIN_ZOOM,
   MAX_ZOOM,
 } from "@/lib/editor/constants";
@@ -68,17 +69,17 @@ function isValidMaskOpacity(value: unknown): value is number {
   return typeof value === "number" && value >= 0 && value <= 1;
 }
 
-/** Type guard for ImageFilters validation */
+/** Type guard for ImageFilters validation (validates brightness & contrast ranges) */
 function isValidFilters(value: unknown): value is ImageFilters {
   if (typeof value !== "object" || value === null) return false;
   const obj = value as Record<string, unknown>;
   return (
     typeof obj.brightness === "number" &&
-    obj.brightness >= 0 &&
-    obj.brightness <= 400 &&
+    obj.brightness >= FILTER_LIMITS.min &&
+    obj.brightness <= FILTER_LIMITS.max &&
     typeof obj.contrast === "number" &&
-    obj.contrast >= 0 &&
-    obj.contrast <= 400
+    obj.contrast >= FILTER_LIMITS.min &&
+    obj.contrast <= FILTER_LIMITS.max
   );
 }
 
