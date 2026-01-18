@@ -48,7 +48,8 @@ test.describe("Editor Navigation @important", () => {
     // Verify zoom in button is visible and clickable
     await expect(editorPage.zoomInButton).toBeVisible();
     await editorPage.zoomIn();
-    await authenticatedPage.waitForTimeout(300);
+    // Wait for zoom animation to complete by checking canvas stability
+    await expect(editorPage.canvas).toBeVisible();
 
     // Verify canvas is still visible after zoom
     await expect(editorPage.canvas).toBeVisible();
@@ -62,7 +63,8 @@ test.describe("Editor Navigation @important", () => {
     // Verify zoom out button is visible and clickable
     await expect(editorPage.zoomOutButton).toBeVisible();
     await editorPage.zoomOut();
-    await authenticatedPage.waitForTimeout(300);
+    // Wait for zoom animation to complete by checking canvas stability
+    await expect(editorPage.canvas).toBeVisible();
 
     // Verify canvas is still visible after zoom
     await expect(editorPage.canvas).toBeVisible();
@@ -75,7 +77,8 @@ test.describe("Editor Navigation @important", () => {
 
     // Use keyboard shortcut (ArrowUp for zoom in according to the component)
     await editorPage.pressKey("ArrowUp");
-    await authenticatedPage.waitForTimeout(300);
+    // Wait for zoom animation to complete by checking canvas stability
+    await expect(editorPage.canvas).toBeVisible();
 
     // Verify canvas is still visible after keyboard zoom
     await expect(editorPage.canvas).toBeVisible();
@@ -95,7 +98,8 @@ test.describe("Editor Navigation @important", () => {
     const nextButtonVisible = await editorPage.nextButton.isVisible({ timeout: 5000 }).catch(() => false);
     if (nextButtonVisible) {
       await editorPage.goToNextImage();
-      await authenticatedPage.waitForTimeout(500);
+      // Wait for navigation by checking URL change
+      await authenticatedPage.waitForURL(/\/2/, { timeout: 5000 });
       // URL should now include image 2
       expect(authenticatedPage.url()).toContain("/2");
     } else {
@@ -119,7 +123,8 @@ test.describe("Editor Navigation @important", () => {
     const prevButtonVisible = await editorPage.prevButton.isVisible({ timeout: 5000 }).catch(() => false);
     if (prevButtonVisible) {
       await editorPage.goToPreviousImage();
-      await authenticatedPage.waitForTimeout(500);
+      // Wait for navigation by checking URL change
+      await authenticatedPage.waitForURL(/\/1/, { timeout: 5000 });
       // URL should now include image 1
       expect(authenticatedPage.url()).toContain("/1");
     } else {

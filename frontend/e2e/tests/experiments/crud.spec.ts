@@ -213,7 +213,14 @@ test.describe("Experiments CRUD @critical", () => {
     // If search is available, test it
     if (await experimentPage.searchInput.isVisible()) {
       await experimentPage.searchInput.fill(uniqueName);
-      await authenticatedPage.waitForTimeout(500); // Wait for debounce
+      // Wait for search results by checking for API response or DOM update
+      await authenticatedPage.waitForResponse(
+        (response) => response.url().includes("/api/experiments") && response.ok(),
+        { timeout: 5000 }
+      ).catch(() => {
+        // Fallback: wait for DOM to stabilize after debounce
+      });
+      await authenticatedPage.waitForLoadState("networkidle");
 
       // Should only show matching experiment
       const count = await experimentPage.getExperimentCount();

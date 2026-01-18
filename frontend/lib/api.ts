@@ -881,6 +881,13 @@ class ApiClient {
   /**
    * Get URL for streaming export download.
    * Use this URL directly in an anchor tag or window.open for download.
+   *
+   * SECURITY NOTE: Token is passed in URL query parameter because browser downloads
+   * cannot include Authorization headers. This is a known limitation. Mitigations:
+   * - Tokens should be short-lived
+   * - Server adds Referrer-Policy: no-referrer to response
+   * - URLs may appear in server logs - ensure log rotation/security
+   * TODO: Consider implementing single-use download tokens for enhanced security
    */
   getExportStreamUrl(jobId: string): string {
     const token = this.getToken();

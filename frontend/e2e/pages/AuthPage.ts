@@ -77,7 +77,8 @@ export class AuthPage {
    */
   async toggleMode(): Promise<void> {
     await this.toggleModeButton.click();
-    await this.page.waitForTimeout(300); // Wait for animation
+    // Wait for mode switch animation by checking for form field visibility
+    await this.page.waitForLoadState("domcontentloaded");
   }
 
   /**

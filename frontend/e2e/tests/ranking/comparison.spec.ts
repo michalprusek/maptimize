@@ -1,5 +1,6 @@
 import { test, expect } from "../../fixtures/auth.fixture";
 import { RankingPage } from "../../pages";
+import { mockRankingEndpoints, mockRankingPair } from "../../mocks/ml-endpoints";
 
 /**
  * Pairwise Ranking E2E Tests - P1 Critical
@@ -79,79 +80,19 @@ test.describe("Pairwise Ranking @critical", () => {
   });
 
   test("should select image A as winner", async ({ authenticatedPage }) => {
-    // Mock endpoints
-    await authenticatedPage.route("**/api/ranking/pair*", async (route) => {
-      await route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: JSON.stringify({
-          crop_a: { id: 1, image_id: 1, mip_url: "/api/images/crops/1/image" },
-          crop_b: { id: 2, image_id: 1, mip_url: "/api/images/crops/2/image" },
-          comparison_number: 1,
-          total_comparisons: 100,
-        }),
-      });
-    });
-
-    await authenticatedPage.route("**/api/ranking/compare", async (route) => {
-      await route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: JSON.stringify({
-          id: 1,
-          crop_a_id: 1,
-          crop_b_id: 2,
-          winner_id: 1,
-          timestamp: new Date().toISOString(),
-        }),
-      });
-    });
-
+    await mockRankingEndpoints(authenticatedPage, { winnerId: 1 });
     await rankingPage.goto();
+    // goto() already includes waitForLoad() which handles page ready state
 
-    // Wait for images to load
-    await authenticatedPage.waitForTimeout(500);
-
-    // If comparison view is visible, select image A
     if (await rankingPage.isComparisonViewDisplayed()) {
       await rankingPage.selectImageA();
-
-      // Should trigger compare API
-      // (mock handles the response)
     }
   });
 
   test("should select image B as winner", async ({ authenticatedPage }) => {
-    // Mock endpoints
-    await authenticatedPage.route("**/api/ranking/pair*", async (route) => {
-      await route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: JSON.stringify({
-          crop_a: { id: 1, image_id: 1, mip_url: "/api/images/crops/1/image" },
-          crop_b: { id: 2, image_id: 1, mip_url: "/api/images/crops/2/image" },
-          comparison_number: 1,
-          total_comparisons: 100,
-        }),
-      });
-    });
-
-    await authenticatedPage.route("**/api/ranking/compare", async (route) => {
-      await route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: JSON.stringify({
-          id: 1,
-          crop_a_id: 1,
-          crop_b_id: 2,
-          winner_id: 2,
-          timestamp: new Date().toISOString(),
-        }),
-      });
-    });
-
+    await mockRankingEndpoints(authenticatedPage, { winnerId: 2 });
     await rankingPage.goto();
-    await authenticatedPage.waitForTimeout(500);
+    // goto() already includes waitForLoad() which handles page ready state
 
     if (await rankingPage.isComparisonViewDisplayed()) {
       await rankingPage.selectImageB();
@@ -159,39 +100,11 @@ test.describe("Pairwise Ranking @critical", () => {
   });
 
   test("should support keyboard shortcuts for selection", async ({ authenticatedPage }) => {
-    // Mock endpoints
-    await authenticatedPage.route("**/api/ranking/pair*", async (route) => {
-      await route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: JSON.stringify({
-          crop_a: { id: 1, image_id: 1, mip_url: "/api/images/crops/1/image" },
-          crop_b: { id: 2, image_id: 1, mip_url: "/api/images/crops/2/image" },
-          comparison_number: 1,
-          total_comparisons: 100,
-        }),
-      });
-    });
-
-    await authenticatedPage.route("**/api/ranking/compare", async (route) => {
-      await route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: JSON.stringify({
-          id: 1,
-          crop_a_id: 1,
-          crop_b_id: 2,
-          winner_id: 1,
-          timestamp: new Date().toISOString(),
-        }),
-      });
-    });
-
+    await mockRankingEndpoints(authenticatedPage);
     await rankingPage.goto();
-    await authenticatedPage.waitForTimeout(500);
+    // goto() already includes waitForLoad() which handles page ready state
 
     if (await rankingPage.isComparisonViewDisplayed()) {
-      // Press '1' or 'ArrowLeft' to select A
       await rankingPage.pressKey("1");
     }
   });
@@ -248,18 +161,9 @@ test.describe("Pairwise Ranking @critical", () => {
   });
 
   test("should show undo button after making comparison", async ({ authenticatedPage }) => {
-    // Mock pair endpoint
-    await authenticatedPage.route("**/api/ranking/pair*", async (route) => {
-      await route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: JSON.stringify({
-          crop_a: { id: 1, image_id: 1, mip_url: "/api/images/crops/1/image" },
-          crop_b: { id: 2, image_id: 1, mip_url: "/api/images/crops/2/image" },
-          comparison_number: 2, // Already made 1 comparison
-          total_comparisons: 100,
-        }),
-      });
+    // Use modified pair data indicating a comparison was already made
+    await mockRankingEndpoints(authenticatedPage, {
+      pairData: { ...mockRankingPair, comparison_number: 2 },
     });
 
     // Mock progress endpoint to show comparisons made
@@ -279,51 +183,23 @@ test.describe("Pairwise Ranking @critical", () => {
     });
 
     await rankingPage.goto();
-    await authenticatedPage.waitForTimeout(500);
+    // goto() already includes waitForLoad() which handles page ready state
 
-    // Undo button should be visible if comparisons have been made
     if (await rankingPage.undoButton.isVisible()) {
       await expect(rankingPage.undoButton).toBeEnabled();
     }
   });
 
   test("should undo last comparison", async ({ authenticatedPage }) => {
-    // Mock endpoints
-    await authenticatedPage.route("**/api/ranking/pair*", async (route) => {
-      await route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: JSON.stringify({
-          crop_a: { id: 1, image_id: 1, mip_url: "/api/images/crops/1/image" },
-          crop_b: { id: 2, image_id: 1, mip_url: "/api/images/crops/2/image" },
-          comparison_number: 2,
-          total_comparisons: 100,
-        }),
-      });
-    });
-
-    await authenticatedPage.route("**/api/ranking/undo", async (route) => {
-      await route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: JSON.stringify({
-          id: 1,
-          crop_a_id: 1,
-          crop_b_id: 2,
-          winner_id: 1,
-          timestamp: new Date().toISOString(),
-        }),
-      });
+    await mockRankingEndpoints(authenticatedPage, {
+      pairData: { ...mockRankingPair, comparison_number: 2 },
     });
 
     await rankingPage.goto();
-    await authenticatedPage.waitForTimeout(500);
+    // goto() already includes waitForLoad() which handles page ready state
 
     if (await rankingPage.undoButton.isVisible()) {
       await rankingPage.undo();
-
-      // Undo request should have been made
-      // (handled by mock)
     }
   });
 
@@ -356,17 +232,9 @@ test.describe("Pairwise Ranking @critical", () => {
   });
 
   test("should handle no more pairs available", async ({ authenticatedPage }) => {
-    // Mock empty pair response
-    await authenticatedPage.route("**/api/ranking/pair*", async (route) => {
-      await route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: JSON.stringify({
-          crop_a: null,
-          crop_b: null,
-          message: "No more pairs available",
-        }),
-      });
+    // Mock empty pair response (null crops)
+    await mockRankingEndpoints(authenticatedPage, {
+      pairData: { crop_a: null, crop_b: null, comparison_number: 0, total_comparisons: 0 },
     });
 
     await rankingPage.goto();
@@ -376,39 +244,26 @@ test.describe("Pairwise Ranking @critical", () => {
     const showingLeaderboard = await rankingPage.isLeaderboardDisplayed().catch(() => false);
     const noMetrics = await rankingPage.noMetricsState.isVisible().catch(() => false);
 
-    // Accept any of these states - depends on whether real metrics exist
     expect(noMorePairs || showingLeaderboard || noMetrics).toBe(true);
   });
 
   test("should display empty state when no crops available", async ({ authenticatedPage }) => {
-    // Mock empty pair and leaderboard
-    await authenticatedPage.route("**/api/ranking/pair*", async (route) => {
-      await route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: JSON.stringify({
-          crop_a: null,
-          crop_b: null,
-        }),
-      });
+    // Mock empty pair
+    await mockRankingEndpoints(authenticatedPage, {
+      pairData: { crop_a: null, crop_b: null, comparison_number: 0, total_comparisons: 0 },
     });
 
+    // Mock empty leaderboard
     await authenticatedPage.route("**/api/ranking/leaderboard*", async (route) => {
       await route.fulfill({
         status: 200,
         contentType: "application/json",
-        body: JSON.stringify({
-          items: [],
-          total: 0,
-          page: 1,
-          per_page: 500,
-        }),
+        body: JSON.stringify({ items: [], total: 0, page: 1, per_page: 500 }),
       });
     });
 
     await rankingPage.goto();
 
-    // Should show empty state
     const hasEmptyState = await rankingPage.emptyState.isVisible();
     const hasNoMorePairs = await rankingPage.noMorePairs.isVisible().catch(() => false);
 

@@ -9,15 +9,15 @@ import path from "path";
  * - testExperiment: Creates a test experiment and cleans up after
  */
 
-// Test user info
+// Test user info - shared across all E2E test files
 export const TEST_USER = {
   email: process.env.TEST_USER_EMAIL || "e2e-test@maptimize.test.com",
   password: process.env.TEST_USER_PASSWORD || "testpassword123",
   name: "E2E Test User",
 };
 
-// Storage state path
-const AUTH_FILE = path.join(__dirname, ".auth/user.json");
+// Storage state path - shared across all E2E test files
+export const AUTH_FILE = path.join(__dirname, ".auth/user.json");
 
 // Custom fixture types
 type CustomFixtures = {

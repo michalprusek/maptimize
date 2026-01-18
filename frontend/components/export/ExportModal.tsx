@@ -269,9 +269,30 @@ export function ExportModal({
 
       setStatus("completed");
     } catch (error) {
-      console.error("Export failed:", error);
+      // Log with full context for debugging
+      const exportContext = {
+        selectedIds: Array.from(selectedIds),
+        options: {
+          includeFovImages,
+          includeCropImages,
+          includeEmbeddings,
+          includeMasks,
+          bboxFormat,
+          maskFormat,
+        },
+        experimentCount: selectedIds.size,
+      };
+      console.error("Export failed:", { error, ...exportContext });
+
+      // TODO: Add Sentry/error tracking when available
+      // logError("export_failed", { error, ...exportContext });
+
       setStatus("error");
-      setErrorMessage(error instanceof Error ? error.message : "Export failed");
+      setErrorMessage(
+        error instanceof Error
+          ? error.message
+          : "Export failed. Please try again or contact support if the problem persists."
+      );
     }
   };
 

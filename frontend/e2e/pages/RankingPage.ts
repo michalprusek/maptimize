@@ -222,8 +222,13 @@ export class RankingPage {
    */
   async pressKey(key: "1" | "2" | "z" | "ArrowLeft" | "ArrowRight"): Promise<void> {
     await this.page.keyboard.press(key);
-    // Wait for response
-    await this.page.waitForTimeout(500);
+    // Wait for API response after keyboard action
+    await this.page.waitForResponse(
+      (response) => response.url().includes("/ranking/") && response.ok(),
+      { timeout: 5000 }
+    ).catch(() => {
+      // Key press may not trigger API call in all cases
+    });
   }
 
   /**
@@ -237,13 +242,13 @@ export class RankingPage {
         break;
       }
       // Alternate between A and B
+      // selectImageA/B already wait for API response
       if (i % 2 === 0) {
         await this.selectImageA();
       } else {
         await this.selectImageB();
       }
       completed++;
-      await this.page.waitForTimeout(300); // Small delay between comparisons
     }
     return completed;
   }

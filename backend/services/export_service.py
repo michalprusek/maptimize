@@ -286,6 +286,10 @@ class ExportService(BaseJobManager[ExportJobData]):
                     )
                     experiment = result.scalar_one_or_none()
                     if not experiment:
+                        logger.error(
+                            f"Experiment {exp_id} not found during export for job {job_id}. "
+                            f"Skipping - user requested {len(job.experiment_ids)} experiments."
+                        )
                         continue
 
                     # Write experiment metadata
@@ -409,11 +413,18 @@ class ExportService(BaseJobManager[ExportJobData]):
                 await self._save_job(job)
 
         except Exception as e:
-            logger.exception(f"Export failed for job {job_id}")
+            logger.exception(
+                f"Export failed for job {job_id}. "
+                f"Experiments: {job.experiment_ids if job else 'unknown'}"
+            )
             job = await self._get_job(job_id)
             if job:
                 job.status = "error"
-                job.error_message = str(e)
+                # Include more context in error message for debugging
+                job.error_message = (
+                    f"{type(e).__name__}: {str(e)}. "
+                    f"Experiments: {job.experiment_ids[:5]}{'...' if len(job.experiment_ids) > 5 else ''}"
+                )
                 await self._save_job(job)
             raise
 
@@ -585,15 +596,24 @@ class ExportService(BaseJobManager[ExportJobData]):
                 )
 
         except Exception as e:
-            logger.warning(f"Failed to write FOV mask for image {image.id}: {e}")
+            # Log full traceback for debugging - this is a data integrity concern
+            logger.exception(
+                f"Failed to write FOV mask for image {image.id} in experiment {exp_id}. "
+                f"Mask format: {mask_format.value}. Users should be informed of missing masks."
+            )
 
-    def _polygon_to_coco_rle(
+    def _polygon_to_rle_counts(
         self,
         polygon: list,
         width: int,
         height: int
-    ) -> dict:
-        """Convert polygon to COCO RLE format."""
+    ) -> tuple[list[int], int, int]:
+        """
+        Convert polygon to RLE counts.
+
+        Returns:
+            Tuple of (counts list, height, width) for COCO format.
+        """
         from PIL import ImageDraw
 
         # Create binary mask
@@ -601,10 +621,8 @@ class ExportService(BaseJobManager[ExportJobData]):
         draw = ImageDraw.Draw(img)
         draw.polygon(polygon, fill=1)
 
-        # Convert to numpy array
+        # Convert to numpy array and flatten in column-major (Fortran) order for COCO
         mask_array = np.array(img, dtype=np.uint8)
-
-        # Flatten in column-major (Fortran) order for COCO
         flat_mask = mask_array.flatten(order='F')
 
         # Run-length encode
@@ -625,10 +643,17 @@ class ExportService(BaseJobManager[ExportJobData]):
         if flat_mask[0] == 1:
             counts.insert(0, 0)
 
-        return {
-            "size": [height, width],
-            "counts": counts
-        }
+        return counts, height, width
+
+    def _polygon_to_coco_rle(
+        self,
+        polygon: list,
+        width: int,
+        height: int
+    ) -> dict:
+        """Convert polygon to COCO RLE format (integer counts)."""
+        counts, h, w = self._polygon_to_rle_counts(polygon, width, height)
+        return {"size": [h, w], "counts": counts}
 
     def _polygon_to_coco_string_rle(
         self,
@@ -637,45 +662,9 @@ class ExportService(BaseJobManager[ExportJobData]):
         height: int
     ) -> dict:
         """Convert polygon to COCO compressed string RLE format."""
-        from PIL import ImageDraw
-
-        # Create binary mask
-        img = PILImage.new('L', (width, height), 0)
-        draw = ImageDraw.Draw(img)
-        draw.polygon(polygon, fill=1)
-
-        # Convert to numpy array
-        mask_array = np.array(img, dtype=np.uint8)
-
-        # Flatten in column-major (Fortran) order for COCO
-        flat_mask = mask_array.flatten(order='F')
-
-        # Run-length encode
-        counts = []
-        current_val = 0
-        count = 0
-
-        for val in flat_mask:
-            if val == current_val:
-                count += 1
-            else:
-                counts.append(count)
-                count = 1
-                current_val = val
-        counts.append(count)
-
-        # COCO RLE starts with 0s count
-        if flat_mask[0] == 1:
-            counts.insert(0, 0)
-
-        # Compress to string (COCO 1.0 format)
-        # Uses a custom encoding where each 6 bits are encoded as ASCII
+        counts, h, w = self._polygon_to_rle_counts(polygon, width, height)
         compressed = self._encode_rle_counts(counts)
-
-        return {
-            "size": [height, width],
-            "counts": compressed
-        }
+        return {"size": [h, w], "counts": compressed}
 
     def _encode_rle_counts(self, counts: list) -> str:
         """Encode RLE counts as compressed COCO string."""

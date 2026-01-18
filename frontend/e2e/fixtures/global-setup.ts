@@ -1,6 +1,7 @@
 import { chromium, FullConfig } from "@playwright/test";
 import fs from "fs";
 import path from "path";
+import { TEST_USER, AUTH_FILE } from "./auth.fixture";
 
 /**
  * Global setup - runs once before all tests.
@@ -8,15 +9,6 @@ import path from "path";
  * Creates authenticated session and saves it to storage state file.
  * All tests will use this pre-authenticated state.
  */
-
-// Test user credentials - these should be set up in test environment
-const TEST_USER = {
-  email: process.env.TEST_USER_EMAIL || "e2e-test@maptimize.test.com",
-  password: process.env.TEST_USER_PASSWORD || "testpassword123",
-  name: "E2E Test User",
-};
-
-const AUTH_FILE = path.join(__dirname, ".auth/user.json");
 
 async function globalSetup(config: FullConfig) {
   const { baseURL } = config.projects[0].use;
@@ -73,10 +65,27 @@ async function globalSetup(config: FullConfig) {
   } catch (error) {
     console.error("Failed to create auth state:", error);
 
-    // Try to register the test user if login failed
-    if (String(error).includes("timeout") || String(error).includes("dashboard")) {
-      console.log("Login failed, attempting to register test user...");
+    // Only attempt registration for expected login failures (user doesn't exist)
+    // Be specific about which errors trigger registration to avoid hiding real bugs
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    const isLoginFailure =
+      errorMessage.includes("waitForURL") ||
+      errorMessage.includes("Timeout") ||
+      errorMessage.includes("timeout") ||
+      errorMessage.includes("waiting for selector") ||
+      (error instanceof Error && error.name === "TimeoutError");
 
+    if (!isLoginFailure) {
+      console.error(
+        "Unexpected error type - not attempting registration recovery:",
+        error instanceof Error ? error.name : typeof error
+      );
+      throw error;
+    }
+
+    console.log("Login failed (user likely doesn't exist), attempting to register test user...");
+
+    try {
       await page.goto(`${baseURL}/auth`);
       await page.waitForSelector('input[type="email"]');
 
@@ -84,7 +93,8 @@ async function globalSetup(config: FullConfig) {
       const toggleButton = page.getByText(/don't have an account|create account/i);
       if (await toggleButton.isVisible()) {
         await toggleButton.click();
-        await page.waitForTimeout(500);
+        // Wait for mode switch animation
+        await page.waitForSelector('input[type="text"]', { timeout: 5_000 });
 
         // Fill registration form
         await page.fill('input[type="text"]', TEST_USER.name);
@@ -100,9 +110,13 @@ async function globalSetup(config: FullConfig) {
         // Save storage state
         await context.storageState({ path: AUTH_FILE });
         console.log("Test user registered and auth state saved");
+      } else {
+        console.error("Could not find register toggle button");
+        throw error;
       }
-    } else {
-      throw error;
+    } catch (registrationError) {
+      console.error("Registration also failed:", registrationError);
+      throw registrationError;
     }
   } finally {
     await browser.close();

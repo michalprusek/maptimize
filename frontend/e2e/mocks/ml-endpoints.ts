@@ -306,6 +306,79 @@ export async function clearMocks(page: Page): Promise<void> {
 }
 
 // ============================================================================
+// Ranking Page Mocks
+// ============================================================================
+
+/** Default mock data for ranking pair response */
+export const mockRankingPair = {
+  crop_a: { id: 1, image_id: 1, mip_url: "/api/images/crops/1/image" },
+  crop_b: { id: 2, image_id: 1, mip_url: "/api/images/crops/2/image" },
+  comparison_number: 1,
+  total_comparisons: 100,
+};
+
+/** Mock comparison result */
+export const mockCompareResult = {
+  id: 1,
+  crop_a_id: 1,
+  crop_b_id: 2,
+  winner_id: 1,
+  timestamp: new Date().toISOString(),
+};
+
+/** Type for ranking pair data that can have null crops */
+export type RankingPairData = {
+  crop_a: { id: number; image_id: number; mip_url: string } | null;
+  crop_b: { id: number; image_id: number; mip_url: string } | null;
+  comparison_number: number;
+  total_comparisons: number;
+};
+
+/**
+ * Set up ranking page mocks for pairwise comparison tests.
+ * Reduces boilerplate in ranking tests.
+ */
+export async function mockRankingEndpoints(
+  page: Page,
+  options: {
+    pairData?: RankingPairData;
+    winnerId?: number;
+  } = {}
+): Promise<void> {
+  const { pairData = mockRankingPair, winnerId = 1 } = options;
+
+  // Mock ranking pair endpoint
+  await page.route("**/api/ranking/pair*", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(pairData),
+    });
+  });
+
+  // Mock compare endpoint
+  await page.route("**/api/ranking/compare", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        ...mockCompareResult,
+        winner_id: winnerId,
+      }),
+    });
+  });
+
+  // Mock undo endpoint
+  await page.route("**/api/ranking/undo", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(mockCompareResult),
+    });
+  });
+}
+
+// ============================================================================
 // Editor Page Mocks
 // ============================================================================
 

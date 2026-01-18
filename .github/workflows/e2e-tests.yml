@@ -17,8 +17,10 @@ on:
 
 env:
   # Test user credentials for E2E tests
-  TEST_USER_EMAIL: test@maptimize.local
-  TEST_USER_PASSWORD: testpassword123
+  # NOTE: For production, these should be GitHub Secrets (${{ secrets.TEST_USER_EMAIL }})
+  # Using defaults here for initial setup - add secrets in repo settings for security
+  TEST_USER_EMAIL: ${{ secrets.TEST_USER_EMAIL || 'test@maptimize.local' }}
+  TEST_USER_PASSWORD: ${{ secrets.TEST_USER_PASSWORD || 'testpassword123' }}
   # Node settings
   NODE_VERSION: '20'
 

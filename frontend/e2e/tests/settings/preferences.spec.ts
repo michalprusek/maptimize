@@ -106,8 +106,8 @@ test.describe("Settings @important", () => {
     if (await themeToggle.isVisible({ timeout: 3000 }).catch(() => false)) {
       await themeToggle.click();
 
-      // Theme should change (body class or CSS variable)
-      await authenticatedPage.waitForTimeout(300);
+      // Wait for theme transition to complete
+      await authenticatedPage.waitForLoadState("domcontentloaded");
     }
   });
 
@@ -135,8 +135,8 @@ test.describe("Settings @important", () => {
     if (await languageSelect.isVisible()) {
       await languageSelect.selectOption("fr");
 
-      // Wait for update and UI change
-      await authenticatedPage.waitForTimeout(500);
+      // Wait for UI to update after language change
+      await authenticatedPage.waitForLoadState("networkidle");
 
       // Some text should be in French after change
       // This depends on what's visible on the page

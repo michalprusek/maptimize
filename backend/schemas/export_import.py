@@ -3,7 +3,7 @@ from datetime import datetime
 from enum import Enum as PyEnum
 from typing import List, Literal, Optional
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 # ============================================================================
@@ -102,6 +102,15 @@ class ExportPrepareRequest(BaseModel):
         description="List of experiment IDs to export"
     )
     options: ExportOptions = Field(default_factory=ExportOptions)
+
+    @field_validator('experiment_ids')
+    @classmethod
+    def validate_positive_ids(cls, v: List[int]) -> List[int]:
+        """Ensure all experiment IDs are positive integers."""
+        for exp_id in v:
+            if exp_id <= 0:
+                raise ValueError(f"Experiment ID must be positive, got {exp_id}")
+        return v
 
 
 class ExportPrepareResponse(BaseModel):
