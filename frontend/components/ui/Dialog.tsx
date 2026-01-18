@@ -60,11 +60,17 @@ export function Dialog({
         <motion.div
           {...modalOverlayAnimation}
           className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 backdrop-blur-sm p-4"
-          onClick={onClose}
+          onClick={(e) => {
+            // Only close if clicking directly on the overlay, not on children
+            if (e.target === e.currentTarget) {
+              onClose();
+            }
+          }}
         >
           <motion.div
             {...modalContentAnimation}
             onClick={(e) => e.stopPropagation()}
+            onMouseDown={(e) => e.stopPropagation()}
             className={`glass-card p-6 w-full ${MAX_WIDTH_CLASSES[maxWidth]} max-h-[90vh] flex flex-col`}
             role="dialog"
             aria-modal="true"
