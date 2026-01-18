@@ -331,6 +331,31 @@ export type UndoAction =
   | { type: "update"; bboxId: string | number; previousState: EditorBbox; newState: EditorBbox }
   | { type: "delete"; bboxId: string | number; previousState: EditorBbox };
 
+// ============================================================================
+// Mask Undo Types
+// ============================================================================
+
+/**
+ * State of a FOV mask at a point in time.
+ */
+export interface FOVMaskState {
+  /** Whether mask exists */
+  hasMask: boolean;
+  /** Polygon data (can be single or multi-polygon) */
+  polygon?: [number, number][] | [number, number][][];
+  /** IoU score */
+  iouScore?: number;
+  /** Area in pixels */
+  areaPixels?: number;
+}
+
+/**
+ * Mask undo action types.
+ */
+export type MaskUndoAction =
+  | { type: "save"; imageId: number; previousState: FOVMaskState }
+  | { type: "delete"; imageId: number; previousState: FOVMaskState };
+
 /**
  * Props for the main ImageEditor component.
  */

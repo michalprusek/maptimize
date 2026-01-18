@@ -62,6 +62,7 @@ export function AppSidebar({
   const pathname = usePathname();
   const queryClient = useQueryClient();
   const t = useTranslations("navigation");
+  const tFooter = useTranslations("footer");
   const tBug = useTranslations("bugReport");
   const { user, logout } = useAuthStore();
   const [showBugReport, setShowBugReport] = useState(false);
@@ -232,6 +233,30 @@ export function AppSidebar({
         isOpen={showBugReport}
         onClose={() => setShowBugReport(false)}
       />
+
+      {/* Footer */}
+      <div className="px-4 py-3 border-t border-white/5 text-center">
+        <p className="text-xs text-text-muted">
+          {tFooter("createdAt")}{" "}
+          <a
+            href="https://www.utia.cas.cz"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-primary-400 hover:text-primary-300 transition-colors"
+          >
+            UTIA CAS
+          </a>
+        </p>
+        <p className="text-xs text-text-muted mt-1">
+          {tFooter("contact")}:{" "}
+          <a
+            href="mailto:prusek@utia.cas.cz"
+            className="text-primary-400 hover:text-primary-300 transition-colors"
+          >
+            prusek@utia.cas.cz
+          </a>
+        </p>
+      </div>
     </>
   );
 

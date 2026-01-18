@@ -53,6 +53,7 @@ import { SegmentationOverlay } from "./SegmentationOverlay";
 import { TextPromptSearch } from "./TextPromptSearch";
 import { useBboxInteraction } from "./hooks/useBboxInteraction";
 import { useUndoHistory } from "./hooks/useUndoHistory";
+import { useMaskUndoHistory } from "./hooks/useMaskUndoHistory";
 import { useSegmentation } from "./hooks/useSegmentation";
 import { KeyboardShortcutsModal } from "./KeyboardShortcutsModal";
 import { useEditorModePersistence, useLocalStorage } from "@/hooks";
@@ -300,20 +301,38 @@ export function ImageEditorPage({
     }
   }, [crops]);
 
-  // Editor state
-  const [editorState, setEditorState] = useState<EditorState>(() => ({
-    mode: "view",
-    selectedBboxId: focusCropId ?? null,
-    hoveredBboxId: null,
-    activeHandle: null,
-    isDragging: false,
-    dragStart: null,
-    isSpacePressed: false,
-    isShiftPressed: false,
-    zoom: 1,
-    panOffset: { x: 0, y: 0 },
-    isSegmentAddMode: true, // Default to add mode when entering segment mode
-  }));
+  // Editor state - initialize mode from localStorage to preserve across image navigation
+  const [editorState, setEditorState] = useState<EditorState>(() => {
+    // Read persisted mode from localStorage (synchronous read during init)
+    let initialMode: EditorMode = "view";
+    if (typeof window !== "undefined") {
+      try {
+        const stored = localStorage.getItem("maptimize:editor:mode");
+        if (stored) {
+          const parsed = JSON.parse(stored);
+          if (["view", "draw", "edit", "segment"].includes(parsed)) {
+            initialMode = parsed as EditorMode;
+          }
+        }
+      } catch {
+        // Ignore parse errors, use default
+      }
+    }
+
+    return {
+      mode: initialMode,
+      selectedBboxId: focusCropId ?? null,
+      hoveredBboxId: null,
+      activeHandle: null,
+      isDragging: false,
+      dragStart: null,
+      isSpacePressed: false,
+      isShiftPressed: false,
+      zoom: 1,
+      panOffset: { x: 0, y: 0 },
+      isSegmentAddMode: true, // Default to add mode when entering segment mode
+    };
+  });
 
   // Persist editor mode across page refreshes (localStorage)
   const setEditorMode = useCallback((mode: EditorMode) => {
@@ -423,6 +442,30 @@ export function ImageEditorPage({
       setFovMaskPolygons(polygons);
       onDataChanged?.();
     }, [onDataChanged]),
+  });
+
+  // Reload FOV mask from API (used after undo operations)
+  const reloadFOVMask = useCallback(async () => {
+    try {
+      const result = await api.getFOVSegmentationMask(fovImage.id);
+      if (result.has_mask && result.polygon) {
+        const normalized = normalizePolygonData(result.polygon);
+        if (normalized) {
+          setFovMaskPolygons(normalized);
+        }
+      } else {
+        setFovMaskPolygons(null);
+      }
+      onDataChanged?.();
+    } catch (err) {
+      console.error("[Editor] Failed to reload FOV mask:", err);
+    }
+  }, [fovImage.id, onDataChanged]);
+
+  // Mask undo history hook (for segmentation mode)
+  const maskUndoHistory = useMaskUndoHistory({
+    onMaskRestored: reloadFOVMask,
+    onError: (message) => showError(message),
   });
 
   // Load FOV mask on mount
@@ -752,6 +795,9 @@ export function ImageEditorPage({
   const deleteMaskPolygon = useCallback(async (index: number) => {
     if (!fovMaskPolygons) return;
 
+    // Capture current mask state before deleting (for undo)
+    const previousState = await maskUndoHistory.captureState(fovImage.id);
+
     const newPolygons = fovMaskPolygons.filter((_, idx) => idx !== index);
 
     // Step 1: Delete entire mask
@@ -784,12 +830,13 @@ export function ImageEditorPage({
       }
     }
 
-    // Success
+    // Success - push to undo stack
+    maskUndoHistory.pushDeleteAction(fovImage.id, previousState);
     setFovMaskPolygons(newPolygons.length > 0 ? newPolygons : null);
     setSelectedMaskIndex(null);
     setHoveredMaskIndex(null);
     onDataChanged?.();
-  }, [fovMaskPolygons, fovImage.id, onDataChanged, showError, t]);
+  }, [fovMaskPolygons, fovImage.id, onDataChanged, showError, t, maskUndoHistory]);
 
   // Handle FOV mask polygon click - right-click shows context menu
   const handleMaskClick = useCallback((index: number, e: React.MouseEvent) => {
@@ -997,9 +1044,15 @@ export function ImageEditorPage({
       // Z = undo (with or without Ctrl)
       if (e.key === "z" || e.key === "Z") {
         e.preventDefault();
-        // In segment mode: undo last segmentation click
+        // In segment mode: undo last click OR undo last mask operation
         if (editorState.mode === "segment") {
-          segmentation.undoLastClick();
+          if (segmentation.state.clickPoints.length > 0) {
+            // Undo last click point if any
+            segmentation.undoLastClick();
+          } else if (maskUndoHistory.canUndo) {
+            // Otherwise undo last mask operation
+            maskUndoHistory.undo();
+          }
         } else {
           // In other modes: undo bbox changes
           undoHistory.undo();
@@ -1147,7 +1200,7 @@ export function ImageEditorPage({
       window.removeEventListener("keydown", handleKeyDown);
       window.removeEventListener("keyup", handleKeyUp);
     };
-  }, [bboxes, editorState.selectedBboxId, editorState.hoveredBboxId, editorState.isSpacePressed, editorState.isShiftPressed, editorState.mode, editorState.isSegmentAddMode, handleBboxDeleteLocal, undoHistory, segmentation, showShortcutsModal, handleResetView, hasPrevImage, hasNextImage, onNavigatePrev, onNavigateNext, hoveredMaskIndex, fovMaskPolygons, fovImage.id, onDataChanged, showError, t, deleteMaskPolygon]);
+  }, [bboxes, editorState.selectedBboxId, editorState.hoveredBboxId, editorState.isSpacePressed, editorState.isShiftPressed, editorState.mode, editorState.isSegmentAddMode, handleBboxDeleteLocal, undoHistory, segmentation, showShortcutsModal, handleResetView, hasPrevImage, hasNextImage, onNavigatePrev, onNavigateNext, hoveredMaskIndex, fovMaskPolygons, fovImage.id, onDataChanged, showError, t, deleteMaskPolygon, maskUndoHistory]);
 
   // Bbox interaction hook
   const {
@@ -1204,11 +1257,17 @@ export function ImageEditorPage({
 
   // Handle save FOV mask
   const handleSaveMask = useCallback(async () => {
+    // Capture current mask state before saving (for undo)
+    const previousState = await maskUndoHistory.captureState(fovImage.id);
+
     const result = await segmentation.saveFOVMask();
-    if (!result.success && result.error) {
+    if (result.success) {
+      // Push to undo stack on successful save
+      maskUndoHistory.pushSaveAction(fovImage.id, previousState);
+    } else if (result.error) {
       showError(result.error);
     }
-  }, [segmentation, showError]);
+  }, [segmentation, showError, fovImage.id, maskUndoHistory]);
 
   // Track panning state for segment mode Shift+drag
   const [segmentPanning, setSegmentPanning] = useState<{ startX: number; startY: number; startPanX: number; startPanY: number } | null>(null);
@@ -1595,6 +1654,10 @@ export function ImageEditorPage({
         // Segment add mode props
         isSegmentAddMode={editorState.isSegmentAddMode}
         onToggleSegmentAddMode={() => setEditorState(prev => ({ ...prev, isSegmentAddMode: !prev.isSegmentAddMode }))}
+        // Mask undo props (segmentation mode)
+        canUndoMask={maskUndoHistory.canUndo}
+        onUndoMask={maskUndoHistory.undo}
+        isUndoingMask={maskUndoHistory.isUndoing}
         // Re-detect props
         onRedetect={() => setShowRedetectConfirm(true)}
         isRedetecting={redetectMutation.isPending}

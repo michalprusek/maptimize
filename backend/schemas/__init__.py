@@ -23,6 +23,17 @@ from .ranking import (
     ProgressResponse,
     PairResponse,
 )
+from .export_import import (
+    BBoxFormat,
+    ExportOptions,
+    ExportPrepareRequest,
+    ExportPrepareResponse,
+    ExportStatusResponse,
+    ImportFormat,
+    ImportValidationResult,
+    ImportExecuteRequest,
+    ImportStatusResponse,
+)
 
 __all__ = [
     "UserCreate",
@@ -41,4 +52,14 @@ __all__ = [
     "RankingResponse",
     "ProgressResponse",
     "PairResponse",
+    # Export/Import
+    "BBoxFormat",
+    "ExportOptions",
+    "ExportPrepareRequest",
+    "ExportPrepareResponse",
+    "ExportStatusResponse",
+    "ImportFormat",
+    "ImportValidationResult",
+    "ImportExecuteRequest",
+    "ImportStatusResponse",
 ]

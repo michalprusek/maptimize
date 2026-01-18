@@ -42,6 +42,13 @@ RUN uv pip install --system \
     numba \
     scikit-learn
 
+# Install SAM 3 dependencies first (not properly declared in sam3 package)
+RUN uv pip install --system \
+    pycocotools \
+    hydra-core \
+    iopath \
+    decord
+
 # Install SAM 3 from Facebook Research
 RUN uv pip install --system git+https://github.com/facebookresearch/sam3.git
 

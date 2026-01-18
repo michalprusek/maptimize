@@ -94,6 +94,13 @@ interface ImageEditorToolbarProps {
   isSegmentAddMode?: boolean;
   /** Toggle add mask mode */
   onToggleSegmentAddMode?: () => void;
+  // Mask undo props (segmentation mode)
+  /** Whether mask undo is available */
+  canUndoMask?: boolean;
+  /** Undo last mask operation */
+  onUndoMask?: () => void;
+  /** Whether mask undo is in progress */
+  isUndoingMask?: boolean;
 }
 
 const displayModes: { value: DisplayMode; label: string }[] = [
@@ -354,6 +361,10 @@ export function ImageEditorToolbar({
   // Segment add mode props
   isSegmentAddMode = true,
   onToggleSegmentAddMode,
+  // Mask undo props
+  canUndoMask = false,
+  onUndoMask,
+  isUndoingMask = false,
 }: ImageEditorToolbarProps) {
   const t = useTranslations("editor");
   const toolbarRef = useRef<HTMLDivElement>(null);
@@ -799,6 +810,17 @@ export function ImageEditorToolbar({
               />
             </>
           )}
+
+          {divider}
+
+          {/* Mask undo (for saved mask operations) */}
+          <ToolbarIconButton
+            onClick={onUndoMask}
+            disabled={!canUndoMask || isUndoingMask}
+            icon={Undo2}
+            isLoading={isUndoingMask}
+            title={t("shortcuts.undo")}
+          />
         </>
       )}
 

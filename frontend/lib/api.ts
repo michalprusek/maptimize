@@ -854,6 +854,69 @@ class ApiClient {
     });
   }
 
+  // ============================================================================
+  // Export/Import
+  // ============================================================================
+
+  /**
+   * Prepare an export job (returns job_id and estimates).
+   */
+  async prepareExport(experimentIds: number[], options: ExportOptions = {}) {
+    return this.request<ExportPrepareResponse>("/api/data/export/prepare", {
+      method: "POST",
+      body: JSON.stringify({
+        experiment_ids: experimentIds,
+        options,
+      }),
+    });
+  }
+
+  /**
+   * Get export job status.
+   */
+  async getExportStatus(jobId: string) {
+    return this.request<ExportStatusResponse>(`/api/data/export/status/${jobId}`);
+  }
+
+  /**
+   * Get URL for streaming export download.
+   * Use this URL directly in an anchor tag or window.open for download.
+   */
+  getExportStreamUrl(jobId: string): string {
+    const token = this.getToken();
+    return `${API_URL}/api/data/export/stream/${jobId}?token=${token}`;
+  }
+
+  /**
+   * Validate an import file (upload and detect format).
+   */
+  async validateImport(file: File) {
+    const formData = new FormData();
+    formData.append("file", file);
+
+    return this.request<ImportValidationResult>("/api/data/import/validate", {
+      method: "POST",
+      body: formData,
+    });
+  }
+
+  /**
+   * Execute an import after validation.
+   */
+  async executeImport(data: ImportExecuteRequest) {
+    return this.request<ImportStatusResponse>("/api/data/import/execute", {
+      method: "POST",
+      body: JSON.stringify(data),
+    });
+  }
+
+  /**
+   * Get import job status.
+   */
+  async getImportStatus(jobId: string) {
+    return this.request<ImportStatusResponse>(`/api/data/import/status/${jobId}`);
+  }
+
   // Bug Reports
   async submitBugReport(data: BugReportCreate) {
     return this.request<BugReport>("/api/bug-reports", {
@@ -1420,6 +1483,73 @@ export interface TextSegmentResponse {
   instances?: TextSegmentInstance[];
   prompt?: string;
   error?: string;
+}
+
+// ============================================================================
+// Export/Import types
+// ============================================================================
+
+export type BBoxFormat = "coco" | "yolo" | "voc" | "csv";
+
+export interface ExportOptions {
+  include_fov_images?: boolean;
+  include_crop_images?: boolean;
+  include_embeddings?: boolean;
+  include_masks?: boolean;
+  bbox_format?: BBoxFormat;
+}
+
+export interface ExportPrepareResponse {
+  job_id: string;
+  estimated_size_bytes: number;
+  experiment_count: number;
+  image_count: number;
+  crop_count: number;
+  mask_count: number;
+}
+
+export interface ExportStatusResponse {
+  job_id: string;
+  status: "preparing" | "streaming" | "completed" | "error";
+  progress_percent: number;
+  current_step?: string;
+  error_message?: string;
+  created_at: string;
+  completed_at?: string;
+}
+
+export type ImportFormat = "maptimize" | "coco" | "yolo" | "voc" | "csv";
+
+export interface ImportValidationResult {
+  job_id: string;
+  detected_format: ImportFormat;
+  is_valid: boolean;
+  image_count: number;
+  annotation_count: number;
+  has_embeddings: boolean;
+  has_masks: boolean;
+  errors: string[];
+  warnings: string[];
+}
+
+export interface ImportExecuteRequest {
+  job_id: string;
+  experiment_name: string;
+  import_as_format: ImportFormat;
+  create_crops_from_bboxes?: boolean;
+}
+
+export interface ImportStatusResponse {
+  job_id: string;
+  status: "validating" | "importing" | "processing" | "completed" | "error";
+  progress_percent: number;
+  current_step?: string;
+  error_message?: string;
+  experiment_id?: number;
+  images_imported: number;
+  crops_created: number;
+  created_at: string;
+  completed_at?: string;
 }
 
 export const api = new ApiClient();

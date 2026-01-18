@@ -18,13 +18,19 @@ import {
   AlertCircle,
   Layers,
   ChevronDown,
+  Download,
+  Upload,
 } from "lucide-react";
+import { ExportModal, ImportModal } from "@/components/export";
 
 export default function ExperimentsPage(): JSX.Element {
   const t = useTranslations("experiments");
   const tCommon = useTranslations("common");
   const tProteins = useTranslations("proteins");
+  const tExportImport = useTranslations("exportImport");
   const [showCreateModal, setShowCreateModal] = useState(false);
+  const [showExportModal, setShowExportModal] = useState(false);
+  const [showImportModal, setShowImportModal] = useState(false);
   const [newExpName, setNewExpName] = useState("");
   const [newExpDescription, setNewExpDescription] = useState("");
   const [selectedProteinId, setSelectedProteinId] = useState<number | null>(null);
@@ -108,13 +114,34 @@ export default function ExperimentsPage(): JSX.Element {
             {t("title")}
           </h1>
         </div>
-        <button
-          onClick={() => setShowCreateModal(true)}
-          className="btn-primary flex items-center gap-2"
-        >
-          <Plus className="w-5 h-5" />
-          {t("create")}
-        </button>
+        <div className="flex items-center gap-3">
+          {/* Import button */}
+          <button
+            onClick={() => setShowImportModal(true)}
+            className="btn-secondary flex items-center gap-2"
+          >
+            <Upload className="w-5 h-5" />
+            {tExportImport("import")}
+          </button>
+          {/* Export button - only show when experiments exist */}
+          {experiments && experiments.length > 0 && (
+            <button
+              onClick={() => setShowExportModal(true)}
+              className="btn-secondary flex items-center gap-2"
+            >
+              <Download className="w-5 h-5" />
+              {tExportImport("export")}
+            </button>
+          )}
+          {/* Create button */}
+          <button
+            onClick={() => setShowCreateModal(true)}
+            className="btn-primary flex items-center gap-2"
+          >
+            <Plus className="w-5 h-5" />
+            {t("create")}
+          </button>
+        </div>
       </div>
 
       {/* Error notification */}
@@ -385,6 +412,23 @@ export default function ExperimentsPage(): JSX.Element {
         cancelLabel={tCommon("cancel")}
         isLoading={deleteMutation.isPending}
         variant="danger"
+      />
+
+      {/* Export Modal */}
+      <ExportModal
+        isOpen={showExportModal}
+        onClose={() => setShowExportModal(false)}
+        experiments={experiments || []}
+      />
+
+      {/* Import Modal */}
+      <ImportModal
+        isOpen={showImportModal}
+        onClose={() => setShowImportModal(false)}
+        onImportComplete={() => {
+          queryClient.invalidateQueries({ queryKey: ["experiments"] });
+          setShowImportModal(false);
+        }}
       />
     </div>
   );
