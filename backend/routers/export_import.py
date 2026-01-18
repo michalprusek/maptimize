@@ -4,10 +4,11 @@ import os
 import tempfile
 from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
-from typing import TypeVar
+from typing import Optional, TypeVar
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
 from fastapi.responses import StreamingResponse
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import get_db
@@ -22,13 +23,64 @@ from schemas.export_import import (
 )
 from services.export_service import export_service
 from services.import_service import import_service
-from utils.security import get_current_user
+from utils.security import decode_token, get_current_user
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
 T = TypeVar("T")
+
+
+async def get_user_from_query_token(
+    token: Optional[str],
+    db: AsyncSession
+) -> User:
+    """
+    Validate JWT token from query parameter and return user.
+
+    Used for streaming endpoints where browser cannot send Authorization header.
+
+    Args:
+        token: JWT token from query parameter
+        db: Database session
+
+    Returns:
+        User object
+
+    Raises:
+        HTTPException: If token is missing, invalid, expired, or user not found
+    """
+    if not token:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Token required. Please log in and try again."
+        )
+
+    payload = decode_token(token)
+    if not payload:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired token. Please log in and try again."
+        )
+
+    # Check expiration
+    if payload.exp < datetime.now(timezone.utc):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Session expired. Please log in and try again."
+        )
+
+    result = await db.execute(select(User).where(User.id == payload.sub))
+    user = result.scalar_one_or_none()
+
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="User not found. Please log in and try again."
+        )
+
+    return user
 
 
 async def handle_service_call(
@@ -135,7 +187,7 @@ async def prepare_export(
 @router.get("/export/stream/{job_id}")
 async def stream_export(
     job_id: str,
-    current_user: User = Depends(get_current_user),
+    token: Optional[str] = Query(None, description="JWT token for download (browser cannot send headers)"),
     db: AsyncSession = Depends(get_db)
 ):
     """
@@ -143,7 +195,11 @@ async def stream_export(
 
     Downloads the export as a streaming response to handle large files
     without loading everything into memory.
+
+    Authentication via query parameter 'token' (for browser downloads where
+    Authorization header cannot be sent).
     """
+    current_user = await get_user_from_query_token(token, db)
     await verify_job_ownership(job_id, current_user.id, export_service, "Export")
 
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")

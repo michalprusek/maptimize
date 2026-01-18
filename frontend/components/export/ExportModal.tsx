@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState, useRef, useMemo } from "react";
 import { createPortal } from "react-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import {
@@ -13,6 +13,8 @@ import {
   Grid,
   Database,
   Layers,
+  Box,
+  Check,
 } from "lucide-react";
 import { useTranslations } from "next-intl";
 import { modalOverlayAnimation, modalContentAnimation } from "@/lib/animations";
@@ -22,6 +24,7 @@ import {
   type Experiment,
   type ExportOptions,
   type BBoxFormat,
+  type MaskFormat,
   type ExportPrepareResponse,
 } from "@/lib/api";
 
@@ -34,20 +37,106 @@ interface ExportModalProps {
 
 type ExportStatus = "idle" | "preparing" | "downloading" | "completed" | "error";
 
+// Styled checkbox component
+function StyledCheckbox({
+  checked,
+  onChange,
+  label,
+  icon: Icon,
+  small = false,
+  disabled = false,
+  disabledTooltip,
+}: {
+  checked: boolean;
+  onChange: (checked: boolean) => void;
+  label: string;
+  icon?: React.ComponentType<{ className?: string }>;
+  small?: boolean;
+  disabled?: boolean;
+  disabledTooltip?: string;
+}) {
+  return (
+    <div
+      className={`flex items-center gap-3 select-none ${small ? "py-1" : "p-3"} ${
+        disabled ? "cursor-not-allowed opacity-50" : "cursor-pointer group"
+      }`}
+      onClick={() => !disabled && onChange(!checked)}
+      title={disabled ? disabledTooltip : undefined}
+    >
+      <div
+        className={`relative flex items-center justify-center rounded-md border-2 transition-all duration-200 flex-shrink-0 ${
+          small ? "w-4 h-4" : "w-5 h-5"
+        } ${
+          checked
+            ? "bg-primary-500 border-primary-500"
+            : disabled
+              ? "bg-transparent border-white/20"
+              : "bg-transparent border-white/30 group-hover:border-white/50"
+        }`}
+      >
+        {checked && <Check className={small ? "w-3 h-3 text-white" : "w-3.5 h-3.5 text-white"} strokeWidth={3} />}
+      </div>
+      {Icon && <Icon className={`${small ? "w-3.5 h-3.5" : "w-4 h-4"} text-text-muted flex-shrink-0`} />}
+      <span className={`${small ? "text-xs text-text-secondary" : "text-sm text-text-primary"}`}>{label}</span>
+    </div>
+  );
+}
+
+// Styled radio button component
+function StyledRadio({
+  checked,
+  onChange,
+  label,
+  name,
+}: {
+  checked: boolean;
+  onChange: () => void;
+  label: string;
+  name: string;
+}) {
+  return (
+    <div
+      className="flex items-center gap-2.5 cursor-pointer group py-1.5 select-none"
+      onClick={onChange}
+    >
+      <div
+        className={`relative w-4 h-4 rounded-full border-2 transition-all duration-200 flex items-center justify-center flex-shrink-0 ${
+          checked
+            ? "border-primary-500"
+            : "border-white/30 group-hover:border-white/50"
+        }`}
+      >
+        {checked && (
+          <div className="w-2 h-2 rounded-full bg-primary-500" />
+        )}
+      </div>
+      <span className="text-xs text-text-secondary group-hover:text-text-primary transition-colors">{label}</span>
+    </div>
+  );
+}
+
 export function ExportModal({
   isOpen,
   onClose,
   experiments,
-  preSelectedIds = [],
+  preSelectedIds,
 }: ExportModalProps): React.ReactNode {
   const t = useTranslations("exportImport");
   const tCommon = useTranslations("common");
   const [mounted, setMounted] = useState(false);
 
+  // Track previous isOpen state to detect modal opening
+  const prevIsOpenRef = useRef(isOpen);
+
+  // Memoize experiment IDs to avoid reference changes
+  const experimentIds = useMemo(() => experiments.map((e) => e.id), [experiments]);
+  const stablePreSelectedIds = useMemo(() => preSelectedIds ?? [], [preSelectedIds]);
+
   // Selection state
-  const [selectedIds, setSelectedIds] = useState<Set<number>>(
-    new Set(preSelectedIds.length > 0 ? preSelectedIds : experiments.map((e) => e.id))
-  );
+  const [selectedIds, setSelectedIds] = useState<Set<number>>(() => {
+    const initial = stablePreSelectedIds.length > 0 ? stablePreSelectedIds : experimentIds;
+    return new Set(initial);
+  });
 
   // Export options
   const [includeFovImages, setIncludeFovImages] = useState(true);
@@ -56,6 +145,7 @@ export function ExportModal({
   const [includeCropImages, setIncludeCropImages] = useState(true);
   const [includeEmbeddings, setIncludeEmbeddings] = useState(true);
   const [includeMasks, setIncludeMasks] = useState(true);
+  const [maskFormat, setMaskFormat] = useState<MaskFormat>("png");
   const [bboxFormat, setBboxFormat] = useState<BBoxFormat>("coco");
 
   // Auto-uncheck FOV images when both projections are unchecked
@@ -91,16 +181,20 @@ export function ExportModal({
     setMounted(true);
   }, []);
 
-  // Reset when modal opens
+  // Reset when modal opens (transition from closed to open)
   useEffect(() => {
-    if (isOpen) {
+    const wasOpen = prevIsOpenRef.current;
+    prevIsOpenRef.current = isOpen;
+
+    // Only reset when modal is opening (was closed, now open)
+    if (isOpen && !wasOpen) {
       setStatus("idle");
       setPrepareResponse(null);
       setErrorMessage(null);
-      const initialIds = preSelectedIds.length > 0 ? preSelectedIds : experiments.map((e) => e.id);
+      const initialIds = stablePreSelectedIds.length > 0 ? stablePreSelectedIds : experimentIds;
       setSelectedIds(new Set(initialIds));
     }
-  }, [isOpen, experiments, preSelectedIds]);
+  }, [isOpen, experimentIds, stablePreSelectedIds]);
 
   // Keyboard handling
   const handleKeyDown = useCallback(
@@ -155,6 +249,7 @@ export function ExportModal({
         include_embeddings: includeEmbeddings,
         include_masks: includeMasks,
         bbox_format: bboxFormat,
+        mask_format: maskFormat,
       };
 
       const response = await api.prepareExport(Array.from(selectedIds), options);
@@ -185,6 +280,14 @@ export function ExportModal({
   const totalImages = selectedExperiments.reduce((sum, e) => sum + e.image_count, 0);
   const totalCrops = selectedExperiments.reduce((sum, e) => sum + e.cell_count, 0);
   const isProcessing = status === "preparing" || status === "downloading";
+  const hasSumProjections = selectedExperiments.some((e) => e.has_sum_projections);
+
+  // Auto-uncheck SUM when no selected experiments have sum projections
+  useEffect(() => {
+    if (!hasSumProjections && includeSumProjections) {
+      setIncludeSumProjections(false);
+    }
+  }, [hasSumProjections, includeSumProjections]);
 
   if (!mounted) return null;
 
@@ -282,104 +385,109 @@ export function ExportModal({
                 {/* FOV Images and Masks - side by side with nested options */}
                 <div className="grid grid-cols-2 gap-3">
                   {/* FOV Images with nested MIP/SUM options */}
-                  <div className="rounded-lg bg-bg-secondary/50">
-                    <label className="flex items-center gap-3 p-3 cursor-pointer hover:bg-bg-secondary rounded-t-lg">
-                      <input
-                        type="checkbox"
-                        checked={includeFovImages}
-                        onChange={(e) => handleFovImagesChange(e.target.checked)}
-                        className="w-4 h-4 rounded border-white/20 bg-bg-secondary text-primary-500 focus:ring-primary-500"
-                      />
-                      <Image className="w-4 h-4 text-text-muted" />
-                      <span className="text-sm text-text-primary">{t("fovImages")}</span>
-                    </label>
+                  <div className="rounded-lg bg-bg-secondary/50 hover:bg-bg-secondary/70 transition-colors">
+                    <StyledCheckbox
+                      checked={includeFovImages}
+                      onChange={handleFovImagesChange}
+                      label={t("fovImages")}
+                      icon={Image}
+                    />
                     {includeFovImages && (
-                      <div className="pl-10 pb-3 pr-3 space-y-2">
-                        <label className="flex items-center gap-2 cursor-pointer">
-                          <input
-                            type="checkbox"
-                            checked={includeMipProjections}
-                            onChange={(e) => handleMipChange(e.target.checked)}
-                            className="w-3.5 h-3.5 rounded border-white/20 bg-bg-secondary text-primary-500 focus:ring-primary-500"
-                          />
-                          <span className="text-xs text-text-secondary">{t("mipProjections")}</span>
-                        </label>
-                        <label className="flex items-center gap-2 cursor-pointer">
-                          <input
-                            type="checkbox"
-                            checked={includeSumProjections}
-                            onChange={(e) => handleSumChange(e.target.checked)}
-                            className="w-3.5 h-3.5 rounded border-white/20 bg-bg-secondary text-primary-500 focus:ring-primary-500"
-                          />
-                          <span className="text-xs text-text-secondary">{t("sumProjections")}</span>
-                        </label>
+                      <div className="pl-11 pb-3 pr-3 space-y-1">
+                        <StyledCheckbox
+                          checked={includeMipProjections}
+                          onChange={handleMipChange}
+                          label={t("mipProjections")}
+                          small
+                        />
+                        <StyledCheckbox
+                          checked={includeSumProjections}
+                          onChange={handleSumChange}
+                          label={t("sumProjections")}
+                          small
+                          disabled={!hasSumProjections}
+                          disabledTooltip={t("noSumProjectionsAvailable")}
+                        />
                       </div>
                     )}
                   </div>
 
-                  {/* Masks */}
-                  <label className="flex items-center gap-3 p-3 rounded-lg bg-bg-secondary/50 cursor-pointer hover:bg-bg-secondary h-fit">
-                    <input
-                      type="checkbox"
+                  {/* Masks checkbox */}
+                  <div className="rounded-lg bg-bg-secondary/50 hover:bg-bg-secondary/70 transition-colors">
+                    <StyledCheckbox
                       checked={includeMasks}
-                      onChange={(e) => setIncludeMasks(e.target.checked)}
-                      className="w-4 h-4 rounded border-white/20 bg-bg-secondary text-primary-500 focus:ring-primary-500"
+                      onChange={setIncludeMasks}
+                      label={t("masks")}
+                      icon={Layers}
                     />
-                    <Layers className="w-4 h-4 text-text-muted" />
-                    <span className="text-sm text-text-primary">{t("masks")}</span>
-                  </label>
+                  </div>
                 </div>
 
                 {/* Crop Images and Embeddings */}
                 <div className="grid grid-cols-2 gap-3">
-                  <label className="flex items-center gap-3 p-3 rounded-lg bg-bg-secondary/50 cursor-pointer hover:bg-bg-secondary">
-                    <input
-                      type="checkbox"
+                  <div className="rounded-lg bg-bg-secondary/50 hover:bg-bg-secondary/70 transition-colors">
+                    <StyledCheckbox
                       checked={includeCropImages}
-                      onChange={(e) => setIncludeCropImages(e.target.checked)}
-                      className="w-4 h-4 rounded border-white/20 bg-bg-secondary text-primary-500 focus:ring-primary-500"
+                      onChange={setIncludeCropImages}
+                      label={t("cropImages")}
+                      icon={Grid}
                     />
-                    <Grid className="w-4 h-4 text-text-muted" />
-                    <span className="text-sm text-text-primary">{t("cropImages")}</span>
-                  </label>
-                  <label className="flex items-center gap-3 p-3 rounded-lg bg-bg-secondary/50 cursor-pointer hover:bg-bg-secondary">
-                    <input
-                      type="checkbox"
+                  </div>
+                  <div className="rounded-lg bg-bg-secondary/50 hover:bg-bg-secondary/70 transition-colors">
+                    <StyledCheckbox
                       checked={includeEmbeddings}
-                      onChange={(e) => setIncludeEmbeddings(e.target.checked)}
-                      className="w-4 h-4 rounded border-white/20 bg-bg-secondary text-primary-500 focus:ring-primary-500"
+                      onChange={setIncludeEmbeddings}
+                      label={t("embeddings")}
+                      icon={Database}
                     />
-                    <Database className="w-4 h-4 text-text-muted" />
-                    <span className="text-sm text-text-primary">{t("embeddings")}</span>
-                  </label>
+                  </div>
                 </div>
               </div>
             </div>
 
-            {/* BBox Format */}
+            {/* Format Selection - Segmentation and Detection side by side */}
             <div className="mb-6">
               <h3 className="text-sm font-medium text-text-secondary mb-3">
-                {t("bboxFormat")}
+                {t("annotationFormats")}
               </h3>
-              <div className="grid grid-cols-2 gap-2">
-                {(["coco", "yolo", "voc", "csv"] as BBoxFormat[]).map((format) => (
-                  <label
-                    key={format}
-                    className="flex items-center gap-3 p-2 rounded-lg bg-bg-secondary/50 cursor-pointer hover:bg-bg-secondary"
-                  >
-                    <input
-                      type="radio"
-                      name="bboxFormat"
-                      value={format}
-                      checked={bboxFormat === format}
-                      onChange={() => setBboxFormat(format)}
-                      className="w-4 h-4 border-white/20 bg-bg-secondary text-primary-500 focus:ring-primary-500"
-                    />
-                    <span className="text-sm text-text-primary">
-                      {t(`bboxFormat${format.charAt(0).toUpperCase() + format.slice(1)}`)}
-                    </span>
-                  </label>
-                ))}
+              <div className="grid grid-cols-2 gap-4">
+                {/* Segmentation Format */}
+                <div className="rounded-lg bg-bg-secondary/50 p-4">
+                  <div className="flex items-center gap-2 mb-3 pb-2 border-b border-white/10">
+                    <Layers className="w-4 h-4 text-primary-400" />
+                    <span className="text-sm font-medium text-text-primary">{t("maskFormat")}</span>
+                  </div>
+                  <div className="space-y-1">
+                    {(["png", "coco", "coco_rle", "polygon"] as MaskFormat[]).map((format) => (
+                      <StyledRadio
+                        key={format}
+                        name="maskFormat"
+                        checked={maskFormat === format}
+                        onChange={() => setMaskFormat(format)}
+                        label={t(`maskFormat${format.charAt(0).toUpperCase() + format.slice(1).replace(/_([a-z])/g, (_, c) => c.toUpperCase())}`)}
+                      />
+                    ))}
+                  </div>
+                </div>
+
+                {/* Detection Format */}
+                <div className="rounded-lg bg-bg-secondary/50 p-4">
+                  <div className="flex items-center gap-2 mb-3 pb-2 border-b border-white/10">
+                    <Box className="w-4 h-4 text-primary-400" />
+                    <span className="text-sm font-medium text-text-primary">{t("bboxFormat")}</span>
+                  </div>
+                  <div className="space-y-1">
+                    {(["coco", "yolo", "voc", "csv"] as BBoxFormat[]).map((format) => (
+                      <StyledRadio
+                        key={format}
+                        name="bboxFormat"
+                        checked={bboxFormat === format}
+                        onChange={() => setBboxFormat(format)}
+                        label={t(`bboxFormat${format.charAt(0).toUpperCase() + format.slice(1)}`)}
+                      />
+                    ))}
+                  </div>
+                </div>
               </div>
             </div>
 

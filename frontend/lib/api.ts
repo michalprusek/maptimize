@@ -968,6 +968,7 @@ export interface Experiment {
   updated_at: string;
   image_count: number;
   cell_count: number;
+  has_sum_projections: boolean;
 }
 
 export interface MapProtein {
@@ -1490,6 +1491,7 @@ export interface TextSegmentResponse {
 // ============================================================================
 
 export type BBoxFormat = "coco" | "yolo" | "voc" | "csv";
+export type MaskFormat = "png" | "coco_rle" | "coco" | "polygon";
 
 export interface ExportOptions {
   include_fov_images?: boolean;
@@ -1497,6 +1499,7 @@ export interface ExportOptions {
   include_embeddings?: boolean;
   include_masks?: boolean;
   bbox_format?: BBoxFormat;
+  mask_format?: MaskFormat;
 }
 
 export interface ExportPrepareResponse {

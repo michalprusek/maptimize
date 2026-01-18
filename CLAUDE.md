@@ -276,3 +276,118 @@ export function MyComponent() {
 2. Přidej překlad do `frontend/messages/fr.json`
 3. Použij `t("key")` v komponentě
 4. **NIKDY** nepřidávej hardcoded text do JSX!
+
+## 🧪 E2E Testování (Playwright)
+
+### Struktura testů
+
+```
+frontend/e2e/
+├── fixtures/         # Test fixtures a helpers
+│   ├── auth.fixture.ts    # Authenticated page fixture
+│   ├── global-setup.ts    # Creates auth state before tests
+│   └── test-data.ts       # Test data generators
+├── pages/            # Page Object Models
+│   ├── AuthPage.ts
+│   ├── DashboardPage.ts
+│   ├── ExperimentPage.ts
+│   ├── EditorPage.ts
+│   └── RankingPage.ts
+├── mocks/            # API mocks pro ML endpointy
+│   └── ml-endpoints.ts
+├── tests/            # Test soubory
+│   ├── auth/login.spec.ts
+│   ├── experiments/crud.spec.ts
+│   ├── images/upload.spec.ts
+│   ├── ranking/comparison.spec.ts
+│   ├── editor/navigation.spec.ts
+│   └── settings/preferences.spec.ts
+└── playwright.config.ts
+```
+
+### Spuštění testů
+
+```bash
+cd frontend
+
+# Všechny testy
+npm run test:e2e
+
+# Pouze kritické testy (před commitem)
+npm run test:e2e:critical
+
+# S UI pro debugging
+npm run test:e2e:ui
+
+# Debug mode
+npm run test:e2e:debug
+
+# Zobrazit HTML report
+npm run test:e2e:report
+```
+
+### Kdy spouštět testy
+
+| Změna | Příkaz |
+|-------|--------|
+| Nová stránka/route | `npm run test:e2e -- e2e/tests/[feature]/` |
+| Změna formuláře | `npm run test:e2e -- e2e/tests/[feature]/` |
+| Změna API endpointu | `npm run test:e2e -- --grep "[endpoint]"` |
+| Auth logika | `npm run test:e2e -- e2e/tests/auth/` |
+| **Před commitem** | `npm run test:e2e:critical` |
+| **Před PR** | `npm run test:e2e` |
+
+### Přeskočit testy když:
+- Jen dokumentace změny
+- Jen config změny (bez runtime dopadu)
+- Backend-only změny (pokryto pytest)
+
+### Priorita testů
+
+| Tag | Popis | Kdy spouštět |
+|-----|-------|--------------|
+| `@critical` | Login, CRUD, Upload, Ranking | Před každým commitem |
+| `@important` | Editor, Settings | Před PR |
+| (bez tagu) | Nice-to-have testy | Před release |
+
+### Psaní nových testů
+
+1. **Použij Page Object Model** - všechny selektory v `e2e/pages/`
+2. **Mockuj ML endpointy** - `import { mockMLEndpoints } from "../../mocks/ml-endpoints"`
+3. **Používej testovací data** - `import { generateTestId } from "../../fixtures/test-data"`
+4. **Taguj kritické testy** - `test.describe("Feature @critical", ...)`
+5. **Čisti po sobě** - smaž vytvořené experimenty v `afterEach`
+
+### Příklad testu
+
+```typescript
+import { test, expect } from "../../fixtures/auth.fixture";
+import { ExperimentPage } from "../../pages";
+import { generateTestId, deleteTestExperiment } from "../../fixtures/test-data";
+
+test.describe("Feature @critical", () => {
+  let experimentPage: ExperimentPage;
+  const createdIds: number[] = [];
+
+  test.beforeEach(async ({ authenticatedPage }) => {
+    experimentPage = new ExperimentPage(authenticatedPage);
+  });
+
+  test.afterEach(async ({ authenticatedPage }) => {
+    for (const id of createdIds) {
+      await deleteTestExperiment(authenticatedPage, id);
+    }
+  });
+
+  test("should do something", async ({ authenticatedPage }) => {
+    // Test implementation
+  });
+});
+```
+
+### CI/CD
+
+E2E testy běží automaticky v GitHub Actions:
+- **Push do main/develop** - plná sada testů
+- **Pull Request** - pouze smoke testy (@critical)
+- **Artifacts** - HTML report dostupný po každém běhu

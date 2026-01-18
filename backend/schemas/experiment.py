@@ -47,6 +47,7 @@ class ExperimentResponse(BaseModel):
     updated_at: datetime
     image_count: int = 0
     cell_count: int = 0
+    has_sum_projections: bool = False
 
     class Config:
         from_attributes = True

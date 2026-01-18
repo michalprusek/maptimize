@@ -30,6 +30,7 @@ from schemas.export_import import (
     ExportOptions,
     ExportPrepareResponse,
     ExportStatusResponse,
+    MaskFormat,
 )
 from services.annotation_converters import to_coco, to_csv, to_voc, to_yolo, to_yolo_classes
 from services.job_manager import BaseJobManager
@@ -331,7 +332,9 @@ class ExportService(BaseJobManager[ExportJobData]):
 
                             # Write FOV mask
                             if job.options.include_masks and image.fov_segmentation_mask:
-                                await self._write_fov_mask(zf, exp_id, image)
+                                await self._write_fov_mask(
+                                    zf, exp_id, image, job.options.mask_format
+                                )
 
                             processed_items += 1
 
@@ -342,14 +345,9 @@ class ExportService(BaseJobManager[ExportJobData]):
                             progress,
                             f"Processing experiment {exp_idx + 1}/{len(job.experiment_ids)}"
                         )
-
-                        # Yield accumulated bytes
-                        buffer.seek(0)
-                        chunk = buffer.read()
-                        if chunk:
-                            yield chunk
-                        buffer.seek(0)
-                        buffer.truncate()
+                        # NOTE: Don't yield/truncate buffer during ZIP generation!
+                        # ZIP files require the Central Directory to be written at the end,
+                        # and truncating the buffer corrupts the internal offset tracking.
 
                 # Write annotations in all formats
                 await self._update_job_progress(job_id, 85, "Writing annotations")
@@ -391,11 +389,17 @@ class ExportService(BaseJobManager[ExportJobData]):
                     await self._update_job_progress(job_id, 90, "Writing embeddings")
                     await self._write_embeddings(zf, all_images, all_crops)
 
-                # Yield remaining bytes
-                buffer.seek(0)
-                chunk = buffer.read()
-                if chunk:
-                    yield chunk
+            # ZIP file is now properly closed (Central Directory written)
+            # Yield the complete ZIP content
+            buffer.seek(0)
+
+            # Stream the ZIP in chunks for memory efficiency
+            CHUNK_SIZE = 64 * 1024  # 64KB chunks
+            while True:
+                chunk = buffer.read(CHUNK_SIZE)
+                if not chunk:
+                    break
+                yield chunk
 
             # Mark job complete
             await self._update_job_progress(job_id, 100, "Complete", "completed")
@@ -506,9 +510,10 @@ class ExportService(BaseJobManager[ExportJobData]):
         self,
         zf: zipfile.ZipFile,
         exp_id: int,
-        image: Image
+        image: Image,
+        mask_format: MaskFormat = MaskFormat.PNG
     ) -> None:
-        """Write FOV segmentation mask as PNG."""
+        """Write FOV segmentation mask in specified format."""
         if not image.fov_segmentation_mask:
             return
 
@@ -519,27 +524,177 @@ class ExportService(BaseJobManager[ExportJobData]):
             return
 
         try:
-            # Create binary mask from polygon
-            from PIL import ImageDraw
-            img = PILImage.new('L', (image.width, image.height), 0)
-            draw = ImageDraw.Draw(img)
-
             # Convert polygon points to flat tuple list
             points = [(p[0], p[1]) for p in polygon_points]
-            if len(points) >= 3:
+            if len(points) < 3:
+                return
+
+            base_path = f"experiments/{exp_id}/masks"
+
+            if mask_format == MaskFormat.PNG:
+                # Binary mask as PNG
+                from PIL import ImageDraw
+                img = PILImage.new('L', (image.width, image.height), 0)
+                draw = ImageDraw.Draw(img)
                 draw.polygon(points, fill=255)
 
-            # Save to buffer
-            buffer = io.BytesIO()
-            img.save(buffer, format='PNG')
-            buffer.seek(0)
+                buffer = io.BytesIO()
+                img.save(buffer, format='PNG')
+                buffer.seek(0)
+                zf.writestr(f"{base_path}/fov_{image.id}.png", buffer.read())
 
-            zf.writestr(
-                f"experiments/{exp_id}/masks/fov_{image.id}.png",
-                buffer.read()
-            )
+            elif mask_format == MaskFormat.COCO_RLE:
+                # COCO RLE encoding (integer counts)
+                rle_data = self._polygon_to_coco_rle(points, image.width, image.height)
+                mask_json = {
+                    "image_id": image.id,
+                    "segmentation": rle_data,
+                    "area": mask.area_pixels or 0,
+                }
+                zf.writestr(
+                    f"{base_path}/fov_{image.id}.json",
+                    json.dumps(mask_json, indent=2)
+                )
+
+            elif mask_format == MaskFormat.COCO:
+                # COCO 1.0 format (compressed string RLE)
+                rle_data = self._polygon_to_coco_string_rle(points, image.width, image.height)
+                mask_json = {
+                    "image_id": image.id,
+                    "segmentation": rle_data,
+                    "area": mask.area_pixels or 0,
+                    "iscrowd": 1,  # RLE format requires iscrowd=1 in COCO
+                }
+                zf.writestr(
+                    f"{base_path}/fov_{image.id}.json",
+                    json.dumps(mask_json, indent=2)
+                )
+
+            elif mask_format == MaskFormat.POLYGON:
+                # Polygon coordinates as JSON
+                mask_json = {
+                    "image_id": image.id,
+                    "polygon": points,
+                    "area": mask.area_pixels or 0,
+                    "width": image.width,
+                    "height": image.height,
+                }
+                zf.writestr(
+                    f"{base_path}/fov_{image.id}.json",
+                    json.dumps(mask_json, indent=2)
+                )
+
         except Exception as e:
             logger.warning(f"Failed to write FOV mask for image {image.id}: {e}")
+
+    def _polygon_to_coco_rle(
+        self,
+        polygon: list,
+        width: int,
+        height: int
+    ) -> dict:
+        """Convert polygon to COCO RLE format."""
+        from PIL import ImageDraw
+
+        # Create binary mask
+        img = PILImage.new('L', (width, height), 0)
+        draw = ImageDraw.Draw(img)
+        draw.polygon(polygon, fill=1)
+
+        # Convert to numpy array
+        mask_array = np.array(img, dtype=np.uint8)
+
+        # Flatten in column-major (Fortran) order for COCO
+        flat_mask = mask_array.flatten(order='F')
+
+        # Run-length encode
+        counts = []
+        current_val = 0
+        count = 0
+
+        for val in flat_mask:
+            if val == current_val:
+                count += 1
+            else:
+                counts.append(count)
+                count = 1
+                current_val = val
+        counts.append(count)
+
+        # COCO RLE starts with 0s count
+        if flat_mask[0] == 1:
+            counts.insert(0, 0)
+
+        return {
+            "size": [height, width],
+            "counts": counts
+        }
+
+    def _polygon_to_coco_string_rle(
+        self,
+        polygon: list,
+        width: int,
+        height: int
+    ) -> dict:
+        """Convert polygon to COCO compressed string RLE format."""
+        from PIL import ImageDraw
+
+        # Create binary mask
+        img = PILImage.new('L', (width, height), 0)
+        draw = ImageDraw.Draw(img)
+        draw.polygon(polygon, fill=1)
+
+        # Convert to numpy array
+        mask_array = np.array(img, dtype=np.uint8)
+
+        # Flatten in column-major (Fortran) order for COCO
+        flat_mask = mask_array.flatten(order='F')
+
+        # Run-length encode
+        counts = []
+        current_val = 0
+        count = 0
+
+        for val in flat_mask:
+            if val == current_val:
+                count += 1
+            else:
+                counts.append(count)
+                count = 1
+                current_val = val
+        counts.append(count)
+
+        # COCO RLE starts with 0s count
+        if flat_mask[0] == 1:
+            counts.insert(0, 0)
+
+        # Compress to string (COCO 1.0 format)
+        # Uses a custom encoding where each 6 bits are encoded as ASCII
+        compressed = self._encode_rle_counts(counts)
+
+        return {
+            "size": [height, width],
+            "counts": compressed
+        }
+
+    def _encode_rle_counts(self, counts: list) -> str:
+        """Encode RLE counts as compressed COCO string."""
+        # COCO uses a custom LEB128-like encoding for counts
+        # Each value is encoded in groups of 6 bits + continuation bit
+        result = []
+        for count in counts:
+            if count == 0:
+                result.append(48)  # '0' character
+            else:
+                while count > 0:
+                    # Take 5 bits
+                    val = count & 0x1F
+                    count >>= 5
+                    # Add offset and continuation bit if more data
+                    if count > 0:
+                        val |= 0x20  # Set continuation bit
+                    result.append(val + 48)  # Add to '0' base
+        return ''.join(chr(c) for c in result)
 
     async def _write_embeddings(
         self,

@@ -46,6 +46,14 @@ class BBoxFormat(str, PyEnum):
     CSV = "csv"        # Flat CSV format
 
 
+class MaskFormat(str, PyEnum):
+    """Supported segmentation mask export formats."""
+    PNG = "png"              # Binary mask as PNG image (default)
+    COCO_RLE = "coco_rle"    # COCO RLE encoding with integer counts
+    COCO = "coco"            # COCO 1.0 format with compressed string RLE
+    POLYGON = "polygon"      # Polygon coordinates in JSON
+
+
 class ExportOptions(BaseModel):
     """Options for what to include in the export."""
     include_fov_images: bool = Field(
@@ -62,11 +70,15 @@ class ExportOptions(BaseModel):
     )
     include_masks: bool = Field(
         default=True,
-        description="Include segmentation masks as PNG files"
+        description="Include segmentation masks"
     )
     bbox_format: BBoxFormat = Field(
         default=BBoxFormat.COCO,
         description="Bounding box annotation format"
+    )
+    mask_format: MaskFormat = Field(
+        default=MaskFormat.PNG,
+        description="Segmentation mask export format"
     )
 
     @model_validator(mode="after")
