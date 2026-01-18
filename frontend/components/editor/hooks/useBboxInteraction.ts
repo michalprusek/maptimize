@@ -437,12 +437,13 @@ export function useBboxInteraction(
     [canvasRef, setEditorState]
   );
 
-  // Compute modification state
+  // Compute modification state using pattern matching (avoids type assertion)
   const isModifyingBbox =
     interactionState.type === "dragging" || interactionState.type === "resizing";
-  const modifyingBboxId = isModifyingBbox
-    ? (interactionState as { bboxId: string | number }).bboxId
-    : null;
+  const modifyingBboxId =
+    interactionState.type === "dragging" || interactionState.type === "resizing"
+      ? interactionState.bboxId
+      : null;
 
   return {
     handleMouseDown,

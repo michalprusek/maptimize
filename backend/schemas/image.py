@@ -2,7 +2,7 @@
 from datetime import datetime
 from typing import Optional, List, Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from models.image import UploadStatus
 
@@ -345,6 +345,19 @@ class CropBatchUpdateItem(BaseModel):
     bbox_w: Optional[int] = Field(None, gt=0, le=2048)
     bbox_h: Optional[int] = Field(None, gt=0, le=2048)
     map_protein_id: Optional[int] = None
+
+    @model_validator(mode="after")
+    def validate_action_fields(self) -> "CropBatchUpdateItem":
+        """Validate that required fields are present based on action type."""
+        if self.action == "create":
+            if self.id is not None:
+                raise ValueError("Create action should not have id")
+            if any(v is None for v in [self.bbox_x, self.bbox_y, self.bbox_w, self.bbox_h]):
+                raise ValueError("Create action requires all bbox fields (bbox_x, bbox_y, bbox_w, bbox_h)")
+        elif self.action in ("update", "delete"):
+            if self.id is None:
+                raise ValueError(f"{self.action.capitalize()} action requires id")
+        return self
 
 
 class CropBatchUpdateRequest(BaseModel):

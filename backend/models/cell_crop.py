@@ -52,6 +52,14 @@ class CellCrop(Base):
     embedding: Mapped[Optional[list]] = mapped_column(Vector(1024), nullable=True)
     embedding_model: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
 
+    # Embedding extraction status for background task tracking
+    # None = not started, "pending" = queued, "computing" = in progress,
+    # "ready" = embedding available, "error" = failed (see embedding_error)
+    embedding_status: Mapped[Optional[str]] = mapped_column(
+        String(20), nullable=True, default=None
+    )
+    embedding_error: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
+
     # Pre-computed UMAP coordinates for visualization
     umap_x: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     umap_y: Mapped[Optional[float]] = mapped_column(Float, nullable=True)

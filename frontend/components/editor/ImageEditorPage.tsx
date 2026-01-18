@@ -432,14 +432,18 @@ export function ImageEditorPage({
           const normalized = normalizePolygonData(result.polygon);
           if (normalized) {
             setFovMaskPolygons(normalized);
+          } else {
+            console.warn("[Editor] FOV mask data could not be normalized");
           }
         }
       } catch (err) {
         console.error("[Editor] Failed to load FOV mask:", err);
+        // Show error toast so user knows masks couldn't be loaded
+        showError(t("loadMasksError"));
       }
     };
     loadFOVMask();
-  }, [fovImage.id]);
+  }, [fovImage.id, showError, t]);
 
   // Load saved polygons when crops change
   useEffect(() => {

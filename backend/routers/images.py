@@ -772,15 +772,53 @@ async def regenerate_crop_features(
 
     # Extract embedding asynchronously (non-blocking)
     if result.get("needs_embedding") and background_tasks:
+        # Set status to pending before starting task
+        crop.embedding_status = "pending"
+        crop.embedding_error = None
+        await db.commit()
+
         async def extract_embedding_task(target_crop_id: int):
             from database import get_db_context
             async with get_db_context() as task_db:
                 try:
+                    # Update status to computing
+                    await task_db.execute(
+                        update(CellCrop)
+                        .where(CellCrop.id == target_crop_id)
+                        .values(embedding_status="computing", embedding_error=None)
+                    )
+                    await task_db.commit()
+
                     await extract_features_for_crops([target_crop_id], task_db)
+
+                    # Update status to ready on success
+                    await task_db.execute(
+                        update(CellCrop)
+                        .where(CellCrop.id == target_crop_id)
+                        .values(embedding_status="ready", embedding_error=None)
+                    )
+                    await task_db.commit()
+                    logger.info(f"Successfully extracted embedding for crop {target_crop_id}")
                 except Exception as e:
+                    error_msg = str(e)[:500]  # Truncate to fit field
                     logger.error(f"Background embedding extraction failed for crop {target_crop_id}: {e}")
+                    # Update status to error
+                    try:
+                        await task_db.execute(
+                            update(CellCrop)
+                            .where(CellCrop.id == target_crop_id)
+                            .values(embedding_status="error", embedding_error=error_msg)
+                        )
+                        await task_db.commit()
+                    except Exception as db_err:
+                        logger.error(f"Failed to update error status for crop {target_crop_id}: {db_err}")
 
         background_tasks.add_task(extract_embedding_task, crop.id)
+
+    # Build warnings list if any issues occurred
+    warnings = []
+    if not result.get("umap_invalidated", True):
+        warnings.append("UMAP coordinates could not be invalidated - visualization may be stale")
 
     return CropRegenerateResponse(
         id=crop.id,
@@ -794,7 +832,7 @@ async def regenerate_crop_features(
         embedding_model=crop.embedding_model,
         has_embedding=crop.embedding is not None,
         processing_status="processing",  # Embedding is being extracted async
-        warnings=None,
+        warnings=warnings if warnings else None,
     )
 
 
@@ -850,16 +888,46 @@ async def create_manual_crop(
             detail=error
         )
 
+    # Set embedding status to pending before starting task
+    crop.embedding_status = "pending"
+    crop.embedding_error = None
     await db.commit()
 
-    # Extract features in background
+    # Extract features in background with status tracking
     async def extract_features_task(crop_id: int):
         from database import get_db_context
         async with get_db_context() as task_db:
             try:
+                # Update status to computing
+                await task_db.execute(
+                    update(CellCrop)
+                    .where(CellCrop.id == crop_id)
+                    .values(embedding_status="computing", embedding_error=None)
+                )
+                await task_db.commit()
+
                 await extract_features_for_crops([crop_id], task_db)
+
+                # Update status to ready on success
+                await task_db.execute(
+                    update(CellCrop)
+                    .where(CellCrop.id == crop_id)
+                    .values(embedding_status="ready", embedding_error=None)
+                )
+                await task_db.commit()
+                logger.info(f"Successfully extracted features for crop {crop_id}")
             except Exception as e:
+                error_msg = str(e)[:500]
                 logger.error(f"Failed to extract features for crop {crop_id}: {e}")
+                try:
+                    await task_db.execute(
+                        update(CellCrop)
+                        .where(CellCrop.id == crop_id)
+                        .values(embedding_status="error", embedding_error=error_msg)
+                    )
+                    await task_db.commit()
+                except Exception as db_err:
+                    logger.error(f"Failed to update error status for crop {crop_id}: {db_err}")
 
     background_tasks.add_task(extract_features_task, crop.id)
 
@@ -1041,13 +1109,31 @@ async def batch_update_crops(
     # Queue feature regeneration if requested
     regeneration_queued = False
     if request.regenerate_features and crops_to_regenerate:
+        # Set embedding status to pending for all crops before starting task
+        for crop_id in crops_to_regenerate:
+            await db.execute(
+                update(CellCrop)
+                .where(CellCrop.id == crop_id)
+                .values(embedding_status="pending", embedding_error=None)
+            )
+        await db.commit()
+
         async def regenerate_task(crop_ids: list):
             from database import get_db_context
             from services.crop_editor_service import regenerate_crop_features as do_regen
             from ml.features import extract_features_for_crops
             async with get_db_context() as task_db:
+                successful_crop_ids = []
                 for crop_id in crop_ids:
                     try:
+                        # Update status to computing
+                        await task_db.execute(
+                            update(CellCrop)
+                            .where(CellCrop.id == crop_id)
+                            .values(embedding_status="computing", embedding_error=None)
+                        )
+                        await task_db.commit()
+
                         result = await task_db.execute(
                             select(CellCrop)
                             .options(selectinload(CellCrop.image))
@@ -1056,14 +1142,48 @@ async def batch_update_crops(
                         crop = result.scalar_one_or_none()
                         if crop:
                             await do_regen(crop, crop.image, task_db)
+                            successful_crop_ids.append(crop_id)
                     except Exception as e:
+                        error_msg = str(e)[:500]
                         logger.error(f"Failed to regenerate crop {crop_id}: {e}")
+                        try:
+                            await task_db.execute(
+                                update(CellCrop)
+                                .where(CellCrop.id == crop_id)
+                                .values(embedding_status="error", embedding_error=error_msg)
+                            )
+                            await task_db.commit()
+                        except Exception as db_err:
+                            logger.error(f"Failed to update error status for crop {crop_id}: {db_err}")
                 await task_db.commit()
-                # Extract embeddings for all regenerated crops
-                try:
-                    await extract_features_for_crops(crop_ids, task_db)
-                except Exception as e:
-                    logger.error(f"Failed to extract embeddings for batch: {e}")
+
+                # Extract embeddings only for successfully regenerated crops
+                if successful_crop_ids:
+                    try:
+                        await extract_features_for_crops(successful_crop_ids, task_db)
+                        # Update status to ready for all successful crops
+                        for crop_id in successful_crop_ids:
+                            await task_db.execute(
+                                update(CellCrop)
+                                .where(CellCrop.id == crop_id)
+                                .values(embedding_status="ready", embedding_error=None)
+                            )
+                        await task_db.commit()
+                        logger.info(f"Successfully extracted embeddings for {len(successful_crop_ids)} crops")
+                    except Exception as e:
+                        error_msg = str(e)[:500]
+                        logger.error(f"Failed to extract embeddings for batch: {e}")
+                        # Mark all as error
+                        for crop_id in successful_crop_ids:
+                            try:
+                                await task_db.execute(
+                                    update(CellCrop)
+                                    .where(CellCrop.id == crop_id)
+                                    .values(embedding_status="error", embedding_error=error_msg)
+                                )
+                            except Exception:
+                                pass
+                        await task_db.commit()
 
         background_tasks.add_task(regenerate_task, crops_to_regenerate)
         regeneration_queued = True

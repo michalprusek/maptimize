@@ -2,7 +2,7 @@
 from datetime import datetime
 from typing import Optional, List
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 # CRUD Schemas
@@ -102,7 +102,16 @@ class MetricComparisonCreate(BaseModel):
     image_a_id: int
     image_b_id: int
     winner_id: int
-    response_time_ms: Optional[int] = None
+    response_time_ms: Optional[int] = Field(None, ge=0)
+
+    @model_validator(mode="after")
+    def validate_comparison(self) -> "MetricComparisonCreate":
+        """Validate that winner is one of the compared images and images are different."""
+        if self.image_a_id == self.image_b_id:
+            raise ValueError("Cannot compare image with itself")
+        if self.winner_id not in (self.image_a_id, self.image_b_id):
+            raise ValueError("Winner must be one of the compared images")
+        return self
 
 
 class MetricComparisonResponse(BaseModel):

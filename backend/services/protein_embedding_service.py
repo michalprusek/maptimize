@@ -143,9 +143,49 @@ async def batch_compute_protein_embeddings(
             computed += 1
             logger.info(f"Computed embedding for '{protein.name}'")
 
+        except (KeyboardInterrupt, SystemExit):
+            # Re-raise system-level errors
+            raise
+        except RuntimeError as e:
+            error_str = str(e).lower()
+            # Check for GPU OOM errors - should abort batch
+            if "out of memory" in error_str or "cuda" in error_str:
+                logger.error(f"GPU out of memory processing '{protein.name}': {e}")
+                errors.append({
+                    "protein": protein.name,
+                    "error": str(e),
+                    "error_type": "gpu_oom",
+                    "retryable": False
+                })
+                # Abort batch on OOM - don't continue processing
+                break
+            else:
+                failed += 1
+                errors.append({
+                    "protein": protein.name,
+                    "error": str(e),
+                    "error_type": "runtime_error",
+                    "retryable": True
+                })
+                logger.error(f"Failed to compute embedding for '{protein.name}': {e}")
+        except ValueError as e:
+            # Validation errors (bad sequence) - not retryable
+            failed += 1
+            errors.append({
+                "protein": protein.name,
+                "error": str(e),
+                "error_type": "validation_error",
+                "retryable": False
+            })
+            logger.error(f"Invalid sequence for '{protein.name}': {e}")
         except Exception as e:
             failed += 1
-            errors.append({"protein": protein.name, "error": str(e)})
+            errors.append({
+                "protein": protein.name,
+                "error": str(e),
+                "error_type": "unknown",
+                "retryable": True
+            })
             logger.error(f"Failed to compute embedding for '{protein.name}': {e}")
 
     await db.commit()
