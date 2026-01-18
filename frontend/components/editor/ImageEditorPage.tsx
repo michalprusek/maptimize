@@ -59,12 +59,27 @@ import { useEditorModePersistence, useLocalStorage } from "@/hooks";
 // localStorage keys for persisting editor settings
 const TOOLBAR_POSITION_KEY = "maptimize:editor:toolbarPosition";
 const MASK_OPACITY_KEY = "maptimize:editor:maskOpacity";
+const FILTERS_KEY = "maptimize:editor:filters";
 const DEFAULT_TOOLBAR_POSITION: ToolbarPosition = { edge: "bottom", offset: 0.5 };
 const DEFAULT_MASK_OPACITY = 0.3;
 
 /** Type guard for mask opacity validation */
 function isValidMaskOpacity(value: unknown): value is number {
   return typeof value === "number" && value >= 0 && value <= 1;
+}
+
+/** Type guard for ImageFilters validation */
+function isValidFilters(value: unknown): value is ImageFilters {
+  if (typeof value !== "object" || value === null) return false;
+  const obj = value as Record<string, unknown>;
+  return (
+    typeof obj.brightness === "number" &&
+    obj.brightness >= 0 &&
+    obj.brightness <= 400 &&
+    typeof obj.contrast === "number" &&
+    obj.contrast >= 0 &&
+    obj.contrast <= 400
+  );
 }
 
 /** Type guard for ToolbarPosition validation */
@@ -329,8 +344,12 @@ export function ImageEditorPage({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fovImage.id]);
 
-  // Image filters
-  const [filters, setFilters] = useState<ImageFilters>(DEFAULT_FILTERS);
+  // Image filters - persisted to localStorage
+  const [filters, setFilters] = useLocalStorage<ImageFilters>(
+    FILTERS_KEY,
+    DEFAULT_FILTERS,
+    { validate: isValidFilters }
+  );
 
   // Context menu state
   const [contextMenu, setContextMenu] = useState<ContextMenuState>({
@@ -1198,10 +1217,10 @@ export function ImageEditorPage({
     (e: React.MouseEvent<HTMLElement>) => {
       // In segment mode, handle segmentation clicks
       if (editorState.mode === "segment") {
-        // Shift modifier: left click = pan (bypass bbox detection), right click = undo
-        if (e.shiftKey) {
+        // Shift modifier OR add mode OFF: left click = pan (bypass bbox detection), right click = undo
+        if (e.shiftKey || !editorState.isSegmentAddMode) {
           if (e.button === 0) {
-            // Left click with Shift = start panning directly (bypass bbox detection)
+            // Left click with Shift (or add mode off) = start panning directly (bypass bbox detection)
             const container = containerRef.current;
             if (container) {
               const rect = container.getBoundingClientRect();
@@ -1221,8 +1240,8 @@ export function ImageEditorPage({
             return;
           }
         }
-        // Normal segmentation behavior (no Shift) - only if embedding is ready
-        if (segmentation.isReady) {
+        // Normal segmentation behavior (no Shift, add mode ON) - only if embedding is ready
+        if (segmentation.isReady && editorState.isSegmentAddMode) {
           // Prevent context menu on right click
           if (e.button === 2) {
             e.preventDefault();
@@ -1234,7 +1253,7 @@ export function ImageEditorPage({
       // Otherwise, delegate to bbox interaction
       handleMouseDown(e);
     },
-    [editorState.mode, editorState.panOffset, segmentation.isReady, segmentation.undoLastClick, handleSegmentationClick, handleMouseDown]
+    [editorState.mode, editorState.panOffset, editorState.isSegmentAddMode, segmentation.isReady, segmentation.undoLastClick, handleSegmentationClick, handleMouseDown]
   );
 
   // Handle mouse move for segment mode panning

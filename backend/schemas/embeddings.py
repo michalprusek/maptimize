@@ -17,6 +17,7 @@ class UmapPointResponse(BaseModel):
 
     crop_id: int = Field(..., description="Cell crop ID")
     image_id: int = Field(..., description="Parent image ID")
+    experiment_id: int = Field(..., description="Experiment ID for navigation")
     x: float = Field(..., description="UMAP x coordinate")
     y: float = Field(..., description="UMAP y coordinate")
     protein_name: Optional[str] = Field(None, description="MAP protein name")

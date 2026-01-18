@@ -133,6 +133,7 @@ async def _get_cropped_umap(
         UmapPointResponse(
             crop_id=crop.id,
             image_id=crop.image_id,
+            experiment_id=crop.image.experiment_id,
             x=float(projection[i, 0]),
             y=float(projection[i, 1]),
             protein_name=crop.map_protein.name if crop.map_protein else None,
