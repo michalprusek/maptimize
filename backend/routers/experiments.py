@@ -55,11 +55,13 @@ async def list_experiments(
 ):
     """List user's experiments with image and cell counts in a single query."""
     # Get experiments with counts using a single query with aggregates
+    # Also count images with sum projections (sum_path IS NOT NULL)
     result = await db.execute(
         select(
             Experiment,
             func.count(distinct(Image.id)).label("image_count"),
-            func.count(CellCrop.id).label("cell_count")
+            func.count(CellCrop.id).label("cell_count"),
+            func.count(distinct(Image.id)).filter(Image.sum_path.isnot(None)).label("sum_count")
         )
         .options(selectinload(Experiment.map_protein))
         .outerjoin(Image, Experiment.id == Image.experiment_id)
@@ -73,10 +75,11 @@ async def list_experiments(
     rows = result.unique().all()
 
     response = []
-    for exp, image_count, cell_count in rows:
+    for exp, image_count, cell_count, sum_count in rows:
         exp_response = ExperimentResponse.model_validate(exp)
         exp_response.image_count = image_count or 0
         exp_response.cell_count = cell_count or 0
+        exp_response.has_sum_projections = (sum_count or 0) > 0
         response.append(exp_response)
 
     return response
@@ -148,9 +151,13 @@ async def get_experiment(
     )
     cell_count = cell_result.scalar() or 0
 
+    # Check if any images have sum projections
+    has_sum = any(img.sum_path for img in experiment.images)
+
     response = ExperimentDetailResponse.model_validate(experiment)
     response.image_count = len(experiment.images)
     response.cell_count = cell_count
+    response.has_sum_projections = has_sum
 
     return response
 

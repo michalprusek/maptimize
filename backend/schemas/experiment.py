@@ -45,8 +45,9 @@ class ExperimentResponse(BaseModel):
     fasta_sequence: Optional[str] = None
     created_at: datetime
     updated_at: datetime
-    image_count: int = 0
-    cell_count: int = 0
+    image_count: int = Field(default=0, ge=0, description="Number of images (non-negative)")
+    cell_count: int = Field(default=0, ge=0, description="Number of cells (non-negative)")
+    has_sum_projections: bool = False
 
     class Config:
         from_attributes = True

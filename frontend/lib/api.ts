@@ -881,6 +881,13 @@ class ApiClient {
   /**
    * Get URL for streaming export download.
    * Use this URL directly in an anchor tag or window.open for download.
+   *
+   * SECURITY NOTE: Token is passed in URL query parameter because browser downloads
+   * cannot include Authorization headers. This is a known limitation. Mitigations:
+   * - Tokens should be short-lived
+   * - Server adds Referrer-Policy: no-referrer to response
+   * - URLs may appear in server logs - ensure log rotation/security
+   * TODO: Consider implementing single-use download tokens for enhanced security
    */
   getExportStreamUrl(jobId: string): string {
     const token = this.getToken();
@@ -968,6 +975,7 @@ export interface Experiment {
   updated_at: string;
   image_count: number;
   cell_count: number;
+  has_sum_projections: boolean;
 }
 
 export interface MapProtein {
@@ -1490,6 +1498,7 @@ export interface TextSegmentResponse {
 // ============================================================================
 
 export type BBoxFormat = "coco" | "yolo" | "voc" | "csv";
+export type MaskFormat = "png" | "coco_rle" | "coco" | "polygon";
 
 export interface ExportOptions {
   include_fov_images?: boolean;
@@ -1497,6 +1506,7 @@ export interface ExportOptions {
   include_embeddings?: boolean;
   include_masks?: boolean;
   bbox_format?: BBoxFormat;
+  mask_format?: MaskFormat;
 }
 
 export interface ExportPrepareResponse {
