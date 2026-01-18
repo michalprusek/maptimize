@@ -69,7 +69,20 @@ class SAMEncoder:
                 )
 
             self._model = SAM(SAM_MODEL_PATH)
-            self._model.to(self.device)
+
+            # Try to load on requested device, fall back to CPU if OOM
+            try:
+                self._model.to(self.device)
+            except (torch.cuda.OutOfMemoryError, RuntimeError) as e:
+                if "out of memory" in str(e).lower() or "cuda" in str(e).lower():
+                    logger.warning(f"CUDA OOM when loading SAM model, falling back to CPU: {e}")
+                    self.device = "cpu"
+                    # Clear any partial CUDA allocations
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
+                    self._model.to("cpu")
+                else:
+                    raise
 
             # Initialize predictor with dummy prediction (required by Ultralytics SAM)
             logger.info("Initializing SAM predictor...")
