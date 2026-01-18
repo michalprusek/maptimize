@@ -181,24 +181,6 @@ function getNavButtonClassName(isEnabled: boolean): string {
 }
 
 /**
- * Updates saved polygons list - replaces existing or adds new.
- */
-function updateSavedPolygon(
-  polygons: CellPolygon[],
-  cropId: number,
-  points: [number, number][],
-  iouScore: number
-): CellPolygon[] {
-  const existingIndex = polygons.findIndex(p => p.cropId === cropId);
-  if (existingIndex >= 0) {
-    const updated = [...polygons];
-    updated[existingIndex] = { cropId, points, iouScore };
-    return updated;
-  }
-  return [...polygons, { cropId, points, iouScore }];
-}
-
-/**
  * Segmentation mode button with status indicators.
  * Extracted to avoid nested ternaries in the main component.
  */

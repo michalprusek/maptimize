@@ -472,3 +472,78 @@ async def get_crop_with_ownership_check(
         return None, None, "Access denied"
 
     return crop, crop.image, None
+
+
+# =============================================================================
+# Embedding Status Tracking (DRY helper for background tasks)
+# =============================================================================
+
+
+def truncate_error_message(error: str, max_length: int = 500) -> str:
+    """Truncate error message with indicator if truncated."""
+    if len(error) > max_length:
+        return error[:max_length - 3] + "..."
+    return error
+
+
+async def update_crop_embedding_status(
+    db: AsyncSession,
+    crop_id: int,
+    status: str,
+    error_msg: Optional[str] = None,
+) -> None:
+    """
+    Update embedding status for a crop.
+
+    DRY helper to avoid repeating status update logic in background tasks.
+
+    Args:
+        db: Database session
+        crop_id: ID of the crop to update
+        status: One of "pending", "computing", "ready", "error"
+        error_msg: Error message (only for "error" status)
+    """
+    from sqlalchemy import update
+    from models.cell_crop import CellCrop
+
+    truncated_error = truncate_error_message(error_msg) if error_msg else None
+
+    await db.execute(
+        update(CellCrop)
+        .where(CellCrop.id == crop_id)
+        .values(
+            embedding_status=status,
+            embedding_error=truncated_error
+        )
+    )
+    await db.commit()
+    logger.debug(f"Updated crop {crop_id} embedding status to '{status}'")
+
+
+async def run_embedding_extraction_task(crop_id: int) -> None:
+    """
+    Background task for extracting embeddings for a single crop.
+
+    DRY: Common logic used by regenerate_crop_features and create_manual_crop endpoints.
+    Handles status tracking, error handling, and logging.
+
+    Args:
+        crop_id: ID of the crop to extract embeddings for
+    """
+    from database import get_db_context
+    from ml.features import extract_features_for_crops
+
+    async with get_db_context() as task_db:
+        try:
+            await update_crop_embedding_status(task_db, crop_id, "computing")
+            await extract_features_for_crops([crop_id], task_db)
+            await update_crop_embedding_status(task_db, crop_id, "ready")
+            logger.info(f"Successfully extracted embedding for crop {crop_id}")
+        except (KeyboardInterrupt, SystemExit):
+            raise  # Always propagate system-level errors
+        except Exception as e:
+            logger.error(f"Background embedding extraction failed for crop {crop_id}: {e}")
+            try:
+                await update_crop_embedding_status(task_db, crop_id, "error", str(e))
+            except Exception as db_err:
+                logger.error(f"Failed to update error status for crop {crop_id}: {db_err}")

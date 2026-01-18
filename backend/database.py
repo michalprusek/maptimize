@@ -97,6 +97,9 @@ async def ensure_schema_updates():
             ("cell_crops", "embedding", "vector(1024)"),
             ("cell_crops", "embedding_model", "VARCHAR(100)"),
             ("cell_crops", "map_protein_id", "INTEGER REFERENCES map_proteins(id)"),
+            # Embedding status tracking for background tasks
+            ("cell_crops", "embedding_status", "VARCHAR(20)"),
+            ("cell_crops", "embedding_error", "VARCHAR(500)"),
             # Pre-computed UMAP coordinates for cell crops
             ("cell_crops", "umap_x", "FLOAT"),
             ("cell_crops", "umap_y", "FLOAT"),

@@ -54,6 +54,45 @@ router = APIRouter()
 settings = get_settings()
 
 
+# =============================================================================
+# Helper Functions (DRY)
+# =============================================================================
+
+
+async def verify_experiment_ownership(
+    experiment_id: int,
+    user_id: int,
+    db: AsyncSession,
+) -> Experiment:
+    """
+    Verify user owns an experiment.
+
+    Args:
+        experiment_id: ID of the experiment
+        user_id: ID of the user
+        db: Database session
+
+    Returns:
+        Experiment if found and owned
+
+    Raises:
+        HTTPException: 404 if not found
+    """
+    result = await db.execute(
+        select(Experiment).where(
+            Experiment.id == experiment_id,
+            Experiment.user_id == user_id
+        )
+    )
+    experiment = result.scalar_one_or_none()
+    if not experiment:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Experiment not found"
+        )
+    return experiment
+
+
 def safe_remove_file(path: Optional[str]) -> bool:
     """
     Safely remove a file, logging warnings on failure.
@@ -185,19 +224,7 @@ async def upload_image(
         file: The image file (TIFF Z-stack, PNG, JPG)
     """
     # Verify experiment ownership and get experiment's protein assignment
-    result = await db.execute(
-        select(Experiment).where(
-            Experiment.id == experiment_id,
-            Experiment.user_id == current_user.id
-        )
-    )
-    experiment = result.scalar_one_or_none()
-
-    if not experiment:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Experiment not found"
-        )
+    experiment = await verify_experiment_ownership(experiment_id, current_user.id, db)
 
     # Validate file type
     allowed_extensions = {".tif", ".tiff", ".png", ".jpg", ".jpeg"}
@@ -334,18 +361,7 @@ async def list_fovs(
     Note: limit is optional. If not provided, all FOVs are returned.
     Frontend handles pagination for display.
     """
-    # Verify experiment ownership
-    result = await db.execute(
-        select(Experiment).where(
-            Experiment.id == experiment_id,
-            Experiment.user_id == current_user.id
-        )
-    )
-    if not result.scalar_one_or_none():
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Experiment not found"
-        )
+    await verify_experiment_ownership(experiment_id, current_user.id, db)
 
     # Get images with protein info and cell counts
     query = (
@@ -402,18 +418,7 @@ async def list_images(
     db: AsyncSession = Depends(get_db)
 ):
     """List images in an experiment with cell counts in a single query."""
-    # Verify experiment ownership
-    result = await db.execute(
-        select(Experiment).where(
-            Experiment.id == experiment_id,
-            Experiment.user_id == current_user.id
-        )
-    )
-    if not result.scalar_one_or_none():
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Experiment not found"
-        )
+    await verify_experiment_ownership(experiment_id, current_user.id, db)
 
     # Get images with protein info and cell counts in a single query
     query = (
@@ -451,18 +456,7 @@ async def list_cell_crops(
     db: AsyncSession = Depends(get_db)
 ):
     """List all cell crops for an experiment."""
-    # Verify experiment ownership
-    result = await db.execute(
-        select(Experiment).where(
-            Experiment.id == experiment_id,
-            Experiment.user_id == current_user.id
-        )
-    )
-    if not result.scalar_one_or_none():
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Experiment not found"
-        )
+    await verify_experiment_ownership(experiment_id, current_user.id, db)
 
     # Build query with optional exclusion filter
     query = (
@@ -772,48 +766,14 @@ async def regenerate_crop_features(
 
     # Extract embedding asynchronously (non-blocking)
     if result.get("needs_embedding") and background_tasks:
+        from services.crop_editor_service import run_embedding_extraction_task
+
         # Set status to pending before starting task
         crop.embedding_status = "pending"
         crop.embedding_error = None
         await db.commit()
 
-        async def extract_embedding_task(target_crop_id: int):
-            from database import get_db_context
-            async with get_db_context() as task_db:
-                try:
-                    # Update status to computing
-                    await task_db.execute(
-                        update(CellCrop)
-                        .where(CellCrop.id == target_crop_id)
-                        .values(embedding_status="computing", embedding_error=None)
-                    )
-                    await task_db.commit()
-
-                    await extract_features_for_crops([target_crop_id], task_db)
-
-                    # Update status to ready on success
-                    await task_db.execute(
-                        update(CellCrop)
-                        .where(CellCrop.id == target_crop_id)
-                        .values(embedding_status="ready", embedding_error=None)
-                    )
-                    await task_db.commit()
-                    logger.info(f"Successfully extracted embedding for crop {target_crop_id}")
-                except Exception as e:
-                    error_msg = str(e)[:500]  # Truncate to fit field
-                    logger.error(f"Background embedding extraction failed for crop {target_crop_id}: {e}")
-                    # Update status to error
-                    try:
-                        await task_db.execute(
-                            update(CellCrop)
-                            .where(CellCrop.id == target_crop_id)
-                            .values(embedding_status="error", embedding_error=error_msg)
-                        )
-                        await task_db.commit()
-                    except Exception as db_err:
-                        logger.error(f"Failed to update error status for crop {target_crop_id}: {db_err}")
-
-        background_tasks.add_task(extract_embedding_task, crop.id)
+        background_tasks.add_task(run_embedding_extraction_task, crop.id)
 
     # Build warnings list if any issues occurred
     warnings = []
@@ -888,48 +848,14 @@ async def create_manual_crop(
             detail=error
         )
 
-    # Set embedding status to pending before starting task
+    # Set embedding status to pending and queue background extraction
+    from services.crop_editor_service import run_embedding_extraction_task
+
     crop.embedding_status = "pending"
     crop.embedding_error = None
     await db.commit()
 
-    # Extract features in background with status tracking
-    async def extract_features_task(crop_id: int):
-        from database import get_db_context
-        async with get_db_context() as task_db:
-            try:
-                # Update status to computing
-                await task_db.execute(
-                    update(CellCrop)
-                    .where(CellCrop.id == crop_id)
-                    .values(embedding_status="computing", embedding_error=None)
-                )
-                await task_db.commit()
-
-                await extract_features_for_crops([crop_id], task_db)
-
-                # Update status to ready on success
-                await task_db.execute(
-                    update(CellCrop)
-                    .where(CellCrop.id == crop_id)
-                    .values(embedding_status="ready", embedding_error=None)
-                )
-                await task_db.commit()
-                logger.info(f"Successfully extracted features for crop {crop_id}")
-            except Exception as e:
-                error_msg = str(e)[:500]
-                logger.error(f"Failed to extract features for crop {crop_id}: {e}")
-                try:
-                    await task_db.execute(
-                        update(CellCrop)
-                        .where(CellCrop.id == crop_id)
-                        .values(embedding_status="error", embedding_error=error_msg)
-                    )
-                    await task_db.commit()
-                except Exception as db_err:
-                    logger.error(f"Failed to update error status for crop {crop_id}: {db_err}")
-
-    background_tasks.add_task(extract_features_task, crop.id)
+    background_tasks.add_task(run_embedding_extraction_task, crop.id)
 
     return ManualCropCreateResponse(
         id=crop.id,
@@ -1120,19 +1046,16 @@ async def batch_update_crops(
 
         async def regenerate_task(crop_ids: list):
             from database import get_db_context
-            from services.crop_editor_service import regenerate_crop_features as do_regen
+            from services.crop_editor_service import (
+                regenerate_crop_features as do_regen,
+                update_crop_embedding_status,
+            )
             from ml.features import extract_features_for_crops
             async with get_db_context() as task_db:
                 successful_crop_ids = []
                 for crop_id in crop_ids:
                     try:
-                        # Update status to computing
-                        await task_db.execute(
-                            update(CellCrop)
-                            .where(CellCrop.id == crop_id)
-                            .values(embedding_status="computing", embedding_error=None)
-                        )
-                        await task_db.commit()
+                        await update_crop_embedding_status(task_db, crop_id, "computing")
 
                         result = await task_db.execute(
                             select(CellCrop)
@@ -1143,16 +1066,15 @@ async def batch_update_crops(
                         if crop:
                             await do_regen(crop, crop.image, task_db)
                             successful_crop_ids.append(crop_id)
+                        else:
+                            # Crop was deleted between status update and processing
+                            logger.warning(f"Crop {crop_id} not found during regeneration - may have been deleted")
+                    except (KeyboardInterrupt, SystemExit):
+                        raise  # Always propagate system-level errors
                     except Exception as e:
-                        error_msg = str(e)[:500]
                         logger.error(f"Failed to regenerate crop {crop_id}: {e}")
                         try:
-                            await task_db.execute(
-                                update(CellCrop)
-                                .where(CellCrop.id == crop_id)
-                                .values(embedding_status="error", embedding_error=error_msg)
-                            )
-                            await task_db.commit()
+                            await update_crop_embedding_status(task_db, crop_id, "error", str(e))
                         except Exception as db_err:
                             logger.error(f"Failed to update error status for crop {crop_id}: {db_err}")
                 await task_db.commit()
@@ -1163,27 +1085,18 @@ async def batch_update_crops(
                         await extract_features_for_crops(successful_crop_ids, task_db)
                         # Update status to ready for all successful crops
                         for crop_id in successful_crop_ids:
-                            await task_db.execute(
-                                update(CellCrop)
-                                .where(CellCrop.id == crop_id)
-                                .values(embedding_status="ready", embedding_error=None)
-                            )
-                        await task_db.commit()
+                            await update_crop_embedding_status(task_db, crop_id, "ready")
                         logger.info(f"Successfully extracted embeddings for {len(successful_crop_ids)} crops")
+                    except (KeyboardInterrupt, SystemExit):
+                        raise
                     except Exception as e:
-                        error_msg = str(e)[:500]
                         logger.error(f"Failed to extract embeddings for batch: {e}")
                         # Mark all as error
                         for crop_id in successful_crop_ids:
                             try:
-                                await task_db.execute(
-                                    update(CellCrop)
-                                    .where(CellCrop.id == crop_id)
-                                    .values(embedding_status="error", embedding_error=error_msg)
-                                )
-                            except Exception:
-                                pass
-                        await task_db.commit()
+                                await update_crop_embedding_status(task_db, crop_id, "error", str(e))
+                            except Exception as status_err:
+                                logger.error(f"Failed to update error status for crop {crop_id}: {status_err}")
 
         background_tasks.add_task(regenerate_task, crops_to_regenerate)
         regeneration_queued = True
