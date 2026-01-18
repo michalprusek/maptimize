@@ -291,119 +291,18 @@ class ImageProcessor:
         Run the full processing pipeline (legacy mode).
 
         This combines Phase 1 and Phase 2 for backward compatibility.
+        Delegates to process_upload_only() then process_batch().
 
         Returns:
             True if successful, False otherwise
         """
-        async with get_db_context() as db:
-            try:
-                # Get image record
-                result = await db.execute(
-                    select(Image).where(Image.id == self.image_id)
-                )
-                image = result.scalar_one_or_none()
+        # Phase 1: Create projections and thumbnail
+        phase1_success = await self.process_upload_only()
+        if not phase1_success:
+            return False
 
-                if not image:
-                    logger.error(f"Image {self.image_id} not found")
-                    return False
-
-                logger.info(f"Processing image {image.id}: {image.original_filename} (detect_cells={self.detect_cells})")
-
-                # Update status
-                image.status = UploadStatus.PROCESSING
-                image.detect_cells = self.detect_cells
-                await db.commit()
-
-                # Load image
-                data = await self._load_image(image.file_path)
-                if data is None:
-                    raise ValueError(f"Failed to load image: {image.file_path}")
-
-                # Check if Z-stack (3D) or 2D image
-                is_zstack = len(data.shape) == 3
-
-                # Store dimensions
-                if is_zstack:
-                    image.z_slices = data.shape[0]
-                    image.height = data.shape[1]
-                    image.width = data.shape[2]
-                else:
-                    image.height = data.shape[0]
-                    image.width = data.shape[1]
-
-                # Create projections based on image type
-                if is_zstack:
-                    logger.info(f"Processing Z-stack with {data.shape[0]} slices...")
-
-                    # Create MIP projection
-                    mip = create_mip(data)
-                    mip_path = await self._save_projection(image, mip, "mip")
-                    image.mip_path = str(mip_path)
-
-                    # Create SUM projection
-                    sum_proj = create_sum_projection(data)
-                    sum_path = await self._save_projection(image, sum_proj, "sum")
-                    image.sum_path = str(sum_path)
-
-                    # Mark source as discarded (will delete after commit succeeds)
-                    image.source_discarded = True
-                    original_path = Path(image.file_path)
-                else:
-                    logger.info("Processing 2D image...")
-                    mip = data
-                    sum_proj = None
-
-                    # For 2D images in non-web-compatible formats (TIFF), convert to PNG
-                    # Browsers can't display TIFF, so we need a web-friendly version
-                    file_ext = Path(image.file_path).suffix.lower()
-                    if file_ext in ['.tif', '.tiff']:
-                        logger.info("Converting 2D TIFF to PNG for web display")
-                        mip_path = await self._save_projection(image, mip, "mip")
-                        image.mip_path = str(mip_path)
-                        # Keep the original TIFF for scientific accuracy
-                        original_path = None
-                    else:
-                        # For web-compatible formats (PNG, JPEG), use original directly
-                        original_path = None
-
-                # Save thumbnail (always from MIP)
-                thumb_path = await self._save_thumbnail(image, mip)
-                image.thumbnail_path = str(thumb_path)
-
-                await db.commit()
-
-                # Delete original Z-stack file AFTER successful commit (prevents data loss on rollback)
-                if original_path and original_path.exists():
-                    original_path.unlink()
-                    logger.info(f"Deleted original Z-stack: {original_path}")
-
-                if self.detect_cells:
-                    # Run detection pipeline
-                    await self._run_detection(db, image, mip, sum_proj, is_zstack)
-                else:
-                    # No detection - just mark as ready (FOV only, no whole-image crop)
-                    logger.info("Detection disabled - FOV will be shown without crops")
-                    image.status = UploadStatus.READY
-                    image.processed_at = datetime.now(timezone.utc)
-
-                await db.commit()
-                logger.info(f"Successfully processed image {image.id}")
-                return True
-
-            except Exception as e:
-                logger.exception(f"Error processing image {self.image_id}: {e}")
-
-                # Update status to error
-                result = await db.execute(
-                    select(Image).where(Image.id == self.image_id)
-                )
-                image = result.scalar_one_or_none()
-                if image:
-                    image.status = UploadStatus.ERROR
-                    image.error_message = str(e)
-                    await db.commit()
-
-                return False
+        # Phase 2: Run detection if enabled
+        return await self.process_batch(detect_cells=self.detect_cells)
 
     async def _run_detection(
         self,
@@ -667,22 +566,45 @@ async def process_image(image_id: int, detect_cells: bool = True) -> bool:
     return await processor.process()
 
 
+async def _run_background_task(
+    task_name: str,
+    image_id: int,
+    coro,
+) -> None:
+    """
+    Common wrapper for background image processing tasks.
+
+    Handles cancellation, system errors, and updates error status on failure.
+    DRY: Consolidates error handling for all background processing functions.
+
+    Args:
+        task_name: Human-readable task name for logging
+        image_id: Image ID for error status update
+        coro: Coroutine to execute
+    """
+    try:
+        await coro
+    except asyncio.CancelledError:
+        logger.info(f"{task_name} cancelled for image {image_id}")
+        raise
+    except (MemoryError, SystemExit, KeyboardInterrupt):
+        logger.critical(f"System-level error during {task_name} for image {image_id}")
+        raise
+    except Exception as e:
+        logger.exception(f"{task_name} failed for image {image_id}: {e}")
+        await _update_error_status(image_id, str(e))
+
+
 async def process_image_background(image_id: int, detect_cells: bool = True):
     """
     Process an image in the background.
     This is meant to be called from a background task.
     """
-    try:
-        await process_image(image_id, detect_cells=detect_cells)
-    except asyncio.CancelledError:
-        logger.info(f"Processing cancelled for image {image_id}")
-        raise  # Always re-raise cancellation
-    except (MemoryError, SystemExit, KeyboardInterrupt):
-        logger.critical(f"System-level error during image {image_id} processing")
-        raise  # Don't catch system-level errors
-    except Exception as e:
-        logger.exception(f"Background processing failed for image {image_id}: {e}")
-        await _update_error_status(image_id, str(e))
+    await _run_background_task(
+        "Background processing",
+        image_id,
+        process_image(image_id, detect_cells=detect_cells),
+    )
 
 
 async def _update_error_status(image_id: int, error_message: str):
@@ -724,17 +646,11 @@ async def process_upload_only_background(image_id: int):
     Phase 1 background task: Process uploaded image.
     Creates projections and thumbnail, sets status to UPLOADED.
     """
-    try:
-        await process_upload_only(image_id)
-    except asyncio.CancelledError:
-        logger.info(f"Phase 1 processing cancelled for image {image_id}")
-        raise
-    except (MemoryError, SystemExit, KeyboardInterrupt):
-        logger.critical(f"System-level error during Phase 1 for image {image_id}")
-        raise
-    except Exception as e:
-        logger.exception(f"Phase 1 background processing failed for image {image_id}: {e}")
-        await _update_error_status(image_id, str(e))
+    await _run_background_task(
+        "Phase 1 processing",
+        image_id,
+        process_upload_only(image_id),
+    )
 
 
 async def process_batch(image_id: int, detect_cells: bool, map_protein_id: Optional[int] = None) -> bool:
@@ -757,14 +673,8 @@ async def process_batch_background(image_id: int, detect_cells: bool, map_protei
     """
     Phase 2 background task: Run detection and feature extraction.
     """
-    try:
-        await process_batch(image_id, detect_cells, map_protein_id)
-    except asyncio.CancelledError:
-        logger.info(f"Phase 2 processing cancelled for image {image_id}")
-        raise
-    except (MemoryError, SystemExit, KeyboardInterrupt):
-        logger.critical(f"System-level error during Phase 2 for image {image_id}")
-        raise
-    except Exception as e:
-        logger.exception(f"Phase 2 background processing failed for image {image_id}: {e}")
-        await _update_error_status(image_id, str(e))
+    await _run_background_task(
+        "Phase 2 processing",
+        image_id,
+        process_batch(image_id, detect_cells, map_protein_id),
+    )

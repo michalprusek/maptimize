@@ -141,6 +141,33 @@ def delete_crop_files(crop: CellCrop) -> None:
 
 
 # =============================================================================
+# MIP Source Helper
+# =============================================================================
+
+
+def get_mip_source_path(image: Image) -> Optional[str]:
+    """
+    Determine the MIP source path for an image.
+
+    For Z-stacks: Uses the generated MIP projection.
+    For 2D images: Falls back to the original file.
+
+    DRY: Common logic used by regenerate_crop_features and create_manual_crop.
+
+    Args:
+        image: Image model instance
+
+    Returns:
+        Path string or None if no source available
+    """
+    if image.mip_path and Path(image.mip_path).exists():
+        return image.mip_path
+    if Path(image.file_path).exists():
+        return image.file_path
+    return None
+
+
+# =============================================================================
 # Regeneration Functions
 # =============================================================================
 
@@ -172,16 +199,11 @@ async def regenerate_crop_features(
     Returns:
         dict with success status and details
     """
-    from ml.features import extract_features_for_crops
     from services.umap_service import invalidate_crop_umap
 
     # Determine MIP source path
-    if image.mip_path and Path(image.mip_path).exists():
-        mip_source = image.mip_path
-    elif Path(image.file_path).exists():
-        # For 2D images, use original file
-        mip_source = image.file_path
-    else:
+    mip_source = get_mip_source_path(image)
+    if not mip_source:
         return {"success": False, "error": "No MIP or source file available"}
 
     # Load MIP projection
@@ -245,19 +267,7 @@ async def regenerate_crop_features(
 
     await db.flush()
 
-    # Extract new DINOv3 embedding
-    embedding_extracted = False
-    embedding_error = None
-    try:
-        result = await extract_features_for_crops([crop.id], db)
-        embedding_extracted = result.get("success", 0) > 0
-        if not embedding_extracted:
-            embedding_error = result.get("error", "Unknown embedding error")
-    except Exception as e:
-        logger.error(f"Failed to extract embedding for crop {crop.id}: {e}")
-        embedding_error = str(e)
-
-    # Invalidate UMAP for all crops in this experiment
+    # Invalidate UMAP for all crops in this experiment (synchronous - fast)
     umap_invalidated = False
     try:
         await invalidate_crop_umap(db, image_id=image.id)
@@ -265,20 +275,13 @@ async def regenerate_crop_features(
     except Exception as e:
         logger.warning(f"Failed to invalidate UMAP: {e}")
 
-    # Determine overall success status
-    # Partial success = crop regenerated but embedding failed
-    warnings = []
-    if not embedding_extracted:
-        warnings.append(f"Embedding extraction failed: {embedding_error}")
-    if not umap_invalidated:
-        warnings.append("UMAP invalidation failed")
+    # Note: Embedding extraction is done asynchronously by the caller
+    # to avoid blocking the response
 
     return {
-        "success": True,  # Crop itself was regenerated
-        "partial_success": len(warnings) > 0,
-        "embedding_extracted": embedding_extracted,
+        "success": True,
+        "needs_embedding": True,  # Signal caller to extract embedding async
         "umap_invalidated": umap_invalidated,
-        "warnings": warnings if warnings else None,
         "mip_path": crop.mip_path,
         "sum_crop_path": crop.sum_crop_path,
         "mean_intensity": crop.mean_intensity,
@@ -317,11 +320,8 @@ async def create_manual_crop(
         return None, error
 
     # Determine MIP source
-    if image.mip_path and Path(image.mip_path).exists():
-        mip_source = image.mip_path
-    elif Path(image.file_path).exists():
-        mip_source = image.file_path
-    else:
+    mip_source = get_mip_source_path(image)
+    if not mip_source:
         return None, "No MIP or source file available"
 
     # Load MIP projection

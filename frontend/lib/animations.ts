@@ -268,3 +268,27 @@ export const pageVariants: Variants = {
     transition: { duration: 0.2 },
   },
 };
+
+// =============================================================================
+// MODAL / DIALOG ANIMATIONS
+// =============================================================================
+
+/**
+ * Overlay fade animation for modals/dialogs.
+ * Use with AnimatePresence and motion.div.
+ */
+export const modalOverlayAnimation = {
+  initial: { opacity: 0 },
+  animate: { opacity: 1 },
+  exit: { opacity: 0 },
+} as const;
+
+/**
+ * Content scale animation for modal/dialog content.
+ * Use with AnimatePresence and motion.div.
+ */
+export const modalContentAnimation = {
+  initial: { scale: 0.95, opacity: 0 },
+  animate: { scale: 1, opacity: 1 },
+  exit: { scale: 0.95, opacity: 0 },
+} as const;

@@ -1,8 +1,6 @@
 """Bug report router for user feedback submission."""
-from typing import List
-
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import select, func
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -36,20 +34,7 @@ async def create_bug_report(
     await db.commit()
     await db.refresh(bug_report)
 
-    return BugReportResponse(
-        id=bug_report.id,
-        user_id=bug_report.user_id,
-        user_name=current_user.name,
-        user_email=current_user.email,
-        description=bug_report.description,
-        category=bug_report.category,
-        status=bug_report.status,
-        browser_info=bug_report.browser_info,
-        page_url=bug_report.page_url,
-        screen_resolution=bug_report.screen_resolution,
-        user_settings_json=bug_report.user_settings_json,
-        created_at=bug_report.created_at,
-    )
+    return BugReportResponse.from_report_and_user(bug_report, current_user)
 
 
 @router.get("", response_model=BugReportListResponse)
@@ -66,23 +51,7 @@ async def get_my_bug_reports(
     reports = result.scalars().all()
 
     return BugReportListResponse(
-        reports=[
-            BugReportResponse(
-                id=r.id,
-                user_id=r.user_id,
-                user_name=current_user.name,
-                user_email=current_user.email,
-                description=r.description,
-                category=r.category,
-                status=r.status,
-                browser_info=r.browser_info,
-                page_url=r.page_url,
-                screen_resolution=r.screen_resolution,
-                user_settings_json=r.user_settings_json,
-                created_at=r.created_at,
-            )
-            for r in reports
-        ],
+        reports=[BugReportResponse.from_report_and_user(r, current_user) for r in reports],
         total=len(reports),
     )
 
@@ -107,22 +76,6 @@ async def get_all_bug_reports(
     reports = result.scalars().all()
 
     return BugReportListResponse(
-        reports=[
-            BugReportResponse(
-                id=r.id,
-                user_id=r.user_id,
-                user_name=r.user.name,
-                user_email=r.user.email,
-                description=r.description,
-                category=r.category,
-                status=r.status,
-                browser_info=r.browser_info,
-                page_url=r.page_url,
-                screen_resolution=r.screen_resolution,
-                user_settings_json=r.user_settings_json,
-                created_at=r.created_at,
-            )
-            for r in reports
-        ],
+        reports=[BugReportResponse.from_report_and_user(r, r.user) for r in reports],
         total=len(reports),
     )

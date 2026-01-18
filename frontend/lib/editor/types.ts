@@ -109,6 +109,9 @@ export function normalizePolygonFormat(
 /**
  * Click point for SAM segmentation.
  * Left click = positive (foreground), Right click = negative (background)
+ *
+ * CANONICAL SOURCE: This type is the source of truth.
+ * Re-exported in @/lib/api for API compatibility.
  */
 export interface SegmentClickPoint {
   /** X coordinate in image pixels */

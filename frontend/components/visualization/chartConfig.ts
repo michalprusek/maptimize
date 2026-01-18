@@ -5,6 +5,8 @@
  * across all visualization components.
  */
 
+import type { ReactNode } from "react";
+
 // Default color for points without protein assignment
 export const DEFAULT_POINT_COLOR = "#888888";
 
@@ -35,3 +37,21 @@ export const UMAP_SCATTER_ANIMATION = {
   animationDuration: 300,
   animationEasing: "ease-out",
 } as const;
+
+// Shared legend group interface
+export interface LegendGroup {
+  name: string;
+  color: string;
+  count: number;
+}
+
+// Silhouette score color thresholds
+export function getSilhouetteScoreStyle(score: number): string {
+  if (score > 0.5) {
+    return "bg-green-500/20 text-green-400";
+  }
+  if (score > 0.25) {
+    return "bg-accent-amber/20 text-accent-amber";
+  }
+  return "bg-accent-red/20 text-accent-red";
+}

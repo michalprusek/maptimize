@@ -32,6 +32,7 @@ import {
   UMAP_TOOLTIP_CURSOR,
   UMAP_SCATTER_ANIMATION,
   formatAxisTick,
+  getSilhouetteScoreStyle,
 } from "./chartConfig";
 
 interface UmapVisualizationProps {
@@ -354,13 +355,7 @@ export function UmapVisualization({
               </span>
               {silhouetteScore !== null && (
                 <span
-                  className={`px-2 py-0.5 rounded text-xs font-mono ${
-                    silhouetteScore > 0.5
-                      ? "bg-green-500/20 text-green-400"
-                      : silhouetteScore > 0.25
-                        ? "bg-accent-amber/20 text-accent-amber"
-                        : "bg-accent-red/20 text-accent-red"
-                  }`}
+                  className={`px-2 py-0.5 rounded text-xs font-mono ${getSilhouetteScoreStyle(silhouetteScore)}`}
                   title={t("silhouetteTooltip")}
                 >
                   {t("silhouette")}: {silhouetteScore.toFixed(3)}

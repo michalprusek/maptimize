@@ -3,13 +3,13 @@ import logging
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status, Query
-from sqlalchemy import select, func, and_, distinct, delete
+from sqlalchemy import select, func, distinct
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
-from openskill.models import PlackettLuce
 
 from database import get_db
 from config import get_settings
+from utils.rating import update_ratings, calculate_convergence, estimate_remaining_comparisons
 
 logger = logging.getLogger(__name__)
 from models.user import User
@@ -34,7 +34,6 @@ from utils.pair_selection import select_pair, InsufficientItemsError
 
 router = APIRouter()
 settings = get_settings()
-model = PlackettLuce()
 
 
 async def get_or_create_rating(
@@ -62,24 +61,6 @@ async def get_or_create_rating(
         await db.flush()
 
     return rating
-
-
-def update_ratings(
-    winner_mu: float,
-    winner_sigma: float,
-    loser_mu: float,
-    loser_sigma: float
-) -> tuple:
-    """Update ratings using TrueSkill algorithm."""
-    winner = model.rating(mu=winner_mu, sigma=winner_sigma)
-    loser = model.rating(mu=loser_mu, sigma=loser_sigma)
-
-    [[new_winner], [new_loser]] = model.rate([[winner], [loser]])
-
-    return (
-        (new_winner.mu, new_winner.sigma),
-        (new_loser.mu, new_loser.sigma)
-    )
 
 
 @router.get("/pair", response_model=PairResponse)
@@ -482,22 +463,10 @@ async def get_progress(
     sigma_result = await db.execute(sigma_query)
     avg_sigma = sigma_result.scalar() or settings.initial_sigma
 
-    # Calculate convergence (0-100%)
-    max_sigma = settings.initial_sigma
-    target_sigma = settings.target_sigma
-
-    if avg_sigma <= target_sigma:
-        convergence = 100.0
-    else:
-        convergence = max(0, min(100, (max_sigma - avg_sigma) / (max_sigma - target_sigma) * 100))
-
-    # Estimate remaining comparisons
-    if avg_sigma <= target_sigma:
-        estimated_remaining = 0
-    else:
-        # Rough estimate based on typical convergence rate
-        remaining_ratio = (avg_sigma - target_sigma) / (max_sigma - target_sigma)
-        estimated_remaining = int(remaining_ratio * 200)  # Assume ~200 comparisons for full convergence
+    convergence = calculate_convergence(avg_sigma, settings.initial_sigma, settings.target_sigma)
+    estimated_remaining = estimate_remaining_comparisons(
+        avg_sigma, settings.initial_sigma, settings.target_sigma
+    )
 
     # Determine phase
     phase = "exploration" if total_comparisons < settings.exploration_pairs else "exploitation"

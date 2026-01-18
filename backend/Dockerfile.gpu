@@ -23,6 +23,7 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     torch torchvision --extra-index-url https://download.pytorch.org/whl/cu126
 
 # Build other ML dependencies
+# Note: Using transformers>=4.56 for DINOv3 support, ESM-C installed with --no-deps
 RUN --mount=type=cache,target=/root/.cache/pip \
     pip install uv && \
     pip wheel --no-cache-dir --wheel-dir /wheels \
@@ -78,8 +79,25 @@ RUN pip install --no-cache-dir "numpy>=1.26,<2" einops decord pycocotools superv
 # Install SAM 3 from Facebook Research
 RUN pip install --no-cache-dir git+https://github.com/facebookresearch/sam3.git
 
-# Install ESM-C for protein embeddings
-RUN pip install --no-cache-dir "esm>=3.0.0"
+# Install ESM-C for protein embeddings (with --no-deps to avoid transformers downgrade)
+# ESM-C requires transformers<4.48.2 but we need >=4.56 for DINOv3
+# Install ESM-C dependencies manually, then ESM-C without deps
+RUN pip install --no-cache-dir \
+    torchtext \
+    biotite>=1.0.0 \
+    msgpack-numpy \
+    biopython \
+    brotli \
+    attrs \
+    pandas \
+    cloudpathlib \
+    httpx \
+    tenacity \
+    zstd \
+    ipywidgets \
+    py3dmol \
+    pydssp && \
+    pip install --no-cache-dir --no-deps "esm>=3.0.0"
 
 # Install remaining dependencies
 RUN uv pip install --system -e "."

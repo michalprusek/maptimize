@@ -153,11 +153,24 @@ export function useBboxInteraction(
         }
       }
 
-      // Check if clicking inside any bbox
       const adjustedPosScaled = {
         x: pos.x - panOffset.x,
         y: pos.y - panOffset.y,
       };
+
+      // In draw mode: always start drawing new bbox, don't select existing ones
+      if (mode === "draw") {
+        onBboxSelect(null);
+        setInteractionState({
+          type: "drawing",
+          startPos: adjustedPosScaled,
+          currentPos: adjustedPosScaled,
+        });
+        setCursor("crosshair");
+        return;
+      }
+
+      // In view mode: check if clicking inside any bbox to select/drag it
       const clickedBbox = findBboxAtPosition(adjustedPosScaled, bboxes, zoom);
 
       if (clickedBbox) {
@@ -174,18 +187,6 @@ export function useBboxInteraction(
           },
         });
         setCursor("move");
-        return;
-      }
-
-      // Start drawing new bbox if in draw mode
-      if (mode === "draw") {
-        onBboxSelect(null);
-        setInteractionState({
-          type: "drawing",
-          startPos: adjustedPosScaled,
-          currentPos: adjustedPosScaled,
-        });
-        setCursor("crosshair");
         return;
       }
 
@@ -322,22 +323,25 @@ export function useBboxInteraction(
         }
       }
 
-      // Check for bbox hover
-      const hoveredBbox = findBboxAtPosition(adjustedPos, bboxes, zoom);
-      if (hoveredBbox) {
-        setCursor("move");
-        setEditorState((prev) => ({
-          ...prev,
-          hoveredBboxId: hoveredBbox.id,
-        }));
-      } else {
-        // Empty space: crosshair in draw mode, grab cursor otherwise (for panning)
-        setCursor(editorState.mode === "draw" ? "crosshair" : "grab");
-        setEditorState((prev) => ({
-          ...prev,
-          hoveredBboxId: null,
-        }));
+      // Check for bbox hover (only in view mode, not in draw mode)
+      if (editorState.mode !== "draw") {
+        const hoveredBbox = findBboxAtPosition(adjustedPos, bboxes, zoom);
+        if (hoveredBbox) {
+          setCursor("move");
+          setEditorState((prev) => ({
+            ...prev,
+            hoveredBboxId: hoveredBbox.id,
+          }));
+          return;
+        }
       }
+
+      // No bbox hovered or in draw mode
+      setCursor(editorState.mode === "draw" ? "crosshair" : "grab");
+      setEditorState((prev) => ({
+        ...prev,
+        hoveredBboxId: null,
+      }));
     },
     [bboxes, editorState, canvasRef, imageWidth, imageHeight, onBboxChange, setEditorState]
   );

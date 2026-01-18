@@ -54,6 +54,8 @@ interface SegmentationOverlayProps {
   panOffset: { x: number; y: number };
   /** Whether segmentation mode is active */
   isActive: boolean;
+  /** Whether add mode is active (placing new segmentation points) */
+  isAddMode?: boolean;
   /** Whether API is currently loading */
   isLoading?: boolean;
   /** Container dimensions for SVG sizing */
@@ -81,6 +83,7 @@ export function SegmentationOverlay({
   zoom,
   panOffset,
   isActive,
+  isAddMode = false,
   isLoading = false,
   containerWidth = 0,
   containerHeight = 0,
@@ -218,24 +221,46 @@ export function SegmentationOverlay({
         // Determine stroke color: red for selected/hovered (deletion preview), blue for default
         const strokeColor = isSelected || isHovered ? "#ef4444" : "rgba(59, 130, 246, 0.6)";
         const strokeW = isSelected ? 2.5 : isHovered ? 2 : 1.5;
+        // In add mode, disable pointer events so clicks pass through to canvas for placing points
+        // Exception: always allow right-click for mask deletion (handled via separate element)
+        const enableInteraction = isActive && onMaskClick && !isAddMode;
         return (
-          <path
-            key={`fov-mask-${index}`}
-            d={path}
-            fill={`rgba(59, 130, 246, ${maskOpacity})`}
-            stroke={strokeColor}
-            strokeWidth={strokeW}
-            strokeDasharray={isActive ? undefined : "8 4"}
-            className={`${onMaskClick ? "cursor-pointer" : ""} transition-colors`}
-            style={{ pointerEvents: isActive && onMaskClick ? "auto" : "none" }}
-            onMouseEnter={() => onMaskHover?.(index)}
-            onMouseLeave={() => onMaskHover?.(null)}
-            onClick={(e) => onMaskClick?.(index, e)}
-            onContextMenu={(e) => {
-              e.preventDefault();
-              onMaskClick?.(index, e);
-            }}
-          />
+          <g key={`fov-mask-${index}`}>
+            {/* Main visible mask - interactive only when not in add mode */}
+            <path
+              d={path}
+              fill={`rgba(59, 130, 246, ${maskOpacity})`}
+              stroke={strokeColor}
+              strokeWidth={strokeW}
+              strokeDasharray={isActive ? undefined : "8 4"}
+              className={`${enableInteraction ? "cursor-pointer" : ""} transition-colors`}
+              style={{ pointerEvents: enableInteraction ? "auto" : "none" }}
+              onMouseEnter={() => enableInteraction && onMaskHover?.(index)}
+              onMouseLeave={() => enableInteraction && onMaskHover?.(null)}
+              onClick={(e) => enableInteraction && onMaskClick?.(index, e)}
+              onContextMenu={(e) => {
+                if (enableInteraction) {
+                  e.preventDefault();
+                  onMaskClick?.(index, e);
+                }
+              }}
+            />
+            {/* Invisible right-click catcher - active even in add mode */}
+            {isActive && isAddMode && onMaskClick && (
+              <path
+                d={path}
+                fill="transparent"
+                stroke="transparent"
+                strokeWidth={Math.max(strokeW * 3, 10)}
+                style={{ pointerEvents: "stroke" }}
+                onContextMenu={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  onMaskClick(index, e);
+                }}
+              />
+            )}
+          </g>
         );
       })}
 

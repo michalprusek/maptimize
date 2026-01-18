@@ -5,6 +5,7 @@ import { useEffect, useState, useCallback } from "react";
 import { createPortal } from "react-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import { X, AlertTriangle, Loader2 } from "lucide-react";
+import { modalOverlayAnimation, modalContentAnimation } from "@/lib/animations";
 
 interface ConfirmModalProps {
   isOpen: boolean;
@@ -19,19 +20,6 @@ interface ConfirmModalProps {
   variant?: "danger" | "warning" | "primary";
   icon?: ReactNode;
 }
-
-// Shared modal animation constants (SSOT for modal animations)
-const OVERLAY_ANIMATION = {
-  initial: { opacity: 0 },
-  animate: { opacity: 1 },
-  exit: { opacity: 0 },
-};
-
-const CONTENT_ANIMATION = {
-  initial: { scale: 0.95, opacity: 0 },
-  animate: { scale: 1, opacity: 1 },
-  exit: { scale: 0.95, opacity: 0 },
-};
 
 const VARIANT_STYLES = {
   danger: {
@@ -97,12 +85,12 @@ export function ConfirmModal({
     <AnimatePresence>
       {isOpen && (
         <motion.div
-          {...OVERLAY_ANIMATION}
+          {...modalOverlayAnimation}
           className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 backdrop-blur-sm p-4"
           onClick={onClose}
         >
           <motion.div
-            {...CONTENT_ANIMATION}
+            {...modalContentAnimation}
             onClick={(e) => e.stopPropagation()}
             className="glass-card p-6 w-full max-w-md"
             role="alertdialog"

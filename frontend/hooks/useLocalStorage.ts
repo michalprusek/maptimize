@@ -7,7 +7,7 @@
  * Handles SSR, validation, and error handling.
  */
 
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useRef } from "react";
 
 /**
  * Options for useLocalStorage hook.
@@ -44,10 +44,12 @@ export function useLocalStorage<T>(
 
       const parsed = JSON.parse(stored);
       if (validate && !validate(parsed)) {
+        console.error(`[useLocalStorage] Validation failed for ${key}, using default value`);
         return defaultValue;
       }
       return parsed as T;
-    } catch {
+    } catch (error) {
+      console.error(`[useLocalStorage] Failed to load ${key}:`, error);
       return defaultValue;
     }
   });
@@ -87,11 +89,12 @@ export function useLocalStorage<T>(
 
         const parsed = JSON.parse(e.newValue);
         if (validate && !validate(parsed)) {
+          console.error(`[useLocalStorage] Validation failed for storage event ${key}, ignoring`);
           return;
         }
         setValue(parsed as T);
-      } catch {
-        // Ignore invalid JSON from other tabs
+      } catch (error) {
+        console.error(`[useLocalStorage] Failed to parse storage event for ${key}:`, error);
       }
     }
 

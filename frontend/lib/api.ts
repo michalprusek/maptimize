@@ -9,6 +9,9 @@
  * that should NOT fall back to localhost.
  */
 
+// Import types from editor module (canonical source for segmentation types)
+import type { SAMEmbeddingStatus, SegmentClickPoint } from "@/lib/editor/types";
+
 export const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
 interface ApiError {
@@ -109,6 +112,16 @@ class ApiClient {
     }
 
     return response.json();
+  }
+
+  /**
+   * Build authenticated URL with token query parameter.
+   * Used for direct resource access (images, files) where Authorization header isn't possible.
+   */
+  private buildAuthenticatedUrl(path: string, params: Record<string, string> = {}): string {
+    const token = this.getToken();
+    const queryParams = new URLSearchParams({ ...params, token: token ?? "" });
+    return `${API_URL}${path}?${queryParams}`;
   }
 
   // Auth endpoints
@@ -280,12 +293,8 @@ class ApiClient {
     );
   }
 
-  getImageUrl(imageId: number, type: "original" | "mip" | "thumbnail" = "mip") {
-    const token = this.getToken();
-    if (!token) {
-      console.warn(`[API] No token available for image ${imageId}`);
-    }
-    return `${API_URL}/api/images/${imageId}/file?type=${type}&token=${token}`;
+  getImageUrl(imageId: number, type: "original" | "mip" | "thumbnail" = "mip"): string {
+    return this.buildAuthenticatedUrl(`/api/images/${imageId}/file`, { type });
   }
 
   async deleteImage(id: number) {
@@ -462,20 +471,12 @@ class ApiClient {
     return this.request<MetricProgressResponse>(`/api/metrics/${metricId}/progress`);
   }
 
-  getMetricImageUrl(metricId: number, imageId: number) {
-    const token = this.getToken();
-    if (!token) {
-      console.warn(`[API] No token available for metric image ${metricId}/${imageId}`);
-    }
-    return `${API_URL}/api/metrics/${metricId}/images/${imageId}/file?token=${token}`;
+  getMetricImageUrl(metricId: number, imageId: number): string {
+    return this.buildAuthenticatedUrl(`/api/metrics/${metricId}/images/${imageId}/file`);
   }
 
-  getCropImageUrl(cropId: number, type: "mip" | "sum" = "mip") {
-    const token = this.getToken();
-    if (!token) {
-      console.warn(`[API] No token available for crop ${cropId}`);
-    }
-    return `${API_URL}/api/images/crops/${cropId}/image?type=${type}&token=${token}`;
+  getCropImageUrl(cropId: number, type: "mip" | "sum" = "mip"): string {
+    return this.buildAuthenticatedUrl(`/api/images/crops/${cropId}/image`, { type });
   }
 
   async getCellCrops(experimentId: number, excludeExcluded = true) {
@@ -639,31 +640,10 @@ class ApiClient {
     const formData = new FormData();
     formData.append("file", file);
 
-    // For file uploads, we need to let the browser set the Content-Type
-    // with the proper multipart boundary - so we make a direct fetch call
-    const url = `${API_URL}/api/settings/avatar`;
-    const token = this.getToken();
-
-    const response = await fetch(url, {
+    return this.request<AvatarUploadResponse>("/api/settings/avatar", {
       method: "POST",
-      headers: {
-        ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      },
       body: formData,
     });
-
-    if (!response.ok) {
-      let errorDetail: string;
-      try {
-        const error = await response.json();
-        errorDetail = error.detail || "Upload failed";
-      } catch {
-        errorDetail = `Upload failed: ${response.status}`;
-      }
-      throw new Error(errorDetail);
-    }
-
-    return response.json() as Promise<AvatarUploadResponse>;
   }
 
   async deleteAvatar() {
@@ -1369,9 +1349,8 @@ export interface CropBatchUpdateResponse {
 // Segmentation types
 // ============================================================================
 
-// Re-export from canonical location to avoid DRY violation
-export type { SAMEmbeddingStatus } from "@/lib/editor/types";
-import type { SAMEmbeddingStatus } from "@/lib/editor/types";
+// Re-export from canonical location (editor/types.ts) to avoid DRY violation
+export type { SAMEmbeddingStatus, SegmentClickPoint } from "@/lib/editor/types";
 
 export interface SAMEmbeddingStatusResponse {
   image_id: number;
@@ -1379,12 +1358,6 @@ export interface SAMEmbeddingStatusResponse {
   has_embedding: boolean;
   embedding_shape?: string;
   model_variant?: string;
-}
-
-export interface SegmentClickPoint {
-  x: number;
-  y: number;
-  label: 0 | 1; // 0 = background, 1 = foreground
 }
 
 export interface SegmentResponse {

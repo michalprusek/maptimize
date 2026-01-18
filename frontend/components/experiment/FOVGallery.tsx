@@ -228,8 +228,8 @@ export function FOVGallery({
       const statuses = await Promise.all(
         imageIds.map(async (id) => {
           try {
-            const fov = await api.getFov(id);
-            return { id, status: fov.status, success: fov.status === "READY" || fov.status === "ready" };
+            const fov = await api.getFovImage(id);
+            return { id, status: fov.status, success: fov.status === "READY" };
           } catch {
             return { id, status: "error", success: false };
           }

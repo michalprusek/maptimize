@@ -163,6 +163,59 @@ def compute_umap_online(
 # =============================================================================
 
 
+async def _compute_and_store_umap(
+    items: list,
+    item_type: str,
+    db: AsyncSession,
+    user_id: int,
+    experiment_id: Optional[int] = None,
+) -> dict:
+    """
+    Common helper for computing UMAP and storing coordinates.
+
+    DRY: Consolidates shared logic between compute_crop_umap and compute_fov_umap.
+
+    Args:
+        items: List of CellCrop or Image objects with embeddings
+        item_type: "crops" or "images" for error messages and logging
+        db: AsyncSession database connection
+        user_id: User ID for logging
+        experiment_id: Optional experiment ID for logging
+
+    Returns:
+        dict with success count, silhouette score, and computed_at
+    """
+    if len(items) < MIN_POINTS_FOR_UMAP:
+        return {
+            "error": f"Need at least {MIN_POINTS_FOR_UMAP} {item_type} with embeddings",
+            "count": len(items),
+        }
+
+    embeddings = np.array([item.embedding for item in items])
+    projection, silhouette = compute_umap_online(embeddings, items)
+
+    now = datetime.now(timezone.utc)
+    for i, item in enumerate(items):
+        item.umap_x = float(projection[i, 0])
+        item.umap_y = float(projection[i, 1])
+        item.umap_computed_at = now
+
+    await db.commit()
+
+    exp_suffix = f" experiment {experiment_id}" if experiment_id else ""
+    silhouette_str = f"{silhouette:.3f}" if silhouette else "N/A"
+    logger.info(
+        f"Computed {item_type} UMAP for user {user_id}{exp_suffix}: "
+        f"{len(items)} {item_type}, silhouette={silhouette_str}"
+    )
+
+    return {
+        "success": len(items),
+        "silhouette_score": silhouette,
+        "computed_at": now.isoformat(),
+    }
+
+
 async def compute_crop_umap(
     user_id: int,
     db: AsyncSession,
@@ -197,34 +250,7 @@ async def compute_crop_umap(
     result = await db.execute(query)
     crops = result.scalars().all()
 
-    if len(crops) < MIN_POINTS_FOR_UMAP:
-        return {
-            "error": f"Need at least {MIN_POINTS_FOR_UMAP} crops with embeddings",
-            "count": len(crops),
-        }
-
-    embeddings = np.array([c.embedding for c in crops])
-    projection, silhouette = compute_umap_online(embeddings, crops)
-
-    now = datetime.now(timezone.utc)
-    for i, crop in enumerate(crops):
-        crop.umap_x = float(projection[i, 0])
-        crop.umap_y = float(projection[i, 1])
-        crop.umap_computed_at = now
-
-    await db.commit()
-
-    logger.info(
-        f"Computed crop UMAP for user {user_id}"
-        f"{f' experiment {experiment_id}' if experiment_id else ''}: "
-        f"{len(crops)} crops, silhouette={silhouette:.3f if silhouette else 'N/A'}"
-    )
-
-    return {
-        "success": len(crops),
-        "silhouette_score": silhouette,
-        "computed_at": now.isoformat(),
-    }
+    return await _compute_and_store_umap(crops, "crops", db, user_id, experiment_id)
 
 
 async def compute_fov_umap(
@@ -260,34 +286,7 @@ async def compute_fov_umap(
     result = await db.execute(query)
     images = result.scalars().all()
 
-    if len(images) < MIN_POINTS_FOR_UMAP:
-        return {
-            "error": f"Need at least {MIN_POINTS_FOR_UMAP} FOV images with embeddings",
-            "count": len(images),
-        }
-
-    embeddings = np.array([img.embedding for img in images])
-    projection, silhouette = compute_umap_online(embeddings, images)
-
-    now = datetime.now(timezone.utc)
-    for i, image in enumerate(images):
-        image.umap_x = float(projection[i, 0])
-        image.umap_y = float(projection[i, 1])
-        image.umap_computed_at = now
-
-    await db.commit()
-
-    logger.info(
-        f"Computed FOV UMAP for user {user_id}"
-        f"{f' experiment {experiment_id}' if experiment_id else ''}: "
-        f"{len(images)} images, silhouette={silhouette:.3f if silhouette else 'N/A'}"
-    )
-
-    return {
-        "success": len(images),
-        "silhouette_score": silhouette,
-        "computed_at": now.isoformat(),
-    }
+    return await _compute_and_store_umap(images, "images", db, user_id, experiment_id)
 
 
 # =============================================================================

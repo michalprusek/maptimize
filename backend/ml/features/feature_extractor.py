@@ -1,4 +1,8 @@
-"""Feature extraction service for cell crops using DINOv3."""
+"""Feature extraction service for cell crops using DINOv3.
+
+DINOv3 is Meta's latest self-supervised Vision Transformer with improved
+representation quality. Requires transformers>=4.56.
+"""
 
 import asyncio
 import logging

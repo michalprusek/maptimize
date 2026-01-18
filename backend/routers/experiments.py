@@ -25,6 +25,27 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
+async def get_experiment_for_user(
+    db: AsyncSession,
+    experiment_id: int,
+    user_id: int
+) -> Experiment:
+    """Get experiment and verify ownership. Raises 404 if not found."""
+    result = await db.execute(
+        select(Experiment).where(
+            Experiment.id == experiment_id,
+            Experiment.user_id == user_id
+        )
+    )
+    experiment = result.scalar_one_or_none()
+    if not experiment:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Experiment not found"
+        )
+    return experiment
+
+
 @router.get("", response_model=List[ExperimentResponse])
 async def list_experiments(
     skip: int = Query(0, ge=0),
@@ -142,19 +163,7 @@ async def update_experiment(
     db: AsyncSession = Depends(get_db)
 ):
     """Update an experiment."""
-    result = await db.execute(
-        select(Experiment).where(
-            Experiment.id == experiment_id,
-            Experiment.user_id == current_user.id
-        )
-    )
-    experiment = result.scalar_one_or_none()
-
-    if not experiment:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Experiment not found"
-        )
+    experiment = await get_experiment_for_user(db, experiment_id, current_user.id)
 
     # Update fields
     update_data = data.model_dump(exclude_unset=True)
@@ -174,20 +183,7 @@ async def delete_experiment(
     db: AsyncSession = Depends(get_db)
 ):
     """Delete an experiment and all its images."""
-    result = await db.execute(
-        select(Experiment).where(
-            Experiment.id == experiment_id,
-            Experiment.user_id == current_user.id
-        )
-    )
-    experiment = result.scalar_one_or_none()
-
-    if not experiment:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Experiment not found"
-        )
-
+    experiment = await get_experiment_for_user(db, experiment_id, current_user.id)
     await db.delete(experiment)
     await db.commit()
 
@@ -204,19 +200,7 @@ async def update_experiment_protein(
 
     This cascades the protein assignment to all images and cell crops in the experiment.
     """
-    result = await db.execute(
-        select(Experiment).where(
-            Experiment.id == experiment_id,
-            Experiment.user_id == current_user.id
-        )
-    )
-    experiment = result.scalar_one_or_none()
-
-    if not experiment:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Experiment not found"
-        )
+    experiment = await get_experiment_for_user(db, experiment_id, current_user.id)
 
     # Verify protein exists if provided
     protein = None

@@ -336,10 +336,12 @@ export function ImageEditorPage({
       isFirstMount.current = false;
       return;
     }
-    // Restore the preserved mode when navigating to a new image
-    if (preservedModeRef.current !== editorState.mode) {
-      setEditorState(prev => ({ ...prev, mode: preservedModeRef.current }));
-    }
+    // Restore the preserved mode and reset add mode to ON when navigating to a new image
+    setEditorState(prev => ({
+      ...prev,
+      mode: preservedModeRef.current,
+      isSegmentAddMode: true, // Always enable add mode when switching images
+    }));
     // Clear selected mask when switching images
     setSelectedMaskIndex(null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -783,16 +785,13 @@ export function ImageEditorPage({
     onDataChanged?.();
   }, [fovMaskPolygons, fovImage.id, onDataChanged, showError, t]);
 
-  // Handle FOV mask polygon click - right-click shows context menu (when not in add mode)
+  // Handle FOV mask polygon click - right-click shows context menu
   const handleMaskClick = useCallback((index: number, e: React.MouseEvent) => {
     e.stopPropagation();
     e.preventDefault();
 
-    // Right-click = show context menu (only when not in add mode)
+    // Right-click = show context menu (always allowed for mask deletion)
     if (e.button === 2) {
-      // In add mode, ignore right-click on masks
-      if (editorState.isSegmentAddMode) return;
-
       setMaskContextMenu({
         isOpen: true,
         position: { x: e.clientX, y: e.clientY },
@@ -996,9 +995,26 @@ export function ImageEditorPage({
         return;
       }
 
-      // A / N = toggle draw mode (only when not in segment mode)
-      if (e.key === "n" || e.key === "N" || e.key === "a" || e.key === "A") {
-        // Don't switch modes when in segment mode - let user stay in their chosen mode
+      // A = toggle add points mode (in segment mode) or toggle draw mode (otherwise)
+      if (e.key === "a" || e.key === "A") {
+        if (editorState.mode === "segment") {
+          // In segment mode: toggle add points mode
+          setEditorState((prev) => ({
+            ...prev,
+            isSegmentAddMode: !prev.isSegmentAddMode,
+          }));
+        } else {
+          // Not in segment mode: toggle draw mode
+          setEditorState((prev) => ({
+            ...prev,
+            mode: prev.mode === "draw" ? "view" : "draw",
+          }));
+        }
+        return;
+      }
+
+      // N = toggle draw mode (only when not in segment mode)
+      if (e.key === "n" || e.key === "N") {
         if (editorState.mode === "segment") return;
         setEditorState((prev) => ({
           ...prev,
@@ -1119,7 +1135,7 @@ export function ImageEditorPage({
       window.removeEventListener("keydown", handleKeyDown);
       window.removeEventListener("keyup", handleKeyUp);
     };
-  }, [bboxes, editorState.selectedBboxId, editorState.hoveredBboxId, editorState.isSpacePressed, editorState.isShiftPressed, editorState.mode, handleBboxDeleteLocal, undoHistory, segmentation, showShortcutsModal, handleResetView, hasPrevImage, hasNextImage, onNavigatePrev, onNavigateNext, hoveredMaskIndex, fovMaskPolygons, fovImage.id, onDataChanged, showError, t]);
+  }, [bboxes, editorState.selectedBboxId, editorState.hoveredBboxId, editorState.isSpacePressed, editorState.isShiftPressed, editorState.mode, editorState.isSegmentAddMode, handleBboxDeleteLocal, undoHistory, segmentation, showShortcutsModal, handleResetView, hasPrevImage, hasNextImage, onNavigatePrev, onNavigateNext, hoveredMaskIndex, fovMaskPolygons, fovImage.id, onDataChanged, showError, t, deleteMaskPolygon]);
 
   // Bbox interaction hook
   const {
@@ -1148,7 +1164,8 @@ export function ImageEditorPage({
   // Handle segmentation clicks (convert canvas coordinates to image coordinates)
   const handleSegmentationClick = useCallback(
     (e: React.MouseEvent<HTMLCanvasElement | HTMLDivElement>) => {
-      if (editorState.mode !== "segment" || !segmentation.isReady) return;
+      // Only add points when in segment mode with add mode enabled
+      if (editorState.mode !== "segment" || !segmentation.isReady || !editorState.isSegmentAddMode) return;
 
       const container = containerRef.current;
       if (!container) return;
@@ -1170,7 +1187,7 @@ export function ImageEditorPage({
       const label: 0 | 1 = e.button === 2 ? 0 : 1;
       segmentation.addClickPoint(imageX, imageY, label);
     },
-    [editorState.mode, editorState.zoom, editorState.panOffset, segmentation, fovImage.width, fovImage.height]
+    [editorState.mode, editorState.zoom, editorState.panOffset, editorState.isSegmentAddMode, segmentation, fovImage.width, fovImage.height]
   );
 
   // Handle save FOV mask
@@ -1491,6 +1508,7 @@ export function ImageEditorPage({
             zoom={editorState.zoom}
             panOffset={editorState.panOffset}
             isActive={editorState.mode === "segment"}
+            isAddMode={editorState.isSegmentAddMode}
             isLoading={segmentation.state.isLoading}
             containerWidth={containerDimensions.width}
             containerHeight={containerDimensions.height}

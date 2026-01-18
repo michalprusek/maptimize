@@ -373,6 +373,7 @@
       "deleteCell": "Supprimer cellule",
       "undo": "Annuler",
       "toggleSegmentMode": "Basculer mode segment",
+      "toggleAddPoints": "Basculer mode ajout points",
       "addForeground": "Ajouter point premier plan",
       "addBackground": "Ajouter point arriere-plan",
       "saveMask": "Enregistrer masque",

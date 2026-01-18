@@ -373,6 +373,7 @@
       "deleteCell": "Delete cell",
       "undo": "Undo",
       "toggleSegmentMode": "Toggle segment mode",
+      "toggleAddPoints": "Toggle add points mode",
       "addForeground": "Add foreground point",
       "addBackground": "Add background point",
       "saveMask": "Save mask",

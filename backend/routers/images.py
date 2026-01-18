@@ -744,12 +744,13 @@ async def regenerate_crop_features(
     Regenerate crop images and features from current bbox coordinates.
 
     This extracts new pixels from the parent FOV, saves new crop images,
-    calculates mean_intensity, and extracts new DINOv3 embedding.
+    and calculates mean_intensity. DINOv3 embedding is extracted asynchronously.
     """
     from services.crop_editor_service import (
         get_crop_with_ownership_check,
         regenerate_crop_features as do_regenerate,
     )
+    from ml.features import extract_features_for_crops
 
     crop, image, error = await get_crop_with_ownership_check(crop_id, current_user.id, db)
     if error:
@@ -758,7 +759,7 @@ async def regenerate_crop_features(
             detail=error
         )
 
-    # Perform regeneration
+    # Perform regeneration (synchronous part - crop images)
     result = await do_regenerate(crop, image, db)
 
     if not result["success"]:
@@ -769,8 +770,17 @@ async def regenerate_crop_features(
 
     await db.commit()
 
-    # Determine processing status (completed vs partial)
-    processing_status = "partial" if result.get("partial_success") else "completed"
+    # Extract embedding asynchronously (non-blocking)
+    if result.get("needs_embedding") and background_tasks:
+        async def extract_embedding_task(target_crop_id: int):
+            from database import get_db_context
+            async with get_db_context() as task_db:
+                try:
+                    await extract_features_for_crops([target_crop_id], task_db)
+                except Exception as e:
+                    logger.error(f"Background embedding extraction failed for crop {target_crop_id}: {e}")
+
+        background_tasks.add_task(extract_embedding_task, crop.id)
 
     return CropRegenerateResponse(
         id=crop.id,
@@ -783,8 +793,8 @@ async def regenerate_crop_features(
         mean_intensity=crop.mean_intensity,
         embedding_model=crop.embedding_model,
         has_embedding=crop.embedding is not None,
-        processing_status=processing_status,
-        warnings=result.get("warnings"),
+        processing_status="processing",  # Embedding is being extracted async
+        warnings=None,
     )
 
 
@@ -1034,6 +1044,7 @@ async def batch_update_crops(
         async def regenerate_task(crop_ids: list):
             from database import get_db_context
             from services.crop_editor_service import regenerate_crop_features as do_regen
+            from ml.features import extract_features_for_crops
             async with get_db_context() as task_db:
                 for crop_id in crop_ids:
                     try:
@@ -1048,6 +1059,11 @@ async def batch_update_crops(
                     except Exception as e:
                         logger.error(f"Failed to regenerate crop {crop_id}: {e}")
                 await task_db.commit()
+                # Extract embeddings for all regenerated crops
+                try:
+                    await extract_features_for_crops(crop_ids, task_db)
+                except Exception as e:
+                    logger.error(f"Failed to extract embeddings for batch: {e}")
 
         background_tasks.add_task(regenerate_task, crops_to_regenerate)
         regeneration_queued = True

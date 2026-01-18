@@ -7,10 +7,10 @@ from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy import select, func, distinct, or_, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
-from openskill.models import PlackettLuce
 
 from database import get_db
 from config import get_settings
+from utils.rating import update_ratings, calculate_convergence, estimate_remaining_comparisons
 from models.user import User
 from models.experiment import Experiment
 from models.image import Image
@@ -37,7 +37,6 @@ from utils.security import get_current_user
 
 router = APIRouter()
 settings = get_settings()
-model = PlackettLuce()
 
 
 # =============================================================================
@@ -123,24 +122,6 @@ async def get_or_create_metric_rating(
         await db.flush()
 
     return rating
-
-
-def update_ratings(
-    winner_mu: float,
-    winner_sigma: float,
-    loser_mu: float,
-    loser_sigma: float
-) -> tuple:
-    """Update ratings using Plackett-Luce model (via openskill)."""
-    winner = model.rating(mu=winner_mu, sigma=winner_sigma)
-    loser = model.rating(mu=loser_mu, sigma=loser_sigma)
-
-    [[new_winner], [new_loser]] = model.rate([[winner], [loser]])
-
-    return (
-        (new_winner.mu, new_winner.sigma),
-        (new_loser.mu, new_loser.sigma)
-    )
 
 
 # CRUD Endpoints
@@ -810,21 +791,10 @@ async def get_metric_progress(
     )
     avg_sigma = sigma_result.scalar() or settings.initial_sigma
 
-    # Calculate convergence
-    max_sigma = settings.initial_sigma
-    target_sigma = settings.target_sigma
-
-    if avg_sigma <= target_sigma:
-        convergence = 100.0
-    else:
-        convergence = max(0, min(100, (max_sigma - avg_sigma) / (max_sigma - target_sigma) * 100))
-
-    # Estimate remaining
-    if avg_sigma <= target_sigma:
-        estimated_remaining = 0
-    else:
-        remaining_ratio = (avg_sigma - target_sigma) / (max_sigma - target_sigma)
-        estimated_remaining = int(remaining_ratio * 200)
+    convergence = calculate_convergence(avg_sigma, settings.initial_sigma, settings.target_sigma)
+    estimated_remaining = estimate_remaining_comparisons(
+        avg_sigma, settings.initial_sigma, settings.target_sigma
+    )
 
     # Determine phase
     phase = "exploration" if total_comparisons < settings.exploration_pairs else "exploitation"

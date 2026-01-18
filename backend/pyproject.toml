@@ -32,7 +32,7 @@ ml = [
     "torch>=2.1.0",
     "torchvision>=0.16.0",
     "ultralytics>=8.1.0",
-    "transformers>=4.56.0",
+    "transformers>=4.56.0",  # DINOv3 requires >=4.56, ESM-C installed with --no-deps
     "timm>=0.9.12",
     "pgvector>=0.3.0",
     "umap-learn>=0.5.7",

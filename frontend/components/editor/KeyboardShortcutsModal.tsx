@@ -135,6 +135,10 @@ export function KeyboardShortcutsModal({ isOpen, onClose }: KeyboardShortcutsMod
             action={t("toggleSegmentMode")}
           />
           <ShortcutRow
+            keys={<KeyCap>A</KeyCap>}
+            action={t("toggleAddPoints")}
+          />
+          <ShortcutRow
             keys={<MouseIcon button="left" className="text-emerald-400" />}
             action={t("addForeground")}
           />
