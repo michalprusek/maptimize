@@ -764,7 +764,7 @@ class ImportService(BaseJobManager[ImportJobData]):
             return image
 
         except Exception as e:
-            logger.warning(f"Failed to import MAPtimize image: {e}")
+            logger.exception(f"Failed to import MAPtimize image")
             return None
 
     async def _import_maptimize_crop(
@@ -814,7 +814,7 @@ class ImportService(BaseJobManager[ImportJobData]):
             return crop
 
         except Exception as e:
-            logger.warning(f"Failed to import MAPtimize crop: {e}")
+            logger.exception(f"Failed to import MAPtimize crop")
             return None
 
     async def _import_maptimize_masks(
@@ -855,7 +855,7 @@ class ImportService(BaseJobManager[ImportJobData]):
                     db.add(mask)
 
             except Exception as e:
-                logger.warning(f"Failed to import mask {f}: {e}")
+                logger.exception(f"Failed to import mask {f}")
 
     def _png_mask_to_polygon(self, png_data: bytes) -> Optional[List[List[int]]]:
         """Convert PNG binary mask to polygon points."""
@@ -951,8 +951,11 @@ class ImportService(BaseJobManager[ImportJobData]):
             try:
                 img = PILImage.open(io.BytesIO(image_data))
                 width, height = img.size
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning(
+                    f"Could not determine dimensions for {original_filename}: {type(e).__name__}: {e}. "
+                    f"Image will be imported without dimension metadata."
+                )
 
             # Create database record
             image = Image(
@@ -971,7 +974,7 @@ class ImportService(BaseJobManager[ImportJobData]):
             return image
 
         except Exception as e:
-            logger.warning(f"Failed to import image {original_filename}: {e}")
+            logger.exception(f"Failed to import image {original_filename}")
             return None
 
     async def _create_crop(
@@ -1001,7 +1004,7 @@ class ImportService(BaseJobManager[ImportJobData]):
             return crop
 
         except Exception as e:
-            logger.warning(f"Failed to create crop: {e}")
+            logger.exception(f"Failed to create crop for image {image.id}")
             return None
 
     async def get_import_status(self, job_id: str) -> Optional[ImportStatusResponse]:

@@ -111,43 +111,59 @@ jobs:
       - name: Initialize test database
         working-directory: backend
         env:
-          DATABASE_URL: postgresql://maptimize:maptimize@localhost:5433/maptimize
+          DATABASE_URL: postgresql+asyncpg://maptimize:maptimize@localhost:5433/maptimize
         run: |
-          # Run migrations or create tables
-          python -c "from database import engine, Base; from models import *; Base.metadata.create_all(bind=engine)"
+          # Run migrations or create tables using async engine
+          python << 'PYTHON_SCRIPT'
+          import asyncio
+          from database import engine, Base
+          from models import *
+
+          async def init_db():
+              async with engine.begin() as conn:
+                  await conn.run_sync(Base.metadata.create_all)
+              print("Database tables created")
+
+          asyncio.run(init_db())
+          PYTHON_SCRIPT
 
       - name: Create test user
         working-directory: backend
         env:
-          DATABASE_URL: postgresql://maptimize:maptimize@localhost:5433/maptimize
+          DATABASE_URL: postgresql+asyncpg://maptimize:maptimize@localhost:5433/maptimize
           E2E_TEST_USER_EMAIL: ${{ env.TEST_USER_EMAIL }}
           E2E_TEST_USER_PASSWORD: ${{ env.TEST_USER_PASSWORD }}
         run: |
           python << 'PYTHON_SCRIPT'
+          import asyncio
           import os
-          from database import engine
+          from database import async_session_maker
           from models.user import User
           from utils.security import hash_password
-          from sqlalchemy.orm import Session
+          from sqlalchemy import select
 
           test_email = os.environ.get('E2E_TEST_USER_EMAIL', 'test@maptimize.local')
           test_password = os.environ.get('E2E_TEST_USER_PASSWORD', 'testpassword123')
 
-          with Session(engine) as db:
-              # Check if test user exists
-              user = db.query(User).filter(User.email == test_email).first()
-              if not user:
-                  user = User(
-                      email=test_email,
-                      name="Test User",
-                      hashed_password=hash_password(test_password),
-                      role="researcher"
-                  )
-                  db.add(user)
-                  db.commit()
-                  print("Test user created")
-              else:
-                  print("Test user already exists")
+          async def create_test_user():
+              async with async_session_maker() as db:
+                  # Check if test user exists
+                  result = await db.execute(select(User).where(User.email == test_email))
+                  user = result.scalar_one_or_none()
+                  if not user:
+                      user = User(
+                          email=test_email,
+                          name="Test User",
+                          hashed_password=hash_password(test_password),
+                          role="researcher"
+                      )
+                      db.add(user)
+                      await db.commit()
+                      print("Test user created")
+                  else:
+                      print("Test user already exists")
+
+          asyncio.run(create_test_user())
           PYTHON_SCRIPT
 
       - name: Start backend server

@@ -87,12 +87,10 @@ function StyledRadio({
   checked,
   onChange,
   label,
-  name,
 }: {
   checked: boolean;
   onChange: () => void;
   label: string;
-  name: string;
 }) {
   return (
     <div
@@ -238,6 +236,13 @@ export function ExportModal({
   // Handle export
   const handleExport = async () => {
     if (selectedIds.size === 0) return;
+
+    // Validate at least one export option is selected
+    const hasAnyOption = includeFovImages || includeCropImages || includeEmbeddings || includeMasks;
+    if (!hasAnyOption) {
+      setErrorMessage(t("selectAtLeastOneOption"));
+      return;
+    }
 
     try {
       setStatus("preparing");
@@ -482,7 +487,6 @@ export function ExportModal({
                     {(["png", "coco", "coco_rle", "polygon"] as MaskFormat[]).map((format) => (
                       <StyledRadio
                         key={format}
-                        name="maskFormat"
                         checked={maskFormat === format}
                         onChange={() => setMaskFormat(format)}
                         label={t(`maskFormat${format.charAt(0).toUpperCase() + format.slice(1).replace(/_([a-z])/g, (_, c) => c.toUpperCase())}`)}
@@ -501,7 +505,6 @@ export function ExportModal({
                     {(["coco", "yolo", "voc", "csv"] as BBoxFormat[]).map((format) => (
                       <StyledRadio
                         key={format}
-                        name="bboxFormat"
                         checked={bboxFormat === format}
                         onChange={() => setBboxFormat(format)}
                         label={t(`bboxFormat${format.charAt(0).toUpperCase() + format.slice(1)}`)}

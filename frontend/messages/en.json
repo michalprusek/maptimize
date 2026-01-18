@@ -300,6 +300,7 @@
     "streaming": "Downloading...",
     "completed": "Export completed",
     "error": "Export failed",
+    "selectAtLeastOneOption": "Please select at least one export option (images, crops, embeddings, or masks)",
     "downloadReady": "Your download is ready",
     "experimentCount": "{count, plural, =1 {# experiment} other {# experiments}}",
     "imageCount": "{count, plural, =1 {# image} other {# images}}",

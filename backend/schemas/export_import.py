@@ -116,11 +116,11 @@ class ExportPrepareRequest(BaseModel):
 class ExportPrepareResponse(BaseModel):
     """Response after preparing export job."""
     job_id: str = Field(description="Unique job identifier for streaming download")
-    estimated_size_bytes: int = Field(description="Estimated ZIP file size in bytes")
-    experiment_count: int = Field(description="Number of experiments to export")
-    image_count: int = Field(description="Total number of FOV images")
-    crop_count: int = Field(description="Total number of cell crops")
-    mask_count: int = Field(description="Number of segmentation masks")
+    estimated_size_bytes: int = Field(ge=0, description="Estimated ZIP file size in bytes")
+    experiment_count: int = Field(ge=0, description="Number of experiments to export")
+    image_count: int = Field(ge=0, description="Total number of FOV images")
+    crop_count: int = Field(ge=0, description="Total number of cell crops")
+    mask_count: int = Field(ge=0, description="Number of segmentation masks")
 
 
 class ExportStatusResponse(JobStatusBase):
@@ -147,12 +147,21 @@ class ImportValidationResult(BaseModel):
     job_id: str = Field(description="Job ID for executing the import")
     detected_format: ImportFormat
     is_valid: bool
-    image_count: int = Field(description="Number of images found")
-    annotation_count: int = Field(description="Number of annotations found")
+    image_count: int = Field(ge=0, description="Number of images found")
+    annotation_count: int = Field(ge=0, description="Number of annotations found")
     has_embeddings: bool = Field(default=False, description="Whether embeddings were found")
     has_masks: bool = Field(default=False, description="Whether masks were found")
     errors: List[str] = Field(default_factory=list)
     warnings: List[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def check_validity_consistency(self) -> "ImportValidationResult":
+        """Ensure is_valid flag is consistent with errors list."""
+        if not self.is_valid and not self.errors:
+            raise ValueError("Invalid result must have at least one error explaining why")
+        if self.is_valid and self.errors:
+            raise ValueError("Valid result cannot have errors (use warnings instead)")
+        return self
 
 
 class ImportExecuteRequest(BaseModel):

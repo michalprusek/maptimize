@@ -300,6 +300,7 @@
     "streaming": "Telechargement...",
     "completed": "Export termine",
     "error": "Echec de l'export",
+    "selectAtLeastOneOption": "Veuillez selectionner au moins une option d'export (images, decoupages, embeddings ou masques)",
     "downloadReady": "Votre telechargement est pret",
     "experimentCount": "{count, plural, =1 {# experience} other {# experiences}}",
     "imageCount": "{count, plural, =1 {# image} other {# images}}",
