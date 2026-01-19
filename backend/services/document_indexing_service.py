@@ -170,9 +170,14 @@ async def process_document_async(document_id: int) -> None:
 
             # Render PDF pages to images
             page_images = await render_pdf_to_images(pdf_path)
-            if not page_images:
+            if page_images is None:
                 document.status = DocumentStatus.FAILED.value
-                document.error_message = "Failed to render PDF pages"
+                document.error_message = "Failed to render PDF pages - check if pdf2image and poppler are installed"
+                await db.commit()
+                return
+            if len(page_images) == 0:
+                document.status = DocumentStatus.FAILED.value
+                document.error_message = "PDF has no pages to index"
                 await db.commit()
                 return
 
@@ -247,7 +252,7 @@ async def convert_office_to_pdf(input_path: Path) -> Optional[Path]:
 async def render_pdf_to_images(
     pdf_path: Path,
     dpi: int = 150,
-) -> List[Tuple[int, Image.Image]]:
+) -> Optional[List[Tuple[int, Image.Image]]]:
     """
     Render PDF pages to images using pdf2image.
 
@@ -256,7 +261,8 @@ async def render_pdf_to_images(
         dpi: Resolution for rendering
 
     Returns:
-        List of (page_number, PIL Image) tuples
+        List of (page_number, PIL Image) tuples, or None if rendering failed.
+        Empty list indicates valid 0-page PDF (rare but possible).
     """
     try:
         from pdf2image import convert_from_path
@@ -272,10 +278,10 @@ async def render_pdf_to_images(
 
     except ImportError:
         logger.error("pdf2image not installed. Install with: pip install pdf2image")
-        return []
+        return None  # None indicates failure, not empty PDF
     except Exception as e:
-        logger.exception(f"Error rendering PDF {pdf_path}")
-        return []
+        logger.exception(f"Error rendering PDF {pdf_path}: {e}")
+        return None  # None indicates failure, not empty PDF
 
 
 async def process_pdf_pages(
@@ -496,11 +502,16 @@ async def reindex_document(document_id: int, user_id: int) -> dict:
 
         # Render PDF pages
         page_images = await render_pdf_to_images(original_path)
-        if not page_images:
+        if page_images is None:
             document.status = DocumentStatus.FAILED.value
-            document.error_message = "Failed to render PDF pages"
+            document.error_message = "Failed to render PDF pages - check if pdf2image and poppler are installed"
             await db.commit()
-            return {"error": "Failed to render PDF pages"}
+            return {"error": "Failed to render PDF pages - check server logs for details"}
+        if len(page_images) == 0:
+            document.status = DocumentStatus.FAILED.value
+            document.error_message = "PDF has no pages to index"
+            await db.commit()
+            return {"error": "PDF has no pages to index"}
 
         document.page_count = len(page_images)
         await db.commit()

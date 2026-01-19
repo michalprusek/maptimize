@@ -413,9 +413,9 @@ async def execute_python_code(
                 img_base64 = base64.b64encode(buf.read()).decode("utf-8")
                 result["plots"].append(f"data:image/png;base64,{img_base64}")
                 plt.close(fig)
-        except ImportError:
-            # matplotlib not available - that's fine, no plots to capture
-            pass
+        except ImportError as e:
+            # matplotlib not available - expected when code doesn't use plotting
+            logger.debug(f"matplotlib not available for plot capture: {e}")
         except Exception as plot_error:
             # Log plot capture errors instead of silently ignoring
             logger.warning(f"Failed to capture matplotlib plots: {plot_error}")

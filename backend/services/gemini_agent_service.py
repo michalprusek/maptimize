@@ -915,7 +915,9 @@ async def execute_tool(tool_name: str, args: Dict[str, Any], user_id: int, db: A
                     resp = await client.get(url, params=args.get("params", {}), timeout=10.0)
                     return {"success": True, "data": resp.json() if resp.status_code == 200 else resp.text[:5000]} if resp.status_code == 200 else {"error": f"API error: {resp.status_code}"}
             except Exception as e:
-                return {"error": f"Request failed: {e}"}
+                api_name = args.get('api', 'unknown')
+                logger.warning(f"External API call to {api_name} failed: {e}")
+                return {"error": f"Request to {api_name} failed: {e}"}
 
         elif tool_name == "web_search":
             if not args.get("query"): return {"error": "query required"}

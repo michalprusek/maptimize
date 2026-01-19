@@ -335,7 +335,10 @@ async def index_fov_image(image_id: int, db: AsyncSession) -> bool:
         db: Database session
 
     Returns:
-        True if successful, False otherwise
+        True if successful
+
+    Raises:
+        RAGServiceError: If indexing fails for any reason
     """
     from ml.rag import get_qwen_vl_encoder
     from sqlalchemy import func
@@ -348,14 +351,12 @@ async def index_fov_image(image_id: int, db: AsyncSession) -> bool:
         )
         image = result.scalar_one_or_none()
         if not image:
-            logger.warning(f"Image {image_id} not found for RAG indexing")
-            return False
+            raise RAGServiceError(f"Image {image_id} not found for RAG indexing")
 
         # Get image path
         image_path = Path(settings.upload_dir) / image.file_path
         if not image_path.exists():
-            logger.warning(f"Image file not found: {image_path}")
-            return False
+            raise RAGServiceError(f"Image file not found: {image_path}")
 
         # Generate embedding
         encoder = get_qwen_vl_encoder()
@@ -370,9 +371,12 @@ async def index_fov_image(image_id: int, db: AsyncSession) -> bool:
         logger.info(f"Indexed FOV image {image_id} for RAG")
         return True
 
+    except RAGServiceError:
+        # Re-raise our own exceptions
+        raise
     except Exception as e:
         logger.exception(f"Error indexing FOV image {image_id}")
-        return False
+        raise RAGServiceError(f"Failed to index image {image_id}: {e}") from e
 
 
 async def get_document_content(
@@ -543,17 +547,29 @@ async def batch_index_fov_images(
 
     indexed = 0
     failed = 0
+    errors = []
 
     for image in images:
-        success = await index_fov_image(image.id, db)
-        if success:
+        try:
+            await index_fov_image(image.id, db)
             indexed += 1
-        else:
+        except RAGServiceError as e:
             failed += 1
+            # Collect first few error messages for debugging
+            if len(errors) < 5:
+                errors.append(f"Image {image.id}: {str(e)}")
 
-    return {
+    result = {
         "experiment_id": experiment_id,
         "indexed": indexed,
         "failed": failed,
         "total": len(images),
     }
+
+    # Include error details if any failures occurred
+    if errors:
+        result["error_samples"] = errors
+        if failed > len(errors):
+            result["error_samples"].append(f"... and {failed - len(errors)} more errors")
+
+    return result

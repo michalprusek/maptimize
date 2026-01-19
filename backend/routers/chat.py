@@ -338,6 +338,9 @@ async def edit_message(
     2. Update the message content
     3. Regenerate the AI response
     """
+    # Check rate limit before any processing (editing triggers AI regeneration)
+    _check_rate_limit(current_user.id)
+
     thread = await get_thread_for_user(db, thread_id, current_user.id)
 
     # Get the message to edit
