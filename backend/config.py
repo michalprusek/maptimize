@@ -35,6 +35,12 @@ class Settings(BaseSettings):
     target_sigma: float = 2.0
     exploration_pairs: int = 50
 
+    # RAG / Chat Configuration
+    gemini_api_key: str = ""  # Set via GEMINI_API_KEY env var
+    rag_document_dir: Path = Path("data/rag_documents")
+    rag_max_document_results: int = 20
+    rag_max_fov_results: int = 20
+
     model_config = {
         "env_file": ".env",
         "env_file_encoding": "utf-8",

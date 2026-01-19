@@ -228,6 +228,40 @@ docker compose -f docker-compose.prod.yml restart maptimize-backend
 DELETE /api/images/crops/{id}?confirm_delete_comparisons=true
 ```
 
+## 🔍 Vision RAG System (Chat s dokumenty)
+
+**Architektura:** Systém používá **Vision RAG** - dokumenty se zpracovávají jako obrázky, NE jako extrahovaný text.
+
+### Proč Vision RAG?
+
+1. **Lepší kvalita** - Gemini přímo "čte" stránky jako obrázky, zachovává layout, tabulky, grafy
+2. **Univerzálnost** - Funguje pro jakýkoli PDF (skenované, vědecké články, prezentace)
+3. **Bez OCR závislosti** - Nepotřebuje Tesseract ani jiné OCR nástroje
+
+### Jak to funguje
+
+1. **Upload PDF** → Stránky se renderují jako PNG obrázky (150 DPI)
+2. **Indexování** → Qwen VL encoder vytvoří visual embeddings pro každou stránku
+3. **Vyhledávání** → Semantic search pomocí pgvector nad visual embeddings
+4. **Čtení** → Agent volá `get_document_content` → stránky se pošlou jako base64 obrázky do Gemini
+5. **Gemini Vision** → AI přečte obsah přímo z obrázků stránek
+
+### Klíčové soubory
+
+| Soubor | Účel |
+|--------|------|
+| `backend/services/document_indexing_service.py` | Upload, rendering PDF→PNG, embedding |
+| `backend/services/rag_service.py` | Vyhledávání, `get_document_content` s base64 obrázky |
+| `backend/services/gemini_agent_service.py` | Agent s vision - posílá obrázky do Gemini |
+| `backend/ml/rag/qwen_vl_encoder.py` | Qwen VL model pro visual embeddings |
+
+### DŮLEŽITÉ pro implementaci
+
+- **NIKDY neextrahovat text z PDF** - vše se řeší přes vision
+- **Stránky jsou PNG obrázky** - uložené v `data/rag_documents/{user_id}/doc_{id}_pages/`
+- **Embeddings jsou visual** - 2048-dim vektory z Qwen VL, ne text embeddings
+- `extracted_text` sloupec v DB je NULL a to je OK - nepoužívá se
+
 **Důvod:** Prevence nechtěné ztráty dat - uživatel musí explicitně potvrdit, že chce smazat i comparison historii.
 
 ## 🌐 Internacionalizace (i18n)

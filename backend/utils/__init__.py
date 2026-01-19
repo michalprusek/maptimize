@@ -11,6 +11,12 @@ from .rating import (
     calculate_convergence,
     estimate_remaining_comparisons,
 )
+from .export_helpers import (
+    sanitize_filename,
+    generate_timestamped_filename,
+    fig_to_base64,
+    export_dataframe,
+)
 
 __all__ = [
     "hash_password",
@@ -21,4 +27,8 @@ __all__ = [
     "update_ratings",
     "calculate_convergence",
     "estimate_remaining_comparisons",
+    "sanitize_filename",
+    "generate_timestamped_filename",
+    "fig_to_base64",
+    "export_dataframe",
 ]

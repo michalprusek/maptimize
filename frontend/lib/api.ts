@@ -932,6 +932,140 @@ class ApiClient {
     });
   }
 
+  // ============================================================================
+  // Chat API
+  // ============================================================================
+
+  async getChatThreads() {
+    return this.request<ChatThread[]>("/api/chat/threads");
+  }
+
+  async createChatThread(name?: string) {
+    return this.request<ChatThread>("/api/chat/threads", {
+      method: "POST",
+      body: JSON.stringify(name ? { name } : {}),
+    });
+  }
+
+  async getChatThread(threadId: number) {
+    return this.request<ChatThreadDetail>(`/api/chat/threads/${threadId}`);
+  }
+
+  async updateChatThread(threadId: number, name: string) {
+    return this.request<ChatThread>(`/api/chat/threads/${threadId}`, {
+      method: "PATCH",
+      body: JSON.stringify({ name }),
+    });
+  }
+
+  async deleteChatThread(threadId: number) {
+    return this.request<void>(`/api/chat/threads/${threadId}`, {
+      method: "DELETE",
+    });
+  }
+
+  async sendChatMessage(threadId: number, content: string) {
+    return this.request<ChatMessage>(`/api/chat/threads/${threadId}/messages`, {
+      method: "POST",
+      body: JSON.stringify({ content }),
+    });
+  }
+
+  async getChatMessages(threadId: number) {
+    return this.request<ChatMessage[]>(`/api/chat/threads/${threadId}/messages`);
+  }
+
+  async editChatMessage(threadId: number, messageId: number, content: string) {
+    return this.request<ChatMessage>(`/api/chat/threads/${threadId}/messages/${messageId}`, {
+      method: "PUT",
+      body: JSON.stringify({ content }),
+    });
+  }
+
+  async regenerateChatMessage(threadId: number, messageId: number) {
+    return this.request<ChatMessage>(`/api/chat/threads/${threadId}/messages/${messageId}/regenerate`, {
+      method: "POST",
+    });
+  }
+
+  // ============================================================================
+  // RAG API
+  // ============================================================================
+
+  async getRAGDocuments(status?: string) {
+    const params = status ? `?status=${status}` : "";
+    return this.request<RAGDocument[]>(`/api/rag/documents${params}`);
+  }
+
+  async uploadRAGDocument(file: File) {
+    const formData = new FormData();
+    formData.append("file", file);
+
+    return this.request<RAGDocument>("/api/rag/documents/upload", {
+      method: "POST",
+      body: formData,
+    });
+  }
+
+  async getRAGDocument(documentId: number) {
+    return this.request<RAGDocument>(`/api/rag/documents/${documentId}`);
+  }
+
+  async deleteRAGDocument(documentId: number) {
+    return this.request<void>(`/api/rag/documents/${documentId}`, {
+      method: "DELETE",
+    });
+  }
+
+  getRAGDocumentPdfUrl(documentId: number): string {
+    return this.buildAuthenticatedUrl(`/api/rag/documents/${documentId}/pdf`);
+  }
+
+  async getRAGDocumentPages(documentId: number) {
+    return this.request<RAGDocumentPage[]>(`/api/rag/documents/${documentId}/pages`);
+  }
+
+  async searchWithinDocument(documentId: number, query: string) {
+    return this.request<{
+      query: string;
+      document_id: number;
+      total_matches: number;
+      pages_with_matches: number;
+      matches: Array<{
+        page_number: number;
+        match_count: number;
+        snippet: string;
+      }>;
+    }>(`/api/rag/documents/${documentId}/search?q=${encodeURIComponent(query)}`);
+  }
+
+  getRAGPageImageUrl(documentId: number, pageNumber: number): string {
+    return this.buildAuthenticatedUrl(`/api/rag/documents/${documentId}/pages/${pageNumber}/image`);
+  }
+
+  async getRAGIndexingStatus() {
+    return this.request<RAGIndexingStatus>("/api/rag/indexing/status");
+  }
+
+  async triggerFOVIndexing(experimentId: number) {
+    return this.request<{ experiment_id: number; indexed: number; failed: number; total: number }>(
+      `/api/rag/index/experiment/${experimentId}`,
+      { method: "POST" }
+    );
+  }
+
+  async searchRAG(query: string, experimentId?: number, docLimit = 10, fovLimit = 10) {
+    const params = new URLSearchParams({
+      q: query,
+      doc_limit: docLimit.toString(),
+      fov_limit: fovLimit.toString(),
+    });
+    if (experimentId) {
+      params.append("experiment_id", experimentId.toString());
+    }
+    return this.request<RAGSearchResponse>(`/api/rag/search?${params}`);
+  }
+
   async getMyBugReports() {
     return this.request<BugReportListResponse>("/api/bug-reports");
   }
@@ -1560,6 +1694,112 @@ export interface ImportStatusResponse {
   crops_created: number;
   created_at: string;
   completed_at?: string;
+}
+
+// ============================================================================
+// Chat types
+// ============================================================================
+
+export interface ChatThread {
+  id: number;
+  name: string;
+  created_at: string;
+  updated_at: string;
+  message_count: number;
+  last_message_preview?: string;
+}
+
+export interface ChatThreadDetail extends ChatThread {
+  messages: ChatMessage[];
+}
+
+export interface ChatCitation {
+  type: "document" | "fov";
+  doc_id?: number;
+  page?: number;
+  image_id?: number;
+  title?: string;
+}
+
+export interface ChatImageRef {
+  path: string;
+  caption?: string;
+}
+
+export interface ChatToolCall {
+  tool: string;
+  args: Record<string, unknown>;
+  result?: unknown;
+}
+
+export interface ChatMessage {
+  id: number;
+  thread_id: number;
+  role: "user" | "assistant";
+  content: string;
+  citations: ChatCitation[];
+  image_refs: ChatImageRef[];
+  tool_calls: ChatToolCall[];
+  created_at: string;
+}
+
+// ============================================================================
+// RAG types
+// ============================================================================
+
+export type RAGDocumentStatus = "pending" | "processing" | "completed" | "failed";
+
+export interface RAGDocument {
+  id: number;
+  name: string;
+  file_type: string;
+  status: RAGDocumentStatus;
+  progress: number;
+  page_count: number;
+  error_message?: string;
+  file_size?: number;
+  created_at: string;
+  indexed_at?: string;
+}
+
+export interface RAGDocumentPage {
+  id: number;
+  document_id: number;
+  page_number: number;
+  image_path: string;
+  has_embedding: boolean;
+}
+
+export interface RAGIndexingStatus {
+  documents_pending: number;
+  documents_processing: number;
+  documents_completed: number;
+  documents_failed: number;
+  fov_images_pending: number;
+  fov_images_indexed: number;
+}
+
+export interface RAGDocumentSearchResult {
+  document_id: number;
+  document_name: string;
+  page_number: number;
+  image_path: string;
+  score: number;
+}
+
+export interface RAGFOVSearchResult {
+  image_id: number;
+  experiment_id: number;
+  experiment_name: string;
+  original_filename: string;
+  thumbnail_path?: string;
+  score: number;
+}
+
+export interface RAGSearchResponse {
+  query: string;
+  documents: RAGDocumentSearchResult[];
+  fov_images: RAGFOVSearchResult[];
 }
 
 export const api = new ApiClient();

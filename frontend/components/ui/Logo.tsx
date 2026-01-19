@@ -7,6 +7,7 @@ interface LogoProps {
   size?: "sm" | "md" | "lg" | "xl";
   showText?: boolean;
   animated?: boolean;
+  transparent?: boolean;
 }
 
 const sizeMap = {
@@ -28,18 +29,19 @@ export function Logo({
   size = "md",
   showText = false,
   animated = false,
+  transparent = false,
 }: LogoProps) {
-  return (
-    <div className={clsx("flex items-center gap-3", className)}>
-      <svg
-        viewBox="0 0 64 64"
-        fill="none"
-        xmlns="http://www.w3.org/2000/svg"
-        className={clsx(
-          sizeMap[size],
-          animated && "animate-glow-pulse"
-        )}
-      >
+  const svgElement = (
+    <svg
+      viewBox="0 0 64 64"
+      fill="none"
+      xmlns="http://www.w3.org/2000/svg"
+      className={clsx(
+        sizeMap[size],
+        animated && "animate-glow-pulse",
+        !showText && className
+      )}
+    >
         <defs>
           {/* Glow filter for fluorescence effect */}
           <filter id="logoGlow" x="-50%" y="-50%" width="200%" height="200%">
@@ -69,7 +71,9 @@ export function Logo({
         </defs>
 
         {/* Background circle (subtle) */}
-        <circle cx="32" cy="32" r="30" fill="currentColor" fillOpacity="0.05" />
+        {!transparent && (
+          <circle cx="32" cy="32" r="30" fill="currentColor" fillOpacity="0.05" />
+        )}
 
         {/* Microtubule strands forming "M" shape */}
         <g filter="url(#logoGlow)" className="text-primary-500">
@@ -129,17 +133,23 @@ export function Logo({
           <line x1="50" y1="28" x2="42" y2="32" />
         </g>
       </svg>
+  );
 
-      {showText && (
-        <span
-          className={clsx(
-            "font-display font-bold text-gradient",
-            textSizeMap[size]
-          )}
-        >
-          MAPtimize
-        </span>
-      )}
+  if (!showText) {
+    return svgElement;
+  }
+
+  return (
+    <div className={clsx("flex items-center gap-3", className)}>
+      {svgElement}
+      <span
+        className={clsx(
+          "font-display font-bold text-gradient",
+          textSizeMap[size]
+        )}
+      >
+        MAPtimize
+      </span>
     </div>
   );
 }

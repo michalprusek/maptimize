@@ -267,6 +267,9 @@ class ImageProcessor:
                 # Extract FOV embedding (always, regardless of detect_cells)
                 await self._extract_fov_embedding(db, image)
 
+                # Extract RAG embedding for chat search (non-blocking)
+                await self._extract_rag_embedding(db, image)
+
                 await db.commit()
                 logger.info(f"Phase 2 complete for image {image.id}")
                 return True
@@ -498,6 +501,36 @@ class ImageProcessor:
             logger.error(f"DINOv3 model error during FOV feature extraction: {e}")
         except Exception as e:
             logger.exception(f"Unexpected FOV feature extraction error: {e}")
+
+    async def _extract_rag_embedding(
+        self,
+        db: AsyncSession,
+        image: Image
+    ) -> None:
+        """
+        Extract Qwen3 VL embedding for RAG/chat search (non-fatal on failure).
+
+        This embedding enables semantic search over FOV images in the chat interface.
+        Uses the same image as DINOv3 but with Qwen3-Embedding-VL model optimized
+        for text-to-image retrieval.
+        """
+        try:
+            from services.rag_service import index_fov_image
+            success = await index_fov_image(image.id, db)
+
+            if success:
+                logger.info(f"RAG embedding created for image {image.id}")
+            else:
+                logger.warning(f"RAG embedding extraction failed for image {image.id}")
+        except ImportError as e:
+            logger.debug(f"RAG service not available: {e}")
+            # Not fatal - RAG is optional feature
+        except RuntimeError as e:
+            logger.warning(f"Qwen3 VL model error during RAG embedding: {e}")
+            # Not fatal - user can still use chat without image search
+        except Exception as e:
+            logger.warning(f"Unexpected RAG embedding error for image {image.id}: {e}")
+            # Not fatal - chat feature is optional
 
     async def _trigger_sam_embedding(
         self,

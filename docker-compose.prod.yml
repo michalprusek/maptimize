@@ -60,6 +60,8 @@ services:
       # HuggingFace
       - HF_TOKEN=${HF_TOKEN:-}
       - HF_HOME=/app/.cache/huggingface
+      # Gemini AI (Chat)
+      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
       # Admin
       - DEFAULT_ADMIN_EMAIL=${DEFAULT_ADMIN_EMAIL:-admin@utia.cas.cz}
       - DEFAULT_ADMIN_PASSWORD=${DEFAULT_ADMIN_PASSWORD:-changeme}

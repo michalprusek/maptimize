@@ -138,6 +138,12 @@ class Image(Base):
         String(20), nullable=True, default=None
     )
 
+    # Qwen3 VL embedding for RAG/chat search (2048-dim)
+    rag_embedding: Mapped[Optional[list]] = mapped_column(Vector(2048), nullable=True)
+    rag_indexed_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
     # Pre-computed UMAP coordinates for FOV visualization
     umap_x: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     umap_y: Mapped[Optional[float]] = mapped_column(Float, nullable=True)

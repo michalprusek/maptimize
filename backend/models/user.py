@@ -14,6 +14,9 @@ if TYPE_CHECKING:
     from .metric import Metric
     from .user_settings import UserSettings
     from .bug_report import BugReport
+    from .chat import ChatThread
+    from .rag_document import RAGDocument
+    from .agent_memory import AgentMemory
 
 
 class UserRole(str, PyEnum):
@@ -69,6 +72,18 @@ class User(Base):
         uselist=False
     )
     bug_reports: Mapped[List["BugReport"]] = relationship(
+        back_populates="user",
+        cascade="all, delete-orphan"
+    )
+    chat_threads: Mapped[List["ChatThread"]] = relationship(
+        back_populates="user",
+        cascade="all, delete-orphan"
+    )
+    rag_documents: Mapped[List["RAGDocument"]] = relationship(
+        back_populates="user",
+        cascade="all, delete-orphan"
+    )
+    agent_memories: Mapped[List["AgentMemory"]] = relationship(
         back_populates="user",
         cascade="all, delete-orphan"
     )

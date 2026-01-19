@@ -1,0 +1,91 @@
+"""Chat models for RAG-powered conversation threads."""
+from datetime import datetime
+from enum import Enum as PyEnum
+from typing import TYPE_CHECKING, List, Optional
+
+from pgvector.sqlalchemy import Vector
+from sqlalchemy import String, Text, Float, Integer, ForeignKey, DateTime, func, JSON
+from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+
+from database import Base
+
+if TYPE_CHECKING:
+    from .user import User
+
+
+class ChatRole(str, PyEnum):
+    """Chat message roles."""
+    USER = "user"
+    ASSISTANT = "assistant"
+
+
+class ChatThread(Base):
+    """Chat conversation thread with a user."""
+
+    __tablename__ = "chat_threads"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"),
+        index=True
+    )
+    name: Mapped[str] = mapped_column(String(255), default="New Chat")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now()
+    )
+
+    # Relationships
+    user: Mapped["User"] = relationship(back_populates="chat_threads")
+    messages: Mapped[List["ChatMessage"]] = relationship(
+        back_populates="thread",
+        cascade="all, delete-orphan",
+        order_by="ChatMessage.created_at"
+    )
+
+    def __repr__(self) -> str:
+        return f"<ChatThread(id={self.id}, name={self.name!r})>"
+
+
+class ChatMessage(Base):
+    """Individual message in a chat thread."""
+
+    __tablename__ = "chat_messages"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    thread_id: Mapped[int] = mapped_column(
+        ForeignKey("chat_threads.id", ondelete="CASCADE"),
+        index=True
+    )
+    role: Mapped[str] = mapped_column(String(20))  # "user" or "assistant"
+    content: Mapped[str] = mapped_column(Text)
+
+    # Citations and references (flexible JSONB storage)
+    # Format: [{"type": "document", "doc_id": 1, "page": 5}, {"type": "fov", "image_id": 42}]
+    citations: Mapped[Optional[dict]] = mapped_column(JSONB, default=list)
+
+    # Image references for multimodal responses
+    # Format: [{"path": "/uploads/...", "caption": "..."}]
+    image_refs: Mapped[Optional[dict]] = mapped_column(JSONB, default=list)
+
+    # Tool calls made by the assistant
+    # Format: [{"tool": "search_documents", "args": {...}, "result": {...}}]
+    tool_calls: Mapped[Optional[dict]] = mapped_column(JSONB, default=list)
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now()
+    )
+
+    # Relationships
+    thread: Mapped["ChatThread"] = relationship(back_populates="messages")
+
+    def __repr__(self) -> str:
+        content_preview = self.content[:50] + "..." if len(self.content) > 50 else self.content
+        return f"<ChatMessage(id={self.id}, role={self.role}, content={content_preview!r})>"
