@@ -21,6 +21,20 @@ CREATE INDEX IF NOT EXISTS idx_chat_threads_task_id
 ON chat_threads(generation_task_id)
 WHERE generation_task_id IS NOT NULL;
 
+-- CHECK constraint to ensure valid generation_status values
+-- This prevents invalid states from being written directly to DB
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conname = 'check_generation_status_valid'
+    ) THEN
+        ALTER TABLE chat_threads
+        ADD CONSTRAINT check_generation_status_valid
+        CHECK (generation_status IN ('idle', 'generating', 'completed', 'cancelled', 'error'));
+    END IF;
+END $$;
+
 -- Comment for documentation
 COMMENT ON COLUMN chat_threads.generation_status IS 'Status of AI response generation: idle, generating, completed, cancelled, error';
 COMMENT ON COLUMN chat_threads.generation_task_id IS 'Unique task ID for tracking async generation';

@@ -216,7 +216,8 @@ export const useChatStore = create<ChatState>()(
           }
         } catch (error) {
           // Log non-404 errors for debugging (404 means no generation in progress, which is normal)
-          if (error instanceof Error && !error.message.includes("404")) {
+          // Check for both "404" and "Not Found" since API may return either
+          if (error instanceof Error && !error.message.includes("404") && !error.message.includes("Not Found")) {
             console.warn("Failed to check generation status on thread select:", error.message);
           }
         }
@@ -396,17 +397,41 @@ export const useChatStore = create<ChatState>()(
             generationElapsedSeconds: 0,
           });
         } catch (error) {
+          const errorMessage = error instanceof Error ? error.message : "Failed to cancel generation";
+          // Always reset generation state on cancel failure to avoid stuck UI
+          // The backend will handle cleanup eventually
           set({
-            error: error instanceof Error ? error.message : "Failed to cancel generation",
+            error: errorMessage.includes("404")
+              ? "Generation already completed or cancelled"
+              : errorMessage.includes("400")
+              ? "Cannot cancel - generation not in progress"
+              : `Cancellation failed: ${errorMessage}. The generation may still be running.`,
+            generatingThreadId: null,
+            generationTaskId: null,
+            generationElapsedSeconds: 0,
           });
         }
       },
 
       checkGenerationStatus: async (threadId: number) => {
-        // Poll for generation status until completed, cancelled, or error
-        const pollInterval = 1000; // 1 second
+        /**
+         * Poll for generation status until completed, cancelled, or error.
+         *
+         * Implements defensive polling with race condition protection:
+         * 1. Check generatingThreadId before fetch (early exit if cancelled)
+         * 2. Fetch status from server
+         * 3. Check generatingThreadId again after fetch (handle cancel during fetch)
+         * 4. Update UI based on status
+         * 5. Schedule next poll after interval if still generating
+         *
+         * Retry logic: Uses exponential backoff for transient errors (network, 500s).
+         * Timeout: Stops after 300 polls (~5 minutes) and shows actionable error.
+         */
+        const basePollInterval = 1000; // 1 second base interval
         const maxPolls = 300; // 5 minutes max
+        const maxRetries = 3; // Max retries per poll for transient errors
         let pollCount = 0;
+        let retryCount = 0;
 
         const poll = async () => {
           const { generatingThreadId } = get();
@@ -416,6 +441,9 @@ export const useChatStore = create<ChatState>()(
 
           try {
             const status = await api.getGenerationStatus(threadId);
+
+            // Reset retry count on successful fetch
+            retryCount = 0;
 
             // Check again after API call in case cancelled during fetch
             const currentState = get();
@@ -461,8 +489,9 @@ export const useChatStore = create<ChatState>()(
             // Continue polling if still generating
             if (status.status === "generating") {
               if (pollCount >= maxPolls) {
+                console.warn(`Generation polling timeout for thread ${threadId} after ${maxPolls} polls`);
                 set({
-                  error: "Generation took too long. Please try again.",
+                  error: "Generation is taking longer than expected (>5 minutes). The AI may still be processing your request in the background. Try refreshing the thread in a moment, or cancel and try again with a simpler query.",
                   generatingThreadId: null,
                   generationTaskId: null,
                   generationElapsedSeconds: 0,
@@ -470,12 +499,34 @@ export const useChatStore = create<ChatState>()(
                 return;
               }
               pollCount++;
-              setTimeout(poll, pollInterval);
+              setTimeout(poll, basePollInterval);
             }
           } catch (error) {
-            // On error, stop polling
+            const errorMessage = error instanceof Error ? error.message : "Unknown error";
+            const isTransientError =
+              errorMessage.includes("fetch") ||
+              errorMessage.includes("network") ||
+              errorMessage.includes("timeout") ||
+              errorMessage.includes("500") ||
+              errorMessage.includes("502") ||
+              errorMessage.includes("503") ||
+              errorMessage.includes("504");
+
+            // Retry on transient errors with exponential backoff
+            if (isTransientError && retryCount < maxRetries) {
+              retryCount++;
+              const backoffDelay = basePollInterval * Math.pow(2, retryCount);
+              console.warn(`Polling failed (attempt ${retryCount}/${maxRetries}), retrying in ${backoffDelay}ms: ${errorMessage}`);
+              setTimeout(poll, backoffDelay);
+              return;
+            }
+
+            // Permanent failure after retries or non-transient error
+            console.error(`Generation status polling failed after ${retryCount} retries:`, errorMessage);
             set({
-              error: error instanceof Error ? error.message : "Failed to check status",
+              error: retryCount >= maxRetries
+                ? "Lost connection to server while checking generation status. The AI may still be generating - try refreshing the page."
+                : `Failed to check status: ${errorMessage}`,
               generatingThreadId: null,
               generationTaskId: null,
               generationElapsedSeconds: 0,

@@ -174,16 +174,42 @@ async def _run_generation_task(
     context_warning: Optional[str] = None,
 ):
     """
-    Background task to generate AI response.
-    Updates thread status in DB and stores result.
+    Background task to generate AI response asynchronously.
+
+    CRITICAL: This runs in a separate asyncio task with its own database session.
+    Do not rely on the parent request's DB session or transaction.
+
+    Workflow:
+    1. Creates isolated DB session via async_session_maker()
+    2. Re-validates user authorization (user may be deleted during generation)
+    3. Updates thread status to "generating" and commits
+    4. Checks Redis for cancellation flag (before generation)
+    5. Calls gemini_agent_service.generate_response()
+    6. Checks Redis for cancellation flag (during generation)
+    7. Creates assistant message and updates thread to "completed"
+    8. Cleans up task reference and Redis flags in finally block
+
+    Cancellation: Uses Redis flag (cancel:{task_id}) for cross-process coordination.
     """
     try:
         # Create new DB session for this task
         async with async_session_maker() as db:
+            # Re-validate user authorization (user may be deleted during generation)
+            from models.user import User
+            user = await db.get(User, user_id)
+            if not user:
+                logger.error(f"Task {task_id}: User {user_id} not found (deleted during generation?)")
+                return
+
             # Update thread status to generating
             thread = await db.get(ChatThread, thread_id)
             if not thread:
                 logger.error(f"Task {task_id}: Thread {thread_id} not found")
+                return
+
+            # Re-validate thread ownership
+            if thread.user_id != user_id:
+                logger.error(f"Task {task_id}: Thread {thread_id} ownership changed (user {user_id} != {thread.user_id})")
                 return
 
             thread.generation_status = "generating"
@@ -257,7 +283,19 @@ async def _run_generation_task(
                 await db.commit()
 
     except Exception as e:
-        logger.exception(f"Task {task_id}: Fatal error: {e}")
+        logger.exception(f"Task {task_id}: Fatal error in generation task: {e}")
+        # Try to update thread status to error if possible
+        try:
+            async with async_session_maker() as error_db:
+                thread = await error_db.get(ChatThread, thread_id)
+                if thread and thread.generation_status == "generating":
+                    thread.generation_status = "error"
+                    thread.generation_error = f"Task initialization failed: {str(e)[:500]}"
+                    thread.generation_task_id = None
+                    await error_db.commit()
+                    logger.info(f"Task {task_id}: Updated thread {thread_id} status to error after fatal failure")
+        except Exception as db_error:
+            logger.error(f"Task {task_id}: Failed to update thread status after fatal error: {db_error}")
     finally:
         # Clean up task reference
         _active_tasks.pop(task_id, None)
@@ -265,22 +303,48 @@ async def _run_generation_task(
         try:
             r = await _get_redis()
             await r.delete(f"cancel:{task_id}")
-        except Exception:
-            pass
+        except redis.RedisError as redis_err:
+            logger.warning(f"Task {task_id}: Failed to clean up Redis cancel flag: {redis_err}")
+        except Exception as cleanup_err:
+            logger.error(f"Task {task_id}: Unexpected error during Redis cleanup: {cleanup_err}")
 
 
 async def _cancel_generation(task_id: str) -> bool:
-    """Cancel a generation task."""
+    """
+    Cancel a generation task.
+
+    Sets cancellation flag in Redis with 5-minute TTL for cross-process coordination.
+    Also attempts to cancel the asyncio task if it exists in this process.
+
+    Returns:
+        bool: True if an asyncio task was found and cancel() was called on it.
+              False if task not found or already done. This does NOT guarantee
+              cancellation succeeded - check thread.generation_status instead.
+
+    Raises:
+        HTTPException: If Redis operation fails.
+    """
     # Set cancellation flag in Redis
-    r = await _get_redis()
-    await r.setex(f"cancel:{task_id}", 300, "1")  # 5 min TTL
+    try:
+        r = await _get_redis()
+        await r.setex(f"cancel:{task_id}", 300, "1")  # 5 min TTL
+        logger.info(f"Set cancellation flag in Redis for task {task_id}")
+    except redis.RedisError as e:
+        logger.error(f"Failed to set cancellation flag in Redis for task {task_id}: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to cancel generation due to server error. Please try again."
+        )
 
     # Try to cancel the asyncio task
     task = _active_tasks.get(task_id)
     if task and not task.done():
         task.cancel()
+        logger.info(f"Cancelled asyncio task for {task_id}")
         return True
-    return False
+    else:
+        logger.info(f"Task {task_id} already completed or not found in memory (may be on different worker)")
+        return False
 
 
 @router.get("/threads", response_model=List[ChatThreadResponse])
@@ -407,13 +471,31 @@ async def send_message(
     Creates a user message and triggers background generation.
     Returns immediately with the user message and generation task ID.
     Use GET /threads/{id}/generation-status to poll for completion.
+
+    Uses row-level locking to prevent race conditions when multiple
+    requests try to start generation simultaneously.
     """
     # Check rate limit before any processing
     await _check_rate_limit_async(current_user.id)
 
-    thread = await get_thread_for_user(db, thread_id, current_user.id)
+    # Use SELECT FOR UPDATE to acquire row lock and prevent race conditions
+    # This ensures only one request can start generation at a time
+    result = await db.execute(
+        select(ChatThread)
+        .where(
+            ChatThread.id == thread_id,
+            ChatThread.user_id == current_user.id
+        )
+        .with_for_update()
+    )
+    thread = result.scalar_one_or_none()
+    if not thread:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Chat thread not found"
+        )
 
-    # Check if already generating
+    # Check if already generating (now safe due to row lock)
     if thread.generation_status == "generating":
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -472,6 +554,14 @@ async def send_message(
     # Include the new user message in history for the task
     history_with_new = history + [{"role": "user", "content": data.content}]
 
+    def _task_done_callback(t: asyncio.Task, tid: str = task_id):
+        """Callback to ensure task is always cleaned up from _active_tasks."""
+        _active_tasks.pop(tid, None)
+        if t.cancelled():
+            logger.info(f"Task {tid}: Cleaned up after cancellation")
+        elif t.exception():
+            logger.error(f"Task {tid}: Cleaned up after exception: {t.exception()}")
+
     task = asyncio.create_task(
         _run_generation_task(
             task_id=task_id,
@@ -482,6 +572,7 @@ async def send_message(
             context_warning=context_warning,
         )
     )
+    task.add_done_callback(_task_done_callback)
     _active_tasks[task_id] = task
 
     return SendMessageResponse(

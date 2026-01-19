@@ -181,7 +181,10 @@ export function ChatArea() {
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
-  const threadMessages = activeThreadId ? messages[activeThreadId] || [] : [];
+  // Filter out any undefined messages (defensive coding for corrupted persisted data)
+  const threadMessages = activeThreadId
+    ? (messages[activeThreadId] || []).filter((msg): msg is NonNullable<typeof msg> => msg != null)
+    : [];
 
   // Check if messages have been loaded for this thread
   // undefined = not loaded yet, [] = loaded but empty
