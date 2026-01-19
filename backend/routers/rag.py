@@ -365,8 +365,8 @@ async def search(
                 "document_id": doc["document_id"],
                 "document_name": doc["document_name"],
                 "page_number": doc["page_number"],
-                "image_path": doc["image_path"],
-                "score": doc["score"],
+                "image_path": doc["page_image_url"],  # Field name from rag_service
+                "score": doc["similarity_score"],  # Field name from rag_service
             }
             for doc in results["documents"]
         ],
@@ -377,7 +377,7 @@ async def search(
                 "experiment_name": img["experiment_name"],
                 "original_filename": img["original_filename"],
                 "thumbnail_path": img["thumbnail_path"],
-                "score": img["score"],
+                "score": img["similarity_score"],  # Field name from rag_service
             }
             for img in results["fov_images"]
         ],

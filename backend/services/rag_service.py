@@ -22,6 +22,11 @@ logger = logging.getLogger(__name__)
 settings = get_settings()
 
 
+class RAGServiceError(Exception):
+    """Exception raised when RAG service encounters an error."""
+    pass
+
+
 async def search_documents(
     query: str,
     user_id: int,
@@ -109,7 +114,9 @@ async def search_documents(
 
     except Exception as e:
         logger.exception(f"Error searching documents for query: {query[:50]}...")
-        return []
+        # Raise the error instead of silently returning empty results
+        # This allows callers to distinguish "no results" from "search failed"
+        raise RAGServiceError(f"Document search failed: {e}") from e
 
 
 async def search_fov_images(
@@ -203,7 +210,8 @@ async def search_fov_images(
 
     except Exception as e:
         logger.exception(f"Error searching FOV images for query: {query[:50]}...")
-        return []
+        # Raise the error instead of silently returning empty results
+        raise RAGServiceError(f"FOV image search failed: {e}") from e
 
 
 async def combined_search(
@@ -226,25 +234,46 @@ async def combined_search(
         fov_limit: Max FOV results
 
     Returns:
-        Dict with 'documents' and 'fov_images' lists
+        Dict with 'documents', 'fov_images' lists, and optional 'errors' if any search failed
     """
     if doc_limit is None:
         doc_limit = settings.rag_max_document_results
     if fov_limit is None:
         fov_limit = settings.rag_max_fov_results
 
-    documents = await search_documents(query, user_id, db, limit=doc_limit)
-    fov_images = await search_fov_images(
-        query, user_id, db,
-        experiment_id=experiment_id,
-        limit=fov_limit
-    )
+    documents = []
+    fov_images = []
+    errors = []
 
-    return {
+    # Try document search, capture errors but don't fail entirely
+    try:
+        documents = await search_documents(query, user_id, db, limit=doc_limit)
+    except RAGServiceError as e:
+        logger.error(f"Document search failed in combined_search: {e}")
+        errors.append(f"Document search: {str(e)}")
+
+    # Try FOV search, capture errors but don't fail entirely
+    try:
+        fov_images = await search_fov_images(
+            query, user_id, db,
+            experiment_id=experiment_id,
+            limit=fov_limit
+        )
+    except RAGServiceError as e:
+        logger.error(f"FOV image search failed in combined_search: {e}")
+        errors.append(f"FOV search: {str(e)}")
+
+    result = {
         "query": query,
         "documents": documents,
         "fov_images": fov_images,
     }
+
+    # Include errors if any occurred (so frontend can show warning)
+    if errors:
+        result["search_errors"] = errors
+
+    return result
 
 
 async def get_context_for_chat(

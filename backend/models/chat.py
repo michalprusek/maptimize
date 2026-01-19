@@ -4,7 +4,7 @@ from enum import Enum as PyEnum
 from typing import TYPE_CHECKING, List, Optional
 
 from pgvector.sqlalchemy import Vector
-from sqlalchemy import String, Text, Float, Integer, ForeignKey, DateTime, func, JSON
+from sqlalchemy import String, Text, Float, Integer, ForeignKey, DateTime, func, JSON, CheckConstraint
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -63,24 +63,33 @@ class ChatMessage(Base):
         ForeignKey("chat_threads.id", ondelete="CASCADE"),
         index=True
     )
-    role: Mapped[str] = mapped_column(String(20))  # "user" or "assistant"
+    # Role is validated against ChatRole enum values
+    role: Mapped[str] = mapped_column(String(20))
     content: Mapped[str] = mapped_column(Text)
 
     # Citations and references (flexible JSONB storage)
     # Format: [{"type": "document", "doc_id": 1, "page": 5}, {"type": "fov", "image_id": 42}]
-    citations: Mapped[Optional[dict]] = mapped_column(JSONB, default=list)
+    # Type annotation: list (not dict) to match actual usage
+    citations: Mapped[Optional[list]] = mapped_column(JSONB, default=list)
 
     # Image references for multimodal responses
     # Format: [{"path": "/uploads/...", "caption": "..."}]
-    image_refs: Mapped[Optional[dict]] = mapped_column(JSONB, default=list)
+    image_refs: Mapped[Optional[list]] = mapped_column(JSONB, default=list)
 
     # Tool calls made by the assistant
     # Format: [{"tool": "search_documents", "args": {...}, "result": {...}}]
-    tool_calls: Mapped[Optional[dict]] = mapped_column(JSONB, default=list)
+    tool_calls: Mapped[Optional[list]] = mapped_column(JSONB, default=list)
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now()
+    )
+
+    __table_args__ = (
+        # Role must be 'user' or 'assistant'
+        CheckConstraint("role IN ('user', 'assistant')", name='check_role_valid'),
+        # Content cannot be empty
+        CheckConstraint("content <> ''", name='check_content_not_empty'),
     )
 
     # Relationships

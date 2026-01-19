@@ -4,7 +4,7 @@ from enum import Enum as PyEnum
 from typing import TYPE_CHECKING, List, Optional
 
 from pgvector.sqlalchemy import Vector
-from sqlalchemy import String, Text, Float, Integer, ForeignKey, DateTime, func
+from sqlalchemy import String, Text, Float, Integer, ForeignKey, DateTime, func, CheckConstraint, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from database import Base
@@ -30,6 +30,7 @@ class DocumentType(str, PyEnum):
     XLSX = "xlsx"
     IMAGE = "image"
     VIDEO = "video"
+    OFFICE = "office"
 
 
 class RAGDocument(Base):
@@ -43,16 +44,29 @@ class RAGDocument(Base):
         index=True
     )
     name: Mapped[str] = mapped_column(String(255))
-    file_type: Mapped[str] = mapped_column(String(50))  # pdf, docx, pptx, xlsx, image, video
+    # Store file_type as string but validate against DocumentType values
+    file_type: Mapped[str] = mapped_column(String(50))
 
     # Storage paths
     original_path: Mapped[str] = mapped_column(String(500))  # Original file for PDF viewer
 
-    # Processing status
-    status: Mapped[str] = mapped_column(String(20), default="pending")
-    progress: Mapped[float] = mapped_column(Float, default=0.0)  # 0.0 to 1.0
+    # Processing status - stored as string, validated against DocumentStatus
+    status: Mapped[str] = mapped_column(String(20), default=DocumentStatus.PENDING.value)
+    progress: Mapped[float] = mapped_column(Float, default=0.0)
     page_count: Mapped[int] = mapped_column(Integer, default=0)
     error_message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+    __table_args__ = (
+        # Progress must be between 0.0 and 1.0
+        CheckConstraint('progress >= 0.0 AND progress <= 1.0', name='check_progress_range'),
+        # Page count must be non-negative
+        CheckConstraint('page_count >= 0', name='check_page_count_non_negative'),
+        # Status must be one of the allowed values
+        CheckConstraint(
+            "status IN ('pending', 'processing', 'completed', 'failed')",
+            name='check_status_valid'
+        ),
+    )
 
     # Metadata
     file_size: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)  # bytes
@@ -102,6 +116,13 @@ class RAGDocumentPage(Base):
 
     # Optional extracted text (for hybrid search)
     extracted_text: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+    __table_args__ = (
+        # Each page number must be unique within a document
+        UniqueConstraint('document_id', 'page_number', name='uq_document_page_number'),
+        # Page numbers must be positive (1-indexed)
+        CheckConstraint('page_number > 0', name='check_page_number_positive'),
+    )
 
     # Relationships
     document: Mapped["RAGDocument"] = relationship(back_populates="pages")

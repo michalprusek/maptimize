@@ -12,8 +12,10 @@ This service provides:
 
 import json
 import logging
+import ipaddress
 from datetime import datetime
 from typing import Optional, List, Dict, Any
+from urllib.parse import urlparse
 
 import sqlparse
 from sqlalchemy import select, func, text
@@ -63,6 +65,60 @@ APPROVED_APIS = {
         "description": "STRING protein interaction database",
     },
 }
+
+
+def _is_safe_url(url: str) -> tuple[bool, str]:
+    """
+    Validate URL for SSRF protection.
+
+    Blocks:
+    - Non HTTP/HTTPS schemes
+    - Private/internal IP addresses
+    - Cloud metadata endpoints
+    - Localhost and loopback addresses
+
+    Returns:
+        Tuple of (is_safe, error_message)
+    """
+    try:
+        parsed = urlparse(url)
+
+        # Only allow http/https
+        if parsed.scheme not in ("http", "https"):
+            return False, f"Only HTTP/HTTPS URLs allowed, got: {parsed.scheme}"
+
+        hostname = parsed.hostname
+        if not hostname:
+            return False, "Invalid URL: no hostname"
+
+        # Block localhost and loopback
+        if hostname.lower() in ("localhost", "127.0.0.1", "0.0.0.0", "::1", "[::1]"):
+            return False, "Access to localhost is not allowed"
+
+        # Try to parse as IP address to check for private ranges
+        try:
+            ip = ipaddress.ip_address(hostname)
+            if ip.is_private:
+                return False, "Access to private IP addresses is not allowed"
+            if ip.is_loopback:
+                return False, "Access to loopback addresses is not allowed"
+            if ip.is_link_local:
+                return False, "Access to link-local addresses is not allowed"
+            if ip.is_multicast:
+                return False, "Access to multicast addresses is not allowed"
+            # Block cloud metadata endpoints
+            if str(ip) in ("169.254.169.254", "100.100.100.200"):
+                return False, "Access to cloud metadata endpoints is not allowed"
+        except ValueError:
+            # Not an IP address, it's a hostname - that's fine
+            # But still check for obvious internal hostnames
+            hostname_lower = hostname.lower()
+            if hostname_lower.endswith(".internal") or hostname_lower.endswith(".local"):
+                return False, "Access to internal hostnames is not allowed"
+
+        return True, ""
+    except Exception as e:
+        return False, f"Invalid URL: {e}"
 
 # System prompt for the research assistant
 SYSTEM_PROMPT = """You are MAPtimize Assistant, an expert AI research assistant with FULL ACCESS to the user's research environment.
@@ -135,13 +191,29 @@ You CAN display images using markdown:
 ```
 When tools return `thumbnail_url`, ALWAYS display the images.
 
-### 3. USE CODE FOR ANALYSIS
-When calculations are needed, use `execute_python_code`:
+### 3. USE CODE FOR DATA ANALYSIS & VISUALIZATION
+For ANY calculation or visualization, use `execute_python_code`:
 ```python
 import numpy as np
 import pandas as pd
-# Your analysis here
+import matplotlib.pyplot as plt
+
+# Example: Create a bar plot
+data = {'Images': 36, 'Cells': 76}
+plt.bar(data.keys(), data.values())
+plt.title('Experiment Statistics')
+plt.show()
 ```
+
+**IMPORTANT:** When the code returns plots (in `plots` array), INCLUDE THEM in your response:
+```
+![Plot](data:image/png;base64,THE_BASE64_STRING)
+```
+
+**Data Analysis Workflow:**
+1. Use `query_database` to get raw data from the database
+2. Use `execute_python_code` to analyze data and create visualizations
+3. Display any returned plots using markdown images
 
 ### 4. CITE SOURCES
 - Reference documents as [Doc: "filename" p.X]
@@ -150,30 +222,39 @@ import pandas as pd
 ### 5. REMEMBER IMPORTANT THINGS
 Use `long_term_memory` to store key findings, user preferences, or project context.
 
-## When to Use Each Tool
+## Data Sources - Choose Wisely!
 
-**Counting/Overview:**
-- "how many experiments?" → get_overview_stats
-- "show my data summary" → get_overview_stats
+**TWO SEPARATE DATA SOURCES:**
 
-**Searching:**
-- "find images of microtubules" → semantic_search
-- "search for PRC1" → semantic_search
+1. **EXPERIMENTS** = User's microscopy data (images, cells, measurements)
+   - Tools: `list_experiments`, `list_images`, `get_experiment_stats`, `get_cell_detection_results`, `query_database`
+   - When user asks: "show PRC1 images", "my data", "experiment results", protein names
+   - First find the experiment by name, then get its images/data
 
-**Analysis:**
-- "calculate average cell count" → execute_python_code
-- "show cell distribution" → create_visualization
-- "compare experiments 1 and 2" → compare_experiments
+2. **DOCUMENTS** = Uploaded PDFs, papers, protocols
+   - Tools: `semantic_search`, `search_documents`, `get_document_content`
+   - When user asks: "what does the paper say", "methods in NAEX", "search documents"
+   - Vision RAG: pages are read as images by AI
 
-**Export:**
-- "export my data" → export_data
+**AUTONOMOUS DECISION MAKING:**
+- If user mentions a protein name (PRC1, HMMR, etc.) → likely asking about their EXPERIMENT data
+- If user mentions a document name or "paper" → use document search
+- When unsure → check both: first list_experiments to see if it matches, then search documents
 
-**External Knowledge:**
-- "what is PRC1 protein?" → call_external_api (UniProt) or web_search
+**DISPLAYING IMAGES:**
+When tools return `thumbnail_url`, display images using CORRECT markdown format:
+```
+![filename](/api/images/123/file?type=thumbnail)
+```
 
-**Remember:**
-- "remember that I prefer bar charts" → long_term_memory (store)
-- "what did I note about this?" → long_term_memory (search)
+**CRITICAL: For multiple images, put them ALL ON THE SAME LINE separated by spaces:**
+```
+![img1](/url1) ![img2](/url2) ![img3](/url3)
+```
+This ensures they display in a 3-column grid. DO NOT put each image on a new line!
+
+NOT: `![name](thumbnail_url: /api/...)` - this is WRONG!
+Just use the URL directly without "thumbnail_url:" prefix.
 
 ## Response Style
 - Provide detailed, comprehensive responses
@@ -505,7 +586,7 @@ async def generate_response(
     max_iterations = 8
     for iteration in range(max_iterations):
         response = client.models.generate_content(
-            model="gemini-2.0-flash",
+            model="gemini-3-flash-preview",
             contents=messages,
             config=types.GenerateContentConfig(
                 system_instruction=SYSTEM_PROMPT,
@@ -549,7 +630,8 @@ async def generate_response(
                     for doc in tool_result["document_results"].get("pages", [])[:5]:
                         add_citation(doc.get("document_id"), doc.get("page_number"), doc.get("document_name"))
 
-                messages.append(types.Content(role="model", parts=[types.Part(function_call=function_call)]))
+                # Append the original model content to preserve thought_signature (required for Gemini 3)
+                messages.append(response.candidates[0].content)
 
                 # Handle get_document_content specially - send images for vision reading
                 if tool_name == "get_document_content" and "pages" in tool_result:
@@ -677,49 +759,98 @@ async def execute_tool(tool_name: str, args: Dict[str, Any], user_id: int, db: A
         elif tool_name == "execute_python_code":
             if not args.get("code"): return {"error": "code required"}
             from services.code_execution_service import execute_python_code
-            return await execute_python_code(code=args["code"], timeout_seconds=args.get("timeout_seconds", 30))
+            result = await execute_python_code(code=args["code"], timeout_seconds=args.get("timeout_seconds", 30))
+            # Add markdown-ready plot strings for easy inclusion in response
+            if result.get("plots"):
+                result["plots_markdown"] = [f"![Plot {i+1}]({plot})" for i, plot in enumerate(result["plots"])]
+                result["display_instruction"] = "INCLUDE THESE PLOTS IN YOUR RESPONSE - just copy the markdown from plots_markdown array"
+            return result
 
         elif tool_name == "query_database":
             if not args.get("query"): return {"error": "query required"}
-            query_upper = args["query"].upper()
+            query_str = args["query"].strip()
+            query_upper = query_str.upper()
             try:
-                parsed = sqlparse.parse(args["query"])
+                parsed = sqlparse.parse(query_str)
                 if not parsed or parsed[0].get_type() != "SELECT": return {"error": "Only SELECT allowed"}
+
                 # Check for forbidden keywords (SQL injection prevention)
-                forbidden = ["INSERT", "UPDATE", "DELETE", "DROP", "CREATE", "ALTER", "TRUNCATE", "GRANT", "REVOKE", ";", "--"]
+                forbidden = ["INSERT", "UPDATE", "DELETE", "DROP", "CREATE", "ALTER", "TRUNCATE", "GRANT", "REVOKE", "--", "/*", "*/"]
                 for kw in forbidden:
-                    if kw in query_upper: return {"error": f"Forbidden: {kw}"}
+                    if kw in query_upper: return {"error": f"Forbidden keyword: {kw}"}
+
+                # Block multiple statements (semicolon injection)
+                if query_str.count(";") > 0:
+                    return {"error": "Multiple statements not allowed (semicolons forbidden)"}
+
+                # Block subqueries that could access other tables
+                if "(" in query_upper and "SELECT" in query_upper.split("(", 1)[-1]:
+                    return {"error": "Subqueries not allowed"}
+
+                # Block UNION/INTERSECT/EXCEPT that could access other data
+                if any(kw in query_upper for kw in ["UNION", "INTERSECT", "EXCEPT"]):
+                    return {"error": "UNION/INTERSECT/EXCEPT not allowed"}
+
                 # Validate table names against whitelist
-                for token in sqlparse.parse(args["query"])[0].flatten():
-                    if token.ttype is None and token.value.lower() not in ALLOWED_SQL_TABLES and token.value.lower() not in ("select", "from", "where", "and", "or", "as", "on", "join", "left", "right", "inner", "outer", "group", "by", "order", "limit", "count", "sum", "avg", "min", "max", "distinct", "asc", "desc"):
-                        # Check if it's a potentially unknown table
-                        if "." not in token.value and not token.value.startswith("(") and token.value not in ("true", "false", "null"):
-                            # It might be a table name - verify it's allowed
-                            if token.value.lower() in ("users", "passwords", "secrets", "tokens"):
-                                return {"error": f"Access denied to table: {token.value}"}
+                found_tables = set()
+                for token in parsed[0].flatten():
+                    if token.ttype is None:
+                        val_lower = token.value.lower()
+                        # Skip SQL keywords
+                        if val_lower in ("select", "from", "where", "and", "or", "as", "on", "join", "left", "right", "inner", "outer", "group", "by", "order", "limit", "count", "sum", "avg", "min", "max", "distinct", "asc", "desc", "true", "false", "null", "is", "not", "in", "like", "between", "case", "when", "then", "else", "end", "having", "offset"):
+                            continue
+                        # Skip if it contains a dot (column reference like table.column)
+                        if "." in token.value:
+                            table_part = val_lower.split(".")[0]
+                            if table_part in ALLOWED_SQL_TABLES:
+                                found_tables.add(table_part)
+                            continue
+                        # Check if it's a table name
+                        if val_lower in ALLOWED_SQL_TABLES:
+                            found_tables.add(val_lower)
+                        elif val_lower in ("users", "passwords", "secrets", "tokens", "sessions"):
+                            return {"error": f"Access denied to table: {token.value}"}
+
             except Exception as e:
                 return {"error": f"Parse error: {e}"}
+
             try:
-                # Build safe query with user_id filter (for tables that have it)
-                base_q = args["query"]
-                # Auto-inject user_id filter for user-owned tables
-                if "experiments" in query_upper and "USER_ID" not in query_upper:
+                # Use parameterized queries with :user_id placeholder
+                # Rebuild query to add user_id filter safely
+                limit_val = min(args.get('limit', 100), 1000)
+
+                # Determine which table needs user_id filter
+                needs_exp_filter = "experiments" in query_upper and "USER_ID" not in query_upper
+                needs_doc_filter = "rag_documents" in query_upper and "USER_ID" not in query_upper
+
+                if needs_exp_filter:
                     if "WHERE" in query_upper:
-                        base_q = base_q.replace("WHERE", f"WHERE experiments.user_id = {user_id} AND", 1)
+                        base_q = query_str.upper().replace("WHERE", "WHERE experiments.user_id = :user_id AND", 1)
+                        base_q = query_str[:query_str.upper().find("WHERE")] + base_q[query_str.upper().find("WHERE"):]
                     else:
-                        base_q = base_q.rstrip(";") + f" WHERE experiments.user_id = {user_id}"
-                elif "rag_documents" in query_upper and "USER_ID" not in query_upper:
+                        base_q = query_str.rstrip() + " WHERE experiments.user_id = :user_id"
+                elif needs_doc_filter:
                     if "WHERE" in query_upper:
-                        base_q = base_q.replace("WHERE", f"WHERE rag_documents.user_id = {user_id} AND", 1)
+                        base_q = query_str.upper().replace("WHERE", "WHERE rag_documents.user_id = :user_id AND", 1)
+                        base_q = query_str[:query_str.upper().find("WHERE")] + base_q[query_str.upper().find("WHERE"):]
                     else:
-                        base_q = base_q.rstrip(";") + f" WHERE rag_documents.user_id = {user_id}"
+                        base_q = query_str.rstrip() + " WHERE rag_documents.user_id = :user_id"
+                else:
+                    base_q = query_str
+
                 # Add LIMIT if missing
-                q = base_q if "LIMIT" in query_upper else f"{base_q} LIMIT {min(args.get('limit', 100), 1000)}"
-                result = await db.execute(text(q))
+                final_q = base_q if "LIMIT" in query_upper else f"{base_q} LIMIT :limit_val"
+
+                # Execute with parameters (prevents SQL injection)
+                result = await db.execute(
+                    text(final_q),
+                    {"user_id": user_id, "limit_val": limit_val}
+                )
                 rows = result.fetchall()
                 cols = list(result.keys())
                 return {"success": True, "columns": cols, "rows": [dict(zip(cols, r)) for r in rows], "row_count": len(rows)}
             except Exception as e:
+                logger.warning(f"Query execution error for user {user_id}: {e}")
                 return {"error": f"Query error: {e}"}
 
         elif tool_name == "export_data":
@@ -799,16 +930,43 @@ async def execute_tool(tool_name: str, args: Dict[str, Any], user_id: int, db: A
                         for t in data.get("RelatedTopics", [])[:4]:
                             if isinstance(t, dict) and t.get("Text"): results.append({"title": t.get("Text", "")[:100], "snippet": t.get("Text"), "url": t.get("FirstURL")})
                         return {"query": args["query"], "results": results}
+                    else:
+                        return {"error": f"Web search returned status {resp.status_code}"}
             except Exception as e:
                 return {"error": f"Web search failed: {e}"}
 
         elif tool_name == "browse_webpage":
             if not args.get("url"): return {"error": "url required"}
+
+            # SSRF protection - validate URL before fetching
+            is_safe, error_msg = _is_safe_url(args["url"])
+            if not is_safe:
+                logger.warning(f"SSRF attempt blocked for user {user_id}: {args['url']} - {error_msg}")
+                return {"error": error_msg}
+
             import httpx
             from bs4 import BeautifulSoup
             try:
                 async with httpx.AsyncClient() as client:
-                    resp = await client.get(args["url"], timeout=10.0, follow_redirects=True)
+                    # Disable redirects initially to validate each hop
+                    resp = await client.get(args["url"], timeout=10.0, follow_redirects=False)
+
+                    # Handle redirects manually with SSRF check on each hop
+                    redirect_count = 0
+                    while resp.status_code in (301, 302, 303, 307, 308) and redirect_count < 5:
+                        redirect_url = resp.headers.get("location")
+                        if not redirect_url:
+                            return {"error": "Redirect without location header"}
+
+                        # Validate redirect URL for SSRF
+                        is_safe, error_msg = _is_safe_url(redirect_url)
+                        if not is_safe:
+                            logger.warning(f"SSRF redirect blocked for user {user_id}: {redirect_url}")
+                            return {"error": f"Redirect blocked: {error_msg}"}
+
+                        resp = await client.get(redirect_url, timeout=10.0, follow_redirects=False)
+                        redirect_count += 1
+
                     if resp.status_code != 200: return {"error": f"HTTP {resp.status_code}"}
                     soup = BeautifulSoup(resp.text, "lxml")
                     for tag in soup(["script", "style", "nav", "footer"]): tag.decompose()
@@ -858,6 +1016,7 @@ async def execute_tool(tool_name: str, args: Dict[str, Any], user_id: int, db: A
         # Rollback the session to recover from any database errors
         try:
             await db.rollback()
-        except Exception:
-            pass  # Ignore rollback errors
+        except Exception as rollback_error:
+            # Log rollback errors instead of silently ignoring
+            logger.error(f"Rollback failed after tool error in {tool_name}: {rollback_error}")
         return {"error": str(e)}

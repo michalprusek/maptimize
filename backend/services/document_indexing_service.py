@@ -81,11 +81,26 @@ async def save_uploaded_document(
     user_rag_dir = settings.rag_document_dir / str(user_id)
     user_rag_dir.mkdir(parents=True, exist_ok=True)
 
-    # Generate unique filename
+    # Generate unique filename with path traversal protection
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    safe_name = "".join(c if c.isalnum() or c in "._-" else "_" for c in filename)
+    # Sanitize: only allow alphanumeric, underscore, hyphen (NOT dots to prevent ..)
+    safe_name = "".join(c if c.isalnum() or c in "_-" else "_" for c in filename)
+    # Remove any leading/trailing underscores that could be suspicious
+    safe_name = safe_name.strip("_-")
+    if not safe_name:
+        safe_name = "document"
+    # Get extension from original filename and validate
+    original_ext = Path(filename).suffix.lower()
+    if original_ext and original_ext[1:].isalnum():
+        safe_name = f"{safe_name}{original_ext}"
     unique_name = f"{timestamp}_{safe_name}"
     original_path = user_rag_dir / unique_name
+
+    # Final path traversal check: verify the resolved path is still within user directory
+    resolved_path = original_path.resolve()
+    resolved_user_dir = user_rag_dir.resolve()
+    if not str(resolved_path).startswith(str(resolved_user_dir)):
+        raise ValueError("Invalid filename: path traversal detected")
 
     # Save file
     original_path.write_bytes(content)

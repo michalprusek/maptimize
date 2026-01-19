@@ -237,6 +237,35 @@
   .lut-fire {
     filter: sepia(1) saturate(10) hue-rotate(-10deg) brightness(1.1) contrast(1.1);
   }
+
+  /* ==========================================================================
+   * Chat Message Image Grid
+   * Displays microscopy images in a 3-column grid within chat messages
+   * ========================================================================== */
+
+  /* Container for chat message prose */
+  .chat-message-content .chat-image-item {
+    /* Will be controlled by grid parent */
+  }
+
+  /* When paragraph contains only images, make it a grid */
+  .chat-message-content > div.grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 0.5rem;
+  }
+
+  /* For consecutive image-containing paragraphs, also use grid */
+  .chat-message-content > p:has(.chat-image-item) {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 0.5rem;
+  }
+
+  /* Single images in text should be inline but constrained */
+  .chat-message-content p:not(:has(.chat-image-item:nth-child(2))) .chat-image-item {
+    max-width: 50%;
+  }
 }
 
 /* =============================================================================

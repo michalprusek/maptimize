@@ -4,6 +4,7 @@ import { useState, useRef, useEffect } from "react";
 import { useTranslations } from "next-intl";
 import { useChatStore } from "@/stores/chatStore";
 import { useAuthStore } from "@/stores/authStore";
+import { useSettingsStore, DisplayMode } from "@/stores/settingsStore";
 import type { ChatMessage, ChatCitation } from "@/lib/api";
 import {
   User,
@@ -34,6 +35,7 @@ export function MessageBubble({ message, isNew = false }: MessageBubbleProps) {
     isRegeneratingMessage,
   } = useChatStore();
   const { user } = useAuthStore();
+  const displayMode = useSettingsStore((state) => state.displayMode);
   const [isEditing, setIsEditing] = useState(false);
   const [editContent, setEditContent] = useState(message.content);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -195,7 +197,7 @@ export function MessageBubble({ message, isNew = false }: MessageBubbleProps) {
                 <p className="whitespace-pre-wrap leading-relaxed">{message.content}</p>
               )
             ) : (
-            <div className="prose prose-invert prose-sm max-w-none prose-p:leading-relaxed prose-headings:text-text-primary prose-code:text-primary-300">
+            <div className="prose prose-invert prose-sm max-w-none prose-p:leading-relaxed prose-headings:text-text-primary prose-code:text-primary-300 chat-message-content">
               <ReactMarkdown
                 components={{
                   // Customize link rendering
@@ -233,15 +235,53 @@ export function MessageBubble({ message, isNew = false }: MessageBubbleProps) {
                   ol: ({ children }) => (
                     <ol className="list-decimal list-inside space-y-1 my-2">{children}</ol>
                   ),
-                  // Paragraph spacing
-                  p: ({ children }) => (
-                    <p className="my-1.5 first:mt-0 last:mb-0">{children}</p>
-                  ),
-                  // Image rendering with auth token
+                  // Paragraph - detect if it contains only images and render as grid
+                  p: ({ children, node }) => {
+                    // Check if children are only images (or image wrappers)
+                    const childArray = Array.isArray(children) ? children : [children];
+                    const hasOnlyImages = childArray.every((child: React.ReactNode) => {
+                      if (child === null || child === undefined) return true;
+                      if (typeof child === "string" && child.trim() === "") return true;
+                      if (typeof child === "object" && child !== null && "props" in child) {
+                        // Check if it's an image or our image wrapper span
+                        const props = (child as { props?: { src?: string; className?: string } }).props;
+                        return props?.src || props?.className?.includes("chat-image-item");
+                      }
+                      return false;
+                    });
+
+                    if (hasOnlyImages && childArray.length > 0) {
+                      // Render as a 3-column grid for images
+                      return (
+                        <div className="grid grid-cols-3 gap-2 my-2">
+                          {children}
+                        </div>
+                      );
+                    }
+
+                    return <p className="my-1.5 first:mt-0 last:mb-0">{children}</p>;
+                  },
+                  // Image rendering with auth token, backend URL, and LUT styling
                   img: ({ src, alt }) => {
-                    // Add auth token to API image URLs
+                    // LUT class mapping
+                    const lutClasses: Record<DisplayMode, string> = {
+                      grayscale: "lut-grayscale",
+                      inverted: "lut-inverted",
+                      green: "lut-green",
+                      fire: "lut-fire",
+                    };
+
                     let imageSrc = src || "";
-                    if (imageSrc.startsWith("/api/")) {
+                    const isApiImage = imageSrc.startsWith("/api/");
+                    const isBase64Image = imageSrc.startsWith("data:image/");
+                    const isMicroscopyImage = isApiImage && imageSrc.includes("/images/");
+
+                    if (isApiImage) {
+                      // Prepend backend URL for API paths
+                      const apiUrl = process.env.NEXT_PUBLIC_API_URL || "";
+                      imageSrc = `${apiUrl}${imageSrc}`;
+
+                      // Add auth token
                       const token = typeof window !== "undefined"
                         ? localStorage.getItem("token")
                         : null;
@@ -250,13 +290,48 @@ export function MessageBubble({ message, isNew = false }: MessageBubbleProps) {
                         imageSrc = `${imageSrc}${separator}token=${token}`;
                       }
                     }
+
+                    // Base64 plots: full width, no grid
+                    if (isBase64Image) {
+                      return (
+                        <div className="chat-plot-item my-3">
+                          <img
+                            src={imageSrc}
+                            alt={alt || "Plot"}
+                            className="rounded-lg max-w-full h-auto border border-white/10 bg-white"
+                            loading="lazy"
+                            onClick={() => window.open(imageSrc, '_blank')}
+                          />
+                          {alt && (
+                            <span className="block text-xs text-text-muted mt-1 text-center">
+                              {alt}
+                            </span>
+                          )}
+                        </div>
+                      );
+                    }
+
+                    // Microscopy images: grid layout with LUT
                     return (
-                      <img
-                        src={imageSrc}
-                        alt={alt || ""}
-                        className="rounded-lg max-w-full h-auto my-2 border border-white/10"
-                        loading="lazy"
-                      />
+                      <div className="chat-image-item flex flex-col">
+                        <img
+                          src={imageSrc}
+                          alt={alt || ""}
+                          className={clsx(
+                            "rounded-lg w-full h-auto border border-white/10",
+                            "hover:border-primary-400/50 transition-colors cursor-pointer",
+                            // Apply LUT only to microscopy images
+                            isMicroscopyImage && lutClasses[displayMode]
+                          )}
+                          loading="lazy"
+                          onClick={() => window.open(imageSrc, '_blank')}
+                        />
+                        {alt && (
+                          <span className="text-xs text-text-muted mt-1 truncate text-center">
+                            {alt}
+                          </span>
+                        )}
+                      </div>
                     );
                   },
                 }}

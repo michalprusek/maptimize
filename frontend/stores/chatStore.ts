@@ -360,18 +360,32 @@ export const useChatStore = create<ChatState>()(
       },
 
       regenerateMessage: async (messageId: number) => {
-        const { activeThreadId } = get();
+        const { activeThreadId, messages } = get();
         if (!activeThreadId) {
           set({ error: "No active thread selected" });
           return;
         }
 
-        set({ isRegeneratingMessage: true, error: null });
+        // Optimistically remove the message being regenerated and all after it
+        const currentMessages = messages[activeThreadId] || [];
+        const messageIndex = currentMessages.findIndex((m) => m.id === messageId);
+        const messagesBeforeRegenerate = messageIndex >= 0
+          ? currentMessages.slice(0, messageIndex)
+          : currentMessages;
+
+        set((state) => ({
+          isRegeneratingMessage: true,
+          error: null,
+          messages: {
+            ...state.messages,
+            [activeThreadId]: messagesBeforeRegenerate,
+          },
+        }));
 
         try {
           const response = await api.regenerateChatMessage(activeThreadId, messageId);
 
-          // Reload all messages for the thread (some were deleted)
+          // Reload all messages for the thread
           const threadMessages = await api.getChatMessages(activeThreadId);
 
           set((state) => ({
@@ -382,10 +396,23 @@ export const useChatStore = create<ChatState>()(
             isRegeneratingMessage: false,
           }));
         } catch (error) {
-          set({
-            error: error instanceof Error ? error.message : "Failed to regenerate message",
-            isRegeneratingMessage: false,
-          });
+          // On error, reload messages to get correct state
+          try {
+            const threadMessages = await api.getChatMessages(activeThreadId);
+            set((state) => ({
+              messages: {
+                ...state.messages,
+                [activeThreadId]: threadMessages,
+              },
+              error: error instanceof Error ? error.message : "Failed to regenerate message",
+              isRegeneratingMessage: false,
+            }));
+          } catch {
+            set({
+              error: error instanceof Error ? error.message : "Failed to regenerate message",
+              isRegeneratingMessage: false,
+            });
+          }
         }
       },
 

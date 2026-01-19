@@ -103,6 +103,7 @@ export function ChatArea() {
     messages,
     isLoadingMessages,
     isSendingMessage,
+    isRegeneratingMessage,
     error,
     clearError,
     clearActiveThread,
@@ -134,11 +135,11 @@ export function ChatArea() {
         150;
 
       // Only auto-scroll if user is near bottom (prevents interrupting reading)
-      if (isNearBottom || isSendingMessage) {
+      if (isNearBottom || isSendingMessage || isRegeneratingMessage) {
         messagesEndRef.current.scrollIntoView({ behavior: "smooth" });
       }
     }
-  }, [threadMessages.length, isSendingMessage]);
+  }, [threadMessages.length, isSendingMessage, isRegeneratingMessage]);
 
   // No active thread - show welcome search
   if (!activeThreadId) {
@@ -200,8 +201,8 @@ export function ChatArea() {
               );
             })}
 
-            {/* Typing indicator when AI is responding */}
-            {isSendingMessage && <TypingIndicator />}
+            {/* Typing indicator when AI is responding or regenerating */}
+            {(isSendingMessage || isRegeneratingMessage) && <TypingIndicator />}
           </>
         )}
         <div ref={messagesEndRef} />

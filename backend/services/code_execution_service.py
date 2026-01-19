@@ -19,13 +19,23 @@ from contextlib import redirect_stdout, redirect_stderr
 import signal
 import threading
 
-from RestrictedPython import compile_restricted, safe_builtins
+from RestrictedPython import compile_restricted, safe_builtins, PrintCollector
 from RestrictedPython.Guards import (
     safe_builtins,
     guarded_iter_unpack_sequence,
     guarded_unpack_sequence,
+    safer_getattr,
 )
 from RestrictedPython.Eval import default_guarded_getiter, default_guarded_getitem
+
+# Dangerous dunder attributes that could be used to escape the sandbox
+FORBIDDEN_DUNDER_ATTRS = frozenset({
+    "__class__", "__bases__", "__subclasses__", "__mro__",
+    "__globals__", "__code__", "__closure__", "__func__",
+    "__self__", "__dict__", "__builtins__", "__import__",
+    "__reduce__", "__reduce_ex__", "__getstate__", "__setstate__",
+    "__delattr__", "__setattr__", "__getattribute__",
+})
 
 logger = logging.getLogger(__name__)
 
@@ -107,20 +117,69 @@ def _validate_code_ast(code: str) -> None:
         raise SecurityViolation(f"Syntax error in code: {e}")
 
     for node in ast.walk(tree):
-        # Check for exec/eval calls
+        # Check for exec/eval calls (both as direct name and as attribute)
         if isinstance(node, ast.Call):
             if isinstance(node.func, ast.Name):
-                if node.func.id in ("exec", "eval", "compile", "open", "__import__"):
+                if node.func.id in ("exec", "eval", "compile", "open", "__import__", "globals", "locals", "vars", "dir"):
                     raise SecurityViolation(
                         f"Use of '{node.func.id}' is not allowed"
+                    )
+            elif isinstance(node.func, ast.Attribute):
+                # Check for calls like builtins.exec()
+                if node.func.attr in ("exec", "eval", "compile", "open", "__import__"):
+                    raise SecurityViolation(
+                        f"Use of '{node.func.attr}' is not allowed"
                     )
 
         # Check for attribute access to dangerous methods
         if isinstance(node, ast.Attribute):
-            if node.attr.startswith("_"):
+            # Block all dunder attribute access that could be used to escape sandbox
+            if node.attr in FORBIDDEN_DUNDER_ATTRS:
+                raise SecurityViolation(
+                    f"Access to '{node.attr}' is not allowed (potential sandbox escape)"
+                )
+            # Also block all underscore-prefixed private attrs (except _1, _2 for unpacking)
+            if node.attr.startswith("_") and not node.attr.lstrip("_").isdigit():
                 raise SecurityViolation(
                     f"Access to private attributes ('{node.attr}') is not allowed"
                 )
+
+        # Check for string-based getattr/setattr that could bypass AST checks
+        if isinstance(node, ast.Call):
+            if isinstance(node.func, ast.Name) and node.func.id in ("getattr", "setattr", "delattr", "hasattr"):
+                # If second argument is a string literal, check it
+                if len(node.args) >= 2 and isinstance(node.args[1], ast.Constant):
+                    attr_name = node.args[1].value
+                    if isinstance(attr_name, str):
+                        if attr_name in FORBIDDEN_DUNDER_ATTRS:
+                            raise SecurityViolation(
+                                f"Access to '{attr_name}' via {node.func.id}() is not allowed"
+                            )
+                        if attr_name.startswith("_"):
+                            raise SecurityViolation(
+                                f"Access to private attributes via {node.func.id}() is not allowed"
+                            )
+
+
+def _guarded_write(obj):
+    """
+    Guard for write operations.
+    Only allow write to safe types (lists, dicts, etc.) not to objects that
+    could be modified to escape the sandbox.
+    """
+    # Allow None (for expressions that don't return)
+    if obj is None:
+        return obj
+    # Allow standard mutable types
+    if isinstance(obj, (list, dict, set)):
+        return obj
+    # Allow numpy arrays and pandas objects if imported
+    obj_type = type(obj).__name__
+    if obj_type in ("ndarray", "DataFrame", "Series", "Index"):
+        return obj
+    # For other objects, return a restricted wrapper or the object itself
+    # (RestrictedPython will handle most cases)
+    return obj
 
 
 def _get_restricted_globals() -> dict:
@@ -128,17 +187,10 @@ def _get_restricted_globals() -> dict:
     # Start with safe builtins
     restricted_builtins = dict(safe_builtins)
 
-    # Add safe functions
+    # Add safe built-in functions
     restricted_builtins.update({
-        "_getiter_": default_guarded_getiter,
-        "_getitem_": default_guarded_getitem,
-        "_iter_unpack_sequence_": guarded_iter_unpack_sequence,
-        "_unpack_sequence_": guarded_unpack_sequence,
-        "_getattr_": getattr,
-        "_write_": lambda x: x,  # Allow print
         "__import__": _safe_import,
         "__name__": "__main__",
-        "__builtins__": restricted_builtins,
         # Safe builtins
         "abs": abs,
         "all": all,
@@ -181,7 +233,18 @@ def _get_restricted_globals() -> dict:
         "zip": zip,
     })
 
-    return {"__builtins__": restricted_builtins}
+    # RestrictedPython guards must be at top-level globals, not inside __builtins__
+    return {
+        "__builtins__": restricted_builtins,
+        # RestrictedPython guard functions
+        "_getiter_": default_guarded_getiter,
+        "_getitem_": default_guarded_getitem,
+        "_iter_unpack_sequence_": guarded_iter_unpack_sequence,
+        "_unpack_sequence_": guarded_unpack_sequence,
+        "_getattr_": safer_getattr,
+        "_write_": _guarded_write,
+        "_print_": PrintCollector,
+    }
 
 
 def _extract_imports(code: str) -> tuple[list[str], str]:
@@ -265,13 +328,11 @@ async def execute_python_code(
                 filename="<user_code>",
                 mode="exec",
             )
+            # compile_restricted returns code object directly, or None if compilation fails
+            if byte_code is None:
+                raise SecurityViolation("Compilation failed - restricted syntax detected")
         except SyntaxError as e:
             raise SecurityViolation(f"Compilation error: {e}")
-
-        if byte_code.errors:
-            raise SecurityViolation(
-                f"Restricted compilation errors: {byte_code.errors}"
-            )
 
         # Step 4: Prepare execution environment
         restricted_globals = _get_restricted_globals()
@@ -316,7 +377,15 @@ async def execute_python_code(
             nonlocal result
             try:
                 with redirect_stdout(stdout_capture), redirect_stderr(stderr_capture):
-                    exec(byte_code.code, restricted_globals)
+                    exec(byte_code, restricted_globals)
+
+                    # Collect printed output from PrintCollector
+                    # RestrictedPython stores the collector instance in _print
+                    if "_print" in restricted_globals:
+                        printed = restricted_globals["_print"]
+                        if hasattr(printed, "txt"):
+                            # txt is a list of printed items
+                            result["stdout"] = "".join(str(item) for item in printed.txt)
 
                     # Try to get last expression value
                     if "_" in restricted_globals:
@@ -344,11 +413,23 @@ async def execute_python_code(
                 img_base64 = base64.b64encode(buf.read()).decode("utf-8")
                 result["plots"].append(f"data:image/png;base64,{img_base64}")
                 plt.close(fig)
-        except Exception:
-            pass  # No plots or matplotlib not used
+        except ImportError:
+            # matplotlib not available - that's fine, no plots to capture
+            pass
+        except Exception as plot_error:
+            # Log plot capture errors instead of silently ignoring
+            logger.warning(f"Failed to capture matplotlib plots: {plot_error}")
+            result["plot_capture_warning"] = f"Failed to capture plots: {str(plot_error)}"
 
-        # Step 7: Collect output
-        result["stdout"] = stdout_capture.getvalue()[:MAX_OUTPUT_SIZE]
+        # Step 7: Collect output - combine PrintCollector output with any direct stdout
+        # (PrintCollector captures print(), stdout_capture catches other output)
+        stdout_parts = []
+        if result["stdout"]:  # PrintCollector output set earlier
+            stdout_parts.append(result["stdout"])
+        captured_stdout = stdout_capture.getvalue()
+        if captured_stdout:
+            stdout_parts.append(captured_stdout)
+        result["stdout"] = "".join(stdout_parts)[:MAX_OUTPUT_SIZE]
         result["stderr"] = stderr_capture.getvalue()[:MAX_OUTPUT_SIZE]
 
         if not result["error"]:

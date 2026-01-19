@@ -1,5 +1,7 @@
 """Chat API routes for RAG-powered conversations."""
 import logging
+import time
+from collections import defaultdict
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status, Query, BackgroundTasks
@@ -25,6 +27,46 @@ from utils.security import get_current_user
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+# ============== Rate Limiting ==============
+# Simple in-memory rate limiter for AI endpoints
+# For production, consider using Redis-based rate limiting
+
+# Rate limit: max 10 AI requests per minute per user
+AI_RATE_LIMIT_REQUESTS = 10
+AI_RATE_LIMIT_WINDOW = 60  # seconds
+
+# Store: user_id -> list of timestamps
+_rate_limit_store: dict[int, list[float]] = defaultdict(list)
+
+
+def _check_rate_limit(user_id: int) -> None:
+    """
+    Check if user has exceeded rate limit for AI endpoints.
+
+    Raises HTTPException 429 if rate limit exceeded.
+    """
+    now = time.time()
+    window_start = now - AI_RATE_LIMIT_WINDOW
+
+    # Clean old entries and get recent requests
+    user_requests = _rate_limit_store[user_id]
+    user_requests[:] = [ts for ts in user_requests if ts > window_start]
+
+    if len(user_requests) >= AI_RATE_LIMIT_REQUESTS:
+        # Calculate time until oldest request expires
+        oldest = min(user_requests)
+        retry_after = int(oldest + AI_RATE_LIMIT_WINDOW - now) + 1
+        logger.warning(f"Rate limit exceeded for user {user_id}: {len(user_requests)} requests in {AI_RATE_LIMIT_WINDOW}s")
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=f"Rate limit exceeded. Maximum {AI_RATE_LIMIT_REQUESTS} AI requests per minute.",
+            headers={"Retry-After": str(retry_after)},
+        )
+
+    # Record this request
+    user_requests.append(now)
 
 
 async def get_thread_for_user(
@@ -173,6 +215,9 @@ async def send_message(
     Creates a user message and triggers the Gemini agent to generate a response.
     The response is generated synchronously and returned.
     """
+    # Check rate limit before any processing
+    _check_rate_limit(current_user.id)
+
     thread = await get_thread_for_user(db, thread_id, current_user.id)
 
     # Fetch conversation history (last N messages for context)
@@ -223,8 +268,9 @@ async def send_message(
         # to ensure clean state before inserting assistant message
         try:
             await db.rollback()
-        except Exception:
-            pass  # Ignore rollback errors - transaction might already be clean
+        except Exception as rollback_err:
+            # Log rollback errors instead of silently ignoring
+            logger.warning(f"Rollback after AI generation: {rollback_err}")
 
         # Create assistant message in a fresh transaction
         assistant_message = ChatMessage(
@@ -245,8 +291,8 @@ async def send_message(
         # Ensure transaction is rolled back to clean state
         try:
             await db.rollback()
-        except Exception:
-            pass  # Ignore rollback errors
+        except Exception as rollback_err:
+            logger.warning(f"Rollback error during error recovery: {rollback_err}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to generate response: {str(e)}"
@@ -361,8 +407,8 @@ async def edit_message(
         # Rollback any pending transaction state from generate_response
         try:
             await db.rollback()
-        except Exception:
-            pass
+        except Exception as rollback_err:
+            logger.warning(f"Rollback error: {rollback_err}")
 
         # Create new assistant message in a fresh transaction
         assistant_message = ChatMessage(
@@ -382,8 +428,8 @@ async def edit_message(
         logger.exception(f"Error regenerating AI response for edited message")
         try:
             await db.rollback()
-        except Exception:
-            pass
+        except Exception as rollback_err:
+            logger.warning(f"Rollback error: {rollback_err}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to generate response: {str(e)}"
@@ -405,6 +451,9 @@ async def regenerate_message(
     2. Find the last user message before it
     3. Regenerate the AI response
     """
+    # Check rate limit before any processing
+    _check_rate_limit(current_user.id)
+
     thread = await get_thread_for_user(db, thread_id, current_user.id)
 
     # Get the message to regenerate
@@ -491,8 +540,8 @@ async def regenerate_message(
         # Rollback any pending transaction state from generate_response
         try:
             await db.rollback()
-        except Exception:
-            pass
+        except Exception as rollback_err:
+            logger.warning(f"Rollback error: {rollback_err}")
 
         # Create new assistant message in a fresh transaction
         assistant_message = ChatMessage(
@@ -512,8 +561,8 @@ async def regenerate_message(
         logger.exception(f"Error regenerating AI response")
         try:
             await db.rollback()
-        except Exception:
-            pass
+        except Exception as rollback_err:
+            logger.warning(f"Rollback error: {rollback_err}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to generate response: {str(e)}"
