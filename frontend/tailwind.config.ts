@@ -66,11 +66,23 @@ const config: Config = {
         // New micro-interaction animations
         "pulse-soft": "pulse-soft 2s ease-in-out infinite",
         "shimmer": "shimmer 2s linear infinite",
+        "shimmer-subtle": "shimmer-subtle 1.5s ease-in-out infinite",
         "check-bounce": "check-bounce 0.3s cubic-bezier(0.68, -0.55, 0.265, 1.55)",
         "slide-in-up": "slide-in-up 0.3s ease-out",
         "slide-in-left": "slide-in-left 0.3s ease-out",
+        "slide-in-right": "slide-in-right 0.3s ease-out forwards",
         "fade-in": "fade-in 0.2s ease-out",
         "scale-in": "scale-in 0.2s ease-out",
+        // Chat-specific animations
+        "message-in": "message-in 0.3s ease-out forwards",
+        "typing-dot": "typing-dot 1.4s ease-in-out infinite",
+        "thinking-shimmer": "thinking-shimmer 2s linear infinite",
+        "thinking-pulse": "thinking-pulse 2s ease-in-out infinite",
+        "sparkle-rotate": "sparkle-rotate 3s linear infinite",
+        "glow-ring": "glow-ring 0.2s ease-out forwards",
+        "float-glow": "float-glow 6s ease-in-out infinite",
+        "border-pulse": "border-pulse 1s ease-in-out infinite",
+        "avatar-pulse": "avatar-pulse 0.6s ease-out",
       },
       keyframes: {
         "glow-pulse": {
@@ -91,6 +103,11 @@ const config: Config = {
           "0%": { backgroundPosition: "-200% 0" },
           "100%": { backgroundPosition: "200% 0" },
         },
+        // Subtle shimmer for indexing progress
+        "shimmer-subtle": {
+          "0%": { backgroundPosition: "200% 0" },
+          "100%": { backgroundPosition: "-200% 0" },
+        },
         // Checkbox bounce animation
         "check-bounce": {
           "0%": { transform: "scale(0)", opacity: "0" },
@@ -106,6 +123,10 @@ const config: Config = {
           "0%": { transform: "translateX(-10px)", opacity: "0" },
           "100%": { transform: "translateX(0)", opacity: "1" },
         },
+        "slide-in-right": {
+          "0%": { transform: "translateX(100%)", opacity: "0" },
+          "100%": { transform: "translateX(0)", opacity: "1" },
+        },
         "fade-in": {
           "0%": { opacity: "0" },
           "100%": { opacity: "1" },
@@ -113,6 +134,58 @@ const config: Config = {
         "scale-in": {
           "0%": { transform: "scale(0.95)", opacity: "0" },
           "100%": { transform: "scale(1)", opacity: "1" },
+        },
+        // Chat message entrance (slide up + fade)
+        "message-in": {
+          "0%": { transform: "translateY(16px)", opacity: "0" },
+          "100%": { transform: "translateY(0)", opacity: "1" },
+        },
+        // Typing indicator dot animation
+        "typing-dot": {
+          "0%, 60%, 100%": { transform: "translateY(0)", opacity: "0.4" },
+          "30%": { transform: "translateY(-6px)", opacity: "1" },
+        },
+        // Thinking shimmer text effect
+        "thinking-shimmer": {
+          "0%": { backgroundPosition: "-200% center" },
+          "100%": { backgroundPosition: "200% center" },
+        },
+        // Brain/sparkle pulse
+        "thinking-pulse": {
+          "0%, 100%": { transform: "scale(1)", opacity: "0.7" },
+          "50%": { transform: "scale(1.15)", opacity: "1" },
+        },
+        // Rotating sparkle
+        "sparkle-rotate": {
+          "0%": { transform: "rotate(0deg)" },
+          "100%": { transform: "rotate(360deg)" },
+        },
+        // Input focus glow ring
+        "glow-ring": {
+          "0%": { boxShadow: "0 0 0 0 rgba(0, 212, 170, 0)" },
+          "100%": { boxShadow: "0 0 0 4px rgba(0, 212, 170, 0.15), 0 0 20px rgba(0, 212, 170, 0.1)" },
+        },
+        // Welcome icon float with glow
+        "float-glow": {
+          "0%, 100%": {
+            transform: "translateY(0px)",
+            boxShadow: "0 0 20px rgba(0, 212, 170, 0.2)"
+          },
+          "50%": {
+            transform: "translateY(-8px)",
+            boxShadow: "0 0 30px rgba(0, 212, 170, 0.35)"
+          },
+        },
+        // Pulsing border for drag-over state
+        "border-pulse": {
+          "0%, 100%": { borderColor: "rgba(0, 212, 170, 0.5)" },
+          "50%": { borderColor: "rgba(0, 212, 170, 0.8)" },
+        },
+        // Avatar pulse on new message
+        "avatar-pulse": {
+          "0%": { transform: "scale(1)" },
+          "50%": { transform: "scale(1.1)" },
+          "100%": { transform: "scale(1)" },
         },
       },
     },

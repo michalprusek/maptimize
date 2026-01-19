@@ -25,6 +25,19 @@ dependencies = [
     "email-validator>=2.3.0",
     "greenlet>=3.3.0",
     "bcrypt>=5.0.0",
+    "google-genai>=1.0.0",  # Gemini AI for chat
+    "pdf2image>=1.17.0",  # PDF to image conversion for RAG
+    "qwen-vl-utils>=0.0.8",  # Qwen VL utilities for RAG embeddings
+    # Agent tools dependencies
+    "RestrictedPython>=7.0",  # Secure Python code execution sandbox
+    "sqlparse>=0.5.0",  # SQL query parsing and validation
+    "pandas>=2.0.0",  # Data analysis and export
+    "openpyxl>=3.1.0",  # Excel export support
+    "matplotlib>=3.8.0",  # Visualization charts
+    "seaborn>=0.13.0",  # Statistical visualizations
+    "httpx>=0.26.0",  # Async HTTP client for external APIs
+    "beautifulsoup4>=4.12.0",  # Web page content extraction
+    "lxml>=5.0.0",  # HTML/XML parsing
 ]
 
 [project.optional-dependencies]

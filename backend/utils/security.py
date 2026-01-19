@@ -4,8 +4,9 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 import bcrypt
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, status, Query
 from fastapi.security import OAuth2PasswordBearer
+from typing import Optional
 from jose import jwt
 from jose.exceptions import ExpiredSignatureError, JWTClaimsError, JWTError
 from sqlalchemy import select
@@ -94,6 +95,39 @@ async def get_current_user(
         detail="Could not validate credentials",
         headers={"WWW-Authenticate": "Bearer"},
     )
+
+    payload = decode_token(token)
+    if payload is None:
+        raise credentials_exception
+
+    if payload.exp < datetime.now(timezone.utc):
+        raise credentials_exception
+
+    result = await db.execute(select(User).where(User.id == payload.sub))
+    user = result.scalar_one_or_none()
+
+    if user is None:
+        raise credentials_exception
+
+    return user
+
+
+async def get_current_user_from_query(
+    token: str = Query(..., description="JWT access token"),
+    db: AsyncSession = Depends(get_db)
+) -> User:
+    """Get current authenticated user from JWT token in query parameter.
+
+    Use this for endpoints that serve files/images where Authorization header
+    cannot be sent (e.g., <img src="...">, file downloads).
+    """
+    credentials_exception = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Could not validate credentials",
+    )
+
+    if not token:
+        raise credentials_exception
 
     payload = decode_token(token)
     if payload is None:

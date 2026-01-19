@@ -55,6 +55,10 @@ get_db_context = asynccontextmanager(get_db)
 
 async def init_db():
     """Initialize database tables, enable extensions, and seed default data."""
+    # Import all models to ensure they are registered with SQLAlchemy Base
+    # This is required for Base.metadata.create_all to create all tables
+    import models  # noqa: F401 - imports all model classes
+
     async with engine.begin() as conn:
         # Enable pgvector extension for embedding storage
         await conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
@@ -131,6 +135,9 @@ async def ensure_schema_updates():
             ("map_proteins", "umap_y", "FLOAT"),
             ("map_proteins", "umap_computed_at", "TIMESTAMP WITH TIME ZONE"),
             ("map_proteins", "created_at", "TIMESTAMP WITH TIME ZONE DEFAULT NOW()"),
+            # RAG embedding for FOV images (2048-dim for Qwen VL)
+            ("images", "rag_embedding", "vector(2048)"),
+            ("images", "rag_indexed_at", "TIMESTAMP WITH TIME ZONE"),
         ]
 
         for table, column, col_type in updates:
@@ -167,6 +174,13 @@ async def ensure_schema_updates():
                 logger.debug(f"Enum update {enum_name}.{new_value}: {e}")
             except OperationalError as e:
                 logger.warning(f"Failed to add enum value {enum_name}.{new_value}: {e}")
+
+        # Note: RAG embeddings use 2048 dimensions (Qwen3 VL) which exceeds
+        # pgvector's 2000-dimension limit for HNSW/ivfflat indexes.
+        # We skip index creation - exact search will be used instead.
+        # For production with large datasets, consider dimensionality reduction
+        # or using a dedicated vector database like Qdrant/Pinecone.
+        logger.debug("Skipping RAG vector index creation (2048 dims > pgvector 2000 limit)")
 
         if failed_updates:
             logger.error(f"Schema updates FAILED for: {', '.join(failed_updates)}")

@@ -34,6 +34,19 @@ from .export_import import (
     ImportExecuteRequest,
     ImportStatusResponse,
 )
+from .chat import (
+    ChatThreadCreate,
+    ChatThreadUpdate,
+    ChatThreadResponse,
+    ChatThreadDetailResponse,
+    ChatMessageCreate,
+    ChatMessageResponse,
+    RAGDocumentUploadResponse,
+    RAGDocumentResponse,
+    RAGDocumentPageResponse,
+    RAGIndexingStatusResponse,
+    RAGSearchResponse,
+)
 
 __all__ = [
     "UserCreate",
@@ -62,4 +75,16 @@ __all__ = [
     "ImportValidationResult",
     "ImportExecuteRequest",
     "ImportStatusResponse",
+    # Chat/RAG
+    "ChatThreadCreate",
+    "ChatThreadUpdate",
+    "ChatThreadResponse",
+    "ChatThreadDetailResponse",
+    "ChatMessageCreate",
+    "ChatMessageResponse",
+    "RAGDocumentUploadResponse",
+    "RAGDocumentResponse",
+    "RAGDocumentPageResponse",
+    "RAGIndexingStatusResponse",
+    "RAGSearchResponse",
 ]

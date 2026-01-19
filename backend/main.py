@@ -24,6 +24,7 @@ async def lifespan(app: FastAPI):
     # Startup
     await init_db()
     settings.upload_dir.mkdir(parents=True, exist_ok=True)
+    settings.rag_document_dir.mkdir(parents=True, exist_ok=True)
     yield
     # Shutdown (cleanup if needed)
 
