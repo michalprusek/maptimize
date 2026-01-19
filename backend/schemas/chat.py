@@ -84,6 +84,27 @@ class ChatThreadDetailResponse(ChatThreadResponse):
     messages: List[ChatMessageResponse] = []
 
 
+# ============== Generation Status Schemas ==============
+
+class GenerationStatusResponse(BaseModel):
+    """Status of AI response generation for a thread."""
+    thread_id: int
+    status: str  # idle, generating, completed, cancelled, error
+    task_id: Optional[str] = None
+    started_at: Optional[datetime] = None
+    elapsed_seconds: Optional[int] = None
+    error: Optional[str] = None
+    # If completed, contains the new message
+    message: Optional[ChatMessageResponse] = None
+
+
+class SendMessageResponse(BaseModel):
+    """Response after sending a message (async generation)."""
+    user_message: ChatMessageResponse
+    generation_status: str  # "generating" or "completed"
+    task_id: Optional[str] = None
+
+
 # ============== RAG Document Schemas ==============
 
 class RAGDocumentUploadResponse(BaseModel):

@@ -524,6 +524,8 @@
     "analyzing": "Analyse des donnees...",
     "processing": "Traitement de la requete...",
     "processingComplex": "Analyse complexe en cours...",
+    "cancelling": "Annulation...",
+    "cancelGeneration": "Annuler la generation de la reponse",
     "dismiss": "Fermer",
     "pressEnterToSend": "Appuyez sur Entree pour envoyer",
     "suggestionAnalyze": "Analyser ma derniere experience",

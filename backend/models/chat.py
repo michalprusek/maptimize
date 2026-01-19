@@ -20,6 +20,15 @@ class ChatRole(str, PyEnum):
     ASSISTANT = "assistant"
 
 
+class GenerationStatus(str, PyEnum):
+    """Status of AI response generation."""
+    IDLE = "idle"
+    GENERATING = "generating"
+    COMPLETED = "completed"
+    CANCELLED = "cancelled"
+    ERROR = "error"
+
+
 class ChatThread(Base):
     """Chat conversation thread with a user."""
 
@@ -39,6 +48,20 @@ class ChatThread(Base):
         DateTime(timezone=True),
         server_default=func.now(),
         onupdate=func.now()
+    )
+
+    # Generation status for async message processing
+    generation_status: Mapped[str] = mapped_column(
+        String(20), default="idle"
+    )
+    generation_task_id: Mapped[Optional[str]] = mapped_column(
+        String(64), nullable=True
+    )
+    generation_started_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    generation_error: Mapped[Optional[str]] = mapped_column(
+        Text, nullable=True
     )
 
     # Relationships

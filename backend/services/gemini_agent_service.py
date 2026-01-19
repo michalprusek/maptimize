@@ -1484,12 +1484,16 @@ async def execute_tool(tool_name: str, args: Dict[str, Any], user_id: int, db: A
             try:
                 async with httpx.AsyncClient() as client:
                     resp = await client.get("https://api.duckduckgo.com/", params={"q": args["query"], "format": "json", "no_html": 1}, timeout=10.0)
-                    if resp.status_code == 200:
+                    # DuckDuckGo returns 200 or 202 for success
+                    if resp.status_code in (200, 202):
                         data = resp.json()
                         results = []
                         if data.get("Abstract"): results.append({"title": data.get("Heading", args["query"]), "snippet": data.get("Abstract"), "url": data.get("AbstractURL")})
-                        for t in data.get("RelatedTopics", [])[:4]:
+                        for t in data.get("RelatedTopics", [])[:5]:
                             if isinstance(t, dict) and t.get("Text"): results.append({"title": t.get("Text", "")[:100], "snippet": t.get("Text"), "url": t.get("FirstURL")})
+                        # If no results, provide helpful message
+                        if not results:
+                            return {"query": args["query"], "results": [], "note": "No instant answers found. DuckDuckGo Instant Answers works best for factual queries, definitions, and Wikipedia summaries. For live data like weather or stock prices, this API has limitations."}
                         return {"query": args["query"], "results": results}
                     elif resp.status_code == 429:
                         return {"error": "Search rate limit exceeded. Please wait a moment and try again."}

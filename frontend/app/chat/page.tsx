@@ -19,7 +19,7 @@ export default function ChatPage() {
 
   // Auth check
   const { isAuthenticated, isLoading: authLoading, checkAuth } = useAuthStore();
-  const { loadThreads, loadDocuments, refreshIndexingStatus } = useChatStore();
+  const { activeThreadId, loadThreads, loadDocuments, refreshIndexingStatus, selectThread } = useChatStore();
 
   useEffect(() => {
     checkAuth();
@@ -38,6 +38,11 @@ export default function ChatPage() {
       loadDocuments();
       refreshIndexingStatus();
 
+      // Load messages for persisted active thread (handles page refresh with ongoing generation)
+      if (activeThreadId) {
+        selectThread(activeThreadId);
+      }
+
       // Refresh indexing status and documents periodically
       const interval = setInterval(() => {
         refreshIndexingStatus();
@@ -45,6 +50,9 @@ export default function ChatPage() {
       }, 5000); // Refresh every 5 seconds for better UX
       return () => clearInterval(interval);
     }
+    // Note: activeThreadId and selectThread intentionally excluded from deps
+    // to only run this check on initial mount, not when switching threads
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isAuthenticated, loadThreads, loadDocuments, refreshIndexingStatus]);
 
   if (authLoading) {

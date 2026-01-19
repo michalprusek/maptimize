@@ -6,6 +6,7 @@ import {
   ChatMessage,
   RAGDocument,
   RAGIndexingStatus,
+  GenerationStatus,
 } from "@/lib/api";
 
 // Image preview types
@@ -45,6 +46,11 @@ interface ChatState {
   isDeletingThread: boolean;
   isDeletingDocument: boolean;
 
+  // Generation state (for async AI responses)
+  generatingThreadId: number | null;
+  generationTaskId: string | null;
+  generationElapsedSeconds: number;
+
   // Error state
   error: string | null;
 
@@ -58,6 +64,8 @@ interface ChatState {
   // Actions - Messages
   sendMessage: (content: string) => Promise<void>;
   startConversation: (message: string) => Promise<void>;
+  cancelGeneration: () => Promise<void>;
+  checkGenerationStatus: (threadId: number) => Promise<void>;
   editMessage: (messageId: number, content: string) => Promise<void>;
   regenerateMessage: (messageId: number) => Promise<void>;
 
@@ -81,6 +89,20 @@ interface ChatState {
 
   // Actions - Error
   clearError: () => void;
+}
+
+// Helper to create optimistic user message
+function createOptimisticUserMessage(threadId: number, content: string): ChatMessage {
+  return {
+    id: -Date.now(),
+    thread_id: threadId,
+    role: "user",
+    content,
+    citations: [],
+    image_refs: [],
+    tool_calls: [],
+    created_at: new Date().toISOString(),
+  };
 }
 
 export const useChatStore = create<ChatState>()(
@@ -114,6 +136,11 @@ export const useChatStore = create<ChatState>()(
       isUploadingDocument: false,
       isDeletingThread: false,
       isDeletingDocument: false,
+
+      // Initial generation state
+      generatingThreadId: null,
+      generationTaskId: null,
+      generationElapsedSeconds: 0,
 
       // Initial error state
       error: null,
@@ -152,7 +179,7 @@ export const useChatStore = create<ChatState>()(
       },
 
       selectThread: async (threadId: number) => {
-        const { messages } = get();
+        const { messages, checkGenerationStatus } = get();
 
         // Set active thread immediately
         set({ activeThreadId: threadId, isLoadingMessages: true, error: null });
@@ -173,6 +200,25 @@ export const useChatStore = create<ChatState>()(
           }
         } else {
           set({ isLoadingMessages: false });
+        }
+
+        // Check if there's ongoing generation for this thread (handles page refresh)
+        try {
+          const status = await api.getGenerationStatus(threadId);
+          if (status.status === "generating") {
+            set({
+              generatingThreadId: threadId,
+              generationTaskId: status.task_id || null,
+              generationElapsedSeconds: status.elapsed_seconds || 0,
+            });
+            // Resume polling
+            checkGenerationStatus(threadId);
+          }
+        } catch (error) {
+          // Log non-404 errors for debugging (404 means no generation in progress, which is normal)
+          if (error instanceof Error && !error.message.includes("404")) {
+            console.warn("Failed to check generation status on thread select:", error.message);
+          }
         }
       },
 
@@ -228,16 +274,7 @@ export const useChatStore = create<ChatState>()(
         set({ isSendingMessage: true, error: null });
 
         // Optimistically add user message
-        const tempUserMessage: ChatMessage = {
-          id: -Date.now(), // Temporary negative ID
-          thread_id: activeThreadId,
-          role: "user",
-          content,
-          citations: [],
-          image_refs: [],
-          tool_calls: [],
-          created_at: new Date().toISOString(),
-        };
+        const tempUserMessage = createOptimisticUserMessage(activeThreadId, content);
 
         set((state) => ({
           messages: {
@@ -247,31 +284,32 @@ export const useChatStore = create<ChatState>()(
         }));
 
         try {
-          // Send message and get AI response
+          // Send message - returns immediately with user message and starts async generation
           const response = await api.sendChatMessage(activeThreadId, content);
 
-          // Replace temp message and add response
+          // Replace temp message with real user message
           set((state) => {
             const threadMessages = state.messages[activeThreadId] || [];
             const filteredMessages = threadMessages.filter(
               (m) => m.id !== tempUserMessage.id
             );
 
-            // Add the real user message (from response's thread) and AI response
             return {
               messages: {
                 ...state.messages,
-                [activeThreadId]: [
-                  ...filteredMessages,
-                  { ...tempUserMessage, id: response.id - 1 }, // Approximate user message ID
-                  response,
-                ],
+                [activeThreadId]: [...filteredMessages, response.user_message],
               },
               isSendingMessage: false,
+              generatingThreadId: activeThreadId,
+              generationTaskId: response.task_id || null,
+              generationElapsedSeconds: 0,
             };
           });
 
-          // Update thread list (for message count, etc.)
+          // Start polling for generation status
+          get().checkGenerationStatus(activeThreadId);
+
+          // Update thread list
           get().loadThreads();
         } catch (error) {
           // Remove optimistic message on error
@@ -292,10 +330,9 @@ export const useChatStore = create<ChatState>()(
         set({ isSendingMessage: true, error: null });
 
         try {
-          // Create thread without setting it active yet (to avoid empty state flash)
+          // Create thread
           const thread = await api.createChatThread();
 
-          // Now set as active and add to threads list
           set((state) => ({
             threads: [thread, ...state.threads],
             activeThreadId: thread.id,
@@ -303,16 +340,7 @@ export const useChatStore = create<ChatState>()(
           }));
 
           // Optimistically add user message
-          const tempUserMessage: ChatMessage = {
-            id: -Date.now(),
-            thread_id: thread.id,
-            role: "user",
-            content: message,
-            citations: [],
-            image_refs: [],
-            tool_calls: [],
-            created_at: new Date().toISOString(),
-          };
+          const tempUserMessage = createOptimisticUserMessage(thread.id, message);
 
           set((state) => ({
             messages: {
@@ -321,10 +349,10 @@ export const useChatStore = create<ChatState>()(
             },
           }));
 
-          // Send message and get AI response
+          // Send message - starts async generation
           const response = await api.sendChatMessage(thread.id, message);
 
-          // Replace temp message and add response
+          // Replace temp message with real user message
           set((state) => {
             const threadMessages = state.messages[thread.id] || [];
             const filteredMessages = threadMessages.filter(
@@ -334,17 +362,19 @@ export const useChatStore = create<ChatState>()(
             return {
               messages: {
                 ...state.messages,
-                [thread.id]: [
-                  ...filteredMessages,
-                  { ...tempUserMessage, id: response.id - 1 },
-                  response,
-                ],
+                [thread.id]: [...filteredMessages, response.user_message],
               },
               isSendingMessage: false,
+              generatingThreadId: thread.id,
+              generationTaskId: response.task_id || null,
+              generationElapsedSeconds: 0,
             };
           });
 
-          // Refresh thread list to update message count
+          // Start polling for generation status
+          get().checkGenerationStatus(thread.id);
+
+          // Refresh thread list
           get().loadThreads();
         } catch (error) {
           set({
@@ -352,6 +382,109 @@ export const useChatStore = create<ChatState>()(
             isSendingMessage: false,
           });
         }
+      },
+
+      cancelGeneration: async () => {
+        const { generatingThreadId } = get();
+        if (!generatingThreadId) return;
+
+        try {
+          await api.cancelGeneration(generatingThreadId);
+          set({
+            generatingThreadId: null,
+            generationTaskId: null,
+            generationElapsedSeconds: 0,
+          });
+        } catch (error) {
+          set({
+            error: error instanceof Error ? error.message : "Failed to cancel generation",
+          });
+        }
+      },
+
+      checkGenerationStatus: async (threadId: number) => {
+        // Poll for generation status until completed, cancelled, or error
+        const pollInterval = 1000; // 1 second
+        const maxPolls = 300; // 5 minutes max
+        let pollCount = 0;
+
+        const poll = async () => {
+          const { generatingThreadId } = get();
+
+          // Stop polling if no longer generating this thread (handles cancellation)
+          if (!generatingThreadId || generatingThreadId !== threadId) return;
+
+          try {
+            const status = await api.getGenerationStatus(threadId);
+
+            // Check again after API call in case cancelled during fetch
+            const currentState = get();
+            if (!currentState.generatingThreadId || currentState.generatingThreadId !== threadId) return;
+
+            set({ generationElapsedSeconds: status.elapsed_seconds || 0 });
+
+            if (status.status === "completed" && status.message) {
+              // Add the new assistant message
+              set((state) => ({
+                messages: {
+                  ...state.messages,
+                  [threadId]: [...(state.messages[threadId] || []), status.message!],
+                },
+                generatingThreadId: null,
+                generationTaskId: null,
+                generationElapsedSeconds: 0,
+              }));
+              // Refresh thread list
+              get().loadThreads();
+              return;
+            }
+
+            if (status.status === "error") {
+              set({
+                error: status.error || "Generation failed",
+                generatingThreadId: null,
+                generationTaskId: null,
+                generationElapsedSeconds: 0,
+              });
+              return;
+            }
+
+            if (status.status === "cancelled") {
+              set({
+                generatingThreadId: null,
+                generationTaskId: null,
+                generationElapsedSeconds: 0,
+              });
+              return;
+            }
+
+            // Continue polling if still generating
+            if (status.status === "generating") {
+              if (pollCount >= maxPolls) {
+                set({
+                  error: "Generation took too long. Please try again.",
+                  generatingThreadId: null,
+                  generationTaskId: null,
+                  generationElapsedSeconds: 0,
+                });
+                return;
+              }
+              pollCount++;
+              setTimeout(poll, pollInterval);
+            }
+          } catch (error) {
+            // On error, stop polling
+            set({
+              error: error instanceof Error ? error.message : "Failed to check status",
+              generatingThreadId: null,
+              generationTaskId: null,
+              generationElapsedSeconds: 0,
+            });
+          }
+        };
+
+        // Start polling
+        poll();
       },
 
       editMessage: async (messageId: number, content: string) => {

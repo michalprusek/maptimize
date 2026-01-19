@@ -1,8 +1,12 @@
 """Chat API routes for RAG-powered conversations."""
+import asyncio
+import json
 import logging
 import time
+import uuid
 from collections import defaultdict
-from typing import List, Optional
+from datetime import datetime, timezone
+from typing import List, Optional, Dict, Any
 
 import redis.asyncio as redis
 from fastapi import APIRouter, Depends, HTTPException, status, Query, BackgroundTasks
@@ -12,7 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from config import get_settings
-from database import get_db
+from database import get_db, async_session_maker
 from models.user import User
 from models.chat import ChatThread, ChatMessage
 from schemas.chat import (
@@ -23,11 +27,16 @@ from schemas.chat import (
     ChatMessageCreate,
     ChatMessageEdit,
     ChatMessageResponse,
+    GenerationStatusResponse,
+    SendMessageResponse,
 )
 from utils.security import get_current_user
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
+
+# Track active generation tasks (in-memory for this process)
+_active_tasks: Dict[str, asyncio.Task] = {}
 
 router = APIRouter()
 
@@ -154,6 +163,126 @@ async def get_thread_for_user(
     return thread
 
 
+# ============== Async Generation Task Management ==============
+
+async def _run_generation_task(
+    task_id: str,
+    thread_id: int,
+    user_id: int,
+    query: str,
+    history: List[Dict[str, str]],
+    context_warning: Optional[str] = None,
+):
+    """
+    Background task to generate AI response.
+    Updates thread status in DB and stores result.
+    """
+    try:
+        # Create new DB session for this task
+        async with async_session_maker() as db:
+            # Update thread status to generating
+            thread = await db.get(ChatThread, thread_id)
+            if not thread:
+                logger.error(f"Task {task_id}: Thread {thread_id} not found")
+                return
+
+            thread.generation_status = "generating"
+            thread.generation_task_id = task_id
+            thread.generation_started_at = datetime.now(timezone.utc)
+            thread.generation_error = None
+            await db.commit()
+
+            # Check if cancelled before starting
+            r = await _get_redis()
+            if await r.get(f"cancel:{task_id}"):
+                thread.generation_status = "cancelled"
+                thread.generation_task_id = None
+                await db.commit()
+                logger.info(f"Task {task_id}: Cancelled before start")
+                return
+
+            try:
+                from services.gemini_agent_service import generate_response
+
+                response_data = await generate_response(
+                    query=query,
+                    user_id=user_id,
+                    thread_id=thread_id,
+                    db=db,
+                    history=history,
+                )
+
+                # Check if cancelled during generation
+                if await r.get(f"cancel:{task_id}"):
+                    thread.generation_status = "cancelled"
+                    thread.generation_task_id = None
+                    await db.commit()
+                    logger.info(f"Task {task_id}: Cancelled during generation")
+                    return
+
+                # Add context warning if applicable
+                content = response_data["content"]
+                if context_warning:
+                    content = f"⚠️ *{context_warning}*\n\n{content}"
+
+                # Create assistant message
+                assistant_message = ChatMessage(
+                    thread_id=thread_id,
+                    role="assistant",
+                    content=content,
+                    citations=response_data.get("citations", []),
+                    image_refs=response_data.get("image_refs", []),
+                    tool_calls=response_data.get("tool_calls", []),
+                )
+                db.add(assistant_message)
+
+                # Update thread status to completed
+                thread.generation_status = "completed"
+                thread.generation_task_id = None
+                await db.commit()
+
+                logger.info(f"Task {task_id}: Generation completed successfully")
+
+            except asyncio.CancelledError:
+                thread.generation_status = "cancelled"
+                thread.generation_task_id = None
+                await db.commit()
+                logger.info(f"Task {task_id}: Cancelled via CancelledError")
+
+            except Exception as e:
+                logger.exception(f"Task {task_id}: Generation error: {e}")
+                thread.generation_status = "error"
+                thread.generation_error = str(e)[:500]
+                thread.generation_task_id = None
+                await db.commit()
+
+    except Exception as e:
+        logger.exception(f"Task {task_id}: Fatal error: {e}")
+    finally:
+        # Clean up task reference
+        _active_tasks.pop(task_id, None)
+        # Clean up Redis cancel flag
+        try:
+            r = await _get_redis()
+            await r.delete(f"cancel:{task_id}")
+        except Exception:
+            pass
+
+
+async def _cancel_generation(task_id: str) -> bool:
+    """Cancel a generation task."""
+    # Set cancellation flag in Redis
+    r = await _get_redis()
+    await r.setex(f"cancel:{task_id}", 300, "1")  # 5 min TTL
+
+    # Try to cancel the asyncio task
+    task = _active_tasks.get(task_id)
+    if task and not task.done():
+        task.cancel()
+        return True
+    return False
+
+
 @router.get("/threads", response_model=List[ChatThreadResponse])
 async def list_threads(
     skip: int = Query(0, ge=0),
@@ -265,27 +394,33 @@ async def delete_thread(
     logger.info(f"Deleted chat thread {thread_id}")
 
 
-@router.post("/threads/{thread_id}/messages", response_model=ChatMessageResponse)
+@router.post("/threads/{thread_id}/messages", response_model=SendMessageResponse)
 async def send_message(
     thread_id: int,
     data: ChatMessageCreate,
-    background_tasks: BackgroundTasks,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
     """
-    Send a message and get AI response.
+    Send a message and start async AI response generation.
 
-    Creates a user message and triggers the Gemini agent to generate a response.
-    The response is generated synchronously and returned.
+    Creates a user message and triggers background generation.
+    Returns immediately with the user message and generation task ID.
+    Use GET /threads/{id}/generation-status to poll for completion.
     """
     # Check rate limit before any processing
     await _check_rate_limit_async(current_user.id)
 
     thread = await get_thread_for_user(db, thread_id, current_user.id)
 
+    # Check if already generating
+    if thread.generation_status == "generating":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="A response is already being generated for this thread. Wait for completion or cancel it."
+        )
+
     # Fetch conversation history (last N messages for context)
-    # Count total messages for token monitoring
     total_msg_count = (await db.execute(
         select(func.count(ChatMessage.id)).where(ChatMessage.thread_id == thread_id)
     )).scalar() or 0
@@ -294,7 +429,7 @@ async def send_message(
         select(ChatMessage)
         .where(ChatMessage.thread_id == thread_id)
         .order_by(ChatMessage.created_at.asc())
-        .limit(20)  # Limit history to avoid token limits
+        .limit(20)
     )
     history_messages = history_result.scalars().all()
     history = [
@@ -302,14 +437,14 @@ async def send_message(
         for msg in history_messages
     ]
 
-    # Estimate token usage (rough: ~4 chars per token)
+    # Estimate token usage
     total_chars = sum(len(msg.content) for msg in history_messages)
     estimated_tokens = total_chars // 4
     context_warning = None
     if total_msg_count > 20:
-        context_warning = f"Long conversation: showing last 20 of {total_msg_count} messages. Earlier context may be lost."
+        context_warning = f"Long conversation: showing last 20 of {total_msg_count} messages."
     elif estimated_tokens > 50000:
-        context_warning = f"Large context (~{estimated_tokens//1000}k tokens). Consider starting a new conversation for complex queries."
+        context_warning = f"Large context (~{estimated_tokens//1000}k tokens)."
 
     # Create user message
     user_message = ChatMessage(
@@ -323,55 +458,116 @@ async def send_message(
     if thread.name == "New Chat":
         thread.name = data.content[:50] + ("..." if len(data.content) > 50 else "")
 
-    # Commit user message BEFORE AI generation to ensure it's saved
-    # even if AI generation fails
-    await db.commit()
+    # Generate task ID and update thread status
+    task_id = f"gen_{thread_id}_{uuid.uuid4().hex[:12]}"
+    thread.generation_status = "generating"
+    thread.generation_task_id = task_id
+    thread.generation_started_at = datetime.now(timezone.utc)
+    thread.generation_error = None
 
-    # Refresh to get the committed state
+    await db.commit()
     await db.refresh(user_message)
 
-    # Generate AI response using Gemini agent
-    try:
-        from services.gemini_agent_service import generate_response
+    # Start background generation task
+    # Include the new user message in history for the task
+    history_with_new = history + [{"role": "user", "content": data.content}]
 
-        response_data = await generate_response(
-            query=data.content,
+    task = asyncio.create_task(
+        _run_generation_task(
+            task_id=task_id,
+            thread_id=thread_id,
             user_id=current_user.id,
-            thread_id=thread_id,
-            db=db,
-            history=history,
+            query=data.content,
+            history=history_with_new,
+            context_warning=context_warning,
         )
+    )
+    _active_tasks[task_id] = task
 
-        # Add context warning if applicable
-        content = response_data["content"]
-        if context_warning:
-            content = f"⚠️ *{context_warning}*\n\n{content}"
+    return SendMessageResponse(
+        user_message=ChatMessageResponse.model_validate(user_message),
+        generation_status="generating",
+        task_id=task_id,
+    )
 
-        # Create assistant message (generate_response commits its own changes)
-        assistant_message = ChatMessage(
-            thread_id=thread_id,
-            role="assistant",
-            content=content,
-            citations=response_data.get("citations", []),
-            image_refs=response_data.get("image_refs", []),
-            tool_calls=response_data.get("tool_calls", []),
+
+@router.get("/threads/{thread_id}/generation-status", response_model=GenerationStatusResponse)
+async def get_generation_status(
+    thread_id: int,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Get the current generation status for a thread.
+
+    Poll this endpoint to check if AI response generation is complete.
+    When status is "completed", the new message will be included in the response.
+    """
+    thread = await get_thread_for_user(db, thread_id, current_user.id)
+
+    response = GenerationStatusResponse(
+        thread_id=thread_id,
+        status=thread.generation_status or "idle",
+        task_id=thread.generation_task_id,
+        started_at=thread.generation_started_at,
+        error=thread.generation_error,
+    )
+
+    # Calculate elapsed time
+    if thread.generation_started_at and thread.generation_status == "generating":
+        elapsed = (datetime.now(timezone.utc) - thread.generation_started_at).total_seconds()
+        response.elapsed_seconds = int(elapsed)
+
+    # If completed, include the latest assistant message
+    if thread.generation_status == "completed":
+        result = await db.execute(
+            select(ChatMessage)
+            .where(ChatMessage.thread_id == thread_id, ChatMessage.role == "assistant")
+            .order_by(ChatMessage.created_at.desc())
+            .limit(1)
         )
-        db.add(assistant_message)
+        latest_message = result.scalar_one_or_none()
+        if latest_message:
+            response.message = ChatMessageResponse.model_validate(latest_message)
+
+        # Reset status to idle after returning completed
+        thread.generation_status = "idle"
         await db.commit()
 
-        return ChatMessageResponse.model_validate(assistant_message)
+    return response
 
-    except Exception as e:
-        logger.exception(f"Error generating AI response for thread {thread_id}")
-        # Ensure transaction is rolled back to clean state
-        try:
-            await db.rollback()
-        except Exception as rollback_err:
-            logger.warning(f"Rollback error during error recovery: {rollback_err}")
+
+@router.post("/threads/{thread_id}/cancel-generation")
+async def cancel_generation(
+    thread_id: int,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Cancel an ongoing AI response generation.
+
+    Returns success if cancellation was initiated.
+    """
+    thread = await get_thread_for_user(db, thread_id, current_user.id)
+
+    if thread.generation_status != "generating":
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to generate response: {str(e)}"
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No generation in progress to cancel"
         )
+
+    task_id = thread.generation_task_id
+    if task_id:
+        await _cancel_generation(task_id)
+
+    # Update thread status
+    thread.generation_status = "cancelled"
+    thread.generation_task_id = None
+    await db.commit()
+
+    logger.info(f"Cancelled generation for thread {thread_id}, task {task_id}")
+
+    return {"status": "cancelled", "thread_id": thread_id}
 
 
 @router.get("/threads/{thread_id}/messages", response_model=List[ChatMessageResponse])

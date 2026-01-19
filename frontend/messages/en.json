@@ -478,6 +478,8 @@
     "analyzing": "Analyzing data...",
     "processing": "Processing query...",
     "processingComplex": "Complex analysis in progress...",
+    "cancelling": "Cancelling...",
+    "cancelGeneration": "Cancel response generation",
     "dismiss": "Dismiss",
     "noThreads": "No conversations yet",
     "confirmDeleteThread": "Are you sure you want to delete this conversation?",

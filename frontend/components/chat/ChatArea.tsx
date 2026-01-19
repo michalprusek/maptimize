@@ -1,12 +1,12 @@
 "use client";
 
-import { useRef, useEffect, useMemo, useState } from "react";
+import { useRef, useEffect, useMemo, useState, useCallback } from "react";
 import { useTranslations } from "next-intl";
 import { useChatStore } from "@/stores/chatStore";
 import { MessageBubble } from "./MessageBubble";
 import { ChatInput } from "./ChatInput";
 import { WelcomeSearch } from "./WelcomeSearch";
-import { Sparkles } from "lucide-react";
+import { Sparkles, X } from "lucide-react";
 import { clsx } from "clsx";
 
 // Skeleton loading component with shimmer effect
@@ -55,27 +55,53 @@ function MessageSkeleton({ isUser = false }: { isUser?: boolean }) {
   );
 }
 
-// Animated thinking indicator with modern design and elapsed time
-function TypingIndicator() {
-  const t = useTranslations("chat");
-  const [elapsedSeconds, setElapsedSeconds] = useState(0);
+// Animated thinking indicator with modern design, elapsed time and cancel button
+interface TypingIndicatorProps {
+  elapsedSeconds?: number;
+  onCancel?: () => void;
+  canCancel?: boolean;
+}
 
-  // Track elapsed time to inform user about long-running queries
+function TypingIndicator({ elapsedSeconds: externalElapsedSeconds, onCancel, canCancel }: TypingIndicatorProps) {
+  const t = useTranslations("chat");
+  const [localElapsedSeconds, setLocalElapsedSeconds] = useState(0);
+  const [isCancelling, setIsCancelling] = useState(false);
+
+  // Use external elapsed time if provided (from server), otherwise track locally
+  const elapsedSeconds = externalElapsedSeconds ?? localElapsedSeconds;
+
+  // Track elapsed time locally when not provided from server
   useEffect(() => {
+    if (externalElapsedSeconds !== undefined) return;
+
     const startTime = Date.now();
     const interval = setInterval(() => {
-      setElapsedSeconds(Math.floor((Date.now() - startTime) / 1000));
+      setLocalElapsedSeconds(Math.floor((Date.now() - startTime) / 1000));
     }, 1000);
     return () => clearInterval(interval);
-  }, []);
+  }, [externalElapsedSeconds]);
 
   // Show different status based on elapsed time
   const getStatusText = () => {
+    if (isCancelling) return t("cancelling");
     if (elapsedSeconds < 5) return t("thinking");
     if (elapsedSeconds < 15) return t("analyzing");
     if (elapsedSeconds < 30) return t("processing");
     return t("processingComplex");
   };
+
+  const handleCancel = useCallback(async () => {
+    if (isCancelling || !onCancel) return;
+    setIsCancelling(true);
+    try {
+      await onCancel();
+    } catch (error) {
+      console.error("Failed to cancel generation:", error);
+      // Error is already set in store by cancelGeneration action
+    } finally {
+      setIsCancelling(false);
+    }
+  }, [onCancel, isCancelling]);
 
   return (
     <div className="flex items-start gap-3 animate-fade-in">
@@ -105,7 +131,12 @@ function TypingIndicator() {
 
         {/* Shimmer text with status */}
         <span
-          className="text-sm font-medium bg-gradient-to-r from-text-secondary via-primary-400 to-text-secondary bg-[length:200%_100%] bg-clip-text text-transparent animate-thinking-shimmer"
+          className={clsx(
+            "text-sm font-medium bg-gradient-to-r bg-[length:200%_100%] bg-clip-text text-transparent animate-thinking-shimmer",
+            isCancelling
+              ? "from-amber-400 via-amber-300 to-amber-400"
+              : "from-text-secondary via-primary-400 to-text-secondary"
+          )}
         >
           {getStatusText()}
         </span>
@@ -115,6 +146,17 @@ function TypingIndicator() {
           <span className="text-xs text-text-muted ml-1">
             ({elapsedSeconds}s)
           </span>
+        )}
+
+        {/* Cancel button (shows when cancellation is available) */}
+        {canCancel && !isCancelling && (
+          <button
+            onClick={handleCancel}
+            className="ml-2 p-1 rounded-full bg-white/5 hover:bg-red-500/20 border border-white/10 hover:border-red-500/30 transition-all duration-200 group"
+            title={t("cancelGeneration")}
+          >
+            <X className="w-3.5 h-3.5 text-text-muted group-hover:text-red-400 transition-colors" />
+          </button>
         )}
       </div>
     </div>
@@ -129,6 +171,9 @@ export function ChatArea() {
     isLoadingMessages,
     isSendingMessage,
     isRegeneratingMessage,
+    generatingThreadId,
+    generationElapsedSeconds,
+    cancelGeneration,
     error,
     clearError,
     clearActiveThread,
@@ -138,10 +183,15 @@ export function ChatArea() {
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const threadMessages = activeThreadId ? messages[activeThreadId] || [] : [];
 
+  // Check if messages have been loaded for this thread
+  // undefined = not loaded yet, [] = loaded but empty
+  const messagesLoaded = activeThreadId ? messages[activeThreadId] !== undefined : false;
+
   // Check if thread is empty (has no messages after loading)
+  // Only consider empty if messages were explicitly loaded and the array is empty
   const isEmptyThread = useMemo(() => {
-    return activeThreadId && !isLoadingMessages && threadMessages.length === 0;
-  }, [activeThreadId, isLoadingMessages, threadMessages.length]);
+    return activeThreadId && !isLoadingMessages && messagesLoaded && threadMessages.length === 0;
+  }, [activeThreadId, isLoadingMessages, messagesLoaded, threadMessages.length]);
 
   // Redirect to welcome page when thread is empty
   // This handles: deleted threads, threads with all messages deleted, etc.
@@ -227,7 +277,13 @@ export function ChatArea() {
             })}
 
             {/* Typing indicator when AI is responding or regenerating */}
-            {(isSendingMessage || isRegeneratingMessage) && <TypingIndicator />}
+            {(isSendingMessage || isRegeneratingMessage || generatingThreadId === activeThreadId) && (
+              <TypingIndicator
+                elapsedSeconds={generatingThreadId === activeThreadId ? generationElapsedSeconds : undefined}
+                onCancel={cancelGeneration}
+                canCancel={generatingThreadId === activeThreadId}
+              />
+            )}
           </>
         )}
         <div ref={messagesEndRef} />

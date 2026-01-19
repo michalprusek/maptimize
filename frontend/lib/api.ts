@@ -965,7 +965,7 @@ class ApiClient {
   }
 
   async sendChatMessage(threadId: number, content: string) {
-    return this.request<ChatMessage>(`/api/chat/threads/${threadId}/messages`, {
+    return this.request<SendMessageResponse>(`/api/chat/threads/${threadId}/messages`, {
       method: "POST",
       body: JSON.stringify({ content }),
     });
@@ -973,6 +973,16 @@ class ApiClient {
 
   async getChatMessages(threadId: number) {
     return this.request<ChatMessage[]>(`/api/chat/threads/${threadId}/messages`);
+  }
+
+  async getGenerationStatus(threadId: number) {
+    return this.request<GenerationStatusResponse>(`/api/chat/threads/${threadId}/generation-status`);
+  }
+
+  async cancelGeneration(threadId: number) {
+    return this.request<{ status: string; thread_id: number }>(`/api/chat/threads/${threadId}/cancel-generation`, {
+      method: "POST",
+    });
   }
 
   async editChatMessage(threadId: number, messageId: number, content: string) {
@@ -1743,6 +1753,24 @@ export interface ChatMessage {
   image_refs: ChatImageRef[];
   tool_calls: ChatToolCall[];
   created_at: string;
+}
+
+export type GenerationStatus = "idle" | "generating" | "completed" | "cancelled" | "error";
+
+export interface GenerationStatusResponse {
+  thread_id: number;
+  status: GenerationStatus;
+  task_id?: string;
+  started_at?: string;
+  elapsed_seconds?: number;
+  error?: string;
+  message?: ChatMessage;
+}
+
+export interface SendMessageResponse {
+  user_message: ChatMessage;
+  generation_status: GenerationStatus;
+  task_id?: string;
 }
 
 // ============================================================================
