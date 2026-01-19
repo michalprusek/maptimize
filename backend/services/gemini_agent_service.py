@@ -19,11 +19,17 @@ from urllib.parse import urlparse
 
 
 def _serialize_for_json(obj: Any) -> Any:
-    """Recursively serialize an object for JSON storage, handling datetime and numpy objects."""
+    """Recursively serialize an object for JSON storage, handling datetime, numpy, Decimal, Enum."""
     import numpy as np
+    from decimal import Decimal
+    from enum import Enum
 
     if isinstance(obj, (datetime, date)):
         return obj.isoformat()
+    elif isinstance(obj, Decimal):
+        return float(obj)
+    elif isinstance(obj, Enum):
+        return obj.value
     elif isinstance(obj, (np.integer, np.int64, np.int32)):
         return int(obj)
     elif isinstance(obj, (np.floating, np.float64, np.float32)):
@@ -32,10 +38,15 @@ def _serialize_for_json(obj: Any) -> Any:
         return obj.tolist()
     elif isinstance(obj, np.bool_):
         return bool(obj)
+    elif isinstance(obj, bytes):
+        return obj.decode('utf-8', errors='replace')
     elif isinstance(obj, dict):
         return {k: _serialize_for_json(v) for k, v in obj.items()}
     elif isinstance(obj, (list, tuple)):
         return [_serialize_for_json(item) for item in obj]
+    elif hasattr(obj, '__dict__'):
+        # Handle SQLAlchemy or other objects with __dict__
+        return str(obj)
     return obj
 
 import sqlparse
