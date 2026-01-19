@@ -159,12 +159,19 @@ export function ImagePreviewModal({
 
       // Reset to idle after 2 seconds
       setTimeout(() => setDownloadState("idle"), 2000);
-    } catch (error) {
-      console.error("Download failed:", error);
-      setDownloadState("error");
+    } catch (fetchError) {
+      console.warn("Fetch download failed, trying fallback:", fetchError);
 
-      // Reset to idle after 2 seconds
-      setTimeout(() => setDownloadState("idle"), 2000);
+      // Fallback: open image in new tab (bypasses CORS)
+      try {
+        window.open(processedCurrent.url, "_blank");
+        setDownloadState("done");
+        setTimeout(() => setDownloadState("idle"), 2000);
+      } catch (fallbackError) {
+        console.error("All download methods failed:", fallbackError);
+        setDownloadState("error");
+        setTimeout(() => setDownloadState("idle"), 2000);
+      }
     }
   };
 
