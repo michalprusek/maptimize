@@ -820,11 +820,21 @@ async def generate_response(
                 config_kwargs["tools"] = current_tools
                 config_kwargs["tool_config"] = types.ToolConfig(function_calling_config=types.FunctionCallingConfig(mode=tool_mode))
 
-            response = client.models.generate_content(
-                model="gemini-3-flash-preview",
-                contents=messages,
-                config=types.GenerateContentConfig(**config_kwargs)
-            )
+            # Wrap in asyncio timeout to prevent hanging (120s max per API call)
+            import asyncio
+            try:
+                response = await asyncio.wait_for(
+                    asyncio.to_thread(
+                        client.models.generate_content,
+                        model="gemini-3-flash-preview",
+                        contents=messages,
+                        config=types.GenerateContentConfig(**config_kwargs)
+                    ),
+                    timeout=120.0
+                )
+            except asyncio.TimeoutError:
+                logger.error(f"Gemini API timeout at iteration {iteration} after 120s")
+                return {"content": "The AI service took too long to respond. Please try a simpler question or try again later.", "citations": citations, "image_refs": image_refs, "tool_calls": tool_calls_log}
             logger.info(f"Gemini iteration {iteration} completed - candidates: {len(response.candidates) if response.candidates else 0}")
 
             # Log response details for debugging
