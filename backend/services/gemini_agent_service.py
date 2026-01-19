@@ -824,36 +824,63 @@ async def generate_response(
                 tool_calls_log.append({"tool": tool_name, "args": _serialize_for_json(tool_args), "result": serialized_result})
 
                 # Extract citations from search results (deduplicated)
-                def add_doc_citation(doc_id, page, title):
+                # Citations now include confidence/relevance scores when available
+                def add_doc_citation(doc_id, page, title, confidence=None):
                     """Add document citation if not already present"""
                     if not any(c.get("doc_id") == doc_id and c.get("page") == page for c in citations):
-                        citations.append({"type": "document", "doc_id": doc_id, "page": page, "title": title})
+                        citation = {"type": "document", "doc_id": doc_id, "page": page, "title": title}
+                        if confidence is not None:
+                            citation["confidence"] = round(confidence, 2)
+                        citations.append(citation)
 
-                def add_fov_citation(image_id, experiment_id, title):
+                def add_fov_citation(image_id, experiment_id, title, confidence=None):
                     """Add FOV image citation if not already present"""
                     if not any(c.get("image_id") == image_id for c in citations):
-                        citations.append({"type": "fov", "image_id": image_id, "experiment_id": experiment_id, "title": title})
+                        citation = {"type": "fov", "image_id": image_id, "experiment_id": experiment_id, "title": title}
+                        if confidence is not None:
+                            citation["confidence"] = round(confidence, 2)
+                        citations.append(citation)
 
                 if tool_name == "search_documents" and "results" in tool_result:
                     for doc in tool_result["results"][:5]:
-                        add_doc_citation(doc.get("document_id"), doc.get("page_number"), doc.get("document_name"))
+                        add_doc_citation(
+                            doc.get("document_id"),
+                            doc.get("page_number"),
+                            doc.get("document_name"),
+                            doc.get("similarity_score")
+                        )
 
                 if tool_name == "semantic_search":
                     # Document citations
                     if "document_results" in tool_result:
                         for doc in tool_result["document_results"].get("pages", [])[:5]:
-                            add_doc_citation(doc.get("document_id"), doc.get("page_number"), doc.get("document_name"))
+                            add_doc_citation(
+                                doc.get("document_id"),
+                                doc.get("page_number"),
+                                doc.get("document_name"),
+                                doc.get("similarity_score")
+                            )
                     # FOV image citations
-                    if "fov_results" in tool_result:
-                        for fov in tool_result["fov_results"].get("images", [])[:5]:
-                            add_fov_citation(fov.get("image_id"), fov.get("experiment_id"), fov.get("filename"))
+                    if "image_results" in tool_result:
+                        for fov in tool_result["image_results"].get("images", [])[:5]:
+                            add_fov_citation(
+                                fov.get("image_id"),
+                                fov.get("experiment_id"),
+                                fov.get("filename"),
+                                fov.get("similarity_score")
+                            )
 
                 # FOV citations from search_fov_images
-                if tool_name == "search_fov_images" and "images" in tool_result:
-                    for fov in tool_result["images"][:5]:
-                        add_fov_citation(fov.get("image_id"), fov.get("experiment_id"), fov.get("filename"))
+                if tool_name == "search_fov_images" and "results" in tool_result:
+                    for fov in tool_result["results"][:5]:
+                        add_fov_citation(
+                            fov.get("image_id"),
+                            fov.get("experiment_id"),
+                            fov.get("filename"),
+                            fov.get("similarity_score")
+                        )
 
-                # FOV citations from list_images
+                # FOV citations from list_images (no confidence - not from search)
                 if tool_name == "list_images" and "images" in tool_result:
                     for img in tool_result["images"][:5]:
                         add_fov_citation(img.get("id"), img.get("experiment_id"), img.get("filename"))
@@ -1184,7 +1211,7 @@ async def execute_tool(tool_name: str, args: Dict[str, Any], user_id: int, db: A
                 try:
                     await db.rollback()
                 except Exception as rollback_error:
-                    logger.warning(f"Rollback failed after query error: {rollback_error}")
+                    logger.error(f"CRITICAL: Rollback failed after query error - connection may be corrupted: {rollback_error}")
                 return {"error": f"Query error: {e}"}
 
         elif tool_name == "export_data":
@@ -1427,8 +1454,13 @@ async def execute_tool(tool_name: str, args: Dict[str, Any], user_id: int, db: A
                     if ext in ("links", "all"): result["links"] = [{"text": a.get_text(strip=True)[:100], "href": a["href"]} for a in soup.find_all("a", href=True)[:20]]
                     if ext in ("tables", "all"): result["tables"] = [[[td.get_text(strip=True) for td in tr.find_all(["td", "th"])] for tr in table.find_all("tr")[:20]] for table in soup.find_all("table")[:5]]
                     return result
+            except httpx.TimeoutException:
+                return {"error": "Page fetch timed out. Try a simpler page or check the URL."}
+            except httpx.ConnectError:
+                return {"error": "Could not connect to the website. Check the URL and try again."}
             except Exception as e:
-                return {"error": f"Failed to fetch: {e}"}
+                logger.warning(f"browse_webpage failed for URL {args.get('url')}: {e}")
+                return {"error": f"Failed to fetch page: {type(e).__name__}: {str(e)}"}
 
         elif tool_name == "get_segmentation_masks":
             from models.segmentation import SegmentationMask, FOVSegmentationMask

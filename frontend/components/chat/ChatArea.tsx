@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useEffect, useMemo } from "react";
+import { useRef, useEffect, useMemo, useState } from "react";
 import { useTranslations } from "next-intl";
 import { useChatStore } from "@/stores/chatStore";
 import { MessageBubble } from "./MessageBubble";
@@ -55,9 +55,27 @@ function MessageSkeleton({ isUser = false }: { isUser?: boolean }) {
   );
 }
 
-// Animated thinking indicator with modern design
+// Animated thinking indicator with modern design and elapsed time
 function TypingIndicator() {
   const t = useTranslations("chat");
+  const [elapsedSeconds, setElapsedSeconds] = useState(0);
+
+  // Track elapsed time to inform user about long-running queries
+  useEffect(() => {
+    const startTime = Date.now();
+    const interval = setInterval(() => {
+      setElapsedSeconds(Math.floor((Date.now() - startTime) / 1000));
+    }, 1000);
+    return () => clearInterval(interval);
+  }, []);
+
+  // Show different status based on elapsed time
+  const getStatusText = () => {
+    if (elapsedSeconds < 5) return t("thinking");
+    if (elapsedSeconds < 15) return t("analyzing");
+    if (elapsedSeconds < 30) return t("processing");
+    return t("processingComplex");
+  };
 
   return (
     <div className="flex items-start gap-3 animate-fade-in">
@@ -85,12 +103,19 @@ function TypingIndicator() {
           />
         </div>
 
-        {/* Shimmer text */}
+        {/* Shimmer text with status */}
         <span
           className="text-sm font-medium bg-gradient-to-r from-text-secondary via-primary-400 to-text-secondary bg-[length:200%_100%] bg-clip-text text-transparent animate-thinking-shimmer"
         >
-          {t("thinking")}
+          {getStatusText()}
         </span>
+
+        {/* Elapsed time indicator (shows after 10s) */}
+        {elapsedSeconds >= 10 && (
+          <span className="text-xs text-text-muted ml-1">
+            ({elapsedSeconds}s)
+          </span>
+        )}
       </div>
     </div>
   );

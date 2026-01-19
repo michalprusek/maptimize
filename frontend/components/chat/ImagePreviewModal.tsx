@@ -189,7 +189,7 @@ export function ImagePreviewModal({
               exit={{ opacity: 0, scale: 0.95 }}
               transition={{ duration: 0.2 }}
               src={processedCurrent.url}
-              alt={currentImage.alt || "Preview"}
+              alt={currentImage.alt || t("preview")}
               className={clsx(
                 "max-h-[calc(100vh-200px)] max-w-full object-contain rounded-lg",
                 // Apply LUT only to microscopy images

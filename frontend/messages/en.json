@@ -475,6 +475,9 @@
     "emptyThread": "No messages yet",
     "emptyThreadHint": "Start the conversation by asking a question",
     "thinking": "Thinking...",
+    "analyzing": "Analyzing data...",
+    "processing": "Processing query...",
+    "processingComplex": "Complex analysis in progress...",
     "dismiss": "Dismiss",
     "noThreads": "No conversations yet",
     "confirmDeleteThread": "Are you sure you want to delete this conversation?",
@@ -493,6 +496,7 @@
     "orImages": "or images",
     "indexing": "Indexing {count} of {total}...",
     "citationTooltip": "Click to view source",
+    "relevance": "relevance",
     "untitled": "Untitled",
     "pressEnterToSend": "Press Enter to send",
     "suggestionAnalyze": "Analyze my latest experiment",
@@ -524,6 +528,12 @@
     "cancel": "Cancel",
     "downloadImage": "Download image",
     "previousImage": "Previous image",
-    "nextImage": "Next image"
+    "nextImage": "Next image",
+    "copyCode": "Copy code",
+    "codeCopied": "Copied!",
+    "copyFailed": "Copy failed",
+    "imageFailedToLoad": "Image failed to load",
+    "preview": "Preview",
+    "relevance": "relevance"
   }
 }

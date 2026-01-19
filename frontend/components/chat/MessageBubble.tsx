@@ -32,9 +32,18 @@ interface MessageBubbleProps {
   isNew?: boolean;
 }
 
-// Code block component with copy functionality
-function CodeBlock({ children }: { children: React.ReactNode }) {
-  const [copied, setCopied] = useState(false);
+// Code block component with copy functionality and i18n support
+interface CodeBlockProps {
+  children: React.ReactNode;
+  translations: {
+    copyCode: string;
+    codeCopied: string;
+    copyFailed: string;
+  };
+}
+
+function CodeBlock({ children, translations }: CodeBlockProps) {
+  const [copyState, setCopyState] = useState<"idle" | "copied" | "failed">("idle");
 
   // Extract text content from children recursively
   const getTextContent = (element: React.ReactNode): string => {
@@ -50,10 +59,20 @@ function CodeBlock({ children }: { children: React.ReactNode }) {
     const text = getTextContent(children);
     try {
       await navigator.clipboard.writeText(text);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
+      setCopyState("copied");
+      setTimeout(() => setCopyState("idle"), 2000);
     } catch (err) {
       console.error("Failed to copy:", err);
+      setCopyState("failed");
+      setTimeout(() => setCopyState("idle"), 2000);
+    }
+  };
+
+  const getTitle = () => {
+    switch (copyState) {
+      case "copied": return translations.codeCopied;
+      case "failed": return translations.copyFailed;
+      default: return translations.copyCode;
     }
   };
 
@@ -69,11 +88,18 @@ function CodeBlock({ children }: { children: React.ReactNode }) {
           "opacity-0 group-hover/code:opacity-100",
           "bg-white/[0.05] hover:bg-white/[0.1]",
           "text-text-secondary hover:text-text-primary",
-          copied && "text-green-400 opacity-100"
+          copyState === "copied" && "text-green-400 opacity-100",
+          copyState === "failed" && "text-red-400 opacity-100"
         )}
-        title={copied ? "Copied!" : "Copy code"}
+        title={getTitle()}
       >
-        {copied ? <Check className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
+        {copyState === "copied" ? (
+          <Check className="w-4 h-4" />
+        ) : copyState === "failed" ? (
+          <X className="w-4 h-4" />
+        ) : (
+          <Copy className="w-4 h-4" />
+        )}
       </button>
     </div>
   );
@@ -358,7 +384,17 @@ export function MessageBubble({ message, isNew = false }: MessageBubbleProps) {
                     );
                   },
                   // Code blocks with copy button
-                  pre: ({ children }) => <CodeBlock>{children}</CodeBlock>,
+                  pre: ({ children }) => (
+                    <CodeBlock
+                      translations={{
+                        copyCode: t("copyCode"),
+                        codeCopied: t("codeCopied"),
+                        copyFailed: t("copyFailed"),
+                      }}
+                    >
+                      {children}
+                    </CodeBlock>
+                  ),
                   // Improved list styling
                   ul: ({ children }) => (
                     <ul className="list-disc list-inside space-y-1 my-2">{children}</ul>
@@ -422,12 +458,13 @@ export function MessageBubble({ message, isNew = false }: MessageBubbleProps) {
                   img: ({ src, alt }) => {
                     const processed = processImageUrl(src || "");
 
-                    // Handle image load errors gracefully
+                    // Handle image load errors gracefully with logging
                     const handleImageError = (e: React.SyntheticEvent<HTMLImageElement>) => {
                       const target = e.currentTarget;
+                      console.warn(`Failed to load image: ${target.src}`);
                       target.style.opacity = "0.5";
                       target.style.filter = "grayscale(1)";
-                      target.alt = "Image failed to load";
+                      target.alt = t("imageFailedToLoad");
                     };
 
                     // Base64 plots: full width, no grid
@@ -531,34 +568,59 @@ export function MessageBubble({ message, isNew = false }: MessageBubbleProps) {
           </div>
         </div>
 
-        {/* Citations with improved styling */}
+        {/* Citations with improved styling and confidence indicator */}
         {hasCitations && (
           <div className="flex flex-wrap gap-2 mt-2">
-            {message.citations.map((citation, idx) => (
-              <button
-                key={idx}
-                onClick={() => handleCitationClick(citation)}
-                className={clsx(
-                  "flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium",
-                  "transition-all duration-200 transform hover:scale-105",
-                  "shadow-sm hover:shadow-md",
-                  citation.type === "document"
-                    ? "bg-primary-500/10 text-primary-400 hover:bg-primary-500/20 border border-primary-500/20"
-                    : "bg-accent-pink/10 text-accent-pink hover:bg-accent-pink/20 border border-accent-pink/20"
-                )}
-                title={t("citationTooltip")}
-              >
-                {citation.type === "document" ? (
-                  <FileText className="w-3.5 h-3.5" />
-                ) : (
-                  <ImageIcon className="w-3.5 h-3.5" />
-                )}
-                <span>
-                  {citation.title || t("untitled")}
-                  {citation.page && ` p.${citation.page}`}
-                </span>
-              </button>
-            ))}
+            {message.citations.map((citation, idx) => {
+              // Determine confidence level for visual indicator
+              const confidence = citation.confidence;
+              const hasConfidence = confidence !== undefined && confidence !== null;
+              const confidenceLevel = hasConfidence
+                ? confidence >= 0.8 ? "high" : confidence >= 0.5 ? "medium" : "low"
+                : null;
+
+              return (
+                <button
+                  key={idx}
+                  onClick={() => handleCitationClick(citation)}
+                  className={clsx(
+                    "flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium",
+                    "transition-all duration-200 transform hover:scale-105",
+                    "shadow-sm hover:shadow-md",
+                    citation.type === "document"
+                      ? "bg-primary-500/10 text-primary-400 hover:bg-primary-500/20 border border-primary-500/20"
+                      : "bg-accent-pink/10 text-accent-pink hover:bg-accent-pink/20 border border-accent-pink/20"
+                  )}
+                  title={
+                    hasConfidence
+                      ? `${t("citationTooltip")} (${Math.round(confidence * 100)}% ${t("relevance")})`
+                      : t("citationTooltip")
+                  }
+                >
+                  {/* Confidence indicator dot */}
+                  {hasConfidence && (
+                    <span
+                      className={clsx(
+                        "w-1.5 h-1.5 rounded-full flex-shrink-0",
+                        confidenceLevel === "high" && "bg-green-400",
+                        confidenceLevel === "medium" && "bg-yellow-400",
+                        confidenceLevel === "low" && "bg-orange-400"
+                      )}
+                      title={`${Math.round(confidence * 100)}% relevance`}
+                    />
+                  )}
+                  {citation.type === "document" ? (
+                    <FileText className="w-3.5 h-3.5" />
+                  ) : (
+                    <ImageIcon className="w-3.5 h-3.5" />
+                  )}
+                  <span>
+                    {citation.title || t("untitled")}
+                    {citation.page && ` p.${citation.page}`}
+                  </span>
+                </button>
+              );
+            })}
           </div>
         )}
 
