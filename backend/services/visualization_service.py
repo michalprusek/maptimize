@@ -41,14 +41,14 @@ CHART_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def _fig_to_file(fig: plt.Figure, name: str) -> str:
-    """Save figure to file and return URL."""
+    """Save figure to file and return URL. Does not close the figure."""
     filename = generate_timestamped_filename(name, "png")
     file_path = CHART_DIR / filename
 
     fig.savefig(file_path, format="png", dpi=100, bbox_inches="tight", facecolor="white")
-    plt.close(fig)
+    # Note: fig is NOT closed here - caller is responsible for closing (usually via fig_to_base64)
 
-    return f"/api/charts/{filename}"
+    return f"/uploads/charts/{filename}"
 
 
 async def create_cell_count_histogram(
@@ -118,10 +118,13 @@ async def create_cell_count_histogram(
 
     plt.tight_layout()
 
+    # Save to file first (before fig_to_base64 closes the figure)
+    image_url = _fig_to_file(fig, "cell_count_histogram")
+
     return {
         "success": True,
-        "image_base64": fig_to_base64(fig),
-        "image_url": _fig_to_file(plt.gcf(), "cell_count_histogram") if plt.get_fignums() else None,
+        "image_base64": fig_to_base64(fig),  # This closes the figure
+        "image_url": image_url,
         "statistics": {
             "mean": float(mean_val),
             "median": float(median_val),
@@ -231,12 +234,12 @@ async def create_cell_area_scatter(
     Returns:
         dict with image_base64 and statistics
     """
-    # Query cell dimensions
+    # Query cell dimensions - use correct column names (bbox_w, bbox_h, detection_confidence)
     query = (
         select(
-            CellCrop.bbox_width,
-            CellCrop.bbox_height,
-            CellCrop.confidence,
+            CellCrop.bbox_w,
+            CellCrop.bbox_h,
+            CellCrop.detection_confidence,
             Experiment.name.label("experiment_name"),
         )
         .join(Image, CellCrop.image_id == Image.id)
@@ -255,10 +258,10 @@ async def create_cell_area_scatter(
     if not rows:
         return {"error": "No cell data found"}
 
-    widths = [row.bbox_width for row in rows if row.bbox_width and row.bbox_height]
-    heights = [row.bbox_height for row in rows if row.bbox_width and row.bbox_height]
+    widths = [row.bbox_w for row in rows if row.bbox_w and row.bbox_h]
+    heights = [row.bbox_h for row in rows if row.bbox_w and row.bbox_h]
     areas = [w * h for w, h in zip(widths, heights)]
-    confidences = [row.confidence or 0.5 for row in rows if row.bbox_width and row.bbox_height]
+    confidences = [row.detection_confidence or 0.5 for row in rows if row.bbox_w and row.bbox_h]
 
     # Create figure
     fig, ax = plt.subplots(figsize=(10, 8))
@@ -414,8 +417,29 @@ async def create_visualization(
     Returns:
         dict with image_base64 and metadata
     """
+    # Chart type aliases for better discoverability
+    chart_type_handlers = {
+        "histogram": "histogram",
+        "cell_histogram": "histogram",
+        "bar": "bar",
+        "comparison": "bar",
+        "scatter": "scatter",
+        "cell_scatter": "scatter",
+        "heatmap": "heatmap",
+        "ranking": "heatmap",
+        "custom": "custom",
+    }
+
+    normalized_type = chart_type_handlers.get(chart_type)
+
+    if not normalized_type:
+        return {
+            "error": f"Unknown chart type: {chart_type}",
+            "available_types": ["histogram", "bar", "scatter", "heatmap", "custom"],
+        }
+
     try:
-        if chart_type == "histogram" or chart_type == "cell_histogram":
+        if normalized_type == "histogram":
             return await create_cell_count_histogram(
                 user_id=user_id,
                 db=db,
@@ -423,7 +447,7 @@ async def create_visualization(
                 title=title,
             )
 
-        elif chart_type == "bar" or chart_type == "comparison":
+        if normalized_type == "bar":
             return await create_experiment_comparison_bar(
                 user_id=user_id,
                 db=db,
@@ -432,7 +456,7 @@ async def create_visualization(
                 title=title,
             )
 
-        elif chart_type == "scatter" or chart_type == "cell_scatter":
+        if normalized_type == "scatter":
             return await create_cell_area_scatter(
                 user_id=user_id,
                 db=db,
@@ -440,7 +464,7 @@ async def create_visualization(
                 title=title,
             )
 
-        elif chart_type == "heatmap" or chart_type == "ranking":
+        if normalized_type == "heatmap":
             return await create_ranking_heatmap(
                 user_id=user_id,
                 db=db,
@@ -448,14 +472,13 @@ async def create_visualization(
                 title=title,
             )
 
-        elif chart_type == "custom" and data:
+        if normalized_type == "custom":
+            if not data:
+                return {"error": "data required for custom chart type"}
             return await create_custom_chart(data=data, title=title)
 
-        else:
-            return {
-                "error": f"Unknown chart type: {chart_type}",
-                "available_types": ["histogram", "bar", "scatter", "heatmap", "custom"],
-            }
+        # This should never be reached due to the normalized_type check above
+        return {"error": f"Unhandled chart type: {chart_type}"}
 
     except Exception as e:
         logger.exception(f"Visualization error: {e}")

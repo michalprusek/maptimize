@@ -22,7 +22,7 @@ from models.experiment import Experiment
 from models.image import Image, MapProtein
 from models.cell_crop import CellCrop
 from models.ranking import Comparison, UserRating
-from utils.export_helpers import sanitize_filename, export_dataframe
+from utils.export_helpers import sanitize_filename, export_dataframe, cleanup_old_files
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -126,7 +126,7 @@ async def export_experiment_data(
         "success": True,
         "filename": filename,
         "file_path": str(file_path),
-        "download_url": f"/api/exports/{filename}",
+        "download_url": f"/uploads/exports/{filename}",
         "metadata": metadata,
     }
 
@@ -149,15 +149,17 @@ async def export_cell_crops(
     Returns:
         dict with file_path and metadata
     """
-    # Build query
+    # Build query - use correct column names from CellCrop model
+    # Note: Model uses bbox_w/bbox_h (short) and detection_confidence
     query = (
         select(
             CellCrop.id,
             CellCrop.bbox_x,
             CellCrop.bbox_y,
-            CellCrop.bbox_width,
-            CellCrop.bbox_height,
-            CellCrop.confidence,
+            CellCrop.bbox_w,
+            CellCrop.bbox_h,
+            CellCrop.detection_confidence,
+            CellCrop.mean_intensity,
             CellCrop.created_at,
             Image.id.label("image_id"),
             Image.original_filename.label("image_filename"),
@@ -179,7 +181,7 @@ async def export_cell_crops(
     result = await db.execute(query)
     rows = result.all()
 
-    # Build DataFrame
+    # Build DataFrame - use correct column names from query
     data = []
     for row in rows:
         data.append({
@@ -191,10 +193,11 @@ async def export_cell_crops(
             "image_filename": row.image_filename,
             "bbox_x": row.bbox_x,
             "bbox_y": row.bbox_y,
-            "bbox_width": row.bbox_width,
-            "bbox_height": row.bbox_height,
-            "area": row.bbox_width * row.bbox_height if row.bbox_width and row.bbox_height else None,
-            "confidence": row.confidence,
+            "bbox_width": row.bbox_w,
+            "bbox_height": row.bbox_h,
+            "area": row.bbox_w * row.bbox_h if row.bbox_w and row.bbox_h else None,
+            "confidence": row.detection_confidence,
+            "mean_intensity": row.mean_intensity,
             "created_at": row.created_at.isoformat() if row.created_at else None,
         })
 
@@ -213,7 +216,7 @@ async def export_cell_crops(
         "success": True,
         "filename": filename,
         "file_path": str(file_path),
-        "download_url": f"/api/exports/{filename}",
+        "download_url": f"/uploads/exports/{filename}",
         "row_count": len(data),
     }
 
@@ -272,7 +275,7 @@ async def export_ranking_comparisons(
         "success": True,
         "filename": filename,
         "file_path": str(file_path),
-        "download_url": f"/api/exports/{filename}",
+        "download_url": f"/uploads/exports/{filename}",
         "row_count": len(data),
     }
 
@@ -310,7 +313,7 @@ async def export_analysis_results(
         "success": True,
         "filename": filename,
         "file_path": str(file_path),
-        "download_url": f"/api/exports/{filename}",
+        "download_url": f"/uploads/exports/{filename}",
         "row_count": len(data),
         "columns": list(df.columns),
     }
@@ -318,15 +321,4 @@ async def export_analysis_results(
 
 def cleanup_old_exports(max_age_hours: int = 24) -> int:
     """Remove export files older than max_age_hours."""
-    cutoff = datetime.now().timestamp() - (max_age_hours * 3600)
-    removed = 0
-
-    for file_path in EXPORT_DIR.glob("*"):
-        if file_path.is_file() and file_path.stat().st_mtime < cutoff:
-            try:
-                file_path.unlink()
-                removed += 1
-            except Exception as e:
-                logger.warning(f"Failed to remove old export {file_path}: {e}")
-
-    return removed
+    return cleanup_old_files(EXPORT_DIR, max_age_hours, log_prefix="export")

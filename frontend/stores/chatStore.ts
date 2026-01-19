@@ -8,6 +8,13 @@ import {
   RAGIndexingStatus,
 } from "@/lib/api";
 
+// Image preview types
+export interface ChatImage {
+  src: string;
+  alt: string;
+  messageId: number;
+}
+
 interface ChatState {
   // Data
   threads: ChatThread[];
@@ -15,12 +22,18 @@ interface ChatState {
   messages: Record<number, ChatMessage[]>;
   documents: RAGDocument[];
   indexingStatus: RAGIndexingStatus | null;
+  indexingStatusError: string | null;
 
   // UI State
   isThreadSidebarOpen: boolean;
   isPDFPanelOpen: boolean;
   activePDFDocumentId: number | null;
   activePDFPage: number;
+
+  // Image Preview State
+  isImagePreviewOpen: boolean;
+  previewImages: ChatImage[];
+  previewCurrentIndex: number;
 
   // Loading states
   isLoadingThreads: boolean;
@@ -61,6 +74,11 @@ interface ChatState {
   closePDFViewer: () => void;
   setActivePDFPage: (page: number) => void;
 
+  // Actions - Image Preview
+  openImagePreview: (images: ChatImage[], index: number) => void;
+  closeImagePreview: () => void;
+  navigateImagePreview: (index: number) => void;
+
   // Actions - Error
   clearError: () => void;
 }
@@ -74,12 +92,18 @@ export const useChatStore = create<ChatState>()(
       messages: {},
       documents: [],
       indexingStatus: null,
+      indexingStatusError: null,
 
       // Initial UI state
       isThreadSidebarOpen: true,
       isPDFPanelOpen: false,
       activePDFDocumentId: null,
       activePDFPage: 1,
+
+      // Initial image preview state
+      isImagePreviewOpen: false,
+      previewImages: [],
+      previewCurrentIndex: 0,
 
       // Initial loading states
       isLoadingThreads: false,
@@ -153,6 +177,7 @@ export const useChatStore = create<ChatState>()(
       },
 
       renameThread: async (threadId: number, name: string) => {
+        set({ error: null });
         try {
           await api.updateChatThread(threadId, name);
           set((state) => ({
@@ -472,10 +497,13 @@ export const useChatStore = create<ChatState>()(
       refreshIndexingStatus: async () => {
         try {
           const indexingStatus = await api.getRAGIndexingStatus();
-          set({ indexingStatus });
+          set({ indexingStatus, indexingStatusError: null });
         } catch (error) {
-          // Silently fail for status refresh
+          // Log but track error state for debugging - don't set main error as this is background refresh
           console.error("Failed to refresh indexing status:", error);
+          set({
+            indexingStatusError: error instanceof Error ? error.message : "Status unavailable",
+          });
         }
       },
 
@@ -507,6 +535,28 @@ export const useChatStore = create<ChatState>()(
 
       setActivePDFPage: (page: number) => {
         set({ activePDFPage: page });
+      },
+
+      // ==================== Image Preview Actions ====================
+
+      openImagePreview: (images: ChatImage[], index: number) => {
+        set({
+          isImagePreviewOpen: true,
+          previewImages: images,
+          previewCurrentIndex: index,
+        });
+      },
+
+      closeImagePreview: () => {
+        set({
+          isImagePreviewOpen: false,
+          previewImages: [],
+          previewCurrentIndex: 0,
+        });
+      },
+
+      navigateImagePreview: (index: number) => {
+        set({ previewCurrentIndex: index });
       },
 
       // ==================== Error Actions ====================

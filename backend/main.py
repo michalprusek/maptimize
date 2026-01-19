@@ -12,6 +12,8 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from config import get_settings
 from database import init_db
 from routers import api_router
+from services.code_execution_service import cleanup_old_temp_files
+from services.data_export_service import cleanup_old_exports
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +27,16 @@ async def lifespan(app: FastAPI):
     await init_db()
     settings.upload_dir.mkdir(parents=True, exist_ok=True)
     settings.rag_document_dir.mkdir(parents=True, exist_ok=True)
+
+    # Cleanup old temp files and exports on startup (24 hours max age)
+    try:
+        temp_cleaned = cleanup_old_temp_files(max_age_hours=24)
+        exports_cleaned = cleanup_old_exports(max_age_hours=24)
+        if temp_cleaned or exports_cleaned:
+            logger.info(f"Startup cleanup: {temp_cleaned} temp files, {exports_cleaned} export files removed")
+    except Exception as e:
+        logger.warning(f"Startup cleanup failed: {e}")
+
     yield
     # Shutdown (cleanup if needed)
 

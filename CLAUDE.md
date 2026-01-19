@@ -4,7 +4,13 @@ CRITICAL: před každou novou implementací zkontroluj, jestli už to není naim
 
 CRITICAL: po každé nové implementaci spust code-simplifier agenty ať projdou celé repo a zjednoduší kód a zkontrolujou DRY a SSOT principy.
 
-Neboj se dělat velké a rozsáhlé změny a mazat kód. Legacy implementace maž kdykoliv na ně narazíš. Codebase udržuje maximálně clean a přehlednou. 
+Neboj se dělat velké a rozsáhlé změny a mazat kód. Legacy implementace maž kdykoliv na ně narazíš. Codebase udržuje maximálně clean a přehlednou.
+
+## 🤖 AI Chat Agent
+
+**Model:** `gemini-3-flash-preview` - VŽDY používat tento model pro chat agenta!
+
+Soubor: `backend/services/gemini_agent_service.py`
 
 ## ⚠️ KRITICKÉ UPOZORNĚNÍ - PRODUKCE
 

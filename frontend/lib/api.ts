@@ -1718,7 +1718,9 @@ export interface ChatCitation {
   doc_id?: number;
   page?: number;
   image_id?: number;
+  experiment_id?: number;
   title?: string;
+  confidence?: number; // Relevance score 0-1 from vector search
 }
 
 export interface ChatImageRef {

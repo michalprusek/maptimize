@@ -19,6 +19,7 @@ import { ThreadSidebar } from "./ThreadSidebar";
 import { ChatArea } from "./ChatArea";
 import { IndexingProgress } from "./IndexingProgress";
 import { PDFViewerPanel } from "./PDFViewerPanel";
+import { ImagePreviewModal } from "./ImagePreviewModal";
 import { clsx } from "clsx";
 
 // Breakpoints for responsive design
@@ -76,6 +77,12 @@ export function ChatPageContent() {
     documents,
     activePDFDocumentId,
     openPDFViewer,
+    // Image preview
+    isImagePreviewOpen,
+    previewImages,
+    previewCurrentIndex,
+    closeImagePreview,
+    navigateImagePreview,
   } = useChatStore();
 
   // Responsive state
@@ -332,6 +339,15 @@ export function ChatPageContent() {
         "transition-all duration-300",
         isPDFPanelOpen && isDesktop && "right-[500px]"
       )} />
+
+      {/* Image Preview Modal */}
+      <ImagePreviewModal
+        images={previewImages}
+        currentIndex={previewCurrentIndex}
+        isOpen={isImagePreviewOpen}
+        onClose={closeImagePreview}
+        onNavigate={navigateImagePreview}
+      />
     </div>
   );
 }

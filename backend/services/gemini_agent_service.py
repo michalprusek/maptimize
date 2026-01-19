@@ -13,16 +13,62 @@ This service provides:
 import json
 import logging
 import ipaddress
-from datetime import datetime
+from datetime import datetime, date
 from typing import Optional, List, Dict, Any
 from urllib.parse import urlparse
 
+
+def _serialize_for_json(obj: Any) -> Any:
+    """Recursively serialize an object for JSON storage, handling datetime and numpy objects."""
+    import numpy as np
+
+    if isinstance(obj, (datetime, date)):
+        return obj.isoformat()
+    elif isinstance(obj, (np.integer, np.int64, np.int32)):
+        return int(obj)
+    elif isinstance(obj, (np.floating, np.float64, np.float32)):
+        return float(obj)
+    elif isinstance(obj, np.ndarray):
+        return obj.tolist()
+    elif isinstance(obj, np.bool_):
+        return bool(obj)
+    elif isinstance(obj, dict):
+        return {k: _serialize_for_json(v) for k, v in obj.items()}
+    elif isinstance(obj, (list, tuple)):
+        return [_serialize_for_json(item) for item in obj]
+    return obj
+
 import sqlparse
+import time
 from sqlalchemy import select, func, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from config import get_settings
+
+# Simple in-memory cache for expensive queries
+class StatsCache:
+    """TTL-based cache for overview stats (1 minute cache)."""
+    _cache: Dict[int, tuple] = {}  # user_id -> (timestamp, data)
+    TTL = 60  # seconds
+
+    @classmethod
+    def get(cls, user_id: int) -> Optional[Dict]:
+        if user_id in cls._cache:
+            ts, data = cls._cache[user_id]
+            if time.time() - ts < cls.TTL:
+                return data
+            del cls._cache[user_id]
+        return None
+
+    @classmethod
+    def set(cls, user_id: int, data: Dict) -> None:
+        cls._cache[user_id] = (time.time(), data)
+        # Cleanup old entries (max 100 users)
+        if len(cls._cache) > 100:
+            now = time.time()
+            cls._cache = {k: v for k, v in cls._cache.items() if now - v[0] < cls.TTL}
+
 from models.experiment import Experiment
 from models.image import Image, MapProtein
 from models.cell_crop import CellCrop
@@ -37,6 +83,9 @@ from services.rag_service import (
 )
 
 logger = logging.getLogger(__name__)
+# Ensure our logger outputs at INFO level
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logger.setLevel(logging.INFO)
 settings = get_settings()
 
 # Tables allowed for direct SQL queries (security whitelist)
@@ -129,6 +178,54 @@ SYSTEM_PROMPT = """You are MAPtimize Assistant, an expert AI research assistant 
 - Fluorescence microscopy interpretation
 - Experimental data analysis
 
+## Communication Style - FOR BIOLOGISTS
+
+**IMPORTANT: Your users are biologists, not computer scientists. Communicate accordingly:**
+
+1. **NEVER mention AI models by name** - Don't say "SAM 3", "DINOv2", "Gemini", "Qwen", etc.
+2. **Use biological language** - Talk about "cells", "detection", "analysis", not "inference" or "embeddings"
+3. **Focus on results, not methods** - Say "bylo detekováno 47 buněk" not "model detekoval 47 buněk"
+4. **Avoid AI jargon** - No "neural network", "deep learning", "machine learning", "model", "AI"
+5. **Be a helpful lab assistant** - Present yourself as a knowledgeable assistant, not as an AI
+
+**Good examples:**
+- ✅ "V tomto snímku bylo detekováno 47 buněk."
+- ✅ "Analýza intenzity ukazuje průměrnou hodnotu 15.3."
+- ✅ "Na základě podobnosti buněk jsem našel tyto shluky..."
+
+**Bad examples:**
+- ❌ "Model SAM 3 detekoval 47 buněk."
+- ❌ "Pomocí DINOv2 embeddingů jsem analyzoval podobnost."
+- ❌ "Jako AI model Gemini 3 mohu..."
+
+## Internal Terminology (for your understanding, NOT for users)
+
+**DETECTION vs SEGMENTATION:**
+
+1. **Detection / Crops** = Bounding boxes around cells
+   - Rectangular regions (x, y, width, height) containing cells
+   - Stored as `cell_crops` in database
+   - Use `get_cell_detection_results` to retrieve data
+
+2. **Segmentation** = Per-pixel polygon masks (more detailed than detection)
+   - Precise polygon boundaries of cells
+   - Stored as `segmentation_masks` (per cell) and `fov_segmentation_masks` (whole image)
+   - Use `get_segmentation_masks` to retrieve polygon data
+   - Use `render_segmentation_overlay` to VISUALIZE masks as images
+   - Includes IoU score (quality), area in pixels, creation method
+
+**AUTONOMOUS VISUALIZATION:**
+When user asks about segmentation, masks, or boundaries:
+1. First check if masks exist using `get_segmentation_masks`
+2. Then AUTOMATICALLY render visualization using `render_segmentation_overlay`
+3. Display the resulting image using markdown: `![Segmentation](url)`
+Don't just tell the user about data - SHOW them visualizations!
+
+**When talking to users:**
+- Say "detekované buňky" or "výřezy buněk" - NOT "cell crops"
+- Say "automatická detekce" - NOT "SAM 3 detection"
+- Say "analýza podobnosti" - NOT "embedding similarity"
+
 ## Your Capabilities
 
 ### Data Access & Search
@@ -143,7 +240,9 @@ SYSTEM_PROMPT = """You are MAPtimize Assistant, an expert AI research assistant 
 - **get_document_content**: Read full text from a document
 - **get_experiment_stats**: Get detailed experiment statistics
 - **get_protein_info**: Get protein information
-- **get_cell_detection_results**: Get YOLO cell detection results for an image
+- **get_cell_detection_results**: Get cell detection results (bounding boxes) for an image
+- **get_segmentation_masks**: Get SAM segmentation polygons for cells or FOV images
+- **render_segmentation_overlay**: Render mask visualization on image (returns displayable image URL)
 
 ### Data Analysis & Computation
 - **execute_python_code**: Run Python for custom analysis (numpy, pandas, scipy, matplotlib)
@@ -153,6 +252,7 @@ SYSTEM_PROMPT = """You are MAPtimize Assistant, an expert AI research assistant 
 
 ### Data Management
 - **export_data**: Export to CSV/Excel (experiment, cells, comparisons)
+- **batch_export**: Export multiple experiments combined with statistics to single file
 - **manage_experiment**: Create/update/archive experiments
 
 ### External Knowledge
@@ -198,22 +298,26 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 
-# Example: Create a bar plot
-data = {'Images': 36, 'Cells': 76}
-plt.bar(data.keys(), data.values())
-plt.title('Experiment Statistics')
+# Example: Create a histogram of mean_intensity
+data = [14.2, 18.5, 9.3, 22.1, 11.7]  # From query_database
+plt.figure(figsize=(10, 6))
+plt.hist(data, bins=20, color='steelblue', edgecolor='white')
+plt.xlabel('Mean Intensity')
+plt.ylabel('Frequency')
+plt.title('Distribution of Cell Mean Intensity')
 plt.show()
 ```
 
-**IMPORTANT:** When the code returns plots (in `plots` array), INCLUDE THEM in your response:
+**IMPORTANT:** When the code returns plots (in `plots` array), INCLUDE THEM in your response using the `plots_markdown` array:
 ```
-![Plot](data:image/png;base64,THE_BASE64_STRING)
+![Plot 1](/uploads/temp/plot_xxx.png)
 ```
+The plots are saved as files and the URLs are ready to use - just copy from `plots_markdown`.
 
 **Data Analysis Workflow:**
 1. Use `query_database` to get raw data from the database
 2. Use `execute_python_code` to analyze data and create visualizations
-3. Display any returned plots using markdown images
+3. Display any returned plots using the markdown from `plots_markdown` array
 
 ### 4. CITE SOURCES
 - Reference documents as [Doc: "filename" p.X]
@@ -255,6 +359,19 @@ This ensures they display in a 3-column grid. DO NOT put each image on a new lin
 
 NOT: `![name](thumbnail_url: /api/...)` - this is WRONG!
 Just use the URL directly without "thumbnail_url:" prefix.
+
+**FILE DOWNLOADS (exports):**
+When user asks to export/download data:
+1. Use the `export_data` tool with appropriate parameters
+2. The tool returns `{"download_url": "/uploads/exports/filename.xlsx", ...}`
+3. Present the download link using EXACTLY the URL from `download_url`:
+```markdown
+[Download filename.xlsx](/uploads/exports/filename.xlsx)
+```
+
+**CRITICAL:** NEVER invent or guess export URLs! Always use the `download_url` returned by the tool.
+WRONG: `/api/experiments/9/export?...` - This URL format does NOT exist!
+CORRECT: `/uploads/exports/cell_crops_exp9_20260119_123456.xlsx` - Use the actual URL from tool result!
 
 ## Response Style
 - Provide detailed, comprehensive responses
@@ -383,7 +500,7 @@ AGENT_TOOLS = [
     },
     {
         "name": "get_cell_detection_results",
-        "description": "Get YOLO cell detection results for an image including bounding boxes, confidence scores, and cell count.",
+        "description": "Get cell detection results for an image. Returns bounding boxes (crops) with coordinates, confidence scores, and cell count. Note: This is DETECTION (bounding boxes), not SEGMENTATION (per-pixel masks).",
         "parameters": {
             "type": "object",
             "properties": {
@@ -397,7 +514,7 @@ AGENT_TOOLS = [
     # === CODE EXECUTION ===
     {
         "name": "execute_python_code",
-        "description": "Execute Python code in secure sandbox. Available: numpy, pandas, scipy, matplotlib, seaborn, statistics. Returns stdout, return value, and plots as base64.",
+        "description": "Execute Python code in secure sandbox. Available: numpy, pandas, scipy, matplotlib, seaborn, statistics. Returns stdout, return value, and plots as URLs (saved to temp folder).",
         "parameters": {
             "type": "object",
             "properties": {
@@ -434,6 +551,20 @@ AGENT_TOOLS = [
                 "format": {"type": "string", "enum": ["csv", "xlsx"], "description": "Export format (default csv)"}
             },
             "required": ["data_source"]
+        }
+    },
+    {
+        "name": "batch_export",
+        "description": "Export multiple experiments data combined into single file. Includes cell data, statistics, and comparison.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "experiment_ids": {"type": "array", "items": {"type": "integer"}, "description": "List of experiment IDs to export"},
+                "include_cells": {"type": "boolean", "description": "Include individual cell measurements (default true)"},
+                "include_stats": {"type": "boolean", "description": "Include summary statistics per experiment (default true)"},
+                "format": {"type": "string", "enum": ["csv", "xlsx"], "description": "Export format (default xlsx for multi-sheet)"}
+            },
+            "required": ["experiment_ids"]
         }
     },
 
@@ -540,6 +671,34 @@ AGENT_TOOLS = [
             "required": ["action"]
         }
     },
+
+    # === SEGMENTATION ===
+    {
+        "name": "get_segmentation_masks",
+        "description": "Get SAM segmentation masks (per-pixel polygons) for cells or FOV images. Returns polygon points, IoU score, and area.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "crop_ids": {"type": "array", "items": {"type": "integer"}, "description": "List of cell crop IDs to get masks for"},
+                "image_id": {"type": "integer", "description": "FOV image ID to get full-image mask"},
+                "include_stats": {"type": "boolean", "description": "Include mask statistics (area, IoU)"}
+            }
+        }
+    },
+    {
+        "name": "render_segmentation_overlay",
+        "description": "Render segmentation mask overlaid on image. Returns image URL that can be displayed. Use this to VISUALIZE masks.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "image_id": {"type": "integer", "description": "FOV image ID"},
+                "crop_id": {"type": "integer", "description": "Cell crop ID (renders mask on crop image)"},
+                "show_polygon": {"type": "boolean", "description": "Draw polygon outline (default true)"},
+                "show_fill": {"type": "boolean", "description": "Fill polygon with semi-transparent color (default true)"},
+                "color": {"type": "string", "description": "Color name: red, green, blue, yellow, cyan, magenta (default green)"}
+            }
+        }
+    },
 ]
 
 
@@ -583,20 +742,57 @@ async def generate_response(
     citations = []
     image_refs = []
 
-    max_iterations = 8
+    max_iterations = 20
     for iteration in range(max_iterations):
-        response = client.models.generate_content(
-            model="gemini-3-flash-preview",
-            contents=messages,
-            config=types.GenerateContentConfig(
-                system_instruction=SYSTEM_PROMPT,
-                tools=gemini_tools,
-                tool_config=types.ToolConfig(function_calling_config=types.FunctionCallingConfig(mode="AUTO")),
-                temperature=0.7,
-            )
-        )
+        try:
+            # After many tool calls, hint to generate a response
+            current_tools = gemini_tools
+            tool_mode = "AUTO"
+            if len(tool_calls_log) >= 15:
+                # Disable tools after 15 calls to force text generation
+                current_tools = None
+                tool_mode = "NONE"
+                logger.info(f"Iteration {iteration}: Disabling tools after {len(tool_calls_log)} calls to force response")
 
-        logger.info(f"Gemini iteration {iteration}")
+            logger.info(f"Gemini iteration {iteration} starting with {len(messages)} messages, {len(tool_calls_log)} tool calls...")
+
+            config_kwargs = {
+                "system_instruction": SYSTEM_PROMPT,
+                "temperature": 0.7,
+            }
+            if current_tools:
+                config_kwargs["tools"] = current_tools
+                config_kwargs["tool_config"] = types.ToolConfig(function_calling_config=types.FunctionCallingConfig(mode=tool_mode))
+
+            response = client.models.generate_content(
+                model="gemini-3-flash-preview",
+                contents=messages,
+                config=types.GenerateContentConfig(**config_kwargs)
+            )
+            logger.info(f"Gemini iteration {iteration} completed - candidates: {len(response.candidates) if response.candidates else 0}")
+
+            # Log response details for debugging
+            if response.candidates:
+                candidate = response.candidates[0]
+                logger.info(f"  Candidate finish_reason: {candidate.finish_reason if hasattr(candidate, 'finish_reason') else 'N/A'}")
+                if candidate.content and candidate.content.parts:
+                    for i, part in enumerate(candidate.content.parts):
+                        if hasattr(part, 'text') and part.text:
+                            logger.info(f"  Part {i}: TEXT ({len(part.text)} chars)")
+                        elif hasattr(part, 'function_call') and part.function_call:
+                            logger.info(f"  Part {i}: FUNCTION_CALL ({part.function_call.name})")
+                        else:
+                            logger.info(f"  Part {i}: OTHER ({type(part)})")
+            else:
+                logger.warning(f"  No candidates in response!")
+                if hasattr(response, 'prompt_feedback'):
+                    logger.warning(f"  Prompt feedback: {response.prompt_feedback}")
+
+        except Exception as e:
+            logger.exception(f"Gemini API error at iteration {iteration}: {e}")
+            return {"content": f"Error calling AI service: {str(e)}", "citations": citations, "image_refs": image_refs, "tool_calls": tool_calls_log}
+
+        logger.debug(f"Gemini iteration {iteration}")
 
         if response.candidates and response.candidates[0].content.parts:
             parts = response.candidates[0].content.parts
@@ -610,28 +806,88 @@ async def generate_response(
             if function_call:
                 tool_name = function_call.name
                 tool_args = dict(function_call.args) if function_call.args else {}
-                logger.info(f"Executing tool: {tool_name}")
+                logger.info(f"Executing tool: {tool_name} with args: {tool_args}")
 
-                tool_result = await execute_tool(tool_name, tool_args, user_id, db)
-                tool_calls_log.append({"tool": tool_name, "args": tool_args, "result": "..." if tool_name == "get_document_content" else tool_result})
+                try:
+                    tool_result = await execute_tool(tool_name, tool_args, user_id, db)
+                    logger.info(f"Tool {tool_name} completed successfully")
+                except Exception as tool_error:
+                    logger.exception(f"Tool execution error for {tool_name}: {tool_error}")
+                    tool_result = {"error": f"Tool execution failed: {str(tool_error)}"}
+
+                # Serialize result to handle datetime and numpy objects before storing in JSONB
+                try:
+                    serialized_result = "..." if tool_name == "get_document_content" else _serialize_for_json(tool_result)
+                except Exception as ser_error:
+                    logger.exception(f"Serialization error for {tool_name} result: {ser_error}")
+                    serialized_result = {"error": f"Serialization failed: {str(ser_error)}"}
+                tool_calls_log.append({"tool": tool_name, "args": _serialize_for_json(tool_args), "result": serialized_result})
 
                 # Extract citations from search results (deduplicated)
-                def add_citation(doc_id, page, title):
-                    """Add citation if not already present"""
-                    key = (doc_id, page)
+                # Citations now include confidence/relevance scores when available
+                def add_doc_citation(doc_id, page, title, confidence=None):
+                    """Add document citation if not already present"""
                     if not any(c.get("doc_id") == doc_id and c.get("page") == page for c in citations):
-                        citations.append({"type": "document", "doc_id": doc_id, "page": page, "title": title})
+                        citation = {"type": "document", "doc_id": doc_id, "page": page, "title": title}
+                        if confidence is not None:
+                            citation["confidence"] = round(confidence, 2)
+                        citations.append(citation)
+
+                def add_fov_citation(image_id, experiment_id, title, confidence=None):
+                    """Add FOV image citation if not already present"""
+                    if not any(c.get("image_id") == image_id for c in citations):
+                        citation = {"type": "fov", "image_id": image_id, "experiment_id": experiment_id, "title": title}
+                        if confidence is not None:
+                            citation["confidence"] = round(confidence, 2)
+                        citations.append(citation)
 
                 if tool_name == "search_documents" and "results" in tool_result:
                     for doc in tool_result["results"][:5]:
-                        add_citation(doc.get("document_id"), doc.get("page_number"), doc.get("document_name"))
+                        add_doc_citation(
+                            doc.get("document_id"),
+                            doc.get("page_number"),
+                            doc.get("document_name"),
+                            doc.get("similarity_score")
+                        )
 
-                if tool_name == "semantic_search" and "document_results" in tool_result:
-                    for doc in tool_result["document_results"].get("pages", [])[:5]:
-                        add_citation(doc.get("document_id"), doc.get("page_number"), doc.get("document_name"))
+                if tool_name == "semantic_search":
+                    # Document citations
+                    if "document_results" in tool_result:
+                        for doc in tool_result["document_results"].get("pages", [])[:5]:
+                            add_doc_citation(
+                                doc.get("document_id"),
+                                doc.get("page_number"),
+                                doc.get("document_name"),
+                                doc.get("similarity_score")
+                            )
+                    # FOV image citations
+                    if "image_results" in tool_result:
+                        for fov in tool_result["image_results"].get("images", [])[:5]:
+                            add_fov_citation(
+                                fov.get("image_id"),
+                                fov.get("experiment_id"),
+                                fov.get("filename"),
+                                fov.get("similarity_score")
+                            )
+
+                # FOV citations from search_fov_images
+                if tool_name == "search_fov_images" and "results" in tool_result:
+                    for fov in tool_result["results"][:5]:
+                        add_fov_citation(
+                            fov.get("image_id"),
+                            fov.get("experiment_id"),
+                            fov.get("filename"),
+                            fov.get("similarity_score")
+                        )
+
+                # FOV citations from list_images (no confidence - not from search)
+                if tool_name == "list_images" and "images" in tool_result:
+                    for img in tool_result["images"][:5]:
+                        add_fov_citation(img.get("id"), img.get("experiment_id"), img.get("filename"))
 
                 # Append the original model content to preserve thought_signature (required for Gemini 3)
                 messages.append(response.candidates[0].content)
+                logger.info(f"Appended model content with function_call to messages")
 
                 # Handle get_document_content specially - send images for vision reading
                 if tool_name == "get_document_content" and "pages" in tool_result:
@@ -652,22 +908,92 @@ async def generate_response(
                                 data=page["image_base64"]
                             )))
                             # Add citation for this page
-                            add_citation(tool_result.get("id"), page["page_number"], tool_result.get("name"))
+                            add_doc_citation(tool_result.get("id"), page["page_number"], tool_result.get("name"))
 
                     messages.append(types.Content(role="user", parts=response_parts))
+                    logger.info(f"Appended document content with {len(response_parts)} parts (vision mode)")
                 else:
-                    # Normal function response as JSON
-                    messages.append(types.Content(role="user", parts=[types.Part(function_response=types.FunctionResponse(name=tool_name, response={"result": json.dumps(tool_result, default=str)}))]))
+                    # Function response - create FunctionResponse Part WITHOUT role="user"
+                    # The google-genai SDK expects function responses without explicit role
+                    serialized_response = _serialize_for_json(tool_result)
+                    logger.info(f"Sending function_response for {tool_name}, response keys: {list(serialized_response.keys()) if isinstance(serialized_response, dict) else 'non-dict'}")
+                    function_response_part = types.Part(function_response=types.FunctionResponse(
+                        name=tool_name,
+                        response=serialized_response
+                    ))
+                    # Note: Trying without explicit role - let the SDK handle it
+                    messages.append(types.Content(parts=[function_response_part]))
+                    logger.info(f"Appended function_response to messages (no explicit role)")
                 continue
 
             text_parts = [p.text for p in parts if hasattr(p, 'text') and p.text]
             if text_parts:
+                logger.info(f"Returning text response with {len(text_parts)} parts")
                 return {"content": "\n".join(text_parts), "citations": citations, "image_refs": image_refs, "tool_calls": tool_calls_log}
 
+        # Try response.text as fallback
         if response.text:
+            logger.info(f"Returning response.text fallback ({len(response.text)} chars)")
             return {"content": response.text, "citations": citations, "image_refs": image_refs, "tool_calls": tool_calls_log}
+
+        # If we get here without text or function_call after having tool calls,
+        # Gemini 3 sometimes returns empty response - retry once more
+        if tool_calls_log and iteration < max_iterations - 1:
+            logger.warning(f"Iteration {iteration}: No text after tool call, retrying...")
+            # Log what parts we received for debugging
+            if response.candidates and response.candidates[0].content.parts:
+                for i, part in enumerate(response.candidates[0].content.parts):
+                    logger.warning(f"  Part {i} type: {type(part).__name__}, attrs: {[a for a in dir(part) if not a.startswith('_')]}")
+            continue  # Try next iteration instead of breaking
+
+        # If we get here without text or function_call, something is wrong
+        logger.warning(f"Iteration {iteration}: No text and no function_call found, breaking loop")
+        logger.warning(f"  response.candidates: {response.candidates}")
+        logger.warning(f"  response.text: {response.text if hasattr(response, 'text') else 'N/A'}")
         break
 
+    # If we exhausted iterations but have tool results, generate a smart fallback response
+    if tool_calls_log:
+        logger.warning(f"Agent loop exhausted with {len(tool_calls_log)} tool calls but no text - generating fallback")
+
+        # Extract useful data from tool results for display (language-neutral English)
+        fallback_parts = ["**Analysis Results:**\n"]
+        images_found = []
+        stats_found = []
+
+        for tc in tool_calls_log:
+            result = tc.get("result", {})
+            if isinstance(result, dict):
+                # Extract images from render_segmentation_overlay
+                if tc["tool"] == "render_segmentation_overlay" and result.get("image_markdown"):
+                    images_found.append(result["image_markdown"])
+                # Extract experiment stats
+                elif tc["tool"] == "get_experiment_stats":
+                    stats_found.append(f"- Experiment: {result.get('name', 'N/A')}, images: {result.get('image_count', 0)}, cells: {result.get('cell_count', 0)}")
+                # Extract segmentation info
+                elif tc["tool"] == "get_segmentation_masks":
+                    if result.get("masks_found"):
+                        stats_found.append(f"- Found {result.get('masks_found', 0)} segmentation masks")
+                # Extract cell images from get_cell_detection_results
+                elif tc["tool"] == "get_cell_detection_results" and result.get("crops"):
+                    for crop in result["crops"][:6]:
+                        if crop.get("thumbnail_url"):
+                            images_found.append(f"![Cell {crop['id']}]({crop['thumbnail_url']})")
+
+        if stats_found:
+            fallback_parts.append("\n".join(stats_found))
+
+        if images_found:
+            fallback_parts.append("\n\n**Visualizations:**\n" + " ".join(images_found[:9]))  # Max 9 images
+
+        if not stats_found and not images_found:
+            tool_summary = ", ".join([tc["tool"] for tc in tool_calls_log])
+            fallback_parts = [f"Completed actions: {tool_summary}. Please try your query again."]
+
+        fallback_content = "\n".join(fallback_parts)
+        return {"content": fallback_content, "citations": citations, "image_refs": image_refs, "tool_calls": tool_calls_log}
+
+    logger.error(f"Agent loop exhausted after {max_iterations} iterations or early break, tool_calls: {len(tool_calls_log)}")
     return {"content": "I wasn't able to generate a response.", "citations": citations, "image_refs": image_refs, "tool_calls": tool_calls_log}
 
 
@@ -675,6 +1001,11 @@ async def execute_tool(tool_name: str, args: Dict[str, Any], user_id: int, db: A
     """Execute a tool call and return the result."""
     try:
         if tool_name == "get_overview_stats":
+            # Check cache first (1 min TTL)
+            cached = StatsCache.get(user_id)
+            if cached:
+                return cached
+
             exp_count = (await db.execute(select(func.count(Experiment.id)).where(Experiment.user_id == user_id))).scalar() or 0
             img_result = await db.execute(
                 select(func.count(func.distinct(Image.id)).label("img"), func.count(CellCrop.id).label("cell"))
@@ -684,7 +1015,11 @@ async def execute_tool(tool_name: str, args: Dict[str, Any], user_id: int, db: A
             row = img_result.first()
             doc_count = (await db.execute(select(func.count(RAGDocument.id)).where(RAGDocument.user_id == user_id))).scalar() or 0
             mem_count = (await db.execute(select(func.count(AgentMemory.id)).where(AgentMemory.user_id == user_id))).scalar() or 0
-            return {"total_experiments": exp_count, "total_images": row.img if row else 0, "total_cells": row.cell if row else 0, "total_documents": doc_count, "total_memories": mem_count}
+            result = {"total_experiments": exp_count, "total_images": row.img if row else 0, "total_cells": row.cell if row else 0, "total_documents": doc_count, "total_memories": mem_count}
+
+            # Cache the result
+            StatsCache.set(user_id, result)
+            return result
 
         elif tool_name == "list_experiments":
             result = await db.execute(select(Experiment).options(selectinload(Experiment.map_protein)).where(Experiment.user_id == user_id).order_by(Experiment.updated_at.desc()).limit(args.get("limit", 10)))
@@ -750,10 +1085,11 @@ async def execute_tool(tool_name: str, args: Dict[str, Any], user_id: int, db: A
             if not args.get("image_id"): return {"error": "image_id required"}
             img = (await db.execute(select(Image).join(Experiment).where(Image.id == args["image_id"], Experiment.user_id == user_id))).scalar_one_or_none()
             if not img: return {"error": "Image not found"}
-            crops = (await db.execute(select(CellCrop).where(CellCrop.image_id == args["image_id"]).order_by(CellCrop.confidence.desc()))).scalars().all()
-            result = {"image_id": args["image_id"], "filename": img.original_filename, "cell_count": len(crops), "detection_summary": {"total": len(crops), "avg_confidence": sum(c.confidence or 0 for c in crops) / len(crops) if crops else 0, "avg_area": sum((c.bbox_width or 0) * (c.bbox_height or 0) for c in crops) / len(crops) if crops else 0}}
+            # Use correct column names: detection_confidence, bbox_w, bbox_h
+            crops = (await db.execute(select(CellCrop).where(CellCrop.image_id == args["image_id"]).order_by(CellCrop.detection_confidence.desc()))).scalars().all()
+            result = {"image_id": args["image_id"], "filename": img.original_filename, "cell_count": len(crops), "detection_summary": {"total": len(crops), "avg_confidence": sum(c.detection_confidence or 0 for c in crops) / len(crops) if crops else 0, "avg_area": sum((c.bbox_w or 0) * (c.bbox_h or 0) for c in crops) / len(crops) if crops else 0}}
             if args.get("include_crops"):
-                result["crops"] = [{"id": c.id, "bbox": {"x": c.bbox_x, "y": c.bbox_y, "w": c.bbox_width, "h": c.bbox_height}, "confidence": c.confidence, "thumbnail_url": f"/api/images/crops/{c.id}/file"} for c in crops[:50]]
+                result["crops"] = [{"id": c.id, "bbox": {"x": c.bbox_x, "y": c.bbox_y, "w": c.bbox_w, "h": c.bbox_h}, "confidence": c.detection_confidence, "thumbnail_url": f"/api/images/crops/{c.id}/image"} for c in crops[:50]]
             return result
 
         elif tool_name == "execute_python_code":
@@ -791,6 +1127,10 @@ async def execute_tool(tool_name: str, args: Dict[str, Any], user_id: int, db: A
                 if any(kw in query_upper for kw in ["UNION", "INTERSECT", "EXCEPT"]):
                     return {"error": "UNION/INTERSECT/EXCEPT not allowed"}
 
+                # Block CTE (WITH clause) that could bypass filters
+                if query_upper.strip().startswith("WITH"):
+                    return {"error": "WITH (CTE) queries not allowed"}
+
                 # Validate table names against whitelist
                 found_tables = set()
                 for token in parsed[0].flatten():
@@ -823,18 +1163,34 @@ async def execute_tool(tool_name: str, args: Dict[str, Any], user_id: int, db: A
                 needs_exp_filter = "experiments" in query_upper and "USER_ID" not in query_upper
                 needs_doc_filter = "rag_documents" in query_upper and "USER_ID" not in query_upper
 
+                # Safely inject user_id filter
+                import re
                 if needs_exp_filter:
-                    if "WHERE" in query_upper:
-                        base_q = query_str.upper().replace("WHERE", "WHERE experiments.user_id = :user_id AND", 1)
-                        base_q = query_str[:query_str.upper().find("WHERE")] + base_q[query_str.upper().find("WHERE"):]
+                    # Find WHERE position case-insensitively
+                    where_match = re.search(r'\bWHERE\b', query_str, re.IGNORECASE)
+                    if where_match:
+                        pos = where_match.end()
+                        base_q = query_str[:pos] + " experiments.user_id = :user_id AND" + query_str[pos:]
                     else:
-                        base_q = query_str.rstrip() + " WHERE experiments.user_id = :user_id"
+                        # Find FROM clause to insert WHERE after it
+                        from_match = re.search(r'\bFROM\b\s+\w+(?:\s+\w+)?(?:\s+(?:LEFT|RIGHT|INNER|OUTER)?\s*JOIN\s+\w+(?:\s+\w+)?(?:\s+ON\s+[^,]+)?)*', query_str, re.IGNORECASE)
+                        if from_match:
+                            pos = from_match.end()
+                            base_q = query_str[:pos] + " WHERE experiments.user_id = :user_id" + query_str[pos:]
+                        else:
+                            base_q = query_str.rstrip() + " WHERE experiments.user_id = :user_id"
                 elif needs_doc_filter:
-                    if "WHERE" in query_upper:
-                        base_q = query_str.upper().replace("WHERE", "WHERE rag_documents.user_id = :user_id AND", 1)
-                        base_q = query_str[:query_str.upper().find("WHERE")] + base_q[query_str.upper().find("WHERE"):]
+                    where_match = re.search(r'\bWHERE\b', query_str, re.IGNORECASE)
+                    if where_match:
+                        pos = where_match.end()
+                        base_q = query_str[:pos] + " rag_documents.user_id = :user_id AND" + query_str[pos:]
                     else:
-                        base_q = query_str.rstrip() + " WHERE rag_documents.user_id = :user_id"
+                        from_match = re.search(r'\bFROM\b\s+\w+(?:\s+\w+)?(?:\s+(?:LEFT|RIGHT|INNER|OUTER)?\s*JOIN\s+\w+(?:\s+\w+)?(?:\s+ON\s+[^,]+)?)*', query_str, re.IGNORECASE)
+                        if from_match:
+                            pos = from_match.end()
+                            base_q = query_str[:pos] + " WHERE rag_documents.user_id = :user_id" + query_str[pos:]
+                        else:
+                            base_q = query_str.rstrip() + " WHERE rag_documents.user_id = :user_id"
                 else:
                     base_q = query_str
 
@@ -851,6 +1207,11 @@ async def execute_tool(tool_name: str, args: Dict[str, Any], user_id: int, db: A
                 return {"success": True, "columns": cols, "rows": [dict(zip(cols, r)) for r in rows], "row_count": len(rows)}
             except Exception as e:
                 logger.warning(f"Query execution error for user {user_id}: {e}")
+                # Rollback to recover from failed transaction
+                try:
+                    await db.rollback()
+                except Exception as rollback_error:
+                    logger.error(f"CRITICAL: Rollback failed after query error - connection may be corrupted: {rollback_error}")
                 return {"error": f"Query error: {e}"}
 
         elif tool_name == "export_data":
@@ -866,6 +1227,99 @@ async def execute_tool(tool_name: str, args: Dict[str, Any], user_id: int, db: A
                 return await export_ranking_comparisons(user_id=user_id, db=db, format=fmt)
             return {"error": f"Unknown data_source: {args['data_source']}"}
 
+        elif tool_name == "batch_export":
+            if not args.get("experiment_ids") or len(args["experiment_ids"]) < 1:
+                return {"error": "experiment_ids required (list of IDs)"}
+
+            import pandas as pd
+            from datetime import datetime
+            from pathlib import Path
+            from config import get_settings
+
+            settings = get_settings()
+            EXPORT_DIR = Path(settings.upload_dir) / "exports"
+            EXPORT_DIR.mkdir(parents=True, exist_ok=True)
+
+            exp_ids = args["experiment_ids"]
+            include_cells = args.get("include_cells", True)
+            include_stats = args.get("include_stats", True)
+            fmt = args.get("format", "xlsx")
+
+            # Verify all experiments belong to user
+            exp_result = await db.execute(
+                select(Experiment).where(Experiment.id.in_(exp_ids), Experiment.user_id == user_id)
+            )
+            experiments = exp_result.scalars().all()
+            if len(experiments) != len(exp_ids):
+                return {"error": "Some experiments not found or access denied"}
+
+            # Collect data
+            all_cells = []
+            stats_data = []
+
+            for exp in experiments:
+                # Get cell data
+                cells_result = await db.execute(
+                    select(CellCrop.id, CellCrop.bbox_x, CellCrop.bbox_y, CellCrop.bbox_w, CellCrop.bbox_h,
+                           CellCrop.detection_confidence, CellCrop.mean_intensity, Image.original_filename)
+                    .join(Image, CellCrop.image_id == Image.id)
+                    .where(Image.experiment_id == exp.id)
+                )
+                cells = cells_result.all()
+
+                for c in cells:
+                    all_cells.append({
+                        "experiment_id": exp.id,
+                        "experiment_name": exp.name,
+                        "cell_id": c.id,
+                        "image": c.original_filename,
+                        "bbox_x": c.bbox_x, "bbox_y": c.bbox_y,
+                        "width": c.bbox_w, "height": c.bbox_h,
+                        "area": (c.bbox_w or 0) * (c.bbox_h or 0),
+                        "confidence": c.detection_confidence,
+                        "mean_intensity": c.mean_intensity,
+                    })
+
+                # Calculate statistics
+                if cells:
+                    areas = [(c.bbox_w or 0) * (c.bbox_h or 0) for c in cells]
+                    confs = [c.detection_confidence or 0 for c in cells]
+                    import numpy as np
+                    stats_data.append({
+                        "experiment_id": exp.id,
+                        "experiment_name": exp.name,
+                        "cell_count": len(cells),
+                        "mean_area": np.mean(areas),
+                        "std_area": np.std(areas),
+                        "mean_confidence": np.mean(confs),
+                        "min_confidence": min(confs),
+                        "max_confidence": max(confs),
+                    })
+
+            # Generate file
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            filename = f"batch_export_{timestamp}.{fmt}"
+            filepath = EXPORT_DIR / filename
+
+            if fmt == "xlsx":
+                with pd.ExcelWriter(filepath, engine="openpyxl") as writer:
+                    if include_stats and stats_data:
+                        pd.DataFrame(stats_data).to_excel(writer, sheet_name="Summary", index=False)
+                    if include_cells and all_cells:
+                        pd.DataFrame(all_cells).to_excel(writer, sheet_name="Cells", index=False)
+            else:
+                # CSV - combine data
+                df = pd.DataFrame(all_cells) if include_cells else pd.DataFrame(stats_data)
+                df.to_csv(filepath, index=False)
+
+            return {
+                "success": True,
+                "filename": filename,
+                "download_url": f"/uploads/exports/{filename}",
+                "experiments_exported": len(experiments),
+                "total_cells": len(all_cells),
+            }
+
         elif tool_name == "create_visualization":
             if not args.get("chart_type"): return {"error": "chart_type required"}
             from services.visualization_service import create_visualization
@@ -875,7 +1329,8 @@ async def execute_tool(tool_name: str, args: Dict[str, Any], user_id: int, db: A
             if len(args.get("experiment_ids", [])) < 2: return {"error": "At least 2 experiment_ids required"}
             results = []
             for eid in args["experiment_ids"]:
-                row = (await db.execute(select(Experiment.name, func.count(CellCrop.id).label("cc"), func.avg(CellCrop.bbox_width * CellCrop.bbox_height).label("area"), func.avg(CellCrop.confidence).label("conf")).outerjoin(Image, Experiment.id == Image.experiment_id).outerjoin(CellCrop, Image.id == CellCrop.image_id).where(Experiment.id == eid, Experiment.user_id == user_id).group_by(Experiment.id))).first()
+                # Use correct column names: bbox_w, bbox_h, detection_confidence
+                row = (await db.execute(select(Experiment.name, func.count(CellCrop.id).label("cc"), func.avg(CellCrop.bbox_w * CellCrop.bbox_h).label("area"), func.avg(CellCrop.detection_confidence).label("conf")).outerjoin(Image, Experiment.id == Image.experiment_id).outerjoin(CellCrop, Image.id == CellCrop.image_id).where(Experiment.id == eid, Experiment.user_id == user_id).group_by(Experiment.id))).first()
                 if row: results.append({"experiment_id": eid, "name": row.name, "cell_count": row.cc or 0, "avg_area": float(row.area) if row.area else 0, "avg_confidence": float(row.conf) if row.conf else 0})
             return {"comparison": results, "summary": {"experiments_compared": len(results), "total_cells": sum(r["cell_count"] for r in results)}}
 
@@ -909,13 +1364,26 @@ async def execute_tool(tool_name: str, args: Dict[str, Any], user_id: int, db: A
         elif tool_name == "call_external_api":
             if args.get("api") not in APPROVED_APIS: return {"error": f"API not approved: {args.get('api')}"}
             import httpx
-            url = f"{APPROVED_APIS[args['api']]['base_url']}/{args.get('endpoint', '').lstrip('/')}"
+            api_name = args.get('api', 'unknown')
+            url = f"{APPROVED_APIS[api_name]['base_url']}/{args.get('endpoint', '').lstrip('/')}"
             try:
                 async with httpx.AsyncClient() as client:
                     resp = await client.get(url, params=args.get("params", {}), timeout=10.0)
-                    return {"success": True, "data": resp.json() if resp.status_code == 200 else resp.text[:5000]} if resp.status_code == 200 else {"error": f"API error: {resp.status_code}"}
+                    if resp.status_code == 200:
+                        return {"success": True, "data": resp.json()}
+                    elif resp.status_code == 429:
+                        return {"error": f"{api_name} rate limit exceeded. Please wait a moment and try again."}
+                    elif resp.status_code == 404:
+                        return {"error": f"Resource not found on {api_name}. Check the endpoint or query parameters."}
+                    else:
+                        return {"error": f"{api_name} returned status {resp.status_code}: {resp.text[:500]}"}
+            except httpx.TimeoutException:
+                logger.warning(f"External API call to {api_name} timed out")
+                return {"error": f"{api_name} request timed out. Try again in a moment."}
+            except httpx.ConnectError:
+                logger.warning(f"Failed to connect to {api_name}")
+                return {"error": f"Could not connect to {api_name}. Check network connection."}
             except Exception as e:
-                api_name = args.get('api', 'unknown')
                 logger.warning(f"External API call to {api_name} failed: {e}")
                 return {"error": f"Request to {api_name} failed: {e}"}
 
@@ -932,8 +1400,16 @@ async def execute_tool(tool_name: str, args: Dict[str, Any], user_id: int, db: A
                         for t in data.get("RelatedTopics", [])[:4]:
                             if isinstance(t, dict) and t.get("Text"): results.append({"title": t.get("Text", "")[:100], "snippet": t.get("Text"), "url": t.get("FirstURL")})
                         return {"query": args["query"], "results": results}
+                    elif resp.status_code == 429:
+                        return {"error": "Search rate limit exceeded. Please wait a moment and try again."}
+                    elif resp.status_code == 503:
+                        return {"error": "Search service temporarily unavailable. Try again later."}
                     else:
                         return {"error": f"Web search returned status {resp.status_code}"}
+            except httpx.TimeoutException:
+                return {"error": "Web search timed out. Try a simpler query or try again."}
+            except httpx.ConnectError:
+                return {"error": "Could not connect to search service. Check network connection."}
             except Exception as e:
                 return {"error": f"Web search failed: {e}"}
 
@@ -978,8 +1454,191 @@ async def execute_tool(tool_name: str, args: Dict[str, Any], user_id: int, db: A
                     if ext in ("links", "all"): result["links"] = [{"text": a.get_text(strip=True)[:100], "href": a["href"]} for a in soup.find_all("a", href=True)[:20]]
                     if ext in ("tables", "all"): result["tables"] = [[[td.get_text(strip=True) for td in tr.find_all(["td", "th"])] for tr in table.find_all("tr")[:20]] for table in soup.find_all("table")[:5]]
                     return result
+            except httpx.TimeoutException:
+                return {"error": "Page fetch timed out. Try a simpler page or check the URL."}
+            except httpx.ConnectError:
+                return {"error": "Could not connect to the website. Check the URL and try again."}
             except Exception as e:
-                return {"error": f"Failed to fetch: {e}"}
+                logger.warning(f"browse_webpage failed for URL {args.get('url')}: {e}")
+                return {"error": f"Failed to fetch page: {type(e).__name__}: {str(e)}"}
+
+        elif tool_name == "get_segmentation_masks":
+            from models.segmentation import SegmentationMask, FOVSegmentationMask
+            result = {}
+
+            # Get masks for specific cell crops
+            if args.get("crop_ids"):
+                crop_ids = args["crop_ids"]
+                masks_result = await db.execute(
+                    select(SegmentationMask)
+                    .where(SegmentationMask.cell_crop_id.in_(crop_ids))
+                )
+                masks = masks_result.scalars().all()
+                result["cell_masks"] = [
+                    {
+                        "crop_id": m.cell_crop_id,
+                        "polygon_points": m.polygon_points,
+                        "area_pixels": m.area_pixels,
+                        "iou_score": m.iou_score,
+                        "creation_method": m.creation_method,
+                        "prompt_count": m.prompt_count,
+                    }
+                    for m in masks
+                ]
+                result["masks_found"] = len(masks)
+                result["masks_missing"] = len(crop_ids) - len(masks)
+
+            # Get FOV-level mask
+            if args.get("image_id"):
+                # Verify user owns the image
+                img_check = await db.execute(
+                    select(Image).join(Experiment).where(
+                        Image.id == args["image_id"],
+                        Experiment.user_id == user_id
+                    )
+                )
+                if img_check.scalar_one_or_none():
+                    fov_result = await db.execute(
+                        select(FOVSegmentationMask).where(FOVSegmentationMask.image_id == args["image_id"])
+                    )
+                    fov_mask = fov_result.scalar_one_or_none()
+                    if fov_mask:
+                        result["fov_mask"] = {
+                            "image_id": fov_mask.image_id,
+                            "polygon_points": fov_mask.polygon_points,
+                            "area_pixels": fov_mask.area_pixels,
+                            "iou_score": fov_mask.iou_score,
+                            "creation_method": fov_mask.creation_method,
+                        }
+                    else:
+                        result["fov_mask"] = None
+                        result["fov_mask_status"] = "No FOV mask saved for this image"
+                else:
+                    result["error"] = "Image not found or access denied"
+
+            if not args.get("crop_ids") and not args.get("image_id"):
+                return {"error": "Provide crop_ids or image_id"}
+
+            return result
+
+        elif tool_name == "render_segmentation_overlay":
+            import uuid
+            from datetime import datetime
+            from pathlib import Path
+            from PIL import Image as PILImage, ImageDraw
+            import numpy as np
+            from models.segmentation import SegmentationMask, FOVSegmentationMask
+            from config import get_settings
+
+            settings = get_settings()
+            TEMP_DIR = Path(settings.upload_dir) / "temp"
+            TEMP_DIR.mkdir(parents=True, exist_ok=True)
+
+            # Color mapping
+            colors = {
+                "red": (255, 0, 0), "green": (0, 255, 0), "blue": (0, 0, 255),
+                "yellow": (255, 255, 0), "cyan": (0, 255, 255), "magenta": (255, 0, 255),
+            }
+            color = colors.get(args.get("color", "green"), (0, 255, 0))
+            show_polygon = args.get("show_polygon", True)
+            show_fill = args.get("show_fill", True)
+
+            if args.get("crop_id"):
+                # Render crop with mask
+                crop_result = await db.execute(
+                    select(CellCrop).options(selectinload(CellCrop.image).selectinload(Image.experiment))
+                    .where(CellCrop.id == args["crop_id"])
+                )
+                crop = crop_result.scalar_one_or_none()
+                if not crop or crop.image.experiment.user_id != user_id:
+                    return {"error": "Crop not found or access denied"}
+
+                # Get mask
+                mask_result = await db.execute(
+                    select(SegmentationMask).where(SegmentationMask.cell_crop_id == args["crop_id"])
+                )
+                mask = mask_result.scalar_one_or_none()
+                if not mask:
+                    return {"error": "No segmentation mask found for this crop", "crop_id": args["crop_id"]}
+
+                # Load crop image
+                if not crop.mip_path or not Path(crop.mip_path).exists():
+                    return {"error": "Crop image file not found"}
+
+                img = PILImage.open(crop.mip_path).convert("RGBA")
+
+                # Translate polygon to crop coordinates (mask is in FOV coords)
+                polygon = [(p[0] - crop.bbox_x, p[1] - crop.bbox_y) for p in mask.polygon_points]
+
+            elif args.get("image_id"):
+                # Render FOV with mask
+                img_result = await db.execute(
+                    select(Image).join(Experiment).where(
+                        Image.id == args["image_id"], Experiment.user_id == user_id
+                    )
+                )
+                image = img_result.scalar_one_or_none()
+                if not image:
+                    return {"error": "Image not found or access denied"}
+
+                # Get FOV mask
+                mask_result = await db.execute(
+                    select(FOVSegmentationMask).where(FOVSegmentationMask.image_id == args["image_id"])
+                )
+                mask = mask_result.scalar_one_or_none()
+                if not mask:
+                    return {"error": "No FOV segmentation mask found for this image", "image_id": args["image_id"]}
+
+                # Load image (prefer MIP projection)
+                img_path = image.mip_path or image.file_path
+                if not img_path or not Path(img_path).exists():
+                    return {"error": "Image file not found"}
+
+                img = PILImage.open(img_path).convert("RGBA")
+                polygon = mask.polygon_points
+            else:
+                return {"error": "Provide image_id or crop_id"}
+
+            # Create overlay
+            overlay = PILImage.new("RGBA", img.size, (0, 0, 0, 0))
+            draw = ImageDraw.Draw(overlay)
+
+            # Handle multiple polygons (FOV masks can have multiple)
+            polygons_to_draw = []
+            if polygon and isinstance(polygon[0], list) and len(polygon[0]) > 0:
+                if isinstance(polygon[0][0], list):
+                    # Multiple polygons: [[[x,y],...], [[x,y],...]]
+                    polygons_to_draw = [[(p[0], p[1]) for p in poly] for poly in polygon]
+                else:
+                    # Single polygon: [[x,y], [x,y], ...]
+                    polygons_to_draw = [[(p[0], p[1]) for p in polygon]]
+
+            for poly_coords in polygons_to_draw:
+                if len(poly_coords) < 3:
+                    continue
+                if show_fill:
+                    draw.polygon(poly_coords, fill=(*color, 80))  # Semi-transparent fill
+                if show_polygon:
+                    draw.polygon(poly_coords, outline=(*color, 255), width=2)
+
+            # Composite
+            result_img = PILImage.alpha_composite(img, overlay).convert("RGB")
+
+            # Save to temp
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            unique_id = uuid.uuid4().hex[:8]
+            filename = f"segmentation_{timestamp}_{unique_id}.png"
+            filepath = TEMP_DIR / filename
+            result_img.save(filepath, "PNG")
+
+            url = f"/uploads/temp/{filename}"
+            return {
+                "success": True,
+                "image_url": url,
+                "image_markdown": f"![Segmentation]({url})",
+                "mask_area_pixels": mask.area_pixels,
+                "mask_iou_score": mask.iou_score,
+            }
 
         elif tool_name == "long_term_memory":
             action = args.get("action")

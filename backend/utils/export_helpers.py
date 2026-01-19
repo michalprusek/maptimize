@@ -5,15 +5,19 @@ This module provides common utilities:
 - Timestamped filename generation
 - Figure to base64 conversion
 - DataFrame export helper
+- Old file cleanup
 """
 
 import io
 import base64
+import logging
 from datetime import datetime
 from pathlib import Path
 from typing import Literal
 
 import pandas as pd
+
+logger = logging.getLogger(__name__)
 
 try:
     import matplotlib.pyplot as plt
@@ -92,3 +96,35 @@ def export_dataframe(
         df.to_excel(file_path, index=False, engine="openpyxl")
     else:
         df.to_csv(file_path, index=False)
+
+
+def cleanup_old_files(directory: Path, max_age_hours: int = 24, log_prefix: str = "temp") -> int:
+    """
+    Remove files older than max_age_hours from a directory.
+
+    Args:
+        directory: Directory to clean up
+        max_age_hours: Maximum age in hours before files are deleted
+        log_prefix: Prefix for log messages (e.g., "temp", "export")
+
+    Returns:
+        Number of files removed
+    """
+    if not directory.exists():
+        return 0
+
+    cutoff = datetime.now().timestamp() - (max_age_hours * 3600)
+    removed = 0
+
+    for file_path in directory.glob("*"):
+        if file_path.is_file() and file_path.stat().st_mtime < cutoff:
+            try:
+                file_path.unlink()
+                removed += 1
+            except Exception as e:
+                logger.warning(f"Failed to remove old {log_prefix} file {file_path}: {e}")
+
+    if removed > 0:
+        logger.info(f"Cleaned up {removed} old {log_prefix} files")
+
+    return removed
