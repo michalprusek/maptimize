@@ -10,7 +10,47 @@ Neboj se dělat velké a rozsáhlé změny a mazat kód. Legacy implementace ma�
 
 **Model:** `gemini-3-flash-preview` - VŽDY používat tento model pro chat agenta!
 
-Soubor: `backend/services/gemini_agent_service.py`
+**Soubor:** `backend/services/gemini_agent_service.py`
+
+### Filosofie návrhu - AUTONOMNÍ AGENT
+
+**CRITICAL: Agent musí být maximálně autonomní!**
+
+Místo vytváření specifických tools pro každý typ úkolu (např. `create_cell_histogram`, `compare_experiments_bar_chart`) preferujeme **obecné nástroje**, které agentovi umožní:
+
+1. **Přístup k datům** - `query_database`, `list_experiments`, `list_images`, `get_cell_detection_results`
+2. **Výpočetní schopnosti** - `execute_python_code` (sandbox pro matplotlib, numpy, pandas, scipy)
+3. **Vizualizační nástroje** - `create_visualization` (obecný), ale hlavně Python execution pro custom grafy
+4. **Export dat** - `export_data`, `batch_export` pro stažení dat
+
+### Proč autonomie?
+
+- **Flexibilita** - Agent může vytvořit JAKÝKOLIV graf/analýzu, ne jen předdefinované typy
+- **Kreativita** - Na základě dat může agent navrhnout vlastní vizualizace
+- **Škálovatelnost** - Nemusíme přidávat nový tool pro každý nový typ analýzy
+- **Biolog-friendly** - Uživatel popíše co chce přirozeným jazykem, agent to implementuje
+
+### Příklady správného přístupu
+
+**✅ SPRÁVNĚ:**
+```
+User: "Udělej mi histogram distribuce velikostí buněk"
+Agent: Použije execute_python_code s matplotlib, napočítá z dat a vytvoří custom graf
+```
+
+**❌ ŠPATNĚ:**
+```
+Vytvořit specifický tool `create_cell_size_histogram` jen pro tento účel
+```
+
+### Kdy přidat nový tool?
+
+Nový tool přidávat pouze když:
+1. Operace vyžaduje **přístup k systémovým zdrojům** (DB, filesystem, externí API)
+2. Operace je **bezpečnostně citlivá** a potřebuje validaci
+3. Operace je **velmi častá** a Python execution by byl neefektivní
+
+Pro výpočty, grafy a analýzy → **vždy preferovat `execute_python_code`**
 
 ## ⚠️ KRITICKÉ UPOZORNĚNÍ - PRODUKCE
 
