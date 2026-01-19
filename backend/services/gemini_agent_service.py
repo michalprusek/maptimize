@@ -908,7 +908,7 @@ async def generate_response(
                                 data=page["image_base64"]
                             )))
                             # Add citation for this page
-                            add_citation(tool_result.get("id"), page["page_number"], tool_result.get("name"))
+                            add_doc_citation(tool_result.get("id"), page["page_number"], tool_result.get("name"))
 
                     messages.append(types.Content(role="user", parts=response_parts))
                     logger.info(f"Appended document content with {len(response_parts)} parts (vision mode)")

@@ -41,12 +41,12 @@ CHART_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def _fig_to_file(fig: plt.Figure, name: str) -> str:
-    """Save figure to file and return URL."""
+    """Save figure to file and return URL. Does not close the figure."""
     filename = generate_timestamped_filename(name, "png")
     file_path = CHART_DIR / filename
 
     fig.savefig(file_path, format="png", dpi=100, bbox_inches="tight", facecolor="white")
-    plt.close(fig)
+    # Note: fig is NOT closed here - caller is responsible for closing (usually via fig_to_base64)
 
     return f"/uploads/charts/{filename}"
 
@@ -118,10 +118,13 @@ async def create_cell_count_histogram(
 
     plt.tight_layout()
 
+    # Save to file first (before fig_to_base64 closes the figure)
+    image_url = _fig_to_file(fig, "cell_count_histogram")
+
     return {
         "success": True,
-        "image_base64": fig_to_base64(fig),
-        "image_url": _fig_to_file(plt.gcf(), "cell_count_histogram") if plt.get_fignums() else None,
+        "image_base64": fig_to_base64(fig),  # This closes the figure
+        "image_url": image_url,
         "statistics": {
             "mean": float(mean_val),
             "median": float(median_val),
