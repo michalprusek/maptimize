@@ -3,9 +3,11 @@
 Handles document upload, indexing, and search operations.
 """
 import logging
+import time
 from pathlib import Path
 from typing import List, Optional
 
+import redis.asyncio as redis
 from fastapi import APIRouter, Depends, HTTPException, status, Query, UploadFile, File, BackgroundTasks
 from fastapi.responses import FileResponse
 from sqlalchemy import select, func
@@ -43,6 +45,73 @@ logger = logging.getLogger(__name__)
 settings = get_settings()
 
 router = APIRouter()
+
+
+# ============== Upload Rate Limiting ==============
+# Limit: 10 uploads per hour per user (prevent disk/GPU exhaustion)
+UPLOAD_RATE_LIMIT_REQUESTS = 10
+UPLOAD_RATE_LIMIT_WINDOW = 3600  # 1 hour in seconds
+
+_redis_pool: Optional[redis.Redis] = None
+
+
+async def _get_redis() -> redis.Redis:
+    """Get Redis connection (lazy initialization)."""
+    global _redis_pool
+    if _redis_pool is None:
+        _redis_pool = redis.from_url(
+            settings.redis_url,
+            encoding="utf-8",
+            decode_responses=True,
+            max_connections=10,
+        )
+    return _redis_pool
+
+
+async def _check_upload_rate_limit(user_id: int) -> None:
+    """
+    Check if user has exceeded upload rate limit.
+
+    Prevents disk space and GPU exhaustion from excessive uploads.
+    Raises HTTPException 429 if rate limit exceeded.
+    """
+    try:
+        r = await _get_redis()
+        key = f"rate_limit:upload:{user_id}"
+        now = time.time()
+        window_start = now - UPLOAD_RATE_LIMIT_WINDOW
+
+        async with r.pipeline(transaction=True) as pipe:
+            pipe.zremrangebyscore(key, 0, window_start)
+            pipe.zcard(key)
+            results = await pipe.execute()
+
+        request_count = results[1]
+
+        if request_count >= UPLOAD_RATE_LIMIT_REQUESTS:
+            oldest_entries = await r.zrange(key, 0, 0, withscores=True)
+            if oldest_entries:
+                oldest_ts = oldest_entries[0][1]
+                retry_after = int(oldest_ts + UPLOAD_RATE_LIMIT_WINDOW - now) + 1
+            else:
+                retry_after = UPLOAD_RATE_LIMIT_WINDOW
+
+            logger.warning(f"Upload rate limit exceeded for user {user_id}: {request_count} uploads in 1 hour")
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail=f"Upload rate limit exceeded. Maximum {UPLOAD_RATE_LIMIT_REQUESTS} uploads per hour.",
+                headers={"Retry-After": str(retry_after)},
+            )
+
+        # Record this upload
+        import uuid
+        member = f"{now}:{uuid.uuid4().hex[:8]}"
+        await r.zadd(key, {member: now})
+        await r.expire(key, UPLOAD_RATE_LIMIT_WINDOW + 60)
+
+    except redis.RedisError as e:
+        # Fail-open if Redis is unavailable
+        logger.warning(f"Redis upload rate limit check failed: {e}")
 
 
 async def get_document_for_user(
@@ -102,7 +171,12 @@ async def upload_document(
 
     Supported formats: PDF, DOCX, PPTX, XLSX, images.
     Documents are processed asynchronously in the background.
+
+    Rate limited: max 10 uploads per hour per user.
     """
+    # Check rate limit before processing upload
+    await _check_upload_rate_limit(current_user.id)
+
     if not file.filename:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,

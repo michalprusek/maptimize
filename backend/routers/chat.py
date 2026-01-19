@@ -4,12 +4,14 @@ import time
 from collections import defaultdict
 from typing import List, Optional
 
+import redis.asyncio as redis
 from fastapi import APIRouter, Depends, HTTPException, status, Query, BackgroundTasks
 from fastapi.responses import StreamingResponse
 from sqlalchemy import select, func, distinct, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from config import get_settings
 from database import get_db
 from models.user import User
 from models.chat import ChatThread, ChatMessage
@@ -25,79 +27,110 @@ from schemas.chat import (
 from utils.security import get_current_user
 
 logger = logging.getLogger(__name__)
+settings = get_settings()
 
 router = APIRouter()
 
 
-# ============== Rate Limiting ==============
-# Simple in-memory rate limiter for AI endpoints
-# For production, consider using Redis-based rate limiting
+# ============== Rate Limiting (Redis-based for production) ==============
 
 # Rate limit: max 10 AI requests per minute per user
 AI_RATE_LIMIT_REQUESTS = 10
 AI_RATE_LIMIT_WINDOW = 60  # seconds
-_RATE_LIMIT_CLEANUP_INTERVAL = 300  # Cleanup inactive users every 5 minutes
-_RATE_LIMIT_MAX_USERS = 1000  # Max users to track before forced cleanup
 
-# Store: user_id -> list of timestamps
-_rate_limit_store: dict[int, list[float]] = {}
-_last_cleanup_time: float = 0
+# Redis connection pool (lazy initialization)
+_redis_pool: Optional[redis.Redis] = None
 
 
-def _cleanup_rate_limit_store() -> None:
-    """Remove inactive users from rate limit store to prevent memory leak."""
-    global _last_cleanup_time
-    now = time.time()
-    window_start = now - AI_RATE_LIMIT_WINDOW
+async def _get_redis() -> redis.Redis:
+    """Get Redis connection (lazy initialization with connection pool)."""
+    global _redis_pool
+    if _redis_pool is None:
+        _redis_pool = redis.from_url(
+            settings.redis_url,
+            encoding="utf-8",
+            decode_responses=True,
+            max_connections=10,
+        )
+    return _redis_pool
 
-    # Remove users with no recent requests
-    inactive_users = [
-        uid for uid, timestamps in _rate_limit_store.items()
-        if not timestamps or max(timestamps) < window_start
-    ]
-    for uid in inactive_users:
-        del _rate_limit_store[uid]
 
-    _last_cleanup_time = now
-    if inactive_users:
-        logger.debug(f"Rate limit cleanup: removed {len(inactive_users)} inactive users")
+async def _check_rate_limit_async(user_id: int) -> None:
+    """
+    Check if user has exceeded rate limit for AI endpoints using Redis.
+
+    Uses Redis sorted sets for efficient sliding window rate limiting.
+    This implementation is production-ready: works across multiple workers,
+    survives restarts, and handles distributed deployments.
+
+    Raises HTTPException 429 if rate limit exceeded.
+    """
+    try:
+        r = await _get_redis()
+        key = f"rate_limit:chat:{user_id}"
+        now = time.time()
+        window_start = now - AI_RATE_LIMIT_WINDOW
+
+        # Use Redis transaction (pipeline) for atomic operations
+        async with r.pipeline(transaction=True) as pipe:
+            # Remove old entries outside the window
+            pipe.zremrangebyscore(key, 0, window_start)
+            # Count current requests in window
+            pipe.zcard(key)
+            # Execute atomically
+            results = await pipe.execute()
+
+        request_count = results[1]
+
+        if request_count >= AI_RATE_LIMIT_REQUESTS:
+            # Get oldest timestamp to calculate retry-after
+            oldest_entries = await r.zrange(key, 0, 0, withscores=True)
+            if oldest_entries:
+                oldest_ts = oldest_entries[0][1]
+                retry_after = int(oldest_ts + AI_RATE_LIMIT_WINDOW - now) + 1
+            else:
+                retry_after = AI_RATE_LIMIT_WINDOW
+
+            logger.warning(f"Rate limit exceeded for user {user_id}: {request_count} requests in {AI_RATE_LIMIT_WINDOW}s")
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail=f"Rate limit exceeded. Maximum {AI_RATE_LIMIT_REQUESTS} AI requests per minute.",
+                headers={"Retry-After": str(retry_after)},
+            )
+
+        # Record this request with current timestamp as score
+        # Use unique member to avoid collisions (timestamp + random suffix)
+        import uuid
+        member = f"{now}:{uuid.uuid4().hex[:8]}"
+        await r.zadd(key, {member: now})
+
+        # Set TTL on key to auto-cleanup (window + buffer)
+        await r.expire(key, AI_RATE_LIMIT_WINDOW + 10)
+
+    except redis.RedisError as e:
+        # If Redis is unavailable, log warning but allow request (fail-open)
+        # In production, you might want fail-closed behavior instead
+        logger.warning(f"Redis rate limit check failed, allowing request: {e}")
 
 
 def _check_rate_limit(user_id: int) -> None:
     """
-    Check if user has exceeded rate limit for AI endpoints.
+    Synchronous wrapper for rate limit check (backwards compatibility).
 
-    Raises HTTPException 429 if rate limit exceeded.
+    For new async endpoints, use _check_rate_limit_async directly.
     """
-    global _last_cleanup_time
-    now = time.time()
-    window_start = now - AI_RATE_LIMIT_WINDOW
-
-    # Periodic cleanup to prevent memory leak
-    if now - _last_cleanup_time > _RATE_LIMIT_CLEANUP_INTERVAL or len(_rate_limit_store) > _RATE_LIMIT_MAX_USERS:
-        _cleanup_rate_limit_store()
-
-    # Get or create user entry
-    if user_id not in _rate_limit_store:
-        _rate_limit_store[user_id] = []
-
-    # Clean old entries and get recent requests
-    user_requests = _rate_limit_store[user_id]
-    user_requests[:] = [ts for ts in user_requests if ts > window_start]
-
-    if len(user_requests) >= AI_RATE_LIMIT_REQUESTS:
-        # Calculate time until oldest request expires
-        oldest = min(user_requests)
-        retry_after = int(oldest + AI_RATE_LIMIT_WINDOW - now) + 1
-        logger.warning(f"Rate limit exceeded for user {user_id}: {len(user_requests)} requests in {AI_RATE_LIMIT_WINDOW}s")
-        raise HTTPException(
-            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            detail=f"Rate limit exceeded. Maximum {AI_RATE_LIMIT_REQUESTS} AI requests per minute.",
-            headers={"Retry-After": str(retry_after)},
-        )
-
-    # Record this request
-    user_requests.append(now)
+    import asyncio
+    try:
+        loop = asyncio.get_event_loop()
+        if loop.is_running():
+            # We're already in an async context, create task
+            # This shouldn't happen often, prefer using _check_rate_limit_async
+            asyncio.create_task(_check_rate_limit_async(user_id))
+        else:
+            loop.run_until_complete(_check_rate_limit_async(user_id))
+    except RuntimeError:
+        # No event loop, use asyncio.run
+        asyncio.run(_check_rate_limit_async(user_id))
 
 
 async def get_thread_for_user(
@@ -247,7 +280,7 @@ async def send_message(
     The response is generated synchronously and returned.
     """
     # Check rate limit before any processing
-    _check_rate_limit(current_user.id)
+    await _check_rate_limit_async(current_user.id)
 
     thread = await get_thread_for_user(db, thread_id, current_user.id)
 
@@ -381,7 +414,7 @@ async def edit_message(
     3. Regenerate the AI response
     """
     # Check rate limit before any processing (editing triggers AI regeneration)
-    _check_rate_limit(current_user.id)
+    await _check_rate_limit_async(current_user.id)
 
     thread = await get_thread_for_user(db, thread_id, current_user.id)
 
@@ -491,7 +524,7 @@ async def regenerate_message(
     3. Regenerate the AI response
     """
     # Check rate limit before any processing
-    _check_rate_limit(current_user.id)
+    await _check_rate_limit_async(current_user.id)
 
     thread = await get_thread_for_user(db, thread_id, current_user.id)
 

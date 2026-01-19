@@ -25,7 +25,8 @@ import {
 import { clsx } from "clsx";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { processImageUrl } from "@/lib/utils";
+import { processImageUrl, sanitizeUrlForLogging } from "@/lib/utils";
+import { MarkdownErrorBoundary } from "@/components/ui/ErrorBoundary";
 
 interface MessageBubbleProps {
   message: ChatMessage;
@@ -324,6 +325,7 @@ export function MessageBubble({ message, isNew = false }: MessageBubbleProps) {
               )
             ) : (
             <div className="prose prose-invert prose-sm max-w-none prose-p:leading-relaxed prose-headings:text-text-primary prose-code:text-primary-300 chat-message-content">
+              <MarkdownErrorBoundary>
               <ReactMarkdown
                 remarkPlugins={[remarkGfm]}
                 components={{
@@ -459,9 +461,10 @@ export function MessageBubble({ message, isNew = false }: MessageBubbleProps) {
                     const processed = processImageUrl(src || "");
 
                     // Handle image load errors gracefully with logging
+                    // SECURITY: Don't log full URL to avoid token exposure
                     const handleImageError = (e: React.SyntheticEvent<HTMLImageElement>) => {
                       const target = e.currentTarget;
-                      console.warn(`Failed to load image: ${target.src}`);
+                      console.warn(`Failed to load image: ${sanitizeUrlForLogging(target.src)}`);
                       target.style.opacity = "0.5";
                       target.style.filter = "grayscale(1)";
                       target.alt = t("imageFailedToLoad");
@@ -516,6 +519,7 @@ export function MessageBubble({ message, isNew = false }: MessageBubbleProps) {
               >
                 {message.content}
               </ReactMarkdown>
+              </MarkdownErrorBoundary>
             </div>
           )}
           </div>

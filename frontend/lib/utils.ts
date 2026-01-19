@@ -42,6 +42,30 @@ export interface ProcessedImageUrl {
 }
 
 /**
+ * Sanitize URL for logging - removes sensitive tokens from query parameters.
+ * SECURITY: Never log full URLs that may contain authentication tokens.
+ */
+export function sanitizeUrlForLogging(url: string): string {
+  try {
+    const urlObj = new URL(url);
+    // Remove sensitive query parameters
+    urlObj.searchParams.delete("token");
+    urlObj.searchParams.delete("access_token");
+    urlObj.searchParams.delete("api_key");
+    // Replace remaining sensitive-looking values
+    urlObj.searchParams.forEach((value, key) => {
+      if (key.toLowerCase().includes("token") || key.toLowerCase().includes("key")) {
+        urlObj.searchParams.set(key, "[REDACTED]");
+      }
+    });
+    return urlObj.toString();
+  } catch {
+    // If URL parsing fails, just remove obvious token patterns
+    return url.replace(/[?&]token=[^&]+/gi, "[TOKEN_REDACTED]");
+  }
+}
+
+/**
  * Process image URL to add backend prefix and auth token if needed.
  * Handles API paths, uploads paths, and base64 images.
  */

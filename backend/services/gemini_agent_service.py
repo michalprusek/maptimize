@@ -46,28 +46,36 @@ from sqlalchemy.orm import selectinload
 
 from config import get_settings
 
-# Simple in-memory cache for expensive queries
+# Simple in-memory cache for expensive queries (thread-safe)
+import threading
+
 class StatsCache:
-    """TTL-based cache for overview stats (1 minute cache)."""
+    """TTL-based cache for overview stats (1 minute cache). Thread-safe implementation."""
     _cache: Dict[int, tuple] = {}  # user_id -> (timestamp, data)
+    _lock = threading.Lock()  # Protect concurrent access
     TTL = 60  # seconds
 
     @classmethod
     def get(cls, user_id: int) -> Optional[Dict]:
-        if user_id in cls._cache:
-            ts, data = cls._cache[user_id]
-            if time.time() - ts < cls.TTL:
-                return data
-            del cls._cache[user_id]
-        return None
+        with cls._lock:
+            if user_id in cls._cache:
+                ts, data = cls._cache[user_id]
+                if time.time() - ts < cls.TTL:
+                    # Return a copy to prevent external mutation
+                    return data.copy() if isinstance(data, dict) else data
+                # Entry expired - remove it
+                del cls._cache[user_id]
+            return None
 
     @classmethod
     def set(cls, user_id: int, data: Dict) -> None:
-        cls._cache[user_id] = (time.time(), data)
-        # Cleanup old entries (max 100 users)
-        if len(cls._cache) > 100:
-            now = time.time()
-            cls._cache = {k: v for k, v in cls._cache.items() if now - v[0] < cls.TTL}
+        with cls._lock:
+            cls._cache[user_id] = (time.time(), data.copy() if isinstance(data, dict) else data)
+            # Cleanup old entries (max 100 users)
+            if len(cls._cache) > 100:
+                now = time.time()
+                # Create new dict to avoid mutating during iteration
+                cls._cache = {k: v for k, v in cls._cache.items() if now - v[0] < cls.TTL}
 
 from models.experiment import Experiment
 from models.image import Image, MapProtein
@@ -122,13 +130,34 @@ def _is_safe_url(url: str) -> tuple[bool, str]:
 
     Blocks:
     - Non HTTP/HTTPS schemes
-    - Private/internal IP addresses
+    - Private/internal IP addresses (including via DNS resolution)
     - Cloud metadata endpoints
     - Localhost and loopback addresses
 
     Returns:
         Tuple of (is_safe, error_message)
     """
+    import socket
+
+    def _check_ip_is_safe(ip_str: str) -> tuple[bool, str]:
+        """Check if an IP address is safe (not private/internal)."""
+        try:
+            ip = ipaddress.ip_address(ip_str)
+            if ip.is_private:
+                return False, f"Access to private IP address ({ip_str}) is not allowed"
+            if ip.is_loopback:
+                return False, f"Access to loopback address ({ip_str}) is not allowed"
+            if ip.is_link_local:
+                return False, f"Access to link-local address ({ip_str}) is not allowed"
+            if ip.is_multicast:
+                return False, f"Access to multicast address ({ip_str}) is not allowed"
+            # Block cloud metadata endpoints
+            if str(ip) in ("169.254.169.254", "100.100.100.200"):
+                return False, "Access to cloud metadata endpoints is not allowed"
+            return True, ""
+        except ValueError:
+            return False, f"Invalid IP address: {ip_str}"
+
     try:
         parsed = urlparse(url)
 
@@ -140,32 +169,41 @@ def _is_safe_url(url: str) -> tuple[bool, str]:
         if not hostname:
             return False, "Invalid URL: no hostname"
 
-        # Block localhost and loopback
+        # Block localhost and loopback (string checks)
         if hostname.lower() in ("localhost", "127.0.0.1", "0.0.0.0", "::1", "[::1]"):
             return False, "Access to localhost is not allowed"
 
-        # Try to parse as IP address to check for private ranges
+        # Check for obvious internal hostnames
+        hostname_lower = hostname.lower()
+        if hostname_lower.endswith(".internal") or hostname_lower.endswith(".local"):
+            return False, "Access to internal hostnames is not allowed"
+
+        # Try to parse as IP address first
         try:
             ip = ipaddress.ip_address(hostname)
-            if ip.is_private:
-                return False, "Access to private IP addresses is not allowed"
-            if ip.is_loopback:
-                return False, "Access to loopback addresses is not allowed"
-            if ip.is_link_local:
-                return False, "Access to link-local addresses is not allowed"
-            if ip.is_multicast:
-                return False, "Access to multicast addresses is not allowed"
-            # Block cloud metadata endpoints
-            if str(ip) in ("169.254.169.254", "100.100.100.200"):
-                return False, "Access to cloud metadata endpoints is not allowed"
+            return _check_ip_is_safe(str(ip))
         except ValueError:
-            # Not an IP address, it's a hostname - that's fine
-            # But still check for obvious internal hostnames
-            hostname_lower = hostname.lower()
-            if hostname_lower.endswith(".internal") or hostname_lower.endswith(".local"):
-                return False, "Access to internal hostnames is not allowed"
+            # It's a hostname, not an IP - MUST resolve and validate all resolved IPs
+            # This prevents DNS rebinding and hostnames like localtest.me (resolves to 127.0.0.1)
+            try:
+                # Resolve the hostname to all IP addresses
+                addr_info = socket.getaddrinfo(hostname, None, socket.AF_UNSPEC, socket.SOCK_STREAM)
+                if not addr_info:
+                    return False, f"Could not resolve hostname: {hostname}"
 
-        return True, ""
+                # Check ALL resolved IPs - if any is private/internal, block
+                for info in addr_info:
+                    ip_str = info[4][0]
+                    is_safe, error = _check_ip_is_safe(ip_str)
+                    if not is_safe:
+                        return False, f"Hostname '{hostname}' resolves to blocked address: {error}"
+
+                return True, ""
+            except socket.gaierror as e:
+                return False, f"Could not resolve hostname '{hostname}': {e}"
+            except Exception as e:
+                return False, f"DNS resolution error for '{hostname}': {e}"
+
     except Exception as e:
         return False, f"Invalid URL: {e}"
 
@@ -1119,8 +1157,14 @@ async def execute_tool(tool_name: str, args: Dict[str, Any], user_id: int, db: A
                 if query_str.count(";") > 0:
                     return {"error": "Multiple statements not allowed (semicolons forbidden)"}
 
-                # Block subqueries that could access other tables
-                if "(" in query_upper and "SELECT" in query_upper.split("(", 1)[-1]:
+                # Block subqueries that could access other tables (robust check)
+                # Count all SELECT keywords - if more than 1, there's a subquery
+                select_count = query_upper.count("SELECT")
+                if select_count > 1:
+                    return {"error": "Subqueries not allowed"}
+                # Also check for any SELECT inside parentheses (handles nested parens)
+                import re
+                if re.search(r'\([^)]*\bSELECT\b', query_upper):
                     return {"error": "Subqueries not allowed"}
 
                 # Block UNION/INTERSECT/EXCEPT that could access other data
@@ -1163,14 +1207,25 @@ async def execute_tool(tool_name: str, args: Dict[str, Any], user_id: int, db: A
                 needs_exp_filter = "experiments" in query_upper and "USER_ID" not in query_upper
                 needs_doc_filter = "rag_documents" in query_upper and "USER_ID" not in query_upper
 
-                # Safely inject user_id filter
-                import re
+                # Safely inject user_id filter with proper parentheses to prevent operator precedence bypass
+                # SECURITY: Wrapping user conditions in () prevents: WHERE user_id=X AND (1=1 OR user_id=999)
                 if needs_exp_filter:
                     # Find WHERE position case-insensitively
                     where_match = re.search(r'\bWHERE\b', query_str, re.IGNORECASE)
                     if where_match:
                         pos = where_match.end()
-                        base_q = query_str[:pos] + " experiments.user_id = :user_id AND" + query_str[pos:]
+                        # Extract rest of the query after WHERE until GROUP BY/ORDER BY/LIMIT
+                        rest_of_query = query_str[pos:]
+                        # Find where the WHERE clause ends
+                        end_match = re.search(r'\b(GROUP\s+BY|ORDER\s+BY|LIMIT|HAVING|$)', rest_of_query, re.IGNORECASE)
+                        if end_match:
+                            where_conditions = rest_of_query[:end_match.start()].strip()
+                            after_where = rest_of_query[end_match.start():]
+                        else:
+                            where_conditions = rest_of_query.strip()
+                            after_where = ""
+                        # Wrap user's WHERE conditions in parentheses for safe AND
+                        base_q = query_str[:pos] + f" experiments.user_id = :user_id AND ({where_conditions}) {after_where}"
                     else:
                         # Find FROM clause to insert WHERE after it
                         from_match = re.search(r'\bFROM\b\s+\w+(?:\s+\w+)?(?:\s+(?:LEFT|RIGHT|INNER|OUTER)?\s*JOIN\s+\w+(?:\s+\w+)?(?:\s+ON\s+[^,]+)?)*', query_str, re.IGNORECASE)
@@ -1183,7 +1238,15 @@ async def execute_tool(tool_name: str, args: Dict[str, Any], user_id: int, db: A
                     where_match = re.search(r'\bWHERE\b', query_str, re.IGNORECASE)
                     if where_match:
                         pos = where_match.end()
-                        base_q = query_str[:pos] + " rag_documents.user_id = :user_id AND" + query_str[pos:]
+                        rest_of_query = query_str[pos:]
+                        end_match = re.search(r'\b(GROUP\s+BY|ORDER\s+BY|LIMIT|HAVING|$)', rest_of_query, re.IGNORECASE)
+                        if end_match:
+                            where_conditions = rest_of_query[:end_match.start()].strip()
+                            after_where = rest_of_query[end_match.start():]
+                        else:
+                            where_conditions = rest_of_query.strip()
+                            after_where = ""
+                        base_q = query_str[:pos] + f" rag_documents.user_id = :user_id AND ({where_conditions}) {after_where}"
                     else:
                         from_match = re.search(r'\bFROM\b\s+\w+(?:\s+\w+)?(?:\s+(?:LEFT|RIGHT|INNER|OUTER)?\s*JOIN\s+\w+(?:\s+\w+)?(?:\s+ON\s+[^,]+)?)*', query_str, re.IGNORECASE)
                         if from_match:
