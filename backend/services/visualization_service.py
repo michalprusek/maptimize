@@ -48,7 +48,7 @@ def _fig_to_file(fig: plt.Figure, name: str) -> str:
     fig.savefig(file_path, format="png", dpi=100, bbox_inches="tight", facecolor="white")
     plt.close(fig)
 
-    return f"/api/charts/{filename}"
+    return f"/uploads/charts/{filename}"
 
 
 async def create_cell_count_histogram(
@@ -231,12 +231,12 @@ async def create_cell_area_scatter(
     Returns:
         dict with image_base64 and statistics
     """
-    # Query cell dimensions
+    # Query cell dimensions - use correct column names (bbox_w, bbox_h, detection_confidence)
     query = (
         select(
-            CellCrop.bbox_width,
-            CellCrop.bbox_height,
-            CellCrop.confidence,
+            CellCrop.bbox_w,
+            CellCrop.bbox_h,
+            CellCrop.detection_confidence,
             Experiment.name.label("experiment_name"),
         )
         .join(Image, CellCrop.image_id == Image.id)
@@ -255,10 +255,10 @@ async def create_cell_area_scatter(
     if not rows:
         return {"error": "No cell data found"}
 
-    widths = [row.bbox_width for row in rows if row.bbox_width and row.bbox_height]
-    heights = [row.bbox_height for row in rows if row.bbox_width and row.bbox_height]
+    widths = [row.bbox_w for row in rows if row.bbox_w and row.bbox_h]
+    heights = [row.bbox_h for row in rows if row.bbox_w and row.bbox_h]
     areas = [w * h for w, h in zip(widths, heights)]
-    confidences = [row.confidence or 0.5 for row in rows if row.bbox_width and row.bbox_height]
+    confidences = [row.detection_confidence or 0.5 for row in rows if row.bbox_w and row.bbox_h]
 
     # Create figure
     fig, ax = plt.subplots(figsize=(10, 8))

@@ -521,6 +521,9 @@
     "regenerateMessage": "Regenerate response",
     "editPlaceholder": "Edit your message...",
     "saveEdit": "Save edit",
-    "cancel": "Cancel"
+    "cancel": "Cancel",
+    "downloadImage": "Download image",
+    "previousImage": "Previous image",
+    "nextImage": "Next image"
   }
 }

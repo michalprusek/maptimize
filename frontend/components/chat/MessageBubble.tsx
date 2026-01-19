@@ -1,8 +1,8 @@
 "use client";
 
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useCallback, useMemo } from "react";
 import { useTranslations } from "next-intl";
-import { useChatStore } from "@/stores/chatStore";
+import { useChatStore, ChatImage } from "@/stores/chatStore";
 import { useAuthStore } from "@/stores/authStore";
 import { useSettingsStore, DisplayMode } from "@/stores/settingsStore";
 import type { ChatMessage, ChatCitation } from "@/lib/api";
@@ -16,13 +16,33 @@ import {
   Check,
   X,
   Loader2,
+  Download,
+  FileSpreadsheet,
+  File,
 } from "lucide-react";
 import { clsx } from "clsx";
 import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 
 interface MessageBubbleProps {
   message: ChatMessage;
   isNew?: boolean;
+}
+
+// Helper to extract image URLs from markdown content
+function extractImagesFromMarkdown(content: string, messageId: number): ChatImage[] {
+  const images: ChatImage[] = [];
+  // Match markdown images: ![alt](src)
+  const regex = /!\[([^\]]*)\]\(([^)]+)\)/g;
+  let match;
+  while ((match = regex.exec(content)) !== null) {
+    images.push({
+      alt: match[1] || "",
+      src: match[2],
+      messageId,
+    });
+  }
+  return images;
 }
 
 export function MessageBubble({ message, isNew = false }: MessageBubbleProps) {
@@ -33,9 +53,37 @@ export function MessageBubble({ message, isNew = false }: MessageBubbleProps) {
     regenerateMessage,
     isEditingMessage,
     isRegeneratingMessage,
+    activeThreadId,
+    messages,
+    openImagePreview,
   } = useChatStore();
   const { user } = useAuthStore();
   const displayMode = useSettingsStore((state) => state.displayMode);
+
+  // Collect all images from all messages in the current thread
+  const allThreadImages = useMemo(() => {
+    if (!activeThreadId) return [];
+    const threadMessages = messages[activeThreadId] || [];
+    const images: ChatImage[] = [];
+    for (const msg of threadMessages) {
+      if (msg.role === "assistant") {
+        images.push(...extractImagesFromMarkdown(msg.content, msg.id));
+      }
+    }
+    return images;
+  }, [activeThreadId, messages]);
+
+  // Handle image click - open modal with all images
+  const handleImageClick = useCallback((src: string, alt: string) => {
+    // Find this image in all thread images
+    const index = allThreadImages.findIndex((img) => img.src === src);
+    if (index >= 0) {
+      openImagePreview(allThreadImages, index);
+    } else {
+      // Fallback: if not found, open with just this image
+      openImagePreview([{ src, alt, messageId: message.id }], 0);
+    }
+  }, [allThreadImages, openImagePreview, message.id]);
   const [isEditing, setIsEditing] = useState(false);
   const [editContent, setEditContent] = useState(message.content);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -199,18 +247,53 @@ export function MessageBubble({ message, isNew = false }: MessageBubbleProps) {
             ) : (
             <div className="prose prose-invert prose-sm max-w-none prose-p:leading-relaxed prose-headings:text-text-primary prose-code:text-primary-300 chat-message-content">
               <ReactMarkdown
+                remarkPlugins={[remarkGfm]}
                 components={{
-                  // Customize link rendering
-                  a: ({ href, children }) => (
-                    <a
-                      href={href}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="text-primary-400 hover:text-primary-300 underline underline-offset-2 transition-colors"
-                    >
-                      {children}
-                    </a>
-                  ),
+                  // Customize link rendering - special handling for file downloads
+                  a: ({ href, children }) => {
+                    const isDownloadLink = href && (
+                      href.includes("/uploads/exports/") ||
+                      href.includes("/uploads/temp/") && /\.(xlsx|csv|pdf|zip)$/i.test(href) ||
+                      /\.(xlsx|csv|pdf|zip)$/i.test(href)
+                    );
+
+                    if (isDownloadLink && href) {
+                      // Get filename from URL
+                      const filename = href.split("/").pop() || "file";
+                      const ext = filename.split(".").pop()?.toLowerCase();
+                      const FileIcon = ext === "xlsx" || ext === "csv" ? FileSpreadsheet : File;
+                      const apiUrl = process.env.NEXT_PUBLIC_API_URL || "";
+                      const downloadUrl = href.startsWith("/") ? `${apiUrl}${href}` : href;
+
+                      return (
+                        <a
+                          href={downloadUrl}
+                          download={filename}
+                          className={clsx(
+                            "inline-flex items-center gap-2 px-3 py-2 my-1 rounded-lg",
+                            "bg-primary-500/10 hover:bg-primary-500/20 border border-primary-500/20",
+                            "text-primary-400 hover:text-primary-300 transition-all",
+                            "no-underline font-medium text-sm"
+                          )}
+                        >
+                          <FileIcon className="w-4 h-4" />
+                          <span className="truncate max-w-[200px]">{filename}</span>
+                          <Download className="w-4 h-4 ml-1" />
+                        </a>
+                      );
+                    }
+
+                    return (
+                      <a
+                        href={href}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-primary-400 hover:text-primary-300 underline underline-offset-2 transition-colors"
+                      >
+                        {children}
+                      </a>
+                    );
+                  },
                   // Customize code blocks with better styling
                   code: ({ className, children }) => {
                     const isInline = !className;
@@ -235,7 +318,33 @@ export function MessageBubble({ message, isNew = false }: MessageBubbleProps) {
                   ol: ({ children }) => (
                     <ol className="list-decimal list-inside space-y-1 my-2">{children}</ol>
                   ),
+                  // Table styling for GFM tables
+                  table: ({ children }) => (
+                    <div className="overflow-x-auto my-3">
+                      <table className="min-w-full border-collapse border border-white/10 rounded-lg overflow-hidden">
+                        {children}
+                      </table>
+                    </div>
+                  ),
+                  thead: ({ children }) => (
+                    <thead className="bg-white/[0.05]">{children}</thead>
+                  ),
+                  tbody: ({ children }) => (
+                    <tbody className="divide-y divide-white/[0.05]">{children}</tbody>
+                  ),
+                  tr: ({ children }) => (
+                    <tr className="hover:bg-white/[0.02] transition-colors">{children}</tr>
+                  ),
+                  th: ({ children }) => (
+                    <th className="px-3 py-2 text-left text-xs font-semibold text-text-primary border-b border-white/10">
+                      {children}
+                    </th>
+                  ),
+                  td: ({ children }) => (
+                    <td className="px-3 py-2 text-sm text-text-secondary">{children}</td>
+                  ),
                   // Paragraph - detect if it contains only images and render as grid
+                  // Use <span> with grid display to avoid hydration issues
                   p: ({ children, node }) => {
                     // Check if children are only images (or image wrappers)
                     const childArray = Array.isArray(children) ? children : [children];
@@ -251,11 +360,11 @@ export function MessageBubble({ message, isNew = false }: MessageBubbleProps) {
                     });
 
                     if (hasOnlyImages && childArray.length > 0) {
-                      // Render as a 3-column grid for images
+                      // Render as a 3-column grid for images (use span to avoid nesting issues)
                       return (
-                        <div className="grid grid-cols-3 gap-2 my-2">
+                        <span className="grid grid-cols-3 gap-2 my-2">
                           {children}
-                        </div>
+                        </span>
                       );
                     }
 
@@ -292,28 +401,30 @@ export function MessageBubble({ message, isNew = false }: MessageBubbleProps) {
                     }
 
                     // Base64 plots: full width, no grid
+                    // Use <span> with display:block to avoid hydration error (<div> can't be inside <p>)
                     if (isBase64Image) {
                       return (
-                        <div className="chat-plot-item my-3">
+                        <span className="chat-plot-item block my-3">
                           <img
                             src={imageSrc}
                             alt={alt || "Plot"}
-                            className="rounded-lg max-w-full h-auto border border-white/10 bg-white"
+                            className="rounded-lg max-w-full h-auto border border-white/10 bg-white cursor-pointer hover:opacity-90 transition-opacity"
                             loading="lazy"
-                            onClick={() => window.open(imageSrc, '_blank')}
+                            onClick={() => handleImageClick(imageSrc, alt || "Plot")}
                           />
                           {alt && (
                             <span className="block text-xs text-text-muted mt-1 text-center">
                               {alt}
                             </span>
                           )}
-                        </div>
+                        </span>
                       );
                     }
 
-                    // Microscopy images: grid layout with LUT
+                    // Microscopy images and plots: grid layout with LUT
+                    // Use <span> with flex to avoid hydration error (<div> can't be inside <p>)
                     return (
-                      <div className="chat-image-item flex flex-col">
+                      <span className="chat-image-item flex flex-col">
                         <img
                           src={imageSrc}
                           alt={alt || ""}
@@ -324,14 +435,14 @@ export function MessageBubble({ message, isNew = false }: MessageBubbleProps) {
                             isMicroscopyImage && lutClasses[displayMode]
                           )}
                           loading="lazy"
-                          onClick={() => window.open(imageSrc, '_blank')}
+                          onClick={() => handleImageClick(imageSrc, alt || "")}
                         />
                         {alt && (
                           <span className="text-xs text-text-muted mt-1 truncate text-center">
                             {alt}
                           </span>
                         )}
-                      </div>
+                      </span>
                     );
                   },
                 }}

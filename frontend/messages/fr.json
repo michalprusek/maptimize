@@ -548,6 +548,9 @@
     "regenerateMessage": "Regenerer la reponse",
     "editPlaceholder": "Modifier votre message...",
     "saveEdit": "Enregistrer",
-    "cancel": "Annuler"
+    "cancel": "Annuler",
+    "downloadImage": "Télécharger l'image",
+    "previousImage": "Image précédente",
+    "nextImage": "Image suivante"
   }
 }

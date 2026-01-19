@@ -8,6 +8,13 @@ import {
   RAGIndexingStatus,
 } from "@/lib/api";
 
+// Image preview types
+export interface ChatImage {
+  src: string;
+  alt: string;
+  messageId: number;
+}
+
 interface ChatState {
   // Data
   threads: ChatThread[];
@@ -21,6 +28,11 @@ interface ChatState {
   isPDFPanelOpen: boolean;
   activePDFDocumentId: number | null;
   activePDFPage: number;
+
+  // Image Preview State
+  isImagePreviewOpen: boolean;
+  previewImages: ChatImage[];
+  previewCurrentIndex: number;
 
   // Loading states
   isLoadingThreads: boolean;
@@ -61,6 +73,11 @@ interface ChatState {
   closePDFViewer: () => void;
   setActivePDFPage: (page: number) => void;
 
+  // Actions - Image Preview
+  openImagePreview: (images: ChatImage[], index: number) => void;
+  closeImagePreview: () => void;
+  navigateImagePreview: (index: number) => void;
+
   // Actions - Error
   clearError: () => void;
 }
@@ -80,6 +97,11 @@ export const useChatStore = create<ChatState>()(
       isPDFPanelOpen: false,
       activePDFDocumentId: null,
       activePDFPage: 1,
+
+      // Initial image preview state
+      isImagePreviewOpen: false,
+      previewImages: [],
+      previewCurrentIndex: 0,
 
       // Initial loading states
       isLoadingThreads: false,
@@ -507,6 +529,28 @@ export const useChatStore = create<ChatState>()(
 
       setActivePDFPage: (page: number) => {
         set({ activePDFPage: page });
+      },
+
+      // ==================== Image Preview Actions ====================
+
+      openImagePreview: (images: ChatImage[], index: number) => {
+        set({
+          isImagePreviewOpen: true,
+          previewImages: images,
+          previewCurrentIndex: index,
+        });
+      },
+
+      closeImagePreview: () => {
+        set({
+          isImagePreviewOpen: false,
+          previewImages: [],
+          previewCurrentIndex: 0,
+        });
+      },
+
+      navigateImagePreview: (index: number) => {
+        set({ previewCurrentIndex: index });
       },
 
       // ==================== Error Actions ====================

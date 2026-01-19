@@ -6,6 +6,8 @@ with strict security controls:
 - No file I/O, network access, or system calls
 - Memory and time limits
 - Captured stdout and return values
+
+Plots are saved to a temp folder and URLs are returned instead of base64.
 """
 
 import ast
@@ -14,10 +16,15 @@ import sys
 import base64
 import logging
 import traceback
+import uuid
+from datetime import datetime
+from pathlib import Path
 from typing import Any, Optional
 from contextlib import redirect_stdout, redirect_stderr
 import signal
 import threading
+
+from config import get_settings
 
 from RestrictedPython import compile_restricted, safe_builtins, PrintCollector
 from RestrictedPython.Guards import (
@@ -38,6 +45,11 @@ FORBIDDEN_DUNDER_ATTRS = frozenset({
 })
 
 logger = logging.getLogger(__name__)
+settings = get_settings()
+
+# Temp directory for generated plots (cleaned periodically)
+TEMP_DIR = Path(settings.upload_dir) / "temp"
+TEMP_DIR.mkdir(parents=True, exist_ok=True)
 
 # Whitelisted modules that can be imported
 ALLOWED_IMPORTS = {
@@ -402,17 +414,24 @@ async def execute_python_code(
             result["error"] = f"Execution timeout after {timeout_seconds} seconds"
             return result
 
-        # Step 6: Capture matplotlib plots
+        # Step 6: Capture matplotlib plots and save to temp folder
         try:
             import matplotlib.pyplot as plt
             figures = [plt.figure(i) for i in plt.get_fignums()]
             for fig in figures:
-                buf = io.BytesIO()
-                fig.savefig(buf, format="png", dpi=100, bbox_inches="tight")
-                buf.seek(0)
-                img_base64 = base64.b64encode(buf.read()).decode("utf-8")
-                result["plots"].append(f"data:image/png;base64,{img_base64}")
+                # Generate unique filename
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                unique_id = uuid.uuid4().hex[:8]
+                filename = f"plot_{timestamp}_{unique_id}.png"
+                filepath = TEMP_DIR / filename
+
+                # Save to file
+                fig.savefig(filepath, format="png", dpi=100, bbox_inches="tight", facecolor="white")
                 plt.close(fig)
+
+                # Return URL instead of base64
+                result["plots"].append(f"/uploads/temp/{filename}")
+                logger.debug(f"Saved plot to {filepath}")
         except ImportError as e:
             # matplotlib not available - expected when code doesn't use plotting
             logger.debug(f"matplotlib not available for plot capture: {e}")
@@ -454,3 +473,30 @@ result = {expression}
 print(result)
 """
     return await execute_python_code(code, timeout_seconds=5)
+
+
+def cleanup_old_temp_files(max_age_hours: int = 24) -> int:
+    """
+    Remove temp files (plots, etc.) older than max_age_hours.
+
+    Args:
+        max_age_hours: Maximum age in hours before files are deleted (default 24)
+
+    Returns:
+        Number of files removed
+    """
+    cutoff = datetime.now().timestamp() - (max_age_hours * 3600)
+    removed = 0
+
+    for file_path in TEMP_DIR.glob("*"):
+        if file_path.is_file() and file_path.stat().st_mtime < cutoff:
+            try:
+                file_path.unlink()
+                removed += 1
+            except Exception as e:
+                logger.warning(f"Failed to remove old temp file {file_path}: {e}")
+
+    if removed > 0:
+        logger.info(f"Cleaned up {removed} old temp files")
+
+    return removed
