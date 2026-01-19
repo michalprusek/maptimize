@@ -22,6 +22,7 @@ interface ChatState {
   messages: Record<number, ChatMessage[]>;
   documents: RAGDocument[];
   indexingStatus: RAGIndexingStatus | null;
+  indexingStatusError: string | null;
 
   // UI State
   isThreadSidebarOpen: boolean;
@@ -91,6 +92,7 @@ export const useChatStore = create<ChatState>()(
       messages: {},
       documents: [],
       indexingStatus: null,
+      indexingStatusError: null,
 
       // Initial UI state
       isThreadSidebarOpen: true,
@@ -175,6 +177,7 @@ export const useChatStore = create<ChatState>()(
       },
 
       renameThread: async (threadId: number, name: string) => {
+        set({ error: null });
         try {
           await api.updateChatThread(threadId, name);
           set((state) => ({
@@ -494,10 +497,13 @@ export const useChatStore = create<ChatState>()(
       refreshIndexingStatus: async () => {
         try {
           const indexingStatus = await api.getRAGIndexingStatus();
-          set({ indexingStatus });
+          set({ indexingStatus, indexingStatusError: null });
         } catch (error) {
-          // Silently fail for status refresh
+          // Log but track error state for debugging - don't set main error as this is background refresh
           console.error("Failed to refresh indexing status:", error);
+          set({
+            indexingStatusError: error instanceof Error ? error.message : "Status unavailable",
+          });
         }
       },
 

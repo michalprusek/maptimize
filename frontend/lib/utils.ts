@@ -34,3 +34,44 @@ export function formatDateTime(date: string | Date) {
     minute: "2-digit",
   });
 }
+
+export interface ProcessedImageUrl {
+  url: string;
+  isMicroscopy: boolean;
+  isBase64: boolean;
+}
+
+/**
+ * Process image URL to add backend prefix and auth token if needed.
+ * Handles API paths, uploads paths, and base64 images.
+ */
+export function processImageUrl(src: string): ProcessedImageUrl {
+  let imageSrc = src || "";
+
+  // Normalize URL - ensure it starts with /
+  if (imageSrc.startsWith("api/")) {
+    imageSrc = "/" + imageSrc;
+  }
+
+  const isApiImage = imageSrc.startsWith("/api/");
+  const isBase64Image = imageSrc.startsWith("data:image/");
+  const isUploadsImage = imageSrc.startsWith("/uploads/");
+  const isMicroscopyImage = isApiImage && imageSrc.includes("/images/");
+
+  // Add backend URL for API and uploads paths
+  if (isApiImage || isUploadsImage) {
+    const apiUrl = process.env.NEXT_PUBLIC_API_URL || "";
+    imageSrc = `${apiUrl}${imageSrc}`;
+
+    // Add auth token for API images
+    if (isApiImage && typeof window !== "undefined") {
+      const token = localStorage.getItem("token");
+      if (token) {
+        const separator = imageSrc.includes("?") ? "&" : "?";
+        imageSrc = `${imageSrc}${separator}token=${token}`;
+      }
+    }
+  }
+
+  return { url: imageSrc, isMicroscopy: isMicroscopyImage, isBase64: isBase64Image };
+}

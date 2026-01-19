@@ -1,10 +1,11 @@
 "use client";
 
 import { useState, useRef, useEffect, useCallback, useMemo } from "react";
+import { useRouter } from "next/navigation";
 import { useTranslations } from "next-intl";
 import { useChatStore, ChatImage } from "@/stores/chatStore";
 import { useAuthStore } from "@/stores/authStore";
-import { useSettingsStore, DisplayMode } from "@/stores/settingsStore";
+import { useSettingsStore, LUT_CLASSES } from "@/stores/settingsStore";
 import type { ChatMessage, ChatCitation } from "@/lib/api";
 import {
   User,
@@ -19,14 +20,63 @@ import {
   Download,
   FileSpreadsheet,
   File,
+  Copy,
 } from "lucide-react";
 import { clsx } from "clsx";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { processImageUrl } from "@/lib/utils";
 
 interface MessageBubbleProps {
   message: ChatMessage;
   isNew?: boolean;
+}
+
+// Code block component with copy functionality
+function CodeBlock({ children }: { children: React.ReactNode }) {
+  const [copied, setCopied] = useState(false);
+
+  // Extract text content from children recursively
+  const getTextContent = (element: React.ReactNode): string => {
+    if (typeof element === "string") return element;
+    if (Array.isArray(element)) return element.map(getTextContent).join("");
+    if (element && typeof element === "object" && "props" in element) {
+      return getTextContent((element as React.ReactElement).props.children);
+    }
+    return "";
+  };
+
+  const handleCopy = async () => {
+    const text = getTextContent(children);
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch (err) {
+      console.error("Failed to copy:", err);
+    }
+  };
+
+  return (
+    <div className="relative group/code my-2">
+      <pre className="bg-black/20 rounded-lg p-3 pr-12 overflow-x-auto border border-white/[0.05]">
+        {children}
+      </pre>
+      <button
+        onClick={handleCopy}
+        className={clsx(
+          "absolute top-2 right-2 p-1.5 rounded-md transition-all",
+          "opacity-0 group-hover/code:opacity-100",
+          "bg-white/[0.05] hover:bg-white/[0.1]",
+          "text-text-secondary hover:text-text-primary",
+          copied && "text-green-400 opacity-100"
+        )}
+        title={copied ? "Copied!" : "Copy code"}
+      >
+        {copied ? <Check className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
+      </button>
+    </div>
+  );
 }
 
 // Helper to extract image URLs from markdown content
@@ -47,6 +97,7 @@ function extractImagesFromMarkdown(content: string, messageId: number): ChatImag
 
 export function MessageBubble({ message, isNew = false }: MessageBubbleProps) {
   const t = useTranslations("chat");
+  const router = useRouter();
   const {
     openPDFViewer,
     editMessage,
@@ -136,9 +187,10 @@ export function MessageBubble({ message, isNew = false }: MessageBubbleProps) {
   const handleCitationClick = (citation: ChatCitation) => {
     if (citation.type === "document" && citation.doc_id) {
       openPDFViewer(citation.doc_id, citation.page || 1);
+    } else if (citation.type === "fov" && citation.image_id && citation.experiment_id) {
+      // Navigate to the image editor
+      router.push(`/editor/${citation.experiment_id}/${citation.image_id}`);
     }
-    // For FOV citations, we could navigate to the image viewer
-    // TODO: Implement FOV navigation
   };
 
   return (
@@ -305,12 +357,8 @@ export function MessageBubble({ message, isNew = false }: MessageBubbleProps) {
                       <code className={clsx(className, "text-sm")}>{children}</code>
                     );
                   },
-                  // Better pre block styling for code blocks
-                  pre: ({ children }) => (
-                    <pre className="bg-black/20 rounded-lg p-3 overflow-x-auto border border-white/[0.05] my-2">
-                      {children}
-                    </pre>
-                  ),
+                  // Code blocks with copy button
+                  pre: ({ children }) => <CodeBlock>{children}</CodeBlock>,
                   // Improved list styling
                   ul: ({ children }) => (
                     <ul className="list-disc list-inside space-y-1 my-2">{children}</ul>
@@ -372,45 +420,27 @@ export function MessageBubble({ message, isNew = false }: MessageBubbleProps) {
                   },
                   // Image rendering with auth token, backend URL, and LUT styling
                   img: ({ src, alt }) => {
-                    // LUT class mapping
-                    const lutClasses: Record<DisplayMode, string> = {
-                      grayscale: "lut-grayscale",
-                      inverted: "lut-inverted",
-                      green: "lut-green",
-                      fire: "lut-fire",
+                    const processed = processImageUrl(src || "");
+
+                    // Handle image load errors gracefully
+                    const handleImageError = (e: React.SyntheticEvent<HTMLImageElement>) => {
+                      const target = e.currentTarget;
+                      target.style.opacity = "0.5";
+                      target.style.filter = "grayscale(1)";
+                      target.alt = "Image failed to load";
                     };
 
-                    let imageSrc = src || "";
-                    const isApiImage = imageSrc.startsWith("/api/");
-                    const isBase64Image = imageSrc.startsWith("data:image/");
-                    const isMicroscopyImage = isApiImage && imageSrc.includes("/images/");
-
-                    if (isApiImage) {
-                      // Prepend backend URL for API paths
-                      const apiUrl = process.env.NEXT_PUBLIC_API_URL || "";
-                      imageSrc = `${apiUrl}${imageSrc}`;
-
-                      // Add auth token
-                      const token = typeof window !== "undefined"
-                        ? localStorage.getItem("token")
-                        : null;
-                      if (token) {
-                        const separator = imageSrc.includes("?") ? "&" : "?";
-                        imageSrc = `${imageSrc}${separator}token=${token}`;
-                      }
-                    }
-
                     // Base64 plots: full width, no grid
-                    // Use <span> with display:block to avoid hydration error (<div> can't be inside <p>)
-                    if (isBase64Image) {
+                    if (processed.isBase64) {
                       return (
                         <span className="chat-plot-item block my-3">
                           <img
-                            src={imageSrc}
+                            src={processed.url}
                             alt={alt || "Plot"}
                             className="rounded-lg max-w-full h-auto border border-white/10 bg-white cursor-pointer hover:opacity-90 transition-opacity"
                             loading="lazy"
-                            onClick={() => handleImageClick(imageSrc, alt || "Plot")}
+                            onClick={() => handleImageClick(processed.url, alt || "Plot")}
+                            onError={handleImageError}
                           />
                           {alt && (
                             <span className="block text-xs text-text-muted mt-1 text-center">
@@ -422,20 +452,20 @@ export function MessageBubble({ message, isNew = false }: MessageBubbleProps) {
                     }
 
                     // Microscopy images and plots: grid layout with LUT
-                    // Use <span> with flex to avoid hydration error (<div> can't be inside <p>)
                     return (
                       <span className="chat-image-item flex flex-col">
                         <img
-                          src={imageSrc}
+                          src={processed.url}
                           alt={alt || ""}
                           className={clsx(
                             "rounded-lg w-full h-auto border border-white/10",
                             "hover:border-primary-400/50 transition-colors cursor-pointer",
                             // Apply LUT only to microscopy images
-                            isMicroscopyImage && lutClasses[displayMode]
+                            processed.isMicroscopy && LUT_CLASSES[displayMode]
                           )}
                           loading="lazy"
-                          onClick={() => handleImageClick(imageSrc, alt || "")}
+                          onClick={() => handleImageClick(processed.url, alt || "")}
+                          onError={handleImageError}
                         />
                         {alt && (
                           <span className="text-xs text-text-muted mt-1 truncate text-center">

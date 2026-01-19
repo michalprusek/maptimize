@@ -1718,6 +1718,7 @@ export interface ChatCitation {
   doc_id?: number;
   page?: number;
   image_id?: number;
+  experiment_id?: number;
   title?: string;
 }
 

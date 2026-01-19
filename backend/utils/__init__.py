@@ -16,6 +16,7 @@ from .export_helpers import (
     generate_timestamped_filename,
     fig_to_base64,
     export_dataframe,
+    cleanup_old_files,
 )
 
 __all__ = [
@@ -31,4 +32,5 @@ __all__ = [
     "generate_timestamped_filename",
     "fig_to_base64",
     "export_dataframe",
+    "cleanup_old_files",
 ]

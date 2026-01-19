@@ -18,7 +18,8 @@ import { motion, AnimatePresence } from "framer-motion";
 import { X, ChevronLeft, ChevronRight, Download } from "lucide-react";
 import { clsx } from "clsx";
 import type { ChatImage } from "@/stores/chatStore";
-import { useSettingsStore, DisplayMode } from "@/stores/settingsStore";
+import { useSettingsStore, LUT_CLASSES } from "@/stores/settingsStore";
+import { processImageUrl } from "@/lib/utils";
 
 interface ImagePreviewModalProps {
   images: ChatImage[];
@@ -26,50 +27,6 @@ interface ImagePreviewModalProps {
   isOpen: boolean;
   onClose: () => void;
   onNavigate: (index: number) => void;
-}
-
-// LUT class mapping for microscopy images
-const lutClasses: Record<DisplayMode, string> = {
-  grayscale: "lut-grayscale",
-  inverted: "lut-inverted",
-  green: "lut-green",
-  fire: "lut-fire",
-};
-
-/**
- * Process image URL to add backend prefix and auth token if needed
- */
-function processImageUrl(src: string): { url: string; isMicroscopy: boolean } {
-  let imageSrc = src || "";
-
-  // Normalize URL - ensure it starts with /
-  if (imageSrc.startsWith("api/")) {
-    imageSrc = "/" + imageSrc;
-  }
-
-  const isApiImage = imageSrc.startsWith("/api/");
-  const isBase64Image = imageSrc.startsWith("data:image/");
-  const isUploadsImage = imageSrc.startsWith("/uploads/");
-  const isMicroscopyImage = isApiImage && imageSrc.includes("/images/");
-
-  // Add backend URL for API and uploads paths
-  if (isApiImage || isUploadsImage) {
-    const apiUrl = process.env.NEXT_PUBLIC_API_URL || "";
-    imageSrc = `${apiUrl}${imageSrc}`;
-
-    // Add auth token for API images
-    if (isApiImage) {
-      const token = typeof window !== "undefined"
-        ? localStorage.getItem("token")
-        : null;
-      if (token) {
-        const separator = imageSrc.includes("?") ? "&" : "?";
-        imageSrc = `${imageSrc}${separator}token=${token}`;
-      }
-    }
-  }
-
-  return { url: imageSrc, isMicroscopy: isMicroscopyImage };
 }
 
 export function ImagePreviewModal({
@@ -236,7 +193,7 @@ export function ImagePreviewModal({
               className={clsx(
                 "max-h-[calc(100vh-200px)] max-w-full object-contain rounded-lg",
                 // Apply LUT only to microscopy images
-                processedCurrent.isMicroscopy && lutClasses[displayMode]
+                processedCurrent.isMicroscopy && LUT_CLASSES[displayMode]
               )}
               onClick={(e) => e.stopPropagation()}
             />
@@ -290,7 +247,7 @@ export function ImagePreviewModal({
                     className={clsx(
                       "w-full h-full object-cover",
                       // Apply LUT only to microscopy images
-                      image.processed.isMicroscopy && lutClasses[displayMode]
+                      image.processed.isMicroscopy && LUT_CLASSES[displayMode]
                     )}
                   />
                 </button>

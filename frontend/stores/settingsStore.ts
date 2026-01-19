@@ -162,3 +162,11 @@ export const useSettingsStore = create<SettingsState>()(
 
 // Types re-exported from api.ts for convenience
 export type { DisplayMode, Theme, Language } from "@/lib/api";
+
+// LUT CSS class mapping for microscopy image display modes
+export const LUT_CLASSES: Record<DisplayMode, string> = {
+  grayscale: "lut-grayscale",
+  inverted: "lut-inverted",
+  green: "lut-green",
+  fire: "lut-fire",
+};

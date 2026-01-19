@@ -36,9 +36,31 @@ router = APIRouter()
 # Rate limit: max 10 AI requests per minute per user
 AI_RATE_LIMIT_REQUESTS = 10
 AI_RATE_LIMIT_WINDOW = 60  # seconds
+_RATE_LIMIT_CLEANUP_INTERVAL = 300  # Cleanup inactive users every 5 minutes
+_RATE_LIMIT_MAX_USERS = 1000  # Max users to track before forced cleanup
 
 # Store: user_id -> list of timestamps
-_rate_limit_store: dict[int, list[float]] = defaultdict(list)
+_rate_limit_store: dict[int, list[float]] = {}
+_last_cleanup_time: float = 0
+
+
+def _cleanup_rate_limit_store() -> None:
+    """Remove inactive users from rate limit store to prevent memory leak."""
+    global _last_cleanup_time
+    now = time.time()
+    window_start = now - AI_RATE_LIMIT_WINDOW
+
+    # Remove users with no recent requests
+    inactive_users = [
+        uid for uid, timestamps in _rate_limit_store.items()
+        if not timestamps or max(timestamps) < window_start
+    ]
+    for uid in inactive_users:
+        del _rate_limit_store[uid]
+
+    _last_cleanup_time = now
+    if inactive_users:
+        logger.debug(f"Rate limit cleanup: removed {len(inactive_users)} inactive users")
 
 
 def _check_rate_limit(user_id: int) -> None:
@@ -47,8 +69,17 @@ def _check_rate_limit(user_id: int) -> None:
 
     Raises HTTPException 429 if rate limit exceeded.
     """
+    global _last_cleanup_time
     now = time.time()
     window_start = now - AI_RATE_LIMIT_WINDOW
+
+    # Periodic cleanup to prevent memory leak
+    if now - _last_cleanup_time > _RATE_LIMIT_CLEANUP_INTERVAL or len(_rate_limit_store) > _RATE_LIMIT_MAX_USERS:
+        _cleanup_rate_limit_store()
+
+    # Get or create user entry
+    if user_id not in _rate_limit_store:
+        _rate_limit_store[user_id] = []
 
     # Clean old entries and get recent requests
     user_requests = _rate_limit_store[user_id]
@@ -221,6 +252,11 @@ async def send_message(
     thread = await get_thread_for_user(db, thread_id, current_user.id)
 
     # Fetch conversation history (last N messages for context)
+    # Count total messages for token monitoring
+    total_msg_count = (await db.execute(
+        select(func.count(ChatMessage.id)).where(ChatMessage.thread_id == thread_id)
+    )).scalar() or 0
+
     history_result = await db.execute(
         select(ChatMessage)
         .where(ChatMessage.thread_id == thread_id)
@@ -232,6 +268,15 @@ async def send_message(
         {"role": msg.role, "content": msg.content}
         for msg in history_messages
     ]
+
+    # Estimate token usage (rough: ~4 chars per token)
+    total_chars = sum(len(msg.content) for msg in history_messages)
+    estimated_tokens = total_chars // 4
+    context_warning = None
+    if total_msg_count > 20:
+        context_warning = f"Long conversation: showing last 20 of {total_msg_count} messages. Earlier context may be lost."
+    elif estimated_tokens > 50000:
+        context_warning = f"Large context (~{estimated_tokens//1000}k tokens). Consider starting a new conversation for complex queries."
 
     # Create user message
     user_message = ChatMessage(
@@ -264,19 +309,16 @@ async def send_message(
             history=history,
         )
 
-        # Rollback any pending transaction state from generate_response
-        # to ensure clean state before inserting assistant message
-        try:
-            await db.rollback()
-        except Exception as rollback_err:
-            # Log rollback errors instead of silently ignoring
-            logger.warning(f"Rollback after AI generation: {rollback_err}")
+        # Add context warning if applicable
+        content = response_data["content"]
+        if context_warning:
+            content = f"⚠️ *{context_warning}*\n\n{content}"
 
-        # Create assistant message in a fresh transaction
+        # Create assistant message (generate_response commits its own changes)
         assistant_message = ChatMessage(
             thread_id=thread_id,
             role="assistant",
-            content=response_data["content"],
+            content=content,
             citations=response_data.get("citations", []),
             image_refs=response_data.get("image_refs", []),
             tool_calls=response_data.get("tool_calls", []),
@@ -407,13 +449,7 @@ async def edit_message(
             history=history,
         )
 
-        # Rollback any pending transaction state from generate_response
-        try:
-            await db.rollback()
-        except Exception as rollback_err:
-            logger.warning(f"Rollback error: {rollback_err}")
-
-        # Create new assistant message in a fresh transaction
+        # Create new assistant message
         assistant_message = ChatMessage(
             thread_id=thread_id,
             role="assistant",
@@ -540,13 +576,7 @@ async def regenerate_message(
             history=history,
         )
 
-        # Rollback any pending transaction state from generate_response
-        try:
-            await db.rollback()
-        except Exception as rollback_err:
-            logger.warning(f"Rollback error: {rollback_err}")
-
-        # Create new assistant message in a fresh transaction
+        # Create new assistant message
         assistant_message = ChatMessage(
             thread_id=thread_id,
             role="assistant",

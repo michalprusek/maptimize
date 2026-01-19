@@ -25,6 +25,7 @@ import signal
 import threading
 
 from config import get_settings
+from utils.export_helpers import cleanup_old_files
 
 from RestrictedPython import compile_restricted, safe_builtins, PrintCollector
 from RestrictedPython.Guards import (
@@ -47,7 +48,7 @@ FORBIDDEN_DUNDER_ATTRS = frozenset({
 logger = logging.getLogger(__name__)
 settings = get_settings()
 
-# Temp directory for generated plots (cleaned periodically)
+# Temp directory for generated plots (cleaned on server startup via cleanup_old_temp_files)
 TEMP_DIR = Path(settings.upload_dir) / "temp"
 TEMP_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -304,7 +305,7 @@ async def execute_python_code(
         - stdout: str (captured print output)
         - stderr: str (error messages)
         - result: Any (last expression value)
-        - plots: list[str] (base64 encoded plot images)
+        - plots: list[str] (URL paths to saved plot images, e.g., '/uploads/temp/plot_xxx.png')
         - error: str (if execution failed)
     """
     # Validate timeout
@@ -456,6 +457,12 @@ async def execute_python_code(
 
     except SecurityViolation as e:
         result["error"] = f"Security violation: {str(e)}"
+    except MemoryError:
+        result["error"] = "Memory limit exceeded. Try reducing data size or complexity."
+    except RecursionError:
+        result["error"] = "Maximum recursion depth exceeded. Check for infinite recursion."
+    except ImportError as e:
+        result["error"] = f"Import failed: {str(e)}. Check that the module is in the allowed list."
     except Exception as e:
         result["error"] = f"Execution error: {type(e).__name__}: {str(e)}"
         logger.exception("Code execution failed")
@@ -485,18 +492,4 @@ def cleanup_old_temp_files(max_age_hours: int = 24) -> int:
     Returns:
         Number of files removed
     """
-    cutoff = datetime.now().timestamp() - (max_age_hours * 3600)
-    removed = 0
-
-    for file_path in TEMP_DIR.glob("*"):
-        if file_path.is_file() and file_path.stat().st_mtime < cutoff:
-            try:
-                file_path.unlink()
-                removed += 1
-            except Exception as e:
-                logger.warning(f"Failed to remove old temp file {file_path}: {e}")
-
-    if removed > 0:
-        logger.info(f"Cleaned up {removed} old temp files")
-
-    return removed
+    return cleanup_old_files(TEMP_DIR, max_age_hours, log_prefix="temp")

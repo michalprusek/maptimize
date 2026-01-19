@@ -414,8 +414,29 @@ async def create_visualization(
     Returns:
         dict with image_base64 and metadata
     """
+    # Chart type aliases for better discoverability
+    chart_type_handlers = {
+        "histogram": "histogram",
+        "cell_histogram": "histogram",
+        "bar": "bar",
+        "comparison": "bar",
+        "scatter": "scatter",
+        "cell_scatter": "scatter",
+        "heatmap": "heatmap",
+        "ranking": "heatmap",
+        "custom": "custom",
+    }
+
+    normalized_type = chart_type_handlers.get(chart_type)
+
+    if not normalized_type:
+        return {
+            "error": f"Unknown chart type: {chart_type}",
+            "available_types": ["histogram", "bar", "scatter", "heatmap", "custom"],
+        }
+
     try:
-        if chart_type == "histogram" or chart_type == "cell_histogram":
+        if normalized_type == "histogram":
             return await create_cell_count_histogram(
                 user_id=user_id,
                 db=db,
@@ -423,7 +444,7 @@ async def create_visualization(
                 title=title,
             )
 
-        elif chart_type == "bar" or chart_type == "comparison":
+        if normalized_type == "bar":
             return await create_experiment_comparison_bar(
                 user_id=user_id,
                 db=db,
@@ -432,7 +453,7 @@ async def create_visualization(
                 title=title,
             )
 
-        elif chart_type == "scatter" or chart_type == "cell_scatter":
+        if normalized_type == "scatter":
             return await create_cell_area_scatter(
                 user_id=user_id,
                 db=db,
@@ -440,7 +461,7 @@ async def create_visualization(
                 title=title,
             )
 
-        elif chart_type == "heatmap" or chart_type == "ranking":
+        if normalized_type == "heatmap":
             return await create_ranking_heatmap(
                 user_id=user_id,
                 db=db,
@@ -448,14 +469,13 @@ async def create_visualization(
                 title=title,
             )
 
-        elif chart_type == "custom" and data:
+        if normalized_type == "custom":
+            if not data:
+                return {"error": "data required for custom chart type"}
             return await create_custom_chart(data=data, title=title)
 
-        else:
-            return {
-                "error": f"Unknown chart type: {chart_type}",
-                "available_types": ["histogram", "bar", "scatter", "heatmap", "custom"],
-            }
+        # This should never be reached due to the normalized_type check above
+        return {"error": f"Unhandled chart type: {chart_type}"}
 
     except Exception as e:
         logger.exception(f"Visualization error: {e}")

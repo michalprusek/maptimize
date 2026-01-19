@@ -39,11 +39,36 @@ def _serialize_for_json(obj: Any) -> Any:
     return obj
 
 import sqlparse
+import time
 from sqlalchemy import select, func, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from config import get_settings
+
+# Simple in-memory cache for expensive queries
+class StatsCache:
+    """TTL-based cache for overview stats (1 minute cache)."""
+    _cache: Dict[int, tuple] = {}  # user_id -> (timestamp, data)
+    TTL = 60  # seconds
+
+    @classmethod
+    def get(cls, user_id: int) -> Optional[Dict]:
+        if user_id in cls._cache:
+            ts, data = cls._cache[user_id]
+            if time.time() - ts < cls.TTL:
+                return data
+            del cls._cache[user_id]
+        return None
+
+    @classmethod
+    def set(cls, user_id: int, data: Dict) -> None:
+        cls._cache[user_id] = (time.time(), data)
+        # Cleanup old entries (max 100 users)
+        if len(cls._cache) > 100:
+            now = time.time()
+            cls._cache = {k: v for k, v in cls._cache.items() if now - v[0] < cls.TTL}
+
 from models.experiment import Experiment
 from models.image import Image, MapProtein
 from models.cell_crop import CellCrop
@@ -227,6 +252,7 @@ Don't just tell the user about data - SHOW them visualizations!
 
 ### Data Management
 - **export_data**: Export to CSV/Excel (experiment, cells, comparisons)
+- **batch_export**: Export multiple experiments combined with statistics to single file
 - **manage_experiment**: Create/update/archive experiments
 
 ### External Knowledge
@@ -527,6 +553,20 @@ AGENT_TOOLS = [
             "required": ["data_source"]
         }
     },
+    {
+        "name": "batch_export",
+        "description": "Export multiple experiments data combined into single file. Includes cell data, statistics, and comparison.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "experiment_ids": {"type": "array", "items": {"type": "integer"}, "description": "List of experiment IDs to export"},
+                "include_cells": {"type": "boolean", "description": "Include individual cell measurements (default true)"},
+                "include_stats": {"type": "boolean", "description": "Include summary statistics per experiment (default true)"},
+                "format": {"type": "string", "enum": ["csv", "xlsx"], "description": "Export format (default xlsx for multi-sheet)"}
+            },
+            "required": ["experiment_ids"]
+        }
+    },
 
     # === VISUALIZATION ===
     {
@@ -784,19 +824,39 @@ async def generate_response(
                 tool_calls_log.append({"tool": tool_name, "args": _serialize_for_json(tool_args), "result": serialized_result})
 
                 # Extract citations from search results (deduplicated)
-                def add_citation(doc_id, page, title):
-                    """Add citation if not already present"""
-                    key = (doc_id, page)
+                def add_doc_citation(doc_id, page, title):
+                    """Add document citation if not already present"""
                     if not any(c.get("doc_id") == doc_id and c.get("page") == page for c in citations):
                         citations.append({"type": "document", "doc_id": doc_id, "page": page, "title": title})
 
+                def add_fov_citation(image_id, experiment_id, title):
+                    """Add FOV image citation if not already present"""
+                    if not any(c.get("image_id") == image_id for c in citations):
+                        citations.append({"type": "fov", "image_id": image_id, "experiment_id": experiment_id, "title": title})
+
                 if tool_name == "search_documents" and "results" in tool_result:
                     for doc in tool_result["results"][:5]:
-                        add_citation(doc.get("document_id"), doc.get("page_number"), doc.get("document_name"))
+                        add_doc_citation(doc.get("document_id"), doc.get("page_number"), doc.get("document_name"))
 
-                if tool_name == "semantic_search" and "document_results" in tool_result:
-                    for doc in tool_result["document_results"].get("pages", [])[:5]:
-                        add_citation(doc.get("document_id"), doc.get("page_number"), doc.get("document_name"))
+                if tool_name == "semantic_search":
+                    # Document citations
+                    if "document_results" in tool_result:
+                        for doc in tool_result["document_results"].get("pages", [])[:5]:
+                            add_doc_citation(doc.get("document_id"), doc.get("page_number"), doc.get("document_name"))
+                    # FOV image citations
+                    if "fov_results" in tool_result:
+                        for fov in tool_result["fov_results"].get("images", [])[:5]:
+                            add_fov_citation(fov.get("image_id"), fov.get("experiment_id"), fov.get("filename"))
+
+                # FOV citations from search_fov_images
+                if tool_name == "search_fov_images" and "images" in tool_result:
+                    for fov in tool_result["images"][:5]:
+                        add_fov_citation(fov.get("image_id"), fov.get("experiment_id"), fov.get("filename"))
+
+                # FOV citations from list_images
+                if tool_name == "list_images" and "images" in tool_result:
+                    for img in tool_result["images"][:5]:
+                        add_fov_citation(img.get("id"), img.get("experiment_id"), img.get("filename"))
 
                 # Append the original model content to preserve thought_signature (required for Gemini 3)
                 messages.append(response.candidates[0].content)
@@ -869,8 +929,8 @@ async def generate_response(
     if tool_calls_log:
         logger.warning(f"Agent loop exhausted with {len(tool_calls_log)} tool calls but no text - generating fallback")
 
-        # Extract useful data from tool results for display
-        fallback_parts = ["Zde jsou výsledky mé analýzy:\n"]
+        # Extract useful data from tool results for display (language-neutral English)
+        fallback_parts = ["**Analysis Results:**\n"]
         images_found = []
         stats_found = []
 
@@ -882,11 +942,11 @@ async def generate_response(
                     images_found.append(result["image_markdown"])
                 # Extract experiment stats
                 elif tc["tool"] == "get_experiment_stats":
-                    stats_found.append(f"- Experiment: {result.get('name', 'N/A')}, obrázků: {result.get('image_count', 0)}, buněk: {result.get('cell_count', 0)}")
+                    stats_found.append(f"- Experiment: {result.get('name', 'N/A')}, images: {result.get('image_count', 0)}, cells: {result.get('cell_count', 0)}")
                 # Extract segmentation info
                 elif tc["tool"] == "get_segmentation_masks":
                     if result.get("masks_found"):
-                        stats_found.append(f"- Nalezeno {result.get('masks_found', 0)} segmentačních masek")
+                        stats_found.append(f"- Found {result.get('masks_found', 0)} segmentation masks")
                 # Extract cell images from get_cell_detection_results
                 elif tc["tool"] == "get_cell_detection_results" and result.get("crops"):
                     for crop in result["crops"][:6]:
@@ -897,11 +957,11 @@ async def generate_response(
             fallback_parts.append("\n".join(stats_found))
 
         if images_found:
-            fallback_parts.append("\n\n**Vizualizace:**\n" + " ".join(images_found[:9]))  # Max 9 images
+            fallback_parts.append("\n\n**Visualizations:**\n" + " ".join(images_found[:9]))  # Max 9 images
 
         if not stats_found and not images_found:
             tool_summary = ", ".join([tc["tool"] for tc in tool_calls_log])
-            fallback_parts = [f"Provedl jsem následující akce: {tool_summary}. Zkuste prosím dotaz zopakovat."]
+            fallback_parts = [f"Completed actions: {tool_summary}. Please try your query again."]
 
         fallback_content = "\n".join(fallback_parts)
         return {"content": fallback_content, "citations": citations, "image_refs": image_refs, "tool_calls": tool_calls_log}
@@ -914,6 +974,11 @@ async def execute_tool(tool_name: str, args: Dict[str, Any], user_id: int, db: A
     """Execute a tool call and return the result."""
     try:
         if tool_name == "get_overview_stats":
+            # Check cache first (1 min TTL)
+            cached = StatsCache.get(user_id)
+            if cached:
+                return cached
+
             exp_count = (await db.execute(select(func.count(Experiment.id)).where(Experiment.user_id == user_id))).scalar() or 0
             img_result = await db.execute(
                 select(func.count(func.distinct(Image.id)).label("img"), func.count(CellCrop.id).label("cell"))
@@ -923,7 +988,11 @@ async def execute_tool(tool_name: str, args: Dict[str, Any], user_id: int, db: A
             row = img_result.first()
             doc_count = (await db.execute(select(func.count(RAGDocument.id)).where(RAGDocument.user_id == user_id))).scalar() or 0
             mem_count = (await db.execute(select(func.count(AgentMemory.id)).where(AgentMemory.user_id == user_id))).scalar() or 0
-            return {"total_experiments": exp_count, "total_images": row.img if row else 0, "total_cells": row.cell if row else 0, "total_documents": doc_count, "total_memories": mem_count}
+            result = {"total_experiments": exp_count, "total_images": row.img if row else 0, "total_cells": row.cell if row else 0, "total_documents": doc_count, "total_memories": mem_count}
+
+            # Cache the result
+            StatsCache.set(user_id, result)
+            return result
 
         elif tool_name == "list_experiments":
             result = await db.execute(select(Experiment).options(selectinload(Experiment.map_protein)).where(Experiment.user_id == user_id).order_by(Experiment.updated_at.desc()).limit(args.get("limit", 10)))
@@ -1031,6 +1100,10 @@ async def execute_tool(tool_name: str, args: Dict[str, Any], user_id: int, db: A
                 if any(kw in query_upper for kw in ["UNION", "INTERSECT", "EXCEPT"]):
                     return {"error": "UNION/INTERSECT/EXCEPT not allowed"}
 
+                # Block CTE (WITH clause) that could bypass filters
+                if query_upper.strip().startswith("WITH"):
+                    return {"error": "WITH (CTE) queries not allowed"}
+
                 # Validate table names against whitelist
                 found_tables = set()
                 for token in parsed[0].flatten():
@@ -1063,18 +1136,34 @@ async def execute_tool(tool_name: str, args: Dict[str, Any], user_id: int, db: A
                 needs_exp_filter = "experiments" in query_upper and "USER_ID" not in query_upper
                 needs_doc_filter = "rag_documents" in query_upper and "USER_ID" not in query_upper
 
+                # Safely inject user_id filter
+                import re
                 if needs_exp_filter:
-                    if "WHERE" in query_upper:
-                        base_q = query_str.upper().replace("WHERE", "WHERE experiments.user_id = :user_id AND", 1)
-                        base_q = query_str[:query_str.upper().find("WHERE")] + base_q[query_str.upper().find("WHERE"):]
+                    # Find WHERE position case-insensitively
+                    where_match = re.search(r'\bWHERE\b', query_str, re.IGNORECASE)
+                    if where_match:
+                        pos = where_match.end()
+                        base_q = query_str[:pos] + " experiments.user_id = :user_id AND" + query_str[pos:]
                     else:
-                        base_q = query_str.rstrip() + " WHERE experiments.user_id = :user_id"
+                        # Find FROM clause to insert WHERE after it
+                        from_match = re.search(r'\bFROM\b\s+\w+(?:\s+\w+)?(?:\s+(?:LEFT|RIGHT|INNER|OUTER)?\s*JOIN\s+\w+(?:\s+\w+)?(?:\s+ON\s+[^,]+)?)*', query_str, re.IGNORECASE)
+                        if from_match:
+                            pos = from_match.end()
+                            base_q = query_str[:pos] + " WHERE experiments.user_id = :user_id" + query_str[pos:]
+                        else:
+                            base_q = query_str.rstrip() + " WHERE experiments.user_id = :user_id"
                 elif needs_doc_filter:
-                    if "WHERE" in query_upper:
-                        base_q = query_str.upper().replace("WHERE", "WHERE rag_documents.user_id = :user_id AND", 1)
-                        base_q = query_str[:query_str.upper().find("WHERE")] + base_q[query_str.upper().find("WHERE"):]
+                    where_match = re.search(r'\bWHERE\b', query_str, re.IGNORECASE)
+                    if where_match:
+                        pos = where_match.end()
+                        base_q = query_str[:pos] + " rag_documents.user_id = :user_id AND" + query_str[pos:]
                     else:
-                        base_q = query_str.rstrip() + " WHERE rag_documents.user_id = :user_id"
+                        from_match = re.search(r'\bFROM\b\s+\w+(?:\s+\w+)?(?:\s+(?:LEFT|RIGHT|INNER|OUTER)?\s*JOIN\s+\w+(?:\s+\w+)?(?:\s+ON\s+[^,]+)?)*', query_str, re.IGNORECASE)
+                        if from_match:
+                            pos = from_match.end()
+                            base_q = query_str[:pos] + " WHERE rag_documents.user_id = :user_id" + query_str[pos:]
+                        else:
+                            base_q = query_str.rstrip() + " WHERE rag_documents.user_id = :user_id"
                 else:
                     base_q = query_str
 
@@ -1094,8 +1183,8 @@ async def execute_tool(tool_name: str, args: Dict[str, Any], user_id: int, db: A
                 # Rollback to recover from failed transaction
                 try:
                     await db.rollback()
-                except Exception:
-                    pass
+                except Exception as rollback_error:
+                    logger.warning(f"Rollback failed after query error: {rollback_error}")
                 return {"error": f"Query error: {e}"}
 
         elif tool_name == "export_data":
@@ -1110,6 +1199,99 @@ async def execute_tool(tool_name: str, args: Dict[str, Any], user_id: int, db: A
             elif args["data_source"] == "comparisons":
                 return await export_ranking_comparisons(user_id=user_id, db=db, format=fmt)
             return {"error": f"Unknown data_source: {args['data_source']}"}
+
+        elif tool_name == "batch_export":
+            if not args.get("experiment_ids") or len(args["experiment_ids"]) < 1:
+                return {"error": "experiment_ids required (list of IDs)"}
+
+            import pandas as pd
+            from datetime import datetime
+            from pathlib import Path
+            from config import get_settings
+
+            settings = get_settings()
+            EXPORT_DIR = Path(settings.upload_dir) / "exports"
+            EXPORT_DIR.mkdir(parents=True, exist_ok=True)
+
+            exp_ids = args["experiment_ids"]
+            include_cells = args.get("include_cells", True)
+            include_stats = args.get("include_stats", True)
+            fmt = args.get("format", "xlsx")
+
+            # Verify all experiments belong to user
+            exp_result = await db.execute(
+                select(Experiment).where(Experiment.id.in_(exp_ids), Experiment.user_id == user_id)
+            )
+            experiments = exp_result.scalars().all()
+            if len(experiments) != len(exp_ids):
+                return {"error": "Some experiments not found or access denied"}
+
+            # Collect data
+            all_cells = []
+            stats_data = []
+
+            for exp in experiments:
+                # Get cell data
+                cells_result = await db.execute(
+                    select(CellCrop.id, CellCrop.bbox_x, CellCrop.bbox_y, CellCrop.bbox_w, CellCrop.bbox_h,
+                           CellCrop.detection_confidence, CellCrop.mean_intensity, Image.original_filename)
+                    .join(Image, CellCrop.image_id == Image.id)
+                    .where(Image.experiment_id == exp.id)
+                )
+                cells = cells_result.all()
+
+                for c in cells:
+                    all_cells.append({
+                        "experiment_id": exp.id,
+                        "experiment_name": exp.name,
+                        "cell_id": c.id,
+                        "image": c.original_filename,
+                        "bbox_x": c.bbox_x, "bbox_y": c.bbox_y,
+                        "width": c.bbox_w, "height": c.bbox_h,
+                        "area": (c.bbox_w or 0) * (c.bbox_h or 0),
+                        "confidence": c.detection_confidence,
+                        "mean_intensity": c.mean_intensity,
+                    })
+
+                # Calculate statistics
+                if cells:
+                    areas = [(c.bbox_w or 0) * (c.bbox_h or 0) for c in cells]
+                    confs = [c.detection_confidence or 0 for c in cells]
+                    import numpy as np
+                    stats_data.append({
+                        "experiment_id": exp.id,
+                        "experiment_name": exp.name,
+                        "cell_count": len(cells),
+                        "mean_area": np.mean(areas),
+                        "std_area": np.std(areas),
+                        "mean_confidence": np.mean(confs),
+                        "min_confidence": min(confs),
+                        "max_confidence": max(confs),
+                    })
+
+            # Generate file
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            filename = f"batch_export_{timestamp}.{fmt}"
+            filepath = EXPORT_DIR / filename
+
+            if fmt == "xlsx":
+                with pd.ExcelWriter(filepath, engine="openpyxl") as writer:
+                    if include_stats and stats_data:
+                        pd.DataFrame(stats_data).to_excel(writer, sheet_name="Summary", index=False)
+                    if include_cells and all_cells:
+                        pd.DataFrame(all_cells).to_excel(writer, sheet_name="Cells", index=False)
+            else:
+                # CSV - combine data
+                df = pd.DataFrame(all_cells) if include_cells else pd.DataFrame(stats_data)
+                df.to_csv(filepath, index=False)
+
+            return {
+                "success": True,
+                "filename": filename,
+                "download_url": f"/uploads/exports/{filename}",
+                "experiments_exported": len(experiments),
+                "total_cells": len(all_cells),
+            }
 
         elif tool_name == "create_visualization":
             if not args.get("chart_type"): return {"error": "chart_type required"}
@@ -1155,13 +1337,26 @@ async def execute_tool(tool_name: str, args: Dict[str, Any], user_id: int, db: A
         elif tool_name == "call_external_api":
             if args.get("api") not in APPROVED_APIS: return {"error": f"API not approved: {args.get('api')}"}
             import httpx
-            url = f"{APPROVED_APIS[args['api']]['base_url']}/{args.get('endpoint', '').lstrip('/')}"
+            api_name = args.get('api', 'unknown')
+            url = f"{APPROVED_APIS[api_name]['base_url']}/{args.get('endpoint', '').lstrip('/')}"
             try:
                 async with httpx.AsyncClient() as client:
                     resp = await client.get(url, params=args.get("params", {}), timeout=10.0)
-                    return {"success": True, "data": resp.json() if resp.status_code == 200 else resp.text[:5000]} if resp.status_code == 200 else {"error": f"API error: {resp.status_code}"}
+                    if resp.status_code == 200:
+                        return {"success": True, "data": resp.json()}
+                    elif resp.status_code == 429:
+                        return {"error": f"{api_name} rate limit exceeded. Please wait a moment and try again."}
+                    elif resp.status_code == 404:
+                        return {"error": f"Resource not found on {api_name}. Check the endpoint or query parameters."}
+                    else:
+                        return {"error": f"{api_name} returned status {resp.status_code}: {resp.text[:500]}"}
+            except httpx.TimeoutException:
+                logger.warning(f"External API call to {api_name} timed out")
+                return {"error": f"{api_name} request timed out. Try again in a moment."}
+            except httpx.ConnectError:
+                logger.warning(f"Failed to connect to {api_name}")
+                return {"error": f"Could not connect to {api_name}. Check network connection."}
             except Exception as e:
-                api_name = args.get('api', 'unknown')
                 logger.warning(f"External API call to {api_name} failed: {e}")
                 return {"error": f"Request to {api_name} failed: {e}"}
 
@@ -1178,8 +1373,16 @@ async def execute_tool(tool_name: str, args: Dict[str, Any], user_id: int, db: A
                         for t in data.get("RelatedTopics", [])[:4]:
                             if isinstance(t, dict) and t.get("Text"): results.append({"title": t.get("Text", "")[:100], "snippet": t.get("Text"), "url": t.get("FirstURL")})
                         return {"query": args["query"], "results": results}
+                    elif resp.status_code == 429:
+                        return {"error": "Search rate limit exceeded. Please wait a moment and try again."}
+                    elif resp.status_code == 503:
+                        return {"error": "Search service temporarily unavailable. Try again later."}
                     else:
                         return {"error": f"Web search returned status {resp.status_code}"}
+            except httpx.TimeoutException:
+                return {"error": "Web search timed out. Try a simpler query or try again."}
+            except httpx.ConnectError:
+                return {"error": "Could not connect to search service. Check network connection."}
             except Exception as e:
                 return {"error": f"Web search failed: {e}"}
 

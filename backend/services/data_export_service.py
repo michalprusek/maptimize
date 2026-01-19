@@ -22,7 +22,7 @@ from models.experiment import Experiment
 from models.image import Image, MapProtein
 from models.cell_crop import CellCrop
 from models.ranking import Comparison, UserRating
-from utils.export_helpers import sanitize_filename, export_dataframe
+from utils.export_helpers import sanitize_filename, export_dataframe, cleanup_old_files
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -321,15 +321,4 @@ async def export_analysis_results(
 
 def cleanup_old_exports(max_age_hours: int = 24) -> int:
     """Remove export files older than max_age_hours."""
-    cutoff = datetime.now().timestamp() - (max_age_hours * 3600)
-    removed = 0
-
-    for file_path in EXPORT_DIR.glob("*"):
-        if file_path.is_file() and file_path.stat().st_mtime < cutoff:
-            try:
-                file_path.unlink()
-                removed += 1
-            except Exception as e:
-                logger.warning(f"Failed to remove old export {file_path}: {e}")
-
-    return removed
+    return cleanup_old_files(EXPORT_DIR, max_age_hours, log_prefix="export")
