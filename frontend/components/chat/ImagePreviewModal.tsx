@@ -7,15 +7,15 @@
  * Supports:
  * - Keyboard navigation (Esc, ←, →)
  * - Thumbnail strip for multiple images
- * - Download button
+ * - Download button (works with all image types including cross-origin)
  * - Click outside to close
  * - LUT display mode for microscopy images
  */
 
-import { useEffect, useCallback, useMemo } from "react";
+import { useEffect, useCallback, useMemo, useState } from "react";
 import { useTranslations } from "next-intl";
 import { motion, AnimatePresence } from "framer-motion";
-import { X, ChevronLeft, ChevronRight, Download } from "lucide-react";
+import { X, ChevronLeft, ChevronRight, Download, Loader2, Check } from "lucide-react";
 import { clsx } from "clsx";
 import type { ChatImage } from "@/stores/chatStore";
 import { useSettingsStore, LUT_CLASSES } from "@/stores/settingsStore";
@@ -40,6 +40,9 @@ export function ImagePreviewModal({
   const displayMode = useSettingsStore((state) => state.displayMode);
   const currentImage = images[currentIndex];
   const hasMultiple = images.length > 1;
+
+  // Download state: idle | downloading | done | error
+  const [downloadState, setDownloadState] = useState<"idle" | "downloading" | "done" | "error">("idle");
 
   // Process current image URL
   const processedCurrent = useMemo(() => {
@@ -103,16 +106,66 @@ export function ImagePreviewModal({
     };
   }, [isOpen]);
 
-  // Handle download
-  const handleDownload = () => {
-    if (!processedCurrent) return;
+  // Reset download state when image changes
+  useEffect(() => {
+    setDownloadState("idle");
+  }, [currentIndex]);
 
-    const link = document.createElement("a");
-    link.href = processedCurrent.url;
-    link.download = currentImage?.alt || `image_${currentIndex + 1}.png`;
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
+  // Handle download with cross-origin support
+  const handleDownload = async () => {
+    if (!processedCurrent || downloadState === "downloading") return;
+
+    setDownloadState("downloading");
+
+    try {
+      // Fetch the image as a blob to handle cross-origin images
+      const response = await fetch(processedCurrent.url, {
+        credentials: "include",
+      });
+
+      if (!response.ok) {
+        throw new Error(`Failed to fetch: ${response.status}`);
+      }
+
+      const blob = await response.blob();
+      const blobUrl = URL.createObjectURL(blob);
+
+      // Determine file extension from content type or URL
+      const contentType = response.headers.get("content-type") || "";
+      let extension = "png";
+      if (contentType.includes("jpeg") || contentType.includes("jpg")) {
+        extension = "jpg";
+      } else if (contentType.includes("gif")) {
+        extension = "gif";
+      } else if (contentType.includes("webp")) {
+        extension = "webp";
+      } else if (contentType.includes("svg")) {
+        extension = "svg";
+      }
+
+      // Create download link
+      const link = document.createElement("a");
+      link.href = blobUrl;
+      const filename = currentImage?.alt?.replace(/[^a-zA-Z0-9_-]/g, "_") || `image_${currentIndex + 1}`;
+      link.download = `${filename}.${extension}`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+
+      // Clean up blob URL
+      URL.revokeObjectURL(blobUrl);
+
+      setDownloadState("done");
+
+      // Reset to idle after 2 seconds
+      setTimeout(() => setDownloadState("idle"), 2000);
+    } catch (error) {
+      console.error("Download failed:", error);
+      setDownloadState("error");
+
+      // Reset to idle after 2 seconds
+      setTimeout(() => setDownloadState("idle"), 2000);
+    }
   };
 
   if (!currentImage || !processedCurrent) return null;
@@ -143,10 +196,26 @@ export function ImagePreviewModal({
                   e.stopPropagation();
                   handleDownload();
                 }}
-                className="p-2 rounded-lg hover:bg-white/10 text-text-secondary hover:text-text-primary transition-colors"
+                disabled={downloadState === "downloading"}
+                className={clsx(
+                  "p-2 rounded-lg transition-colors",
+                  downloadState === "done"
+                    ? "bg-green-500/20 text-green-400"
+                    : downloadState === "error"
+                      ? "bg-red-500/20 text-red-400"
+                      : downloadState === "downloading"
+                        ? "bg-white/5 text-text-secondary cursor-wait"
+                        : "hover:bg-white/10 text-text-secondary hover:text-text-primary"
+                )}
                 title={t("downloadImage")}
               >
-                <Download className="w-5 h-5" />
+                {downloadState === "downloading" ? (
+                  <Loader2 className="w-5 h-5 animate-spin" />
+                ) : downloadState === "done" ? (
+                  <Check className="w-5 h-5" />
+                ) : (
+                  <Download className="w-5 h-5" />
+                )}
               </button>
               <button
                 onClick={onClose}
