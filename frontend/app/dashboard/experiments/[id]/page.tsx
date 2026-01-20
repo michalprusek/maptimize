@@ -282,6 +282,11 @@ export default function ExperimentDetailPage(): JSX.Element {
   }, [router, experimentId]);
 
   const handleOpenEditorFromCrop = useCallback((crop: CellCropGallery) => {
+    // Validate that crop has parent image before navigation
+    if (!crop.image_id) {
+      console.error("Cannot open editor: crop has no parent image_id", { cropId: crop.id });
+      return;
+    }
     // Navigate to editor with the parent FOV image
     router.push(`/editor/${experimentId}/${crop.image_id}`);
   }, [router, experimentId]);
@@ -885,10 +890,10 @@ export default function ExperimentDetailPage(): JSX.Element {
                     className="glass-card group"
                     {...cardHoverProps}
                   >
-                    {/* Cell crop preview */}
+                    {/* Cell crop - click opens editor */}
                     <div
                       className="aspect-square bg-bg-secondary flex items-center justify-center relative overflow-hidden rounded-t-xl cursor-pointer"
-                      onClick={() => handleOpenCropPreview(paginatedCrops.indexOf(crop))}
+                      onClick={() => handleOpenEditorFromCrop(crop)}
                     >
                       <MicroscopyImage
                         src={api.getCropImageUrl(crop.id, "mip")}
