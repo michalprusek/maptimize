@@ -11,6 +11,7 @@
     "back": "Back",
     "close": "Close",
     "upload": "Upload",
+    "download": "Download",
     "search": "Search",
     "filter": "Filter",
     "sort": "Sort",
@@ -537,6 +538,12 @@
     "copyFailed": "Copy failed",
     "imageFailedToLoad": "Image failed to load",
     "preview": "Preview",
-    "relevance": "relevance"
+    "source": "source",
+    "sources": "sources",
+    "openInNewTab": "Open in new tab",
+    "refresh": "Refresh",
+    "loadingWebPage": "Loading web page...",
+    "webPageLoadError": "Unable to load page",
+    "webPageLoadErrorDesc": "This website may not allow embedding. Try opening it in a new tab instead."
   }
 }

@@ -11,6 +11,7 @@
     "back": "Retour",
     "close": "Fermer",
     "upload": "Telecharger",
+    "download": "Télécharger",
     "search": "Rechercher",
     "filter": "Filtrer",
     "sort": "Trier",
@@ -564,6 +565,12 @@
     "copyFailed": "Échec de la copie",
     "imageFailedToLoad": "Échec du chargement de l'image",
     "preview": "Aperçu",
-    "relevance": "pertinence"
+    "source": "source",
+    "sources": "sources",
+    "openInNewTab": "Ouvrir dans un nouvel onglet",
+    "refresh": "Actualiser",
+    "loadingWebPage": "Chargement de la page web...",
+    "webPageLoadError": "Impossible de charger la page",
+    "webPageLoadErrorDesc": "Ce site web n'autorise peut-être pas l'intégration. Essayez de l'ouvrir dans un nouvel onglet."
   }
 }

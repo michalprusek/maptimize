@@ -16,6 +16,12 @@ export interface ChatImage {
   messageId: number;
 }
 
+// Web link preview types
+export interface WebLink {
+  url: string;
+  title: string;
+}
+
 interface ChatState {
   // Data
   threads: ChatThread[];
@@ -30,6 +36,10 @@ interface ChatState {
   isPDFPanelOpen: boolean;
   activePDFDocumentId: number | null;
   activePDFPage: number;
+
+  // Web Link Preview State
+  isWebLinkPanelOpen: boolean;
+  activeWebLink: WebLink | null;
 
   // Image Preview State
   isImagePreviewOpen: boolean;
@@ -82,6 +92,10 @@ interface ChatState {
   closePDFViewer: () => void;
   setActivePDFPage: (page: number) => void;
 
+  // Actions - Web Link Preview
+  openWebLinkPreview: (url: string, title: string) => void;
+  closeWebLinkPreview: () => void;
+
   // Actions - Image Preview
   openImagePreview: (images: ChatImage[], index: number) => void;
   closeImagePreview: () => void;
@@ -121,6 +135,10 @@ export const useChatStore = create<ChatState>()(
       isPDFPanelOpen: false,
       activePDFDocumentId: null,
       activePDFPage: 1,
+
+      // Initial web link preview state
+      isWebLinkPanelOpen: false,
+      activeWebLink: null,
 
       // Initial image preview state
       isImagePreviewOpen: false,
@@ -722,6 +740,9 @@ export const useChatStore = create<ChatState>()(
           isPDFPanelOpen: true,
           activePDFDocumentId: documentId,
           activePDFPage: page,
+          // Close web link panel for mutual exclusivity
+          isWebLinkPanelOpen: false,
+          activeWebLink: null,
         });
       },
 
@@ -735,6 +756,43 @@ export const useChatStore = create<ChatState>()(
 
       setActivePDFPage: (page: number) => {
         set({ activePDFPage: page });
+      },
+
+      // ==================== Web Link Preview Actions ====================
+
+      openWebLinkPreview: (url: string, title: string) => {
+        // Validate URL before opening
+        if (!url || typeof url !== "string") {
+          console.error("openWebLinkPreview: Invalid URL provided:", url);
+          return;
+        }
+
+        // Only allow http/https URLs for security
+        try {
+          const parsed = new URL(url);
+          if (!["http:", "https:"].includes(parsed.protocol)) {
+            console.warn("openWebLinkPreview: Non-HTTP URL, opening in new tab:", url);
+            window.open(url, "_blank", "noopener,noreferrer");
+            return;
+          }
+        } catch {
+          console.error("openWebLinkPreview: Malformed URL rejected:", url);
+          return;
+        }
+
+        set({
+          isWebLinkPanelOpen: true,
+          activeWebLink: { url, title: title || url },
+          // Close PDF panel for mutual exclusivity
+          isPDFPanelOpen: false,
+        });
+      },
+
+      closeWebLinkPreview: () => {
+        set({
+          isWebLinkPanelOpen: false,
+          activeWebLink: null,
+        });
       },
 
       // ==================== Image Preview Actions ====================

@@ -9,3 +9,4 @@ export { DocumentUpload } from "./DocumentUpload";
 export { DocumentsModal } from "./DocumentsModal";
 export { IndexingProgress } from "./IndexingProgress";
 export { PDFViewerPanel } from "./PDFViewerPanel";
+export { WebLinkPanel } from "./WebLinkPanel";

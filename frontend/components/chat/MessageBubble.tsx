@@ -22,6 +22,7 @@ import {
   File,
   Copy,
   Globe,
+  ChevronDown,
 } from "lucide-react";
 import { clsx } from "clsx";
 import ReactMarkdown from "react-markdown";
@@ -131,6 +132,7 @@ export function MessageBubble({ message, isNew = false }: MessageBubbleProps) {
   const router = useRouter();
   const {
     openPDFViewer,
+    openWebLinkPreview,
     editMessage,
     regenerateMessage,
     isEditingMessage,
@@ -168,11 +170,17 @@ export function MessageBubble({ message, isNew = false }: MessageBubbleProps) {
   }, [allThreadImages, openImagePreview, message.id]);
   const [isEditing, setIsEditing] = useState(false);
   const [editContent, setEditContent] = useState(message.content);
+  const [sourcesExpanded, setSourcesExpanded] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   const isUser = message.role === "user";
   const userAvatarUrl = user?.avatar_url;
-  const hasCitations = message.citations && message.citations.length > 0;
+  // Filter out image citations (fov type) from display
+  const displayCitations = useMemo(() =>
+    message.citations?.filter((c) => c.type !== "fov") || [],
+    [message.citations]
+  );
+  const hasCitations = displayCitations.length > 0;
   const isThisMessageEditing = isEditing && isEditingMessage;
   const isThisMessageRegenerating = isRegeneratingMessage;
 
@@ -197,9 +205,16 @@ export function MessageBubble({ message, isNew = false }: MessageBubbleProps) {
 
   const handleSaveEdit = async () => {
     if (editContent.trim() && editContent !== message.content) {
-      await editMessage(message.id, editContent.trim());
+      try {
+        await editMessage(message.id, editContent.trim());
+        setIsEditing(false);
+      } catch (error) {
+        // Error already handled by store, keep edit mode open so user can retry
+        console.error("Failed to save message edit:", error);
+      }
+    } else {
+      setIsEditing(false);
     }
-    setIsEditing(false);
   };
 
   const handleRegenerate = async () => {
@@ -222,8 +237,17 @@ export function MessageBubble({ message, isNew = false }: MessageBubbleProps) {
       // Navigate to the image editor
       router.push(`/editor/${citation.experiment_id}/${citation.image_id}`);
     } else if (citation.type === "web" && citation.url) {
-      // Open web link in new tab
-      window.open(citation.url, "_blank", "noopener,noreferrer");
+      // Open web link in preview panel
+      openWebLinkPreview(citation.url, citation.title || citation.url);
+    } else {
+      // Log malformed citation for debugging
+      console.error("Citation click failed - missing required fields:", {
+        type: citation.type,
+        hasDocId: !!citation.doc_id,
+        hasImageId: !!citation.image_id,
+        hasExperimentId: !!citation.experiment_id,
+        hasUrl: !!citation.url,
+      });
     }
   };
 
@@ -572,7 +596,7 @@ export function MessageBubble({ message, isNew = false }: MessageBubbleProps) {
                             alt={alt || "Plot"}
                             className="rounded-lg max-w-full h-auto border border-white/10 bg-white cursor-pointer hover:opacity-90 transition-opacity"
                             loading="lazy"
-                            onClick={() => handleImageClick(processed.url, alt || "Plot")}
+                            onClick={() => handleImageClick(src || "", alt || "Plot")}
                             onError={handleImageError}
                           />
                           {alt && (
@@ -597,7 +621,7 @@ export function MessageBubble({ message, isNew = false }: MessageBubbleProps) {
                             processed.isMicroscopy && LUT_CLASSES[displayMode]
                           )}
                           loading="lazy"
-                          onClick={() => handleImageClick(processed.url, alt || "")}
+                          onClick={() => handleImageClick(src || "", alt || "")}
                           onError={handleImageError}
                         />
                         {alt && (
@@ -665,68 +689,92 @@ export function MessageBubble({ message, isNew = false }: MessageBubbleProps) {
           </div>
         </div>
 
-        {/* Citations with improved styling and confidence indicator */}
+        {/* Collapsible citations section */}
         {hasCitations && (
-          <div className="flex flex-wrap gap-2 mt-2">
-            {message.citations.map((citation, idx) => {
-              // Determine confidence level for visual indicator
-              const confidence = citation.confidence;
-              const hasConfidence = confidence !== undefined && confidence !== null;
-              const confidenceLevel = hasConfidence
-                ? confidence >= 0.8 ? "high" : confidence >= 0.5 ? "medium" : "low"
-                : null;
+          <div className="mt-2">
+            {/* Toggle button */}
+            <button
+              type="button"
+              onClick={() => setSourcesExpanded(!sourcesExpanded)}
+              className={clsx(
+                "flex items-center gap-1.5 px-2 py-1 rounded-md text-xs",
+                "text-text-muted hover:text-text-secondary transition-colors",
+                "hover:bg-white/[0.03]"
+              )}
+            >
+              <ChevronDown
+                className={clsx(
+                  "w-3.5 h-3.5 transition-transform duration-200",
+                  sourcesExpanded && "rotate-180"
+                )}
+              />
+              <span>
+                {displayCitations.length} {displayCitations.length === 1 ? t("source") : t("sources")}
+              </span>
+            </button>
 
-              return (
-                <button
-                  type="button"
-                  key={idx}
-                  onClick={(e) => {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    handleCitationClick(citation);
-                  }}
-                  className={clsx(
-                    "flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium",
-                    "transition-all duration-200 transform hover:scale-105",
-                    "shadow-sm hover:shadow-md",
-                    citation.type === "document"
-                      ? "bg-primary-500/10 text-primary-400 hover:bg-primary-500/20 border border-primary-500/20"
-                      : citation.type === "web"
-                      ? "bg-blue-500/10 text-blue-400 hover:bg-blue-500/20 border border-blue-500/20"
-                      : "bg-accent-pink/10 text-accent-pink hover:bg-accent-pink/20 border border-accent-pink/20"
-                  )}
-                  title={
-                    hasConfidence
-                      ? `${t("citationTooltip")} (${Math.round(confidence * 100)}% ${t("relevance")})`
-                      : t("citationTooltip")
-                  }
-                >
-                  {/* Confidence indicator dot */}
-                  {hasConfidence && (
-                    <span
+            {/* Collapsible content */}
+            {sourcesExpanded && (
+              <div className="flex flex-wrap gap-2 mt-2">
+                {displayCitations.map((citation, idx) => {
+                  const confidence = citation.confidence;
+                  const hasConfidence = confidence !== undefined && confidence !== null;
+                  const confidenceLevel = hasConfidence
+                    ? confidence >= 0.8 ? "high" : confidence >= 0.5 ? "medium" : "low"
+                    : null;
+
+                  return (
+                    <button
+                      type="button"
+                      key={idx}
+                      onClick={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        handleCitationClick(citation);
+                      }}
                       className={clsx(
-                        "w-1.5 h-1.5 rounded-full flex-shrink-0",
-                        confidenceLevel === "high" && "bg-green-400",
-                        confidenceLevel === "medium" && "bg-yellow-400",
-                        confidenceLevel === "low" && "bg-orange-400"
+                        "flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium",
+                        "transition-all duration-200 transform hover:scale-105",
+                        "shadow-sm hover:shadow-md",
+                        citation.type === "document"
+                          ? "bg-primary-500/10 text-primary-400 hover:bg-primary-500/20 border border-primary-500/20"
+                          : citation.type === "web"
+                          ? "bg-blue-500/10 text-blue-400 hover:bg-blue-500/20 border border-blue-500/20"
+                          : "bg-accent-pink/10 text-accent-pink hover:bg-accent-pink/20 border border-accent-pink/20"
                       )}
-                      title={`${Math.round(confidence * 100)}% relevance`}
-                    />
-                  )}
-                  {citation.type === "document" ? (
-                    <FileText className="w-3.5 h-3.5" />
-                  ) : citation.type === "web" ? (
-                    <Globe className="w-3.5 h-3.5" />
-                  ) : (
-                    <ImageIcon className="w-3.5 h-3.5" />
-                  )}
-                  <span>
-                    {citation.title || t("untitled")}
-                    {citation.page && ` p.${citation.page}`}
-                  </span>
-                </button>
-              );
-            })}
+                      title={
+                        hasConfidence
+                          ? `${t("citationTooltip")} (${Math.round(confidence * 100)}% ${t("relevance")})`
+                          : t("citationTooltip")
+                      }
+                    >
+                      {hasConfidence && (
+                        <span
+                          className={clsx(
+                            "w-1.5 h-1.5 rounded-full flex-shrink-0",
+                            confidenceLevel === "high" && "bg-green-400",
+                            confidenceLevel === "medium" && "bg-yellow-400",
+                            confidenceLevel === "low" && "bg-orange-400"
+                          )}
+                          title={`${Math.round(confidence * 100)}% relevance`}
+                        />
+                      )}
+                      {citation.type === "document" ? (
+                        <FileText className="w-3.5 h-3.5" />
+                      ) : citation.type === "web" ? (
+                        <Globe className="w-3.5 h-3.5" />
+                      ) : (
+                        <ImageIcon className="w-3.5 h-3.5" />
+                      )}
+                      <span>
+                        {citation.title || t("untitled")}
+                        {citation.page && ` p.${citation.page}`}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
           </div>
         )}
 
