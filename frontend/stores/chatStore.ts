@@ -628,7 +628,11 @@ export const useChatStore = create<ChatState>()(
               error: errorMessage,
               isRegeneratingMessage: false,
             }));
-          } catch {
+          } catch (fetchError) {
+            console.warn(
+              "[ChatStore] Failed to fetch messages after regeneration error:",
+              fetchError instanceof Error ? fetchError.message : fetchError
+            );
             set({
               error: errorMessage,
               isRegeneratingMessage: false,

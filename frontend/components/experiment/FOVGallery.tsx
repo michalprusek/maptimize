@@ -236,15 +236,31 @@ export function FOVGallery({
     const observer = observerRef.current;
     if (!observer || !galleryRef.current) return;
 
+    // Track observed items for cleanup
+    let observedItems: Element[] = [];
+
     // Small delay to ensure DOM is updated
     const timeoutId = setTimeout(() => {
       const items = galleryRef.current?.querySelectorAll("[data-fov-id]");
-      items?.forEach((item) => observer.observe(item));
+      if (items) {
+        observedItems = Array.from(items);
+        observedItems.forEach((item) => observer.observe(item));
+      }
     }, 50);
 
     return () => {
       clearTimeout(timeoutId);
-      observer.disconnect();
+      // Unobserve specific items instead of disconnecting the shared observer
+      observedItems.forEach((item) => {
+        try {
+          observer.unobserve(item);
+        } catch (error) {
+          // Element may already be disconnected during cleanup
+          if (process.env.NODE_ENV === "development") {
+            console.debug("[FOVGallery] Failed to unobserve item:", error);
+          }
+        }
+      });
     };
   }, [displayFovs, currentPage]);
 
@@ -285,7 +301,11 @@ export function FOVGallery({
           try {
             const fov = await api.getFovImage(id);
             return { id, status: fov.status, success: fov.status === "READY" };
-          } catch {
+          } catch (error) {
+            console.warn(
+              `[FOVGallery] Failed to poll status for image ${id}:`,
+              error instanceof Error ? error.message : error
+            );
             return { id, status: "error", success: false };
           }
         })

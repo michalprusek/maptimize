@@ -54,6 +54,7 @@ export function PDFViewerPanel() {
   const [searchResult, setSearchResult] = useState<SearchResult | null>(null);
   const [currentMatchIndex, setCurrentMatchIndex] = useState(0);
   const [isSearching, setIsSearching] = useState(false);
+  const [searchError, setSearchError] = useState<string | null>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const searchTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
@@ -168,10 +169,12 @@ export function PDFViewerPanel() {
   const performSearch = useCallback(async (query: string) => {
     if (!activePDFDocumentId || query.length < 2) {
       setSearchResult(null);
+      setSearchError(null);
       return;
     }
 
     setIsSearching(true);
+    setSearchError(null);
     try {
       const result = await api.searchWithinDocument(activePDFDocumentId, query);
       if (isMountedRef.current) {
@@ -183,9 +186,10 @@ export function PDFViewerPanel() {
         }
       }
     } catch (error) {
-      console.error("Search failed:", error);
+      console.error("[PDFViewer] Search failed:", error);
       if (isMountedRef.current) {
         setSearchResult(null);
+        setSearchError(error instanceof Error ? error.message : "Search failed");
       }
     } finally {
       if (isMountedRef.current) {
@@ -233,6 +237,7 @@ export function PDFViewerPanel() {
     setIsSearchOpen(false);
     setSearchQuery("");
     setSearchResult(null);
+    setSearchError(null);
     setCurrentMatchIndex(0);
   }, []);
 
@@ -414,8 +419,11 @@ export function PDFViewerPanel() {
         if (observerRef.current && element.isConnected) {
           try {
             observerRef.current.observe(element);
-          } catch {
-            // Ignore observation errors during Fast Refresh
+          } catch (error) {
+            // Expected during Fast Refresh when observer is disconnected
+            if (process.env.NODE_ENV === "development") {
+              console.debug(`[PDFViewer] Observer.observe failed for page ${pageNum}:`, error);
+            }
           }
         }
       } else {
@@ -423,8 +431,11 @@ export function PDFViewerPanel() {
         if (existing && observerRef.current) {
           try {
             observerRef.current.unobserve(existing);
-          } catch {
-            // Element may already be disconnected
+          } catch (error) {
+            // Element may already be disconnected during cleanup
+            if (process.env.NODE_ENV === "development") {
+              console.debug(`[PDFViewer] Observer.unobserve failed for page ${pageNum}:`, error);
+            }
           }
         }
         pageElementsRef.current.delete(pageNum);
@@ -568,7 +579,11 @@ export function PDFViewerPanel() {
           </div>
 
           {/* Match count and navigation */}
-          {searchResult && (
+          {searchError ? (
+            <span className="text-xs text-red-400 min-w-[60px] text-center">
+              {t("searchError") || "Search failed"}
+            </span>
+          ) : searchResult ? (
             <div className="flex items-center gap-1">
               <span className="text-xs text-text-secondary tabular-nums min-w-[60px] text-center">
                 {searchResult.matches.length > 0
@@ -602,7 +617,7 @@ export function PDFViewerPanel() {
                 <ChevronDown className="w-4 h-4" />
               </button>
             </div>
-          )}
+          ) : null}
 
           <button
             onClick={closeSearch}
