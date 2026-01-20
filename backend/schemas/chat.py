@@ -73,6 +73,7 @@ class ChatMessageResponse(BaseModel):
     citations: List[Citation] = []
     image_refs: List[ImageRef] = []
     tool_calls: List[ToolCall] = []
+    interaction_id: Optional[str] = None  # Gemini Interactions API ID (for assistant messages)
     created_at: datetime
 
     class Config:

@@ -54,6 +54,7 @@ export function PDFViewerPanel() {
   const [searchResult, setSearchResult] = useState<SearchResult | null>(null);
   const [currentMatchIndex, setCurrentMatchIndex] = useState(0);
   const [isSearching, setIsSearching] = useState(false);
+  const [searchError, setSearchError] = useState<string | null>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const searchTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
@@ -64,6 +65,10 @@ export function PDFViewerPanel() {
   const isScrollingToPageRef = useRef(false);
   const observerRef = useRef<IntersectionObserver | null>(null);
 
+  // Scroll direction tracking for predictive prefetch
+  const scrollDirectionRef = useRef<"up" | "down" | null>(null);
+  const lastScrollTopRef = useRef(0);
+
   const activeDocument = documents.find((d) => d.id === activePDFDocumentId);
   const totalPages = activeDocument?.page_count || 1;
 
@@ -71,6 +76,21 @@ export function PDFViewerPanel() {
   const pages = useMemo(() => {
     return Array.from({ length: totalPages }, (_, i) => i + 1);
   }, [totalPages]);
+
+  // Virtualization: only render pages near the current page for better performance
+  // Use asymmetric buffer based on scroll direction for predictive prefetch
+  const [scrollDirection, setScrollDirection] = useState<"up" | "down" | null>(null);
+
+  const visiblePageRange = useMemo(() => {
+    // Prefetch more pages in the direction of scroll
+    const forwardBuffer = scrollDirection === "down" ? 5 : 2;
+    const backwardBuffer = scrollDirection === "up" ? 5 : 2;
+
+    return {
+      start: Math.max(1, activePDFPage - backwardBuffer),
+      end: Math.min(totalPages, activePDFPage + forwardBuffer),
+    };
+  }, [activePDFPage, totalPages, scrollDirection]);
 
   // Pages with search matches (for highlighting)
   const pagesWithMatches = useMemo(() => {
@@ -86,14 +106,75 @@ export function PDFViewerPanel() {
     };
   }, []);
 
+  // Track scroll direction for predictive prefetching
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container || !isPDFPanelOpen) return;
+
+    const handleScroll = () => {
+      const currentScrollTop = container.scrollTop;
+      const direction = currentScrollTop > lastScrollTopRef.current ? "down" : "up";
+
+      // Only update state if direction changed (avoid unnecessary re-renders)
+      if (direction !== scrollDirectionRef.current) {
+        scrollDirectionRef.current = direction;
+        setScrollDirection(direction);
+      }
+
+      lastScrollTopRef.current = currentScrollTop;
+    };
+
+    container.addEventListener("scroll", handleScroll, { passive: true });
+    return () => container.removeEventListener("scroll", handleScroll);
+  }, [isPDFPanelOpen]);
+
+  // Prefetch pages beyond the visible buffer using link rel="prefetch"
+  useEffect(() => {
+    if (!activePDFDocumentId || !isPDFPanelOpen) return;
+
+    // Determine pages to prefetch (just beyond the visible range)
+    const pagesToPrefetch: number[] = [];
+    const prefetchDistance = 2; // Prefetch 2 pages beyond visible range
+
+    for (let i = 1; i <= prefetchDistance; i++) {
+      const nextPage = visiblePageRange.end + i;
+      const prevPage = visiblePageRange.start - i;
+
+      if (nextPage <= totalPages) pagesToPrefetch.push(nextPage);
+      if (prevPage >= 1) pagesToPrefetch.push(prevPage);
+    }
+
+    // Create prefetch links
+    const links: HTMLLinkElement[] = [];
+    pagesToPrefetch.forEach((pageNum) => {
+      const link = document.createElement("link");
+      link.rel = "prefetch";
+      link.href = api.getRAGPageImageUrl(activePDFDocumentId, pageNum);
+      link.as = "image";
+      document.head.appendChild(link);
+      links.push(link);
+    });
+
+    // Cleanup prefetch links on unmount or when range changes
+    return () => {
+      links.forEach((link) => {
+        if (link.parentNode) {
+          link.parentNode.removeChild(link);
+        }
+      });
+    };
+  }, [activePDFDocumentId, isPDFPanelOpen, visiblePageRange.start, visiblePageRange.end, totalPages]);
+
   // Debounced search
   const performSearch = useCallback(async (query: string) => {
     if (!activePDFDocumentId || query.length < 2) {
       setSearchResult(null);
+      setSearchError(null);
       return;
     }
 
     setIsSearching(true);
+    setSearchError(null);
     try {
       const result = await api.searchWithinDocument(activePDFDocumentId, query);
       if (isMountedRef.current) {
@@ -105,9 +186,10 @@ export function PDFViewerPanel() {
         }
       }
     } catch (error) {
-      console.error("Search failed:", error);
+      console.error("[PDFViewer] Search failed:", error);
       if (isMountedRef.current) {
         setSearchResult(null);
+        setSearchError(error instanceof Error ? error.message : "Search failed");
       }
     } finally {
       if (isMountedRef.current) {
@@ -155,6 +237,7 @@ export function PDFViewerPanel() {
     setIsSearchOpen(false);
     setSearchQuery("");
     setSearchResult(null);
+    setSearchError(null);
     setCurrentMatchIndex(0);
   }, []);
 
@@ -220,17 +303,25 @@ export function PDFViewerPanel() {
       const containerRect = containerRef.current!.getBoundingClientRect();
       const pageRect = pageElement.getBoundingClientRect();
       const isVisible =
-        pageRect.top >= containerRect.top &&
-        pageRect.top < containerRect.bottom - 100;
+        pageRect.top >= containerRect.top + 50 &&
+        pageRect.top < containerRect.bottom - 150;
 
       if (!isVisible) {
         isScrollingToPageRef.current = true;
-        pageElement.scrollIntoView({ behavior: "smooth", block: "start" });
 
-        // Reset flag after scroll animation
+        // Use instant scroll for better reliability, especially when navigating from citations
+        // Smooth scroll can get interrupted or not complete properly
+        pageElement.scrollIntoView({ behavior: "instant", block: "start" });
+
+        // Add small offset from top for better visibility
+        if (containerRef.current) {
+          containerRef.current.scrollTop -= 20;
+        }
+
+        // Reset flag after a short delay
         setTimeout(() => {
           isScrollingToPageRef.current = false;
-        }, 500);
+        }, 100);
       }
       return true;
     };
@@ -240,13 +331,13 @@ export function PDFViewerPanel() {
 
     // If page element not ready, retry with increasing intervals
     let attempts = 0;
-    const maxAttempts = 10;
+    const maxAttempts = 20;
     const retryInterval = setInterval(() => {
       attempts++;
       if (scrollToPage() || attempts >= maxAttempts) {
         clearInterval(retryInterval);
       }
-    }, 100);
+    }, 50);
 
     return () => clearInterval(retryInterval);
   }, [activePDFPage, isPDFPanelOpen, activePDFDocumentId]);
@@ -257,6 +348,10 @@ export function PDFViewerPanel() {
     setFailedPages(new Set());
     setErrorDetails(new Map());
     pageElementsRef.current.clear();
+    // Reset scroll tracking
+    scrollDirectionRef.current = null;
+    lastScrollTopRef.current = 0;
+    setScrollDirection(null);
     // Reset search when document changes
     closeSearch();
   }, [activePDFDocumentId, closeSearch]);
@@ -316,30 +411,38 @@ export function PDFViewerPanel() {
     });
   }, []);
 
-  // Safe ref registration that handles observer updates
-  const setPageRef = useCallback((pageNum: number) => (element: HTMLDivElement | null) => {
-    if (element) {
-      pageElementsRef.current.set(pageNum, element);
-      // Observe new element if observer exists and element is connected
-      if (observerRef.current && element.isConnected) {
-        try {
-          observerRef.current.observe(element);
-        } catch (e) {
-          // Silently ignore observation errors during Fast Refresh
+  // Register page element ref and manage observer subscription
+  const setPageRef = useCallback(
+    (pageNum: number) => (element: HTMLDivElement | null) => {
+      if (element) {
+        pageElementsRef.current.set(pageNum, element);
+        if (observerRef.current && element.isConnected) {
+          try {
+            observerRef.current.observe(element);
+          } catch (error) {
+            // Expected during Fast Refresh when observer is disconnected
+            if (process.env.NODE_ENV === "development") {
+              console.debug(`[PDFViewer] Observer.observe failed for page ${pageNum}:`, error);
+            }
+          }
         }
-      }
-    } else {
-      const existing = pageElementsRef.current.get(pageNum);
-      if (existing && observerRef.current) {
-        try {
-          observerRef.current.unobserve(existing);
-        } catch (e) {
-          // Element might already be disconnected
+      } else {
+        const existing = pageElementsRef.current.get(pageNum);
+        if (existing && observerRef.current) {
+          try {
+            observerRef.current.unobserve(existing);
+          } catch (error) {
+            // Element may already be disconnected during cleanup
+            if (process.env.NODE_ENV === "development") {
+              console.debug(`[PDFViewer] Observer.unobserve failed for page ${pageNum}:`, error);
+            }
+          }
         }
+        pageElementsRef.current.delete(pageNum);
       }
-      pageElementsRef.current.delete(pageNum);
-    }
-  }, []);
+    },
+    []
+  );
 
   // Keyboard navigation including Ctrl+F
   useEffect(() => {
@@ -476,7 +579,11 @@ export function PDFViewerPanel() {
           </div>
 
           {/* Match count and navigation */}
-          {searchResult && (
+          {searchError ? (
+            <span className="text-xs text-red-400 min-w-[60px] text-center">
+              {t("searchError") || "Search failed"}
+            </span>
+          ) : searchResult ? (
             <div className="flex items-center gap-1">
               <span className="text-xs text-text-secondary tabular-nums min-w-[60px] text-center">
                 {searchResult.matches.length > 0
@@ -510,7 +617,7 @@ export function PDFViewerPanel() {
                 <ChevronDown className="w-4 h-4" />
               </button>
             </div>
-          )}
+          ) : null}
 
           <button
             onClick={closeSearch}
@@ -607,7 +714,7 @@ export function PDFViewerPanel() {
       {/* PDF Content - Seamless scroll container */}
       <div
         ref={containerRef}
-        className="flex-1 overflow-auto p-4 bg-bg-primary/50 scroll-smooth"
+        className="flex-1 overflow-auto p-4 bg-bg-primary/50"
       >
         <div
           className="flex flex-col items-center gap-4"
@@ -620,6 +727,10 @@ export function PDFViewerPanel() {
           {pages.map((pageNum) => {
             const hasMatch = pagesWithMatches.has(pageNum);
             const isCurrentMatch = searchResult?.matches[currentMatchIndex]?.page_number === pageNum;
+            // Virtualization: only render images for pages near the current view
+            const isInVirtualRange = pageNum >= visiblePageRange.start && pageNum <= visiblePageRange.end;
+            // Always render pages that are already loaded or have search matches
+            const shouldRenderImage = isInVirtualRange || loadedPages.has(pageNum) || hasMatch;
 
             return (
               <div
@@ -647,7 +758,12 @@ export function PDFViewerPanel() {
                   )}
                 </div>
 
-                {!failedPages.has(pageNum) ? (
+                {!shouldRenderImage ? (
+                  /* Placeholder for virtualized pages outside view range */
+                  <div className="w-full min-h-[600px] aspect-[8.5/11] flex items-center justify-center bg-white/[0.02] rounded-sm border border-white/5 text-text-muted text-sm">
+                    <span className="opacity-50">Page {pageNum}</span>
+                  </div>
+                ) : !failedPages.has(pageNum) ? (
                   <>
                     {/* Loading skeleton */}
                     {!loadedPages.has(pageNum) && (

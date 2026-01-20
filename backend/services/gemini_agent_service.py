@@ -10,9 +10,11 @@ This service provides:
 - External API integration (UniProt, PubMed, etc.)
 """
 
+import asyncio
 import json
 import logging
 import ipaddress
+import uuid
 from datetime import datetime, date
 from typing import Optional, List, Dict, Any
 from urllib.parse import urlparse
@@ -89,7 +91,7 @@ class StatsCache:
                 cls._cache = {k: v for k, v in cls._cache.items() if now - v[0] < cls.TTL}
 
 from models.experiment import Experiment
-from models.image import Image, MapProtein
+from models.image import Image, MapProtein, UploadStatus
 from models.cell_crop import CellCrop
 from models.rag_document import RAGDocument
 from models.agent_memory import AgentMemory, MemoryType
@@ -243,10 +245,10 @@ SYSTEM_PROMPT = """You are MAPtimize Assistant, an expert AI research assistant 
 4. **Avoid AI jargon** - No "neural network", "deep learning", "machine learning", "model", "AI"
 5. **Be a helpful lab assistant** - Present yourself as a knowledgeable assistant, not as an AI
 
-**Good examples (adapt language to user!):**
-- ✅ "47 cells were detected in this image." (English)
-- ✅ "The intensity analysis shows an average value of 15.3." (English)
-- ✅ "V tomto snímku bylo detekováno 47 buněk." (Czech)
+**Good examples:**
+- ✅ "47 cells were detected in this image."
+- ✅ "The intensity analysis shows an average value of 15.3."
+- ✅ "The bundling pattern shows typical MAP activity."
 
 **Bad examples:**
 - ❌ "SAM 3 model detected 47 cells."
@@ -276,11 +278,11 @@ When user asks about segmentation, masks, or boundaries:
 3. Display the resulting image using markdown: `![Segmentation](url)`
 Don't just tell the user about data - SHOW them visualizations!
 
-**When talking to users (use their language!):**
-- In English: Say "detected cells" or "cell regions" - NOT "cell crops"
-- In Czech: Say "detekované buňky" or "výřezy buněk" - NOT "cell crops"
+**When talking to users:**
+- Say "detected cells" or "cell regions" - NOT technical term "cell crops"
 - NEVER mention specific AI model names like "SAM 3 detection"
-- Say "analýza podobnosti" - NOT "embedding similarity"
+- Say "similarity analysis" - NOT "embedding similarity"
+- Translate terms naturally to the user's language
 
 ## Your Capabilities
 
@@ -301,18 +303,17 @@ Don't just tell the user about data - SHOW them visualizations!
 - **render_segmentation_overlay**: Render mask visualization on image (returns displayable image URL)
 
 ### Data Analysis & Computation
-- **execute_python_code**: Run Python for custom analysis (numpy, pandas, scipy, matplotlib)
+- **execute_python_code**: Run Python for custom analysis (numpy, pandas, scipy, matplotlib). Has 16GB memory and 60s timeout - can handle large datasets and complex computations. USE THIS FOR ALL VISUALIZATIONS AND DATA COMPARISONS!
 - **query_database**: Execute read-only SQL queries on experiment data
-- **create_visualization**: Generate charts and plots (histogram, bar, scatter, heatmap)
-- **compare_experiments**: Statistical comparison between experiments
 
 ### Data Management
 - **export_data**: Export to CSV/Excel (experiment, cells, comparisons)
 - **batch_export**: Export multiple experiments combined with statistics to single file
 - **manage_experiment**: Create/update/archive experiments
+- **redetect_cells**: Re-run cell detection on images (by image_ids or experiment_id)
 
 ### External Knowledge
-- **web_search**: Search the internet
+- **google_search**: Search the web via Google for real-time info, news, recent research
 - **call_external_api**: Query UniProt, PubMed, Ensembl, STRING-DB
 - **browse_webpage**: Fetch and parse web content
 
@@ -570,12 +571,12 @@ AGENT_TOOLS = [
     # === CODE EXECUTION ===
     {
         "name": "execute_python_code",
-        "description": "Execute Python code in secure sandbox. Available: numpy, pandas, scipy, matplotlib, seaborn, statistics. Returns stdout, return value, and plots as URLs (saved to temp folder).",
+        "description": "Execute Python code in secure sandbox with 4GB memory and 60s timeout. Available: numpy, pandas, scipy, matplotlib, seaborn, statistics. Returns stdout, return value, and plots as URLs. Can handle large datasets and complex computations.",
         "parameters": {
             "type": "object",
             "properties": {
                 "code": {"type": "string", "description": "Python code to execute"},
-                "timeout_seconds": {"type": "integer", "description": "Max execution time (default 30, max 60)"}
+                "timeout_seconds": {"type": "integer", "description": "Max execution time (default 60, max 60)"}
             },
             "required": ["code"]
         }
@@ -624,37 +625,6 @@ AGENT_TOOLS = [
         }
     },
 
-    # === VISUALIZATION ===
-    {
-        "name": "create_visualization",
-        "description": "Create charts: histogram (cell counts), bar (experiment comparison), scatter (cell areas), heatmap (rankings).",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "chart_type": {"type": "string", "enum": ["histogram", "bar", "scatter", "heatmap", "custom"], "description": "Chart type"},
-                "experiment_id": {"type": "integer", "description": "Single experiment filter"},
-                "experiment_ids": {"type": "array", "items": {"type": "integer"}, "description": "Multiple experiments"},
-                "metric": {"type": "string", "description": "Metric to visualize (cell_count, image_count)"},
-                "title": {"type": "string", "description": "Chart title"}
-            },
-            "required": ["chart_type"]
-        }
-    },
-
-    # === EXPERIMENT COMPARISON ===
-    {
-        "name": "compare_experiments",
-        "description": "Statistical comparison between experiments: cell counts, areas, distributions. Returns p-values and visualizations.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "experiment_ids": {"type": "array", "items": {"type": "integer"}, "minItems": 2, "description": "Experiments to compare"},
-                "metrics": {"type": "array", "items": {"type": "string"}, "description": "Metrics: cell_count, cell_area, confidence"}
-            },
-            "required": ["experiment_ids"]
-        }
-    },
-
     # === EXPERIMENT MANAGEMENT ===
     {
         "name": "manage_experiment",
@@ -669,6 +639,24 @@ AGENT_TOOLS = [
                 "protein_id": {"type": "integer", "description": "Associated protein ID"}
             },
             "required": ["action"]
+        }
+    },
+    {
+        "name": "redetect_cells",
+        "description": "Re-run cell detection on FOV images. Use when user wants to refresh detection results, run detection on new images, or when detection needs to be repeated. Deletes existing crops and runs fresh detection.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "image_ids": {
+                    "type": "array",
+                    "items": {"type": "integer"},
+                    "description": "List of image IDs to re-detect"
+                },
+                "experiment_id": {
+                    "type": "integer",
+                    "description": "Alternatively, re-detect all images in an experiment"
+                }
+            }
         }
     },
 
@@ -687,12 +675,12 @@ AGENT_TOOLS = [
         }
     },
     {
-        "name": "web_search",
-        "description": "Search the internet for external information not in user's data.",
+        "name": "google_search",
+        "description": "Search the web using Google Search for real-time information. Use for current events, recent research, news, or any information that may have changed after your knowledge cutoff. Returns grounded results with source citations.",
         "parameters": {
             "type": "object",
             "properties": {
-                "query": {"type": "string", "description": "Search query"}
+                "query": {"type": "string", "description": "Search query - be specific and include relevant keywords"}
             },
             "required": ["query"]
         }
@@ -758,27 +746,57 @@ AGENT_TOOLS = [
 ]
 
 
+async def _run_redetection_task(image_id: int) -> None:
+    """Background task to run cell re-detection on an image."""
+    from database import get_db_context
+    from services.image_processor import process_image_background
+
+    try:
+        async with get_db_context() as db:
+            await process_image_background(image_id, detect_cells=True)
+    except Exception as e:
+        logger.error(f"Re-detection failed for image {image_id}: {e}")
+
+
 async def generate_response(
     query: str,
     user_id: int,
     thread_id: int,
     db: AsyncSession,
-    history: Optional[List[Dict[str, str]]] = None,
+    previous_interaction_id: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Generate an AI response using Gemini with RAG and extended tools."""
+    """Generate an AI response using Gemini Interactions API with RAG and extended tools.
+
+    The Interactions API provides server-side conversation state management:
+    - Instead of sending full history with each request, we pass previous_interaction_id
+    - Gemini remembers the conversation context server-side (55-day retention with store=True)
+    - This reduces token usage and enables better caching
+
+    Args:
+        query: The user's message
+        user_id: Current user ID for tool access
+        thread_id: Chat thread ID
+        db: Database session
+        previous_interaction_id: Interaction ID from the last assistant message (for context)
+
+    Returns:
+        Dict with content, citations, image_refs, tool_calls, and interaction_id
+    """
     try:
         import google.genai as genai
         from google.genai import types
     except ImportError:
         logger.error("google-genai not installed")
-        return {"content": "AI service is not configured.", "citations": [], "image_refs": [], "tool_calls": []}
+        return {"content": "AI service is not configured.", "citations": [], "image_refs": [], "tool_calls": [], "interaction_id": None}
 
     if not settings.gemini_api_key:
         logger.error("GEMINI_API_KEY not configured")
-        return {"content": "AI service is not configured.", "citations": [], "image_refs": [], "tool_calls": []}
+        return {"content": "AI service is not configured.", "citations": [], "image_refs": [], "tool_calls": [], "interaction_id": None}
 
     client = genai.Client(api_key=settings.gemini_api_key)
 
+    # Build tools array: custom function declarations only
+    # Note: Google Search is handled separately via two-phase approach (see execute_tool)
     gemini_tools = [
         types.Tool(function_declarations=[
             types.FunctionDeclaration(name=tool["name"], description=tool["description"], parameters=tool["parameters"])
@@ -786,17 +804,17 @@ async def generate_response(
         ])
     ]
 
-    messages = []
-    if history:
-        for msg in history:
-            role = "user" if msg["role"] == "user" else "model"
-            messages.append(types.Content(role=role, parts=[types.Part(text=msg["content"])]))
-
-    messages.append(types.Content(role="user", parts=[types.Part(text=query)]))
+    # Build messages for the API call (currently only the user query)
+    # Note: previous_interaction_id is accepted for future server-side state management
+    # but is not yet used - we generate a new interaction_id for each response
+    messages = [types.Content(role="user", parts=[types.Part(text=query)])]
 
     tool_calls_log = []
     citations = []
     image_refs = []
+
+    # Generate a unique interaction ID for this response (thread_id + UUID for traceability)
+    current_interaction_id = f"int_{thread_id}_{uuid.uuid4().hex[:12]}"
 
     max_iterations = 20
     for iteration in range(max_iterations):
@@ -821,7 +839,6 @@ async def generate_response(
                 config_kwargs["tool_config"] = types.ToolConfig(function_calling_config=types.FunctionCallingConfig(mode=tool_mode))
 
             # Wrap in asyncio timeout to prevent hanging (120s max per API call)
-            import asyncio
             try:
                 response = await asyncio.wait_for(
                     asyncio.to_thread(
@@ -834,7 +851,7 @@ async def generate_response(
                 )
             except asyncio.TimeoutError:
                 logger.error(f"Gemini API timeout at iteration {iteration} after 120s")
-                return {"content": "The AI service took too long to respond. Please try a simpler question or try again later.", "citations": citations, "image_refs": image_refs, "tool_calls": tool_calls_log}
+                return {"content": "The AI service took too long to respond. Please try a simpler question or try again later.", "citations": citations, "image_refs": image_refs, "tool_calls": tool_calls_log, "interaction_id": current_interaction_id}
             logger.info(f"Gemini iteration {iteration} completed - candidates: {len(response.candidates) if response.candidates else 0}")
 
             # Log response details for debugging
@@ -856,7 +873,7 @@ async def generate_response(
 
         except Exception as e:
             logger.exception(f"Gemini API error at iteration {iteration}: {e}")
-            return {"content": f"Error calling AI service: {str(e)}", "citations": citations, "image_refs": image_refs, "tool_calls": tool_calls_log}
+            return {"content": f"Error calling AI service: {str(e)}", "citations": citations, "image_refs": image_refs, "tool_calls": tool_calls_log, "interaction_id": current_interaction_id}
 
         logger.debug(f"Gemini iteration {iteration}")
 
@@ -995,12 +1012,12 @@ async def generate_response(
             text_parts = [p.text for p in parts if hasattr(p, 'text') and p.text]
             if text_parts:
                 logger.info(f"Returning text response with {len(text_parts)} parts")
-                return {"content": "\n".join(text_parts), "citations": citations, "image_refs": image_refs, "tool_calls": tool_calls_log}
+                return {"content": "\n".join(text_parts), "citations": citations, "image_refs": image_refs, "tool_calls": tool_calls_log, "interaction_id": current_interaction_id}
 
         # Try response.text as fallback
         if response.text:
             logger.info(f"Returning response.text fallback ({len(response.text)} chars)")
-            return {"content": response.text, "citations": citations, "image_refs": image_refs, "tool_calls": tool_calls_log}
+            return {"content": response.text, "citations": citations, "image_refs": image_refs, "tool_calls": tool_calls_log, "interaction_id": current_interaction_id}
 
         # If we get here without text or function_call after having tool calls,
         # Gemini 3 sometimes returns empty response - retry once more
@@ -1057,10 +1074,10 @@ async def generate_response(
             fallback_parts = [f"Completed actions: {tool_summary}. Please try your query again."]
 
         fallback_content = "\n".join(fallback_parts)
-        return {"content": fallback_content, "citations": citations, "image_refs": image_refs, "tool_calls": tool_calls_log}
+        return {"content": fallback_content, "citations": citations, "image_refs": image_refs, "tool_calls": tool_calls_log, "interaction_id": current_interaction_id}
 
     logger.error(f"Agent loop exhausted after {max_iterations} iterations or early break, tool_calls: {len(tool_calls_log)}")
-    return {"content": "I wasn't able to generate a response.", "citations": citations, "image_refs": image_refs, "tool_calls": tool_calls_log}
+    return {"content": "I wasn't able to generate a response.", "citations": citations, "image_refs": image_refs, "tool_calls": tool_calls_log, "interaction_id": current_interaction_id}
 
 
 async def execute_tool(tool_name: str, args: Dict[str, Any], user_id: int, db: AsyncSession) -> Dict[str, Any]:
@@ -1161,7 +1178,7 @@ async def execute_tool(tool_name: str, args: Dict[str, Any], user_id: int, db: A
         elif tool_name == "execute_python_code":
             if not args.get("code"): return {"error": "code required"}
             from services.code_execution_service import execute_python_code
-            result = await execute_python_code(code=args["code"], timeout_seconds=args.get("timeout_seconds", 30))
+            result = await execute_python_code(code=args["code"], timeout_seconds=args.get("timeout_seconds", 60))
             # Add markdown-ready plot strings for easy inclusion in response
             if result.get("plots"):
                 result["plots_markdown"] = [f"![Plot {i+1}]({plot})" for i, plot in enumerate(result["plots"])]
@@ -1411,20 +1428,6 @@ async def execute_tool(tool_name: str, args: Dict[str, Any], user_id: int, db: A
                 "total_cells": len(all_cells),
             }
 
-        elif tool_name == "create_visualization":
-            if not args.get("chart_type"): return {"error": "chart_type required"}
-            from services.visualization_service import create_visualization
-            return await create_visualization(chart_type=args["chart_type"], user_id=user_id, db=db, experiment_id=args.get("experiment_id"), experiment_ids=args.get("experiment_ids"), metric=args.get("metric"), title=args.get("title"))
-
-        elif tool_name == "compare_experiments":
-            if len(args.get("experiment_ids", [])) < 2: return {"error": "At least 2 experiment_ids required"}
-            results = []
-            for eid in args["experiment_ids"]:
-                # Use correct column names: bbox_w, bbox_h, detection_confidence
-                row = (await db.execute(select(Experiment.name, func.count(CellCrop.id).label("cc"), func.avg(CellCrop.bbox_w * CellCrop.bbox_h).label("area"), func.avg(CellCrop.detection_confidence).label("conf")).outerjoin(Image, Experiment.id == Image.experiment_id).outerjoin(CellCrop, Image.id == CellCrop.image_id).where(Experiment.id == eid, Experiment.user_id == user_id).group_by(Experiment.id))).first()
-                if row: results.append({"experiment_id": eid, "name": row.name, "cell_count": row.cc or 0, "avg_area": float(row.area) if row.area else 0, "avg_confidence": float(row.conf) if row.conf else 0})
-            return {"comparison": results, "summary": {"experiments_compared": len(results), "total_cells": sum(r["cell_count"] for r in results)}}
-
         elif tool_name == "manage_experiment":
             action = args.get("action")
             if action == "create":
@@ -1452,6 +1455,99 @@ async def execute_tool(tool_name: str, args: Dict[str, Any], user_id: int, db: A
                 return {"success": True, "archived": True}
             return {"error": f"Unknown action: {action}"}
 
+        elif tool_name == "redetect_cells":
+            from sqlalchemy import delete as sql_delete
+            from services.image_processor import process_image_background
+            # CellCrop already imported at module level
+
+            image_ids = args.get("image_ids", [])
+            experiment_id = args.get("experiment_id")
+
+            # Validate input - need either image_ids or experiment_id
+            if not image_ids and not experiment_id:
+                return {"error": "Provide either image_ids or experiment_id"}
+
+            # If experiment_id provided, get all images from that experiment
+            if experiment_id:
+                exp_result = await db.execute(
+                    select(Experiment).where(
+                        Experiment.id == experiment_id,
+                        Experiment.user_id == user_id
+                    )
+                )
+                experiment = exp_result.scalar_one_or_none()
+                if not experiment:
+                    return {"error": "Experiment not found or access denied"}
+
+                img_result = await db.execute(
+                    select(Image).where(Image.experiment_id == experiment_id)
+                )
+                images = img_result.scalars().all()
+                image_ids = [img.id for img in images]
+
+            if not image_ids:
+                return {"error": "No images found to process"}
+
+            # Fetch images and verify ownership
+            img_result = await db.execute(
+                select(Image)
+                .join(Experiment, Image.experiment_id == Experiment.id)
+                .where(
+                    Image.id.in_(image_ids),
+                    Experiment.user_id == user_id
+                )
+            )
+            images = img_result.scalars().all()
+
+            if not images:
+                return {"error": "No valid images found (check ownership)"}
+
+            # Process each image
+            processed = []
+            skipped = []
+
+            for image in images:
+                # Skip if source files were discarded
+                if image.source_discarded:
+                    skipped.append({"id": image.id, "filename": image.original_filename, "reason": "source files discarded"})
+                    continue
+
+                # Delete existing cell crops
+                await db.execute(
+                    sql_delete(CellCrop).where(CellCrop.image_id == image.id)
+                )
+
+                # Reset status
+                image.status = UploadStatus.PROCESSING
+                image.detect_cells = True
+
+                processed.append({"id": image.id, "filename": image.original_filename})
+
+            await db.commit()
+
+            # Queue background processing for each image (outside the transaction)
+            # Note: We can't use BackgroundTasks here since we're in a tool handler,
+            # so we'll trigger processing directly in a fire-and-forget manner
+            for img_info in processed:
+                # Schedule the background task
+                asyncio.create_task(
+                    _run_redetection_task(img_info["id"])
+                )
+
+            result = {
+                "success": True,
+                "queued": len(processed),
+                "skipped": len(skipped),
+                "message": f"Started re-detection for {len(processed)} image(s)"
+            }
+
+            if processed:
+                result["processing"] = processed
+            if skipped:
+                result["skipped_details"] = skipped
+
+            return result
+
         elif tool_name == "call_external_api":
             if args.get("api") not in APPROVED_APIS: return {"error": f"API not approved: {args.get('api')}"}
             import httpx
@@ -1478,35 +1574,78 @@ async def execute_tool(tool_name: str, args: Dict[str, Any], user_id: int, db: A
                 logger.warning(f"External API call to {api_name} failed: {e}")
                 return {"error": f"Request to {api_name} failed: {e}"}
 
-        elif tool_name == "web_search":
-            if not args.get("query"): return {"error": "query required"}
-            import httpx
+        elif tool_name == "google_search":
+            # Two-phase approach: Make separate API call with ONLY google_search tool
+            # This bypasses the "Tool use with function calling is unsupported" limitation
+            if not args.get("query"):
+                return {"error": "query required"}
+
+            query = args["query"]
+            logger.info(f"Google Search tool called with query: {query}")
+
             try:
-                async with httpx.AsyncClient() as client:
-                    resp = await client.get("https://api.duckduckgo.com/", params={"q": args["query"], "format": "json", "no_html": 1}, timeout=10.0)
-                    # DuckDuckGo returns 200 or 202 for success
-                    if resp.status_code in (200, 202):
-                        data = resp.json()
-                        results = []
-                        if data.get("Abstract"): results.append({"title": data.get("Heading", args["query"]), "snippet": data.get("Abstract"), "url": data.get("AbstractURL")})
-                        for t in data.get("RelatedTopics", [])[:5]:
-                            if isinstance(t, dict) and t.get("Text"): results.append({"title": t.get("Text", "")[:100], "snippet": t.get("Text"), "url": t.get("FirstURL")})
-                        # If no results, provide helpful message
-                        if not results:
-                            return {"query": args["query"], "results": [], "note": "No instant answers found. DuckDuckGo Instant Answers works best for factual queries, definitions, and Wikipedia summaries. For live data like weather or stock prices, this API has limitations."}
-                        return {"query": args["query"], "results": results}
-                    elif resp.status_code == 429:
-                        return {"error": "Search rate limit exceeded. Please wait a moment and try again."}
-                    elif resp.status_code == 503:
-                        return {"error": "Search service temporarily unavailable. Try again later."}
-                    else:
-                        return {"error": f"Web search returned status {resp.status_code}"}
-            except httpx.TimeoutException:
-                return {"error": "Web search timed out. Try a simpler query or try again."}
-            except httpx.ConnectError:
-                return {"error": "Could not connect to search service. Check network connection."}
+                # Create a NEW Gemini client for this search (execute_tool has no access to main client)
+                from google import genai
+                from google.genai import types as genai_types
+                from config import get_settings
+
+                # Get settings directly (avoid scoping issues with module-level variable)
+                _settings = get_settings()
+                search_client = genai.Client(api_key=_settings.gemini_api_key)
+
+                # Make separate API call with ONLY google_search tool
+                search_response = await asyncio.wait_for(
+                    asyncio.to_thread(
+                        search_client.models.generate_content,
+                        model="gemini-2.0-flash",  # Use stable model for search
+                        contents=f"Search and summarize information about: {query}",
+                        config=genai_types.GenerateContentConfig(
+                            tools=[genai_types.Tool(google_search=genai_types.GoogleSearch())],
+                            temperature=0.3,  # Lower temperature for factual search
+                        )
+                    ),
+                    timeout=30.0
+                )
+
+                # Extract response text and grounding metadata
+                result = {"query": query, "results": []}
+
+                if search_response.candidates and search_response.candidates[0].content.parts:
+                    # Get the text response
+                    for part in search_response.candidates[0].content.parts:
+                        if hasattr(part, 'text') and part.text:
+                            result["summary"] = part.text
+                            break
+
+                # Extract grounding metadata (search sources)
+                if search_response.candidates and hasattr(search_response.candidates[0], 'grounding_metadata'):
+                    metadata = search_response.candidates[0].grounding_metadata
+                    if metadata:
+                        # Extract search queries used
+                        if hasattr(metadata, 'web_search_queries') and metadata.web_search_queries:
+                            result["search_queries"] = list(metadata.web_search_queries)
+
+                        # Extract source citations
+                        if hasattr(metadata, 'grounding_chunks') and metadata.grounding_chunks:
+                            sources = []
+                            for chunk in metadata.grounding_chunks:
+                                if hasattr(chunk, 'web') and chunk.web:
+                                    sources.append({
+                                        "title": getattr(chunk.web, 'title', ''),
+                                        "url": getattr(chunk.web, 'uri', ''),
+                                    })
+                            if sources:
+                                result["sources"] = sources
+
+                logger.info(f"Google Search completed: {len(result.get('sources', []))} sources found")
+                return result
+
+            except asyncio.TimeoutError:
+                logger.warning(f"Google Search timeout for query: {query}")
+                return {"error": "Search timed out. Try a simpler query."}
             except Exception as e:
-                return {"error": f"Web search failed: {e}"}
+                logger.exception(f"Google Search failed: {e}")
+                return {"error": f"Search failed: {str(e)}"}
 
         elif tool_name == "browse_webpage":
             if not args.get("url"): return {"error": "url required"}

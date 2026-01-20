@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useRef } from "react";
+import { useRouter } from "next/navigation";
 import { useTranslations } from "next-intl";
 import { useChatStore } from "@/stores/chatStore";
 import { ConfirmModal } from "@/components/ui/ConfirmModal";
@@ -13,12 +14,14 @@ import {
   Check,
   X,
   FileText,
+  ArrowLeft,
 } from "lucide-react";
 import { clsx } from "clsx";
 import { formatDistanceToNow } from "date-fns";
 import { DocumentsModal } from "./DocumentsModal";
 
 export function ThreadSidebar() {
+  const router = useRouter();
   const t = useTranslations("chat");
   const tCommon = useTranslations("common");
   const {
@@ -41,6 +44,10 @@ export function ThreadSidebar() {
 
   const handleNewThread = () => {
     clearActiveThread();
+  };
+
+  const handleGoBack = () => {
+    router.back();
   };
 
   const startEditing = (threadId: number, currentName: string) => {
@@ -81,22 +88,35 @@ export function ThreadSidebar() {
 
   return (
     <div className="flex flex-col h-full">
-      {/* Header with New Thread + Documents button */}
+      {/* Header with Back + New Thread + Documents button */}
       <div className="p-4 border-b border-white/5">
         <div className="flex items-center gap-2">
+          {/* Back button */}
+          <button
+            onClick={handleGoBack}
+            className={clsx(
+              "p-2.5 rounded-lg transition-all duration-200",
+              "bg-white/[0.05] border border-white/10 hover:border-white/20",
+              "text-text-secondary hover:text-text-primary hover:bg-white/[0.08]"
+            )}
+            title={tCommon("back")}
+          >
+            <ArrowLeft className="w-5 h-5" />
+          </button>
+
           <button
             onClick={handleNewThread}
             className={clsx(
-              "flex-1 flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg font-medium",
+              "flex-1 flex items-center justify-center gap-2 px-3 py-2.5 rounded-lg font-medium",
               "bg-gradient-to-r from-primary-500 to-primary-600",
-              "text-white",
+              "text-white whitespace-nowrap text-sm",
               "hover:from-primary-400 hover:to-primary-500",
               "shadow-lg shadow-primary-500/20 hover:shadow-primary-500/30",
               "transform transition-all duration-200",
               "hover:scale-[1.02] active:scale-[0.98]"
             )}
           >
-            <Plus className="w-4 h-4" />
+            <Plus className="w-4 h-4 flex-shrink-0" />
             {t("newThread")}
           </button>
 

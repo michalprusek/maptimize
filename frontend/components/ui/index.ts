@@ -7,3 +7,4 @@ export { EmptyState } from "./EmptyState";
 export { StatusBadge, getStatusStyles } from "./StatusBadge";
 export { MicroscopyImage } from "./MicroscopyImage";
 export { Pagination } from "./Pagination";
+export { ImagePreviewModal, type PreviewImage } from "./ImagePreviewModal";

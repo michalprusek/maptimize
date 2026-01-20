@@ -545,6 +545,7 @@
     "zoomOut": "Zoom arrière",
     "fitWidth": "Ajuster à la largeur",
     "download": "Télécharger",
+    "openInEditor": "Ouvrir dans l'éditeur",
     "noDocuments": "Aucun document téléchargé",
     "searchInDocument": "Rechercher dans le document...",
     "noMatches": "Aucune correspondance",

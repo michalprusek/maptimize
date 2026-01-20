@@ -209,9 +209,13 @@ async def create_experiment_comparison_bar(
 
     plt.tight_layout()
 
+    # Save to file first (before fig_to_base64 closes the figure)
+    image_url = _fig_to_file(fig, "cell_count_bar")
+
     return {
         "success": True,
-        "image_base64": fig_to_base64(fig),
+        "image_base64": fig_to_base64(fig),  # This closes the figure
+        "image_url": image_url,
         "data": [{"experiment": name, metric: value} for name, value in zip(names, values)],
     }
 
@@ -299,9 +303,13 @@ async def create_cell_area_scatter(
 
     plt.tight_layout()
 
+    # Save to file first (before fig_to_base64 closes the figure)
+    image_url = _fig_to_file(fig, "cell_area_scatter")
+
     return {
         "success": True,
-        "image_base64": fig_to_base64(fig),
+        "image_base64": fig_to_base64(fig),  # This closes the figure
+        "image_url": image_url,
         "statistics": {
             "count": len(widths),
             "mean_width": float(np.mean(widths)),
@@ -383,9 +391,13 @@ async def create_ranking_heatmap(
 
     plt.tight_layout()
 
+    # Save to file first (before fig_to_base64 closes the figure)
+    image_url = _fig_to_file(fig, "ranking_heatmap")
+
     return {
         "success": True,
-        "image_base64": fig_to_base64(fig),
+        "image_base64": fig_to_base64(fig),  # This closes the figure
+        "image_url": image_url,
         "experiments": list(exp_data.keys()),
         "data_points": {name: len(vals) for name, vals in exp_data.items()},
     }
@@ -534,7 +546,11 @@ async def create_custom_chart(
 
     plt.tight_layout()
 
+    # Save to file first (before fig_to_base64 closes the figure)
+    image_url = _fig_to_file(fig, "custom_chart")
+
     return {
         "success": True,
-        "image_base64": fig_to_base64(fig),
+        "image_base64": fig_to_base64(fig),  # This closes the figure
+        "image_url": image_url,
     }

@@ -103,6 +103,12 @@ class ChatMessage(Base):
     # Format: [{"tool": "search_documents", "args": {...}, "result": {...}}]
     tool_calls: Mapped[Optional[list]] = mapped_column(JSONB, default=list)
 
+    # Gemini Interactions API interaction ID for server-side state management
+    # Only stored for assistant messages; used as previous_interaction_id for next message
+    interaction_id: Mapped[Optional[str]] = mapped_column(
+        String(255), nullable=True, index=True
+    )
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now()

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { api, FOVImage } from "@/lib/api";
@@ -198,6 +198,77 @@ export function FOVGallery({
 
   const queryClient = useQueryClient();
 
+  // Track which images are visible for lazy loading
+  const [visibleImages, setVisibleImages] = useState<Set<number>>(new Set());
+  const observerRef = useRef<IntersectionObserver | null>(null);
+  const galleryRef = useRef<HTMLDivElement>(null);
+
+  // Set up IntersectionObserver for lazy loading thumbnails
+  useEffect(() => {
+    const observer = new IntersectionObserver(
+      (entries) => {
+        const newVisible = entries
+          .filter((entry) => entry.isIntersecting)
+          .map((entry) => parseInt(entry.target.getAttribute("data-fov-id") || "0", 10))
+          .filter((id) => id > 0);
+
+        if (newVisible.length > 0) {
+          setVisibleImages((prev) => {
+            const next = new Set(prev);
+            newVisible.forEach((id) => next.add(id));
+            return next;
+          });
+        }
+      },
+      {
+        rootMargin: "100px", // Start loading 100px before entering viewport
+        threshold: 0,
+      }
+    );
+
+    observerRef.current = observer;
+
+    return () => observer.disconnect();
+  }, []);
+
+  // Observe gallery items when displayFovs changes
+  useEffect(() => {
+    const observer = observerRef.current;
+    if (!observer || !galleryRef.current) return;
+
+    // Track observed items for cleanup
+    let observedItems: Element[] = [];
+
+    // Small delay to ensure DOM is updated
+    const timeoutId = setTimeout(() => {
+      const items = galleryRef.current?.querySelectorAll("[data-fov-id]");
+      if (items) {
+        observedItems = Array.from(items);
+        observedItems.forEach((item) => observer.observe(item));
+      }
+    }, 50);
+
+    return () => {
+      clearTimeout(timeoutId);
+      // Unobserve specific items instead of disconnecting the shared observer
+      observedItems.forEach((item) => {
+        try {
+          observer.unobserve(item);
+        } catch (error) {
+          // Element may already be disconnected during cleanup
+          if (process.env.NODE_ENV === "development") {
+            console.debug("[FOVGallery] Failed to unobserve item:", error);
+          }
+        }
+      });
+    };
+  }, [displayFovs, currentPage]);
+
+  // Reset visible images when page changes (items change)
+  useEffect(() => {
+    setVisibleImages(new Set());
+  }, [currentPage]);
+
   // Helper to invalidate experiment-related queries (DRY)
   const invalidateExperimentQueries = () => {
     queryClient.invalidateQueries({ queryKey: ["fovs", experimentId] });
@@ -230,7 +301,11 @@ export function FOVGallery({
           try {
             const fov = await api.getFovImage(id);
             return { id, status: fov.status, success: fov.status === "READY" };
-          } catch {
+          } catch (error) {
+            console.warn(
+              `[FOVGallery] Failed to poll status for image ${id}:`,
+              error instanceof Error ? error.message : error
+            );
             return { id, status: "error", success: false };
           }
         })
@@ -416,6 +491,7 @@ export function FOVGallery({
       {displayFovs.length > 0 ? (
         <>
         <motion.div
+          ref={galleryRef}
           className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6 gap-4"
           variants={staggerContainerVariants}
           initial="hidden"
@@ -426,6 +502,7 @@ export function FOVGallery({
           {displayFovs.map((fov) => (
             <motion.div
               key={fov.id}
+              data-fov-id={fov.id}
               variants={staggerItemVariants}
               exit={{ opacity: 0, scale: 0.9, transition: { duration: 0.2 } }}
               layout
@@ -440,16 +517,21 @@ export function FOVGallery({
                 onClick={() => onFovClick?.(fov)}
               >
                 {fov.thumbnail_url ? (
-                  <MicroscopyImage
-                    src={api.getImageUrl(fov.id, "thumbnail")}
-                    alt={fov.original_filename}
-                    className="w-full h-full object-cover"
-                    onError={(e) => {
-                      console.warn(`[FOVGallery] Thumbnail load failed for image: ${fov.original_filename}`, e.type);
-                      e.currentTarget.style.display = "none";
-                      e.currentTarget.nextElementSibling?.classList.remove("hidden");
-                    }}
-                  />
+                  visibleImages.has(fov.id) ? (
+                    <MicroscopyImage
+                      src={api.getImageUrl(fov.id, "thumbnail")}
+                      alt={fov.original_filename}
+                      className="w-full h-full object-cover"
+                      onError={(e) => {
+                        console.warn(`[FOVGallery] Thumbnail load failed for image: ${fov.original_filename}`, e.type);
+                        e.currentTarget.style.display = "none";
+                        e.currentTarget.nextElementSibling?.classList.remove("hidden");
+                      }}
+                    />
+                  ) : (
+                    // Placeholder while waiting for IntersectionObserver
+                    <div className="w-full h-full bg-bg-tertiary animate-pulse" />
+                  )
                 ) : (
                   <ImageIcon className="w-10 h-10 text-text-muted" />
                 )}

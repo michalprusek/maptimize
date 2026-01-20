@@ -1,0 +1,227 @@
+{
+  "test_questions": {
+    "google_search": [
+      {
+        "id": "gs_1",
+        "question": "What is the weather in Prague today?",
+        "expected_tool": "google_search",
+        "description": "Basic web search for current weather"
+      },
+      {
+        "id": "gs_2",
+        "question": "What are the latest research findings about microtubule dynamics in 2024?",
+        "expected_tool": "google_search",
+        "description": "Scientific research search requiring recent information"
+      },
+      {
+        "id": "gs_3",
+        "question": "Find recent papers about MAP proteins and cytoskeleton",
+        "expected_tool": "google_search",
+        "description": "Research-specific web search"
+      }
+    ],
+    "code_execution": [
+      {
+        "id": "ce_1",
+        "question": "Create a histogram showing the distribution of cell sizes across all my experiments",
+        "expected_tool": "execute_python_code",
+        "description": "Data visualization requiring Python code execution"
+      },
+      {
+        "id": "ce_2",
+        "question": "Make a scatter plot comparing bundleness scores vs confidence scores for all detected cells",
+        "expected_tool": "execute_python_code",
+        "description": "Complex scatter plot with multiple data sources"
+      },
+      {
+        "id": "ce_3",
+        "question": "Calculate the correlation between cell count and average bundleness score per experiment and show it as a heatmap",
+        "expected_tool": "execute_python_code",
+        "description": "Statistical analysis with heatmap visualization"
+      },
+      {
+        "id": "ce_4",
+        "question": "Create a violin plot showing the distribution of detection confidence grouped by protein type",
+        "expected_tool": "execute_python_code",
+        "description": "Advanced violin plot with grouping"
+      },
+      {
+        "id": "ce_5",
+        "question": "Generate a time series plot showing how many cells were detected per day over the last month",
+        "expected_tool": "execute_python_code",
+        "description": "Time-based analysis and plotting"
+      }
+    ],
+    "experiment_data": [
+      {
+        "id": "ed_1",
+        "question": "Show me 5 sample images from the PRC1 experiment",
+        "expected_tool": "get_sample_images",
+        "description": "Retrieve sample FOV images from specific experiment"
+      },
+      {
+        "id": "ed_2",
+        "question": "What is the average bundleness score in my experiments?",
+        "expected_tool": "get_experiment_stats",
+        "description": "Basic statistics query"
+      },
+      {
+        "id": "ed_3",
+        "question": "List all my experiments with their cell counts",
+        "expected_tool": "list_experiments",
+        "description": "Experiment listing with metadata"
+      },
+      {
+        "id": "ed_4",
+        "question": "Compare the cell detection results between PRC1 and HMMR experiments",
+        "expected_tool": "get_cell_detection_results",
+        "description": "Cross-experiment comparison"
+      }
+    ],
+    "segmentation": [
+      {
+        "id": "seg_1",
+        "question": "Show me the segmentation masks for the cells in image 42",
+        "expected_tool": "get_segmentation_masks",
+        "description": "Retrieve SAM segmentation masks for specific image"
+      },
+      {
+        "id": "seg_2",
+        "question": "Get segmentation masks for crops 100, 101, and 102 with statistics",
+        "expected_tool": "get_segmentation_masks",
+        "description": "Multiple crop segmentation with stats"
+      },
+      {
+        "id": "seg_3",
+        "question": "What is the average cell area based on segmentation masks in my latest experiment?",
+        "expected_tools": ["get_segmentation_masks", "execute_python_code"],
+        "description": "Segmentation analysis requiring code execution"
+      }
+    ],
+    "document_rag": [
+      {
+        "id": "rag_1",
+        "question": "Search my documents for information about fixation protocols",
+        "expected_tool": "search_documents",
+        "description": "RAG search in uploaded documents"
+      },
+      {
+        "id": "rag_2",
+        "question": "What does my protocol say about antibody concentrations?",
+        "expected_tool": "search_documents",
+        "description": "Specific information retrieval from documents"
+      },
+      {
+        "id": "rag_3",
+        "question": "Summarize the methodology section from my uploaded papers",
+        "expected_tools": ["search_documents", "get_document_content"],
+        "description": "Document content analysis"
+      }
+    ],
+    "external_apis": [
+      {
+        "id": "api_1",
+        "question": "Get UniProt information about PRC1 protein",
+        "expected_tool": "call_external_api",
+        "description": "UniProt API call for protein data"
+      },
+      {
+        "id": "api_2",
+        "question": "Find PubMed articles about microtubule bundling",
+        "expected_tool": "call_external_api",
+        "description": "PubMed search via API"
+      },
+      {
+        "id": "api_3",
+        "question": "What proteins interact with HMMR according to STRING database?",
+        "expected_tool": "call_external_api",
+        "description": "STRING-DB protein interaction query"
+      }
+    ],
+    "database_queries": [
+      {
+        "id": "db_1",
+        "question": "How many total cells have been detected in all my experiments?",
+        "expected_tool": "query_database",
+        "description": "Aggregate count query"
+      },
+      {
+        "id": "db_2",
+        "question": "What is the distribution of bundleness scores in my data? Show as SQL query.",
+        "expected_tool": "query_database",
+        "description": "Statistical distribution query"
+      },
+      {
+        "id": "db_3",
+        "question": "Find all cells with bundleness score above 0.8",
+        "expected_tool": "query_database",
+        "description": "Filtered data retrieval"
+      }
+    ],
+    "data_export": [
+      {
+        "id": "exp_1",
+        "question": "Export all cell data from the PRC1 experiment to CSV",
+        "expected_tool": "export_data",
+        "description": "Single experiment CSV export"
+      },
+      {
+        "id": "exp_2",
+        "question": "Create an Excel file with statistics from all my experiments",
+        "expected_tool": "batch_export",
+        "description": "Multi-experiment batch export with stats"
+      }
+    ],
+    "memory": [
+      {
+        "id": "mem_1",
+        "question": "Remember that I prefer green color for PRC1 visualizations",
+        "expected_tool": "long_term_memory",
+        "description": "Store user preference"
+      },
+      {
+        "id": "mem_2",
+        "question": "What preferences have I set before?",
+        "expected_tool": "long_term_memory",
+        "description": "Retrieve stored preferences"
+      }
+    ],
+    "complex_workflows": [
+      {
+        "id": "cw_1",
+        "question": "Analyze the cell morphology in my PRC1 experiment - get the segmentation masks, calculate average area and circularity, and create a scatter plot",
+        "expected_tools": ["get_segmentation_masks", "execute_python_code"],
+        "description": "Multi-step workflow combining segmentation and analysis"
+      },
+      {
+        "id": "cw_2",
+        "question": "Compare my experimental results with what recent literature says about MAP protein bundling efficiency",
+        "expected_tools": ["get_experiment_stats", "google_search"],
+        "description": "Workflow combining local data with web research"
+      },
+      {
+        "id": "cw_3",
+        "question": "Find similar proteins to PRC1 in UniProt and create a comparison table with my experimental data",
+        "expected_tools": ["call_external_api", "query_database", "execute_python_code"],
+        "description": "Complex workflow with external API and data analysis"
+      }
+    ]
+  },
+  "metadata": {
+    "version": "1.0",
+    "created": "2026-01-20",
+    "description": "Test questions for Maptimize AI agent capabilities",
+    "categories": [
+      "google_search",
+      "code_execution",
+      "experiment_data",
+      "segmentation",
+      "document_rag",
+      "external_apis",
+      "database_queries",
+      "data_export",
+      "memory",
+      "complex_workflows"
+    ]
+  }
+}

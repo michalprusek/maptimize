@@ -87,17 +87,16 @@ FORBIDDEN_AST_NODES = {
     ast.ImportFrom,  # We handle imports specially
 }
 
-# Maximum execution time in seconds
-MAX_EXECUTION_TIME = 30
+# Maximum execution time in seconds (increased for complex analyses)
+MAX_EXECUTION_TIME = 60
 
 # Maximum output size in characters
 MAX_OUTPUT_SIZE = 100_000
 
-# Maximum memory limit for code execution (512 MB)
-MAX_MEMORY_BYTES = 512 * 1024 * 1024
-
-# Maximum CPU time (soft limit)
-MAX_CPU_TIME = 30
+# Maximum memory limit for code execution (16 GB virtual address space)
+# Note: RLIMIT_AS limits virtual memory, not physical. Libraries like numpy/matplotlib
+# allocate large virtual regions even when physical usage is low.
+MAX_MEMORY_BYTES = 16 * 1024 * 1024 * 1024
 
 
 class ExecutionTimeout(Exception):
@@ -118,9 +117,9 @@ def _set_resource_limits():
     except (ValueError, resource.error) as e:
         logger.warning(f"Failed to set memory limit: {e}")
 
-    # CPU time limit
+    # CPU time limit (same as execution timeout)
     try:
-        resource.setrlimit(resource.RLIMIT_CPU, (MAX_CPU_TIME, MAX_CPU_TIME + 5))
+        resource.setrlimit(resource.RLIMIT_CPU, (MAX_EXECUTION_TIME, MAX_EXECUTION_TIME + 5))
     except (ValueError, resource.error) as e:
         logger.warning(f"Failed to set CPU limit: {e}")
 
@@ -332,7 +331,7 @@ async def execute_python_code(
 
     Args:
         code: Python code to execute
-        timeout_seconds: Maximum execution time (default 30, max 60)
+        timeout_seconds: Maximum execution time (default 60, max 60)
         context: Optional dict of variables to inject into execution context
 
     Returns:
@@ -510,7 +509,7 @@ async def execute_python_code(
                         unique_id = uuid.uuid4().hex[:8]
                         filename = f"plot_{timestamp}_{unique_id}.png"
                         filepath = temp_dir / filename
-                        fig.savefig(filepath, format="png", dpi=100, bbox_inches="tight", facecolor="white")
+                        fig.savefig(filepath, format="png", dpi=150, bbox_inches="tight", facecolor="white")
                         plt.close(fig)
                         exec_result["plots"].append(f"/uploads/temp/{filename}")
                 except ImportError:
@@ -521,7 +520,7 @@ async def execute_python_code(
                 exec_result["success"] = True
 
             except MemoryError:
-                exec_result["error"] = "Memory limit exceeded (512 MB). Reduce data size."
+                exec_result["error"] = "Memory limit exceeded (16 GB). Reduce data size or complexity."
             except RecursionError:
                 exec_result["error"] = "Maximum recursion depth exceeded."
             except Exception as e:
@@ -560,24 +559,13 @@ async def execute_python_code(
             result["error"] = f"Execution timeout after {timeout_seconds} seconds (process terminated)"
             return result
 
-        # Get result from queue
+        # Get result from queue (stdout/stderr already captured in subprocess)
         try:
             exec_result = result_queue.get_nowait()
             result.update(exec_result)
         except Exception:
             result["error"] = "Failed to retrieve execution result"
             return result
-
-        # Step 7: Collect output - combine PrintCollector output with any direct stdout
-        # (PrintCollector captures print(), stdout_capture catches other output)
-        stdout_parts = []
-        if result["stdout"]:  # PrintCollector output set earlier
-            stdout_parts.append(result["stdout"])
-        captured_stdout = stdout_capture.getvalue()
-        if captured_stdout:
-            stdout_parts.append(captured_stdout)
-        result["stdout"] = "".join(stdout_parts)[:MAX_OUTPUT_SIZE]
-        result["stderr"] = stderr_capture.getvalue()[:MAX_OUTPUT_SIZE]
 
         if not result["error"]:
             result["success"] = True
