@@ -16,6 +16,12 @@ export interface ChatImage {
   messageId: number;
 }
 
+// Web link preview types
+export interface WebLink {
+  url: string;
+  title: string;
+}
+
 interface ChatState {
   // Data
   threads: ChatThread[];
@@ -30,6 +36,10 @@ interface ChatState {
   isPDFPanelOpen: boolean;
   activePDFDocumentId: number | null;
   activePDFPage: number;
+
+  // Web Link Preview State
+  isWebLinkPanelOpen: boolean;
+  activeWebLink: WebLink | null;
 
   // Image Preview State
   isImagePreviewOpen: boolean;
@@ -82,6 +92,10 @@ interface ChatState {
   closePDFViewer: () => void;
   setActivePDFPage: (page: number) => void;
 
+  // Actions - Web Link Preview
+  openWebLinkPreview: (url: string, title: string) => void;
+  closeWebLinkPreview: () => void;
+
   // Actions - Image Preview
   openImagePreview: (images: ChatImage[], index: number) => void;
   closeImagePreview: () => void;
@@ -121,6 +135,10 @@ export const useChatStore = create<ChatState>()(
       isPDFPanelOpen: false,
       activePDFDocumentId: null,
       activePDFPage: 1,
+
+      // Initial web link preview state
+      isWebLinkPanelOpen: false,
+      activeWebLink: null,
 
       // Initial image preview state
       isImagePreviewOpen: false,
@@ -735,6 +753,22 @@ export const useChatStore = create<ChatState>()(
 
       setActivePDFPage: (page: number) => {
         set({ activePDFPage: page });
+      },
+
+      // ==================== Web Link Preview Actions ====================
+
+      openWebLinkPreview: (url: string, title: string) => {
+        set({
+          isWebLinkPanelOpen: true,
+          activeWebLink: { url, title },
+        });
+      },
+
+      closeWebLinkPreview: () => {
+        set({
+          isWebLinkPanelOpen: false,
+          activeWebLink: null,
+        });
       },
 
       // ==================== Image Preview Actions ====================

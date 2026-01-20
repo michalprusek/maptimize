@@ -132,6 +132,7 @@ export function MessageBubble({ message, isNew = false }: MessageBubbleProps) {
   const router = useRouter();
   const {
     openPDFViewer,
+    openWebLinkPreview,
     editMessage,
     regenerateMessage,
     isEditingMessage,
@@ -236,8 +237,8 @@ export function MessageBubble({ message, isNew = false }: MessageBubbleProps) {
       // Navigate to the image editor
       router.push(`/editor/${citation.experiment_id}/${citation.image_id}`);
     } else if (citation.type === "web" && citation.url) {
-      // Open web link in new tab
-      window.open(citation.url, "_blank", "noopener,noreferrer");
+      // Open web link in preview panel
+      openWebLinkPreview(citation.url, citation.title || citation.url);
     } else {
       // Log malformed citation for debugging
       console.error("Citation click failed - missing required fields:", {

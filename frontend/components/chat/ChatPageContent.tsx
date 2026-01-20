@@ -19,6 +19,7 @@ import { ThreadSidebar } from "./ThreadSidebar";
 import { ChatArea } from "./ChatArea";
 import { IndexingProgress } from "./IndexingProgress";
 import { PDFViewerPanel } from "./PDFViewerPanel";
+import { WebLinkPanel } from "./WebLinkPanel";
 import { ImagePreviewModal } from "@/components/ui";
 import { clsx } from "clsx";
 
@@ -77,6 +78,9 @@ export function ChatPageContent() {
     documents,
     activePDFDocumentId,
     openPDFViewer,
+    // Web link preview
+    isWebLinkPanelOpen,
+    closeWebLinkPreview,
     // Image preview
     isImagePreviewOpen,
     previewImages,
@@ -305,6 +309,44 @@ export function ChatPageContent() {
             )}
           </AnimatePresence>
         )}
+
+        {/* Web Link Panel - responsive widths */}
+        {isDesktop ? (
+          <WebLinkPanel />
+        ) : (
+          // Mobile/Tablet: Web link panel as modal overlay
+          <AnimatePresence>
+            {isWebLinkPanelOpen && (
+              <>
+                <motion.div
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  exit={{ opacity: 0 }}
+                  transition={{ duration: reducedMotion ? 0 : 0.2 }}
+                  className="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm"
+                  onClick={closeWebLinkPreview}
+                />
+                <motion.div
+                  initial={{ x: "100%" }}
+                  animate={{ x: 0 }}
+                  exit={{ x: "100%" }}
+                  transition={{
+                    type: reducedMotion ? "tween" : "spring",
+                    stiffness: 300,
+                    damping: 30,
+                    duration: reducedMotion ? 0 : undefined,
+                  }}
+                  className={clsx(
+                    "fixed inset-y-0 right-0 z-50",
+                    "w-full sm:w-[400px]"
+                  )}
+                >
+                  <WebLinkPanel />
+                </motion.div>
+              </>
+            )}
+          </AnimatePresence>
+        )}
       </div>
 
       {/* PDF Preview Panel toggle trigger - right side */}
@@ -337,7 +379,7 @@ export function ChatPageContent() {
       <div className={clsx(
         "pointer-events-none fixed inset-y-0 right-0 w-8 bg-gradient-to-l from-black/10 to-transparent",
         "transition-all duration-300",
-        isPDFPanelOpen && isDesktop && "right-[500px]"
+        (isPDFPanelOpen || isWebLinkPanelOpen) && isDesktop && "right-[500px]"
       )} />
 
       {/* Image Preview Modal */}

@@ -566,6 +566,11 @@
     "imageFailedToLoad": "Échec du chargement de l'image",
     "preview": "Aperçu",
     "source": "source",
-    "sources": "sources"
+    "sources": "sources",
+    "openInNewTab": "Ouvrir dans un nouvel onglet",
+    "refresh": "Actualiser",
+    "loadingWebPage": "Chargement de la page web...",
+    "webPageLoadError": "Impossible de charger la page",
+    "webPageLoadErrorDesc": "Ce site web n'autorise peut-être pas l'intégration. Essayez de l'ouvrir dans un nouvel onglet."
   }
 }

@@ -539,6 +539,11 @@
     "imageFailedToLoad": "Image failed to load",
     "preview": "Preview",
     "source": "source",
-    "sources": "sources"
+    "sources": "sources",
+    "openInNewTab": "Open in new tab",
+    "refresh": "Refresh",
+    "loadingWebPage": "Loading web page...",
+    "webPageLoadError": "Unable to load page",
+    "webPageLoadErrorDesc": "This website may not allow embedding. Try opening it in a new tab instead."
   }
 }
