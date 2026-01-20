@@ -34,11 +34,13 @@ class ChatThreadResponse(BaseModel):
 
 class Citation(BaseModel):
     """Citation reference in a message."""
-    type: str  # "document" or "fov"
+    type: str  # "document", "fov", or "web"
     doc_id: Optional[int] = None
     page: Optional[int] = None
     image_id: Optional[int] = None
     title: Optional[str] = None
+    url: Optional[str] = None  # For web citations
+    confidence: Optional[float] = None  # Relevance score when available
 
 
 class ImageRef(BaseModel):

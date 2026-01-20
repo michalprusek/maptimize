@@ -21,6 +21,7 @@ import {
   FileSpreadsheet,
   File,
   Copy,
+  Globe,
 } from "lucide-react";
 import { clsx } from "clsx";
 import ReactMarkdown from "react-markdown";
@@ -220,6 +221,9 @@ export function MessageBubble({ message, isNew = false }: MessageBubbleProps) {
     } else if (citation.type === "fov" && citation.image_id && citation.experiment_id) {
       // Navigate to the image editor
       router.push(`/editor/${citation.experiment_id}/${citation.image_id}`);
+    } else if (citation.type === "web" && citation.url) {
+      // Open web link in new tab
+      window.open(citation.url, "_blank", "noopener,noreferrer");
     }
   };
 
@@ -687,6 +691,8 @@ export function MessageBubble({ message, isNew = false }: MessageBubbleProps) {
                     "shadow-sm hover:shadow-md",
                     citation.type === "document"
                       ? "bg-primary-500/10 text-primary-400 hover:bg-primary-500/20 border border-primary-500/20"
+                      : citation.type === "web"
+                      ? "bg-blue-500/10 text-blue-400 hover:bg-blue-500/20 border border-blue-500/20"
                       : "bg-accent-pink/10 text-accent-pink hover:bg-accent-pink/20 border border-accent-pink/20"
                   )}
                   title={
@@ -709,6 +715,8 @@ export function MessageBubble({ message, isNew = false }: MessageBubbleProps) {
                   )}
                   {citation.type === "document" ? (
                     <FileText className="w-3.5 h-3.5" />
+                  ) : citation.type === "web" ? (
+                    <Globe className="w-3.5 h-3.5" />
                   ) : (
                     <ImageIcon className="w-3.5 h-3.5" />
                   )}

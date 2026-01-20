@@ -968,6 +968,15 @@ async def generate_response(
                     for img in tool_result["images"][:5]:
                         add_fov_citation(img.get("id"), img.get("experiment_id"), img.get("filename"))
 
+                # Web sources from google_search
+                if tool_name == "google_search" and "sources" in tool_result:
+                    for source in tool_result["sources"][:5]:
+                        url = source.get("url", "")
+                        title = source.get("title", "Web Source")
+                        # Skip if already present
+                        if not any(c.get("url") == url for c in citations):
+                            citations.append({"type": "web", "url": url, "title": title})
+
                 # Append the original model content to preserve thought_signature (required for Gemini 3)
                 messages.append(response.candidates[0].content)
                 logger.info(f"Appended model content with function_call to messages")

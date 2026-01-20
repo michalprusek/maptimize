@@ -1724,11 +1724,12 @@ export interface ChatThreadDetail extends ChatThread {
 }
 
 export interface ChatCitation {
-  type: "document" | "fov";
+  type: "document" | "fov" | "web";
   doc_id?: number;
   page?: number;
   image_id?: number;
   experiment_id?: number;
+  url?: string;  // For web citations
   title?: string;
   confidence?: number; // Relevance score 0-1 from vector search
 }
