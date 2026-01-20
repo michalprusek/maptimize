@@ -12,7 +12,7 @@ import {
   staggerItemVariants,
   cardHoverProps,
 } from "@/lib/animations";
-import { ConfirmModal, MicroscopyImage, Pagination } from "@/components/ui";
+import { ConfirmModal, MicroscopyImage, Pagination, ImagePreviewModal, type PreviewImage } from "@/components/ui";
 import { FOVGallery } from "@/components/experiment";
 import {
   ImageGalleryFilters,
@@ -87,6 +87,10 @@ export default function ExperimentDetailPage(): JSX.Element {
   // Pagination state for crops
   const [cropPage, setCropPage] = useState(1);
   const [cropsPerPage, setCropsPerPage] = useState(48);
+
+  // Image preview modal state
+  const [previewOpen, setPreviewOpen] = useState(false);
+  const [previewIndex, setPreviewIndex] = useState(0);
 
   // Inline editing state
   const [isEditingName, setIsEditingName] = useState(false);
@@ -282,6 +286,28 @@ export default function ExperimentDetailPage(): JSX.Element {
     router.push(`/editor/${experimentId}/${crop.image_id}`);
   }, [router, experimentId]);
 
+  // Preview modal handlers
+  const handleOpenCropPreview = useCallback((cropIndex: number) => {
+    setPreviewIndex(cropIndex);
+    setPreviewOpen(true);
+  }, []);
+
+  const handleClosePreview = useCallback(() => {
+    setPreviewOpen(false);
+  }, []);
+
+  const handlePreviewNavigate = useCallback((index: number) => {
+    setPreviewIndex(index);
+  }, []);
+
+  const handleOpenInEditorFromPreview = useCallback((image: PreviewImage) => {
+    // Find the crop by id to get its image_id
+    const crop = crops?.find(c => c.id === image.id);
+    if (crop) {
+      router.push(`/editor/${experimentId}/${crop.image_id}`);
+    }
+  }, [router, experimentId, crops]);
+
   // State for experiment protein dropdown
   const experimentProteinRef = useRef<HTMLDivElement>(null);
 
@@ -423,6 +449,15 @@ export default function ExperimentDetailPage(): JSX.Element {
   const cropTotalPages = Math.ceil(filteredCrops.length / cropsPerPage);
   const cropStartIndex = (cropPage - 1) * cropsPerPage;
   const paginatedCrops = filteredCrops.slice(cropStartIndex, cropStartIndex + cropsPerPage);
+
+  // Create preview images array for the modal
+  const previewImages: PreviewImage[] = useMemo(() => {
+    return paginatedCrops.map((crop) => ({
+      id: crop.id,
+      src: api.getCropImageUrl(crop.id, "mip"),
+      alt: `${crop.parent_filename} - Cell ${crop.id}`,
+    }));
+  }, [paginatedCrops]);
 
   // Reset crop page when filters change
   useEffect(() => {
@@ -853,7 +888,7 @@ export default function ExperimentDetailPage(): JSX.Element {
                     {/* Cell crop preview */}
                     <div
                       className="aspect-square bg-bg-secondary flex items-center justify-center relative overflow-hidden rounded-t-xl cursor-pointer"
-                      onClick={() => handleOpenEditorFromCrop(crop)}
+                      onClick={() => handleOpenCropPreview(paginatedCrops.indexOf(crop))}
                     >
                       <MicroscopyImage
                         src={api.getCropImageUrl(crop.id, "mip")}
@@ -993,6 +1028,16 @@ export default function ExperimentDetailPage(): JSX.Element {
         confirmLabel="Delete All"
         isLoading={effectiveViewMode === "fovs" ? bulkDeleteFovsMutation.isPending : bulkDeleteCropsMutation.isPending}
         variant="danger"
+      />
+
+      {/* Image preview modal with arrow navigation */}
+      <ImagePreviewModal
+        images={previewImages}
+        currentIndex={previewIndex}
+        isOpen={previewOpen}
+        onClose={handleClosePreview}
+        onNavigate={handlePreviewNavigate}
+        onOpenInEditor={handleOpenInEditorFromPreview}
       />
 
     </div>

@@ -310,8 +310,19 @@ export const useChatStore = create<ChatState>()(
           // Start polling for generation status
           get().checkGenerationStatus(activeThreadId);
 
-          // Update thread list
-          get().loadThreads();
+          // Optimistic thread reorder: move active thread to top without API call
+          // This provides instant UI feedback instead of waiting for loadThreads()
+          set((state) => {
+            const activeThread = state.threads.find((t) => t.id === activeThreadId);
+            if (!activeThread) return state;
+
+            return {
+              threads: [
+                { ...activeThread, updated_at: new Date().toISOString() },
+                ...state.threads.filter((t) => t.id !== activeThreadId),
+              ],
+            };
+          });
         } catch (error) {
           // Remove optimistic message on error
           set((state) => ({
@@ -375,8 +386,8 @@ export const useChatStore = create<ChatState>()(
           // Start polling for generation status
           get().checkGenerationStatus(thread.id);
 
-          // Refresh thread list
-          get().loadThreads();
+          // Thread is already at top from creation - no need to reorder
+          // Name will be updated on next selectThread or page reload
         } catch (error) {
           set({
             error: error instanceof Error ? error.message : "Failed to start conversation",
@@ -548,7 +559,7 @@ export const useChatStore = create<ChatState>()(
         set({ isEditingMessage: true, error: null });
 
         try {
-          const response = await api.editChatMessage(activeThreadId, messageId, content);
+          await api.editChatMessage(activeThreadId, messageId, content);
 
           // Reload all messages for the thread (some were deleted)
           const threadMessages = await api.getChatMessages(activeThreadId);
@@ -592,7 +603,7 @@ export const useChatStore = create<ChatState>()(
         }));
 
         try {
-          const response = await api.regenerateChatMessage(activeThreadId, messageId);
+          await api.regenerateChatMessage(activeThreadId, messageId);
 
           // Reload all messages for the thread
           const threadMessages = await api.getChatMessages(activeThreadId);
@@ -606,6 +617,7 @@ export const useChatStore = create<ChatState>()(
           }));
         } catch (error) {
           // On error, reload messages to get correct state
+          const errorMessage = error instanceof Error ? error.message : "Failed to regenerate message";
           try {
             const threadMessages = await api.getChatMessages(activeThreadId);
             set((state) => ({
@@ -613,12 +625,12 @@ export const useChatStore = create<ChatState>()(
                 ...state.messages,
                 [activeThreadId]: threadMessages,
               },
-              error: error instanceof Error ? error.message : "Failed to regenerate message",
+              error: errorMessage,
               isRegeneratingMessage: false,
             }));
           } catch {
             set({
-              error: error instanceof Error ? error.message : "Failed to regenerate message",
+              error: errorMessage,
               isRegeneratingMessage: false,
             });
           }

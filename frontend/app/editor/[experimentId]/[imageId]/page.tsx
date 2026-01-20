@@ -15,6 +15,7 @@ import { AlertCircle } from "lucide-react";
 import { api } from "@/lib/api";
 import { useAuthStore } from "@/stores/authStore";
 import { ImageEditorPage } from "@/components/editor/ImageEditorPage";
+import { useImagePreloader } from "@/hooks";
 
 interface EditorPageProps {
   params: {
@@ -78,6 +79,10 @@ export default function EditorPage({ params }: EditorPageProps) {
       nextId: currentIndex < sortedImages.length - 1 ? sortedImages[currentIndex + 1]?.id : null,
     };
   }, [allFovImages, fovId]);
+
+  // Preload neighboring images for instant navigation
+  // Buffer 2 images in each direction (total 4 preloaded at any time)
+  useImagePreloader(imageNavigation.currentIndex, imageNavigation.images, 2, "mip");
 
   // Navigation handlers
   const handleNavigatePrev = useCallback(() => {

@@ -19,7 +19,7 @@ import { ThreadSidebar } from "./ThreadSidebar";
 import { ChatArea } from "./ChatArea";
 import { IndexingProgress } from "./IndexingProgress";
 import { PDFViewerPanel } from "./PDFViewerPanel";
-import { ImagePreviewModal } from "./ImagePreviewModal";
+import { ImagePreviewModal } from "@/components/ui";
 import { clsx } from "clsx";
 
 // Breakpoints for responsive design

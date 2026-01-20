@@ -52,6 +52,54 @@ Nový tool přidávat pouze když:
 
 Pro výpočty, grafy a analýzy → **vždy preferovat `execute_python_code`**
 
+### 🧪 Testování AI Agenta
+
+**Když uživatel řekne "otestuj chat" nebo "otestuj agenta"**, proveď následující:
+
+**Testovací otázky:** `backend/tests/test_agent_questions.json`
+
+**Postup testování:**
+
+1. **Spusť sledování logů:**
+```bash
+docker compose -f docker-compose.dev.yml logs -f backend 2>&1 | grep -i -E "gemini|tool|error|exception|google_search"
+```
+
+2. **Pošli testovací otázky do chatu** (vyber z každé kategorie):
+
+| Kategorie | Příklad otázky | Očekávaný tool |
+|-----------|----------------|----------------|
+| Google Search | "What is the weather in Prague?" | `google_search` |
+| Code Execution | "Create a histogram of cell sizes" | `execute_python_code` |
+| Experiment Data | "Show me 5 sample images from PRC1" | `get_sample_images` |
+| Segmentation | "Show segmentation masks for image 42" | `get_segmentation_masks` |
+| Document RAG | "Search my documents for fixation protocols" | `search_documents` |
+| External APIs | "Get UniProt info about PRC1 protein" | `call_external_api` |
+| Database | "How many cells in all experiments?" | `query_database` |
+| Export | "Export PRC1 data to CSV" | `export_data` |
+
+3. **Kontroluj v logu:**
+   - `FUNCTION_CALL (tool_name)` - agent správně zavolal tool
+   - `Tool X completed successfully` - tool proběhl bez chyb
+   - `ERROR` nebo `exception` - problém k vyřešení
+
+4. **Kritéria úspěchu:**
+   - ✅ Agent volá správné tools pro daný typ dotazu
+   - ✅ Tools vracejí výsledky bez ERROR v logu
+   - ✅ Agent generuje smysluplnou odpověď s výsledky
+   - ✅ Obrázky/grafy se správně zobrazují v chatu
+
+**Rychlý smoke test:**
+```bash
+# Otestuj klíčové tools jedním příkazem v logu:
+docker compose -f docker-compose.dev.yml logs backend 2>&1 | grep -c "completed successfully"
+```
+
+**Google Search (two-phase approach):**
+- Agent má `google_search` jako callable tool
+- Při volání se dělá separátní API call s `types.Tool(google_search=types.GoogleSearch())`
+- Obchází limitaci "Tool use with function calling is unsupported"
+
 ## ⚠️ KRITICKÉ UPOZORNĚNÍ - PRODUKCE
 
 **Toto je produkční prostředí!**

@@ -25,6 +25,9 @@ import {
 import { clsx } from "clsx";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import remarkMath from "remark-math";
+import rehypeKatex from "rehype-katex";
+import "katex/dist/katex.min.css";
 import { processImageUrl, sanitizeUrlForLogging } from "@/lib/utils";
 import { MarkdownErrorBoundary } from "@/components/ui/ErrorBoundary";
 
@@ -220,6 +223,36 @@ export function MessageBubble({ message, isNew = false }: MessageBubbleProps) {
     }
   };
 
+  // Process content to make inline citations clickable
+  const processedContent = useMemo(() => {
+    if (!message.content || isUser) return message.content;
+
+    let content = message.content;
+
+    // Convert inline citation references to clickable links
+    // Pattern matches: [Doc: "filename" p.XX] or [Doc: "filename"]
+    const citationPattern = /\[Doc:\s*"([^"]+)"(?:\s+p\.?(\d+))?\]/g;
+
+    content = content.replace(citationPattern, (match, filename, page) => {
+      // Find matching citation in the array
+      const citation = message.citations?.find(c =>
+        c.title?.toLowerCase().includes(filename.toLowerCase()) ||
+        filename.toLowerCase().includes(c.title?.toLowerCase() || "")
+      );
+
+      if (citation && citation.doc_id) {
+        const pageNum = page || citation.page || 1;
+        // Create a special link that we'll handle in ReactMarkdown
+        return `[📄 ${citation.title || filename} p.${pageNum}](citation:${citation.doc_id}:${pageNum})`;
+      }
+
+      // Return a styled version even without a matching citation
+      return `**[📄 ${filename}${page ? ` p.${page}` : ""}]**`;
+    });
+
+    return content;
+  }, [message.content, message.citations, isUser]);
+
   return (
     <div
       className={clsx(
@@ -327,10 +360,37 @@ export function MessageBubble({ message, isNew = false }: MessageBubbleProps) {
             <div className="prose prose-invert prose-sm max-w-none prose-p:leading-relaxed prose-headings:text-text-primary prose-code:text-primary-300 chat-message-content">
               <MarkdownErrorBoundary>
               <ReactMarkdown
-                remarkPlugins={[remarkGfm]}
+                remarkPlugins={[remarkGfm, remarkMath]}
+                rehypePlugins={[rehypeKatex]}
                 components={{
-                  // Customize link rendering - special handling for file downloads
+                  // Customize link rendering - special handling for citations and file downloads
                   a: ({ href, children }) => {
+                    // Handle citation links (citation:docId:page)
+                    if (href?.startsWith("citation:")) {
+                      const parts = href.replace("citation:", "").split(":");
+                      const docId = parseInt(parts[0], 10);
+                      const page = parseInt(parts[1], 10) || 1;
+
+                      return (
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            openPDFViewer(docId, page);
+                          }}
+                          className={clsx(
+                            "inline-flex items-center gap-1 px-2 py-0.5 mx-0.5 rounded",
+                            "bg-primary-500/20 hover:bg-primary-500/30 border border-primary-500/30",
+                            "text-primary-400 hover:text-primary-300 transition-all",
+                            "no-underline font-medium text-sm cursor-pointer"
+                          )}
+                        >
+                          {children}
+                        </button>
+                      );
+                    }
+
                     const isDownloadLink = href && (
                       href.includes("/uploads/exports/") ||
                       href.includes("/uploads/temp/") && /\.(xlsx|csv|pdf|zip)$/i.test(href) ||
@@ -361,6 +421,35 @@ export function MessageBubble({ message, isNew = false }: MessageBubbleProps) {
                           <Download className="w-4 h-4 ml-1" />
                         </a>
                       );
+                    }
+
+                    // Fallback: check if this might be a citation link that wasn't caught
+                    if (href?.includes("citation:")) {
+                      console.warn("Uncaught citation link format:", href);
+                      // Try to extract docId and page from any citation: format
+                      const match = href.match(/citation:(\d+):?(\d+)?/);
+                      if (match) {
+                        const docId = parseInt(match[1], 10);
+                        const page = parseInt(match[2], 10) || 1;
+                        return (
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.preventDefault();
+                              e.stopPropagation();
+                              openPDFViewer(docId, page);
+                            }}
+                            className={clsx(
+                              "inline-flex items-center gap-1 px-2 py-0.5 mx-0.5 rounded",
+                              "bg-primary-500/20 hover:bg-primary-500/30 border border-primary-500/30",
+                              "text-primary-400 hover:text-primary-300 transition-all",
+                              "no-underline font-medium text-sm cursor-pointer"
+                            )}
+                          >
+                            {children}
+                          </button>
+                        );
+                      }
                     }
 
                     return (
@@ -517,7 +606,7 @@ export function MessageBubble({ message, isNew = false }: MessageBubbleProps) {
                   },
                 }}
               >
-                {message.content}
+                {processedContent}
               </ReactMarkdown>
               </MarkdownErrorBoundary>
             </div>
@@ -585,8 +674,13 @@ export function MessageBubble({ message, isNew = false }: MessageBubbleProps) {
 
               return (
                 <button
+                  type="button"
                   key={idx}
-                  onClick={() => handleCitationClick(citation)}
+                  onClick={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    handleCitationClick(citation);
+                  }}
                   className={clsx(
                     "flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium",
                     "transition-all duration-200 transform hover:scale-105",

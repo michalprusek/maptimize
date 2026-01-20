@@ -1,17 +1,14 @@
 """Chat API routes for RAG-powered conversations."""
 import asyncio
-import json
 import logging
 import time
 import uuid
-from collections import defaultdict
 from datetime import datetime, timezone
-from typing import List, Optional, Dict, Any
+from typing import Any, Dict, List, Optional
 
 import redis.asyncio as redis
-from fastapi import APIRouter, Depends, HTTPException, status, Query, BackgroundTasks
-from fastapi.responses import StreamingResponse
-from sqlalchemy import select, func, distinct, delete
+from fastapi import APIRouter, Depends, HTTPException, Query, status
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -163,6 +160,32 @@ async def get_thread_for_user(
     return thread
 
 
+def _create_assistant_message(
+    thread_id: int,
+    response_data: Dict[str, Any],
+    content_override: Optional[str] = None,
+) -> ChatMessage:
+    """Create a ChatMessage from generate_response output.
+
+    Args:
+        thread_id: The thread ID for the message
+        response_data: Dict from generate_response with content, citations, etc.
+        content_override: Optional content to use instead of response_data["content"]
+
+    Returns:
+        ChatMessage instance (not yet added to session)
+    """
+    return ChatMessage(
+        thread_id=thread_id,
+        role="assistant",
+        content=content_override or response_data["content"],
+        citations=response_data.get("citations", []),
+        image_refs=response_data.get("image_refs", []),
+        tool_calls=response_data.get("tool_calls", []),
+        interaction_id=response_data.get("interaction_id"),
+    )
+
+
 # ============== Async Generation Task Management ==============
 
 async def _run_generation_task(
@@ -170,7 +193,7 @@ async def _run_generation_task(
     thread_id: int,
     user_id: int,
     query: str,
-    history: List[Dict[str, str]],
+    previous_interaction_id: Optional[str] = None,
     context_warning: Optional[str] = None,
 ):
     """
@@ -235,7 +258,7 @@ async def _run_generation_task(
                     user_id=user_id,
                     thread_id=thread_id,
                     db=db,
-                    history=history,
+                    previous_interaction_id=previous_interaction_id,
                 )
 
                 # Check if cancelled during generation
@@ -247,18 +270,12 @@ async def _run_generation_task(
                     return
 
                 # Add context warning if applicable
-                content = response_data["content"]
+                content_with_warning = None
                 if context_warning:
-                    content = f"⚠️ *{context_warning}*\n\n{content}"
+                    content_with_warning = f"⚠️ *{context_warning}*\n\n{response_data['content']}"
 
-                # Create assistant message
-                assistant_message = ChatMessage(
-                    thread_id=thread_id,
-                    role="assistant",
-                    content=content,
-                    citations=response_data.get("citations", []),
-                    image_refs=response_data.get("image_refs", []),
-                    tool_calls=response_data.get("tool_calls", []),
+                assistant_message = _create_assistant_message(
+                    thread_id, response_data, content_override=content_with_warning
                 )
                 db.add(assistant_message)
 
@@ -502,31 +519,29 @@ async def send_message(
             detail="A response is already being generated for this thread. Wait for completion or cancel it."
         )
 
-    # Fetch conversation history (last N messages for context)
+    # Get the previous interaction_id from the last assistant message
+    # This enables Gemini Interactions API server-side state management
+    last_assistant_result = await db.execute(
+        select(ChatMessage)
+        .where(
+            ChatMessage.thread_id == thread_id,
+            ChatMessage.role == "assistant",
+            ChatMessage.interaction_id.isnot(None)
+        )
+        .order_by(ChatMessage.created_at.desc())
+        .limit(1)
+    )
+    last_assistant = last_assistant_result.scalar_one_or_none()
+    previous_interaction_id = last_assistant.interaction_id if last_assistant else None
+
+    # Check message count for context warning
     total_msg_count = (await db.execute(
         select(func.count(ChatMessage.id)).where(ChatMessage.thread_id == thread_id)
     )).scalar() or 0
 
-    history_result = await db.execute(
-        select(ChatMessage)
-        .where(ChatMessage.thread_id == thread_id)
-        .order_by(ChatMessage.created_at.asc())
-        .limit(20)
-    )
-    history_messages = history_result.scalars().all()
-    history = [
-        {"role": msg.role, "content": msg.content}
-        for msg in history_messages
-    ]
-
-    # Estimate token usage
-    total_chars = sum(len(msg.content) for msg in history_messages)
-    estimated_tokens = total_chars // 4
     context_warning = None
-    if total_msg_count > 20:
-        context_warning = f"Long conversation: showing last 20 of {total_msg_count} messages."
-    elif estimated_tokens > 50000:
-        context_warning = f"Large context (~{estimated_tokens//1000}k tokens)."
+    if total_msg_count > 50:
+        context_warning = f"Long conversation ({total_msg_count} messages)."
 
     # Create user message
     user_message = ChatMessage(
@@ -550,10 +565,7 @@ async def send_message(
     await db.commit()
     await db.refresh(user_message)
 
-    # Start background generation task
-    # Include the new user message in history for the task
-    history_with_new = history + [{"role": "user", "content": data.content}]
-
+    # Start background generation task with previous_interaction_id for context
     def _task_done_callback(t: asyncio.Task, tid: str = task_id):
         """Callback to ensure task is always cleaned up from _active_tasks."""
         _active_tasks.pop(tid, None)
@@ -568,7 +580,7 @@ async def send_message(
             thread_id=thread_id,
             user_id=current_user.id,
             query=data.content,
-            history=history_with_new,
+            previous_interaction_id=previous_interaction_id,
             context_warning=context_warning,
         )
     )
@@ -738,21 +750,21 @@ async def edit_message(
     # Update the message content
     message.content = data.content
 
-    # Get conversation history (messages before this one, by ID)
-    history_result = await db.execute(
+    # Find the previous interaction_id from the last assistant message BEFORE the edited one
+    # For edit, we start fresh context (or use the previous assistant's interaction_id)
+    prev_assistant_result = await db.execute(
         select(ChatMessage)
         .where(
             ChatMessage.thread_id == thread_id,
-            ChatMessage.id < message.id
+            ChatMessage.id < message.id,
+            ChatMessage.role == "assistant",
+            ChatMessage.interaction_id.isnot(None)
         )
-        .order_by(ChatMessage.id.asc())
-        .limit(20)
+        .order_by(ChatMessage.id.desc())
+        .limit(1)
     )
-    history_messages = history_result.scalars().all()
-    history = [
-        {"role": msg.role, "content": msg.content}
-        for msg in history_messages
-    ]
+    prev_assistant = prev_assistant_result.scalar_one_or_none()
+    previous_interaction_id = prev_assistant.interaction_id if prev_assistant else None
 
     # Commit the edit BEFORE AI generation to ensure it's saved
     await db.commit()
@@ -766,25 +778,17 @@ async def edit_message(
             user_id=current_user.id,
             thread_id=thread_id,
             db=db,
-            history=history,
+            previous_interaction_id=previous_interaction_id,
         )
 
-        # Create new assistant message
-        assistant_message = ChatMessage(
-            thread_id=thread_id,
-            role="assistant",
-            content=response_data["content"],
-            citations=response_data.get("citations", []),
-            image_refs=response_data.get("image_refs", []),
-            tool_calls=response_data.get("tool_calls", []),
-        )
+        assistant_message = _create_assistant_message(thread_id, response_data)
         db.add(assistant_message)
         await db.commit()
 
         return ChatMessageResponse.model_validate(assistant_message)
 
     except Exception as e:
-        logger.exception(f"Error regenerating AI response for edited message")
+        logger.exception("Error regenerating AI response for edited message")
         try:
             await db.rollback()
         except Exception as rollback_err:
@@ -854,6 +858,22 @@ async def regenerate_message(
             detail="No user message found before this assistant message"
         )
 
+    # Find the previous interaction_id from the assistant message BEFORE the one being regenerated
+    # For regenerate, we use the interaction_id from the previous assistant message
+    prev_assistant_result = await db.execute(
+        select(ChatMessage)
+        .where(
+            ChatMessage.thread_id == thread_id,
+            ChatMessage.id < message.id,
+            ChatMessage.role == "assistant",
+            ChatMessage.interaction_id.isnot(None)
+        )
+        .order_by(ChatMessage.id.desc())
+        .limit(1)
+    )
+    prev_assistant = prev_assistant_result.scalar_one_or_none()
+    previous_interaction_id = prev_assistant.interaction_id if prev_assistant else None
+
     # Delete this message and all messages after it (by ID)
     await db.execute(
         delete(ChatMessage).where(
@@ -861,22 +881,6 @@ async def regenerate_message(
             ChatMessage.id >= message.id
         )
     )
-
-    # Get conversation history (messages before the user message, by ID)
-    history_result = await db.execute(
-        select(ChatMessage)
-        .where(
-            ChatMessage.thread_id == thread_id,
-            ChatMessage.id < user_message.id
-        )
-        .order_by(ChatMessage.id.asc())
-        .limit(20)
-    )
-    history_messages = history_result.scalars().all()
-    history = [
-        {"role": msg.role, "content": msg.content}
-        for msg in history_messages
-    ]
 
     # Store user message content before committing (in case it gets detached)
     user_query = user_message.content
@@ -893,25 +897,17 @@ async def regenerate_message(
             user_id=current_user.id,
             thread_id=thread_id,
             db=db,
-            history=history,
+            previous_interaction_id=previous_interaction_id,
         )
 
-        # Create new assistant message
-        assistant_message = ChatMessage(
-            thread_id=thread_id,
-            role="assistant",
-            content=response_data["content"],
-            citations=response_data.get("citations", []),
-            image_refs=response_data.get("image_refs", []),
-            tool_calls=response_data.get("tool_calls", []),
-        )
+        assistant_message = _create_assistant_message(thread_id, response_data)
         db.add(assistant_message)
         await db.commit()
 
         return ChatMessageResponse.model_validate(assistant_message)
 
     except Exception as e:
-        logger.exception(f"Error regenerating AI response")
+        logger.exception("Error regenerating AI response")
         try:
             await db.rollback()
         except Exception as rollback_err:

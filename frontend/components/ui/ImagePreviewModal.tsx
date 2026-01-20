@@ -1,32 +1,39 @@
 "use client";
 
 /**
- * ImagePreviewModal Component
+ * Generic ImagePreviewModal Component
  *
- * Full-screen modal for viewing chat images with navigation.
+ * Full-screen modal for viewing images with navigation.
  * Supports:
- * - Keyboard navigation (Esc, ←, →)
+ * - Keyboard navigation (Esc, Left, Right)
  * - Thumbnail strip for multiple images
- * - Download button (works with all image types including cross-origin)
- * - Click outside to close
+ * - Download button
  * - LUT display mode for microscopy images
+ * - Click outside to close
  */
 
 import { useEffect, useCallback, useMemo, useState } from "react";
 import { useTranslations } from "next-intl";
 import { motion, AnimatePresence } from "framer-motion";
-import { X, ChevronLeft, ChevronRight, Download, Loader2, Check } from "lucide-react";
+import { X, ChevronLeft, ChevronRight, Download, Loader2, Check, ExternalLink } from "lucide-react";
 import { clsx } from "clsx";
-import type { ChatImage } from "@/stores/chatStore";
 import { useSettingsStore, LUT_CLASSES } from "@/stores/settingsStore";
 import { processImageUrl } from "@/lib/utils";
 
+export interface PreviewImage {
+  src: string;
+  alt?: string;
+  id?: number | string;
+}
+
 interface ImagePreviewModalProps {
-  images: ChatImage[];
+  images: PreviewImage[];
   currentIndex: number;
   isOpen: boolean;
   onClose: () => void;
   onNavigate: (index: number) => void;
+  /** Optional callback when "Open in Editor" is clicked */
+  onOpenInEditor?: (image: PreviewImage, index: number) => void;
 }
 
 export function ImagePreviewModal({
@@ -35,13 +42,14 @@ export function ImagePreviewModal({
   isOpen,
   onClose,
   onNavigate,
+  onOpenInEditor,
 }: ImagePreviewModalProps) {
-  const t = useTranslations("chat");
+  const t = useTranslations("common");
   const displayMode = useSettingsStore((state) => state.displayMode);
   const currentImage = images[currentIndex];
   const hasMultiple = images.length > 1;
 
-  // Download state: idle | downloading | done | error
+  // Download state
   const [downloadState, setDownloadState] = useState<"idle" | "downloading" | "done" | "error">("idle");
 
   // Process current image URL
@@ -111,39 +119,25 @@ export function ImagePreviewModal({
     setDownloadState("idle");
   }, [currentIndex]);
 
-  // Handle download with cross-origin support
+  // Handle download
   const handleDownload = async () => {
     if (!processedCurrent || downloadState === "downloading") return;
 
     setDownloadState("downloading");
 
     try {
-      // Fetch the image as a blob to handle cross-origin images
-      const response = await fetch(processedCurrent.url, {
-        credentials: "include",
-      });
-
-      if (!response.ok) {
-        throw new Error(`Failed to fetch: ${response.status}`);
-      }
+      const response = await fetch(processedCurrent.url, { credentials: "include" });
+      if (!response.ok) throw new Error(`Failed to fetch: ${response.status}`);
 
       const blob = await response.blob();
       const blobUrl = URL.createObjectURL(blob);
 
-      // Determine file extension from content type or URL
       const contentType = response.headers.get("content-type") || "";
       let extension = "png";
-      if (contentType.includes("jpeg") || contentType.includes("jpg")) {
-        extension = "jpg";
-      } else if (contentType.includes("gif")) {
-        extension = "gif";
-      } else if (contentType.includes("webp")) {
-        extension = "webp";
-      } else if (contentType.includes("svg")) {
-        extension = "svg";
-      }
+      if (contentType.includes("jpeg") || contentType.includes("jpg")) extension = "jpg";
+      else if (contentType.includes("gif")) extension = "gif";
+      else if (contentType.includes("webp")) extension = "webp";
 
-      // Create download link
       const link = document.createElement("a");
       link.href = blobUrl;
       const filename = currentImage?.alt?.replace(/[^a-zA-Z0-9_-]/g, "_") || `image_${currentIndex + 1}`;
@@ -151,24 +145,16 @@ export function ImagePreviewModal({
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);
-
-      // Clean up blob URL
       URL.revokeObjectURL(blobUrl);
 
       setDownloadState("done");
-
-      // Reset to idle after 2 seconds
       setTimeout(() => setDownloadState("idle"), 2000);
-    } catch (fetchError) {
-      console.warn("Fetch download failed, trying fallback:", fetchError);
-
-      // Fallback: open image in new tab (bypasses CORS)
+    } catch {
       try {
         window.open(processedCurrent.url, "_blank");
         setDownloadState("done");
         setTimeout(() => setDownloadState("idle"), 2000);
-      } catch (fallbackError) {
-        console.error("All download methods failed:", fallbackError);
+      } catch {
         setDownloadState("error");
         setTimeout(() => setDownloadState("idle"), 2000);
       }
@@ -188,7 +174,7 @@ export function ImagePreviewModal({
           className="fixed inset-0 z-[100] flex flex-col bg-black/95 backdrop-blur-md"
           onClick={onClose}
         >
-          {/* Header with close and download buttons */}
+          {/* Header */}
           <div className="flex items-center justify-between px-4 py-3 border-b border-white/10">
             <div className="text-sm text-text-secondary">
               {hasMultiple && (
@@ -198,6 +184,21 @@ export function ImagePreviewModal({
               )}
             </div>
             <div className="flex items-center gap-2">
+              {/* Open in Editor button */}
+              {onOpenInEditor && (
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onOpenInEditor(currentImage, currentIndex);
+                    onClose();
+                  }}
+                  className="p-2 rounded-lg hover:bg-white/10 text-text-secondary hover:text-text-primary transition-colors"
+                  title={t("openInEditor")}
+                >
+                  <ExternalLink className="w-5 h-5" />
+                </button>
+              )}
+              {/* Download button */}
               <button
                 onClick={(e) => {
                   e.stopPropagation();
@@ -214,7 +215,7 @@ export function ImagePreviewModal({
                         ? "bg-white/5 text-text-secondary cursor-wait"
                         : "hover:bg-white/10 text-text-secondary hover:text-text-primary"
                 )}
-                title={t("downloadImage")}
+                title={t("download")}
               >
                 {downloadState === "downloading" ? (
                   <Loader2 className="w-5 h-5 animate-spin" />
@@ -224,6 +225,7 @@ export function ImagePreviewModal({
                   <Download className="w-5 h-5" />
                 )}
               </button>
+              {/* Close button */}
               <button
                 onClick={onClose}
                 className="p-2 rounded-lg hover:bg-white/10 text-text-secondary hover:text-text-primary transition-colors"
@@ -251,7 +253,6 @@ export function ImagePreviewModal({
                   "bg-white/10 hover:bg-white/20 text-white",
                   "focus:outline-none focus:ring-2 focus:ring-primary-400"
                 )}
-                title={t("previousImage")}
               >
                 <ChevronLeft className="w-6 h-6" />
               </button>
@@ -265,10 +266,9 @@ export function ImagePreviewModal({
               exit={{ opacity: 0, scale: 0.95 }}
               transition={{ duration: 0.2 }}
               src={processedCurrent.url}
-              alt={currentImage.alt || t("preview")}
+              alt={currentImage.alt || "Preview"}
               className={clsx(
                 "max-h-[calc(100vh-200px)] max-w-full object-contain rounded-lg",
-                // Apply LUT only to microscopy images
                 processedCurrent.isMicroscopy && LUT_CLASSES[displayMode]
               )}
               onClick={(e) => e.stopPropagation()}
@@ -286,7 +286,6 @@ export function ImagePreviewModal({
                   "bg-white/10 hover:bg-white/20 text-white",
                   "focus:outline-none focus:ring-2 focus:ring-primary-400"
                 )}
-                title={t("nextImage")}
               >
                 <ChevronRight className="w-6 h-6" />
               </button>
@@ -322,7 +321,6 @@ export function ImagePreviewModal({
                     alt={image.alt || `Thumbnail ${idx + 1}`}
                     className={clsx(
                       "w-full h-full object-cover",
-                      // Apply LUT only to microscopy images
                       image.processed.isMicroscopy && LUT_CLASSES[displayMode]
                     )}
                   />
