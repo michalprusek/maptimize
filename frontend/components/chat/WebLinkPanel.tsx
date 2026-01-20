@@ -1,10 +1,13 @@
 "use client";
 
-import { useState, useCallback, useEffect } from "react";
+import { useState, useCallback, useEffect, useRef } from "react";
 import { useTranslations } from "next-intl";
 import { useChatStore } from "@/stores/chatStore";
 import { X, ExternalLink, RefreshCw, Loader2, AlertCircle } from "lucide-react";
 import { clsx } from "clsx";
+
+// Timeout for detecting blocked iframes (X-Frame-Options, CSP)
+const IFRAME_LOAD_TIMEOUT_MS = 10000;
 
 export function WebLinkPanel() {
   const t = useTranslations("chat");
@@ -13,6 +16,15 @@ export function WebLinkPanel() {
   const [isLoading, setIsLoading] = useState(true);
   const [hasError, setHasError] = useState(false);
   const [isHoveringClose, setIsHoveringClose] = useState(false);
+  const isMountedRef = useRef(true);
+
+  // Track mounted state
+  useEffect(() => {
+    isMountedRef.current = true;
+    return () => {
+      isMountedRef.current = false;
+    };
+  }, []);
 
   // Reset state when URL changes
   useEffect(() => {
@@ -22,29 +34,67 @@ export function WebLinkPanel() {
     }
   }, [activeWebLink?.url]);
 
+  // Timeout detection for iframe loads
+  // Many sites block iframe embedding via X-Frame-Options/CSP, and onError doesn't fire
+  useEffect(() => {
+    if (!activeWebLink?.url || hasError || !isLoading) return;
+
+    const timeoutId = setTimeout(() => {
+      if (isMountedRef.current && isLoading) {
+        console.warn("WebLinkPanel: iframe load timeout, URL may be blocked:", activeWebLink.url);
+        setIsLoading(false);
+        setHasError(true);
+      }
+    }, IFRAME_LOAD_TIMEOUT_MS);
+
+    return () => clearTimeout(timeoutId);
+  }, [activeWebLink?.url, isLoading, hasError]);
+
   const handleIframeLoad = useCallback(() => {
+    if (!isMountedRef.current) return;
     setIsLoading(false);
     setHasError(false);
   }, []);
 
   const handleIframeError = useCallback(() => {
+    if (!isMountedRef.current) return;
+    console.warn("WebLinkPanel: iframe onError fired");
     setIsLoading(false);
     setHasError(true);
   }, []);
 
   const handleRetry = useCallback(() => {
+    const iframe = document.getElementById("web-link-iframe") as HTMLIFrameElement | null;
+
+    if (!iframe) {
+      console.error("WebLinkPanel: Cannot retry - iframe element not found");
+      setHasError(true);
+      setIsLoading(false);
+      return;
+    }
+
+    if (!activeWebLink?.url) {
+      console.error("WebLinkPanel: Cannot retry - no active URL");
+      setHasError(true);
+      setIsLoading(false);
+      return;
+    }
+
     setIsLoading(true);
     setHasError(false);
-    // Force iframe reload by briefly removing and re-adding it
-    const iframe = document.getElementById("web-link-iframe") as HTMLIFrameElement;
-    if (iframe && activeWebLink?.url) {
-      iframe.src = activeWebLink.url;
-    }
+    iframe.src = activeWebLink.url;
   }, [activeWebLink?.url]);
 
   const handleOpenExternal = useCallback(() => {
-    if (activeWebLink?.url) {
-      window.open(activeWebLink.url, "_blank", "noopener,noreferrer");
+    if (!activeWebLink?.url) {
+      console.error("WebLinkPanel: Cannot open external - no URL available");
+      return;
+    }
+
+    const newWindow = window.open(activeWebLink.url, "_blank", "noopener,noreferrer");
+    if (!newWindow) {
+      // Popup was blocked by browser
+      console.warn("WebLinkPanel: Popup blocked for URL:", activeWebLink.url);
     }
   }, [activeWebLink?.url]);
 
@@ -54,7 +104,11 @@ export function WebLinkPanel() {
 
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
-        closeWebLinkPreview();
+        try {
+          closeWebLinkPreview();
+        } catch (error) {
+          console.error("WebLinkPanel: Failed to close on Escape:", error);
+        }
       }
     };
 
@@ -70,7 +124,9 @@ export function WebLinkPanel() {
   const getDomain = (url: string) => {
     try {
       return new URL(url).hostname;
-    } catch {
+    } catch (error) {
+      // Log for debugging - helps identify malformed URLs from backend
+      console.warn("WebLinkPanel: Failed to parse URL domain:", url, error);
       return url;
     }
   };

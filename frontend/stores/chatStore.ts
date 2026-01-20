@@ -740,6 +740,9 @@ export const useChatStore = create<ChatState>()(
           isPDFPanelOpen: true,
           activePDFDocumentId: documentId,
           activePDFPage: page,
+          // Close web link panel for mutual exclusivity
+          isWebLinkPanelOpen: false,
+          activeWebLink: null,
         });
       },
 
@@ -758,9 +761,30 @@ export const useChatStore = create<ChatState>()(
       // ==================== Web Link Preview Actions ====================
 
       openWebLinkPreview: (url: string, title: string) => {
+        // Validate URL before opening
+        if (!url || typeof url !== "string") {
+          console.error("openWebLinkPreview: Invalid URL provided:", url);
+          return;
+        }
+
+        // Only allow http/https URLs for security
+        try {
+          const parsed = new URL(url);
+          if (!["http:", "https:"].includes(parsed.protocol)) {
+            console.warn("openWebLinkPreview: Non-HTTP URL, opening in new tab:", url);
+            window.open(url, "_blank", "noopener,noreferrer");
+            return;
+          }
+        } catch {
+          console.error("openWebLinkPreview: Malformed URL rejected:", url);
+          return;
+        }
+
         set({
           isWebLinkPanelOpen: true,
-          activeWebLink: { url, title },
+          activeWebLink: { url, title: title || url },
+          // Close PDF panel for mutual exclusivity
+          isPDFPanelOpen: false,
         });
       },
 
