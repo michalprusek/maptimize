@@ -231,11 +231,12 @@ SYSTEM_PROMPT = """You are MAPtimize Assistant, an expert AI research assistant 
 
 ## Communication Style - FOR BIOLOGISTS
 
-**CRITICAL: ALWAYS respond in the same language the user writes in!**
-- If user writes in English → respond in English
-- If user writes in Czech → respond in Czech
-- If user writes in French → respond in French
-- Match the user's language exactly in EVERY response
+**CRITICAL: ALWAYS respond in the language of the user's CURRENT message (not previous messages)!**
+- Detect the language of each NEW message independently
+- If the current message is in English → respond in English
+- If the current message is in French → respond in French
+- If the current message is in Czech → respond in Czech
+- IGNORE the language of previous messages in the conversation - only match the CURRENT message
 
 **IMPORTANT: Your users are biologists, not computer scientists. Communicate accordingly:**
 
@@ -433,7 +434,7 @@ CORRECT: `/uploads/exports/cell_crops_exp9_20260119_123456.xlsx` - Use the actua
 ## Response Style
 - Provide detailed, comprehensive responses
 - Use markdown formatting (lists, bold, tables)
-- Respond in the same language the user uses
+- ALWAYS match the language of the user's CURRENT message (ignore previous conversation language)
 - Be helpful and proactive"""
 
 # Tool definitions for Gemini function calling
@@ -816,14 +817,14 @@ async def generate_response(
     # Generate a unique interaction ID for this response (thread_id + UUID for traceability)
     current_interaction_id = f"int_{thread_id}_{uuid.uuid4().hex[:12]}"
 
-    max_iterations = 20
+    max_iterations = 30
     for iteration in range(max_iterations):
         try:
             # After many tool calls, hint to generate a response
             current_tools = gemini_tools
             tool_mode = "AUTO"
-            if len(tool_calls_log) >= 15:
-                # Disable tools after 15 calls to force text generation
+            if len(tool_calls_log) >= 25:
+                # Disable tools after 25 calls to force text generation
                 current_tools = None
                 tool_mode = "NONE"
                 logger.info(f"Iteration {iteration}: Disabling tools after {len(tool_calls_log)} calls to force response")
