@@ -22,7 +22,11 @@
     "none": "None",
     "all": "All",
     "showing": "Showing {count} of {total}",
-    "noResults": "No results found"
+    "noResults": "No results found",
+    "previous": "Previous",
+    "next": "Next",
+    "retry": "Retry",
+    "copyFailed": "Failed to copy. Please copy manually."
   },
   "auth": {
     "login": "Sign In",
@@ -559,7 +563,13 @@
     "charts": {
       "activityTimeline": "Activity Timeline",
       "last30Days": "Registrations and active users over the last 30 days",
-      "storageBreakdown": "Storage Breakdown"
+      "storageBreakdown": "Storage Breakdown",
+      "images": "Images",
+      "documents": "Documents",
+      "totalStorage": "Total Storage",
+      "noStorageData": "No storage data",
+      "registrations": "Registrations",
+      "activeUsers": "Active Users"
     },
     "recentUsers": {
       "title": "Recent Registrations",
@@ -575,6 +585,26 @@
       "form": {
         "name": "Name",
         "role": "Role"
+      },
+      "table": {
+        "searchPlaceholder": "Search by name or email...",
+        "allRoles": "All roles",
+        "roleAdmin": "Admin",
+        "roleResearcher": "Researcher",
+        "roleViewer": "Viewer",
+        "user": "User",
+        "role": "Role",
+        "registered": "Registered",
+        "lastLogin": "Last Login",
+        "experiments": "Experiments",
+        "images": "Images",
+        "storage": "Storage",
+        "actions": "Actions",
+        "viewDetails": "View details",
+        "editUser": "Edit user",
+        "deleteUser": "Delete user",
+        "showing": "Showing {from} to {to} of {total} users",
+        "pageOf": "Page {page} of {total}"
       }
     },
     "userDetail": {
@@ -604,13 +634,26 @@
       "resetPasswordConfirmation": "This will generate a new random password for {email}. The user will need to use this new password to log in.",
       "newPasswordGenerated": "A new password has been generated:",
       "copyPasswordWarning": "Make sure to copy this password now. It will not be shown again.",
-      "deleteWarning": "This will permanently delete the user and all their data including experiments, images, documents, and chat history. This action cannot be undone."
+      "deleteWarning": "This will permanently delete the user and all their data including experiments, images, documents, and chat history. This action cannot be undone.",
+      "loadError": "Failed to load data",
+      "retry": "Retry",
+      "noConversations": "No conversations found",
+      "conversationsCount": "Conversations ({count})",
+      "messagesCount": "{count} messages",
+      "selectConversation": "Select a conversation to view messages",
+      "citations": "Citations",
+      "imagesLabel": "Images",
+      "userNotFound": "User not found"
     },
     "common": {
       "save": "Save",
       "cancel": "Cancel",
       "delete": "Delete",
-      "done": "Done"
+      "done": "Done",
+      "retry": "Retry"
+    },
+    "errors": {
+      "loadFailed": "Failed to load data"
     }
   }
 }

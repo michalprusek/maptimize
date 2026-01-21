@@ -9,16 +9,16 @@ from models.user import UserRole
 
 class AdminUserListItem(BaseModel):
     """User item for admin list view."""
-    id: int
-    email: str
-    name: str
+    id: int = Field(gt=0)
+    email: str = Field(min_length=1)
+    name: str = Field(min_length=1)
     role: UserRole
     avatar_url: Optional[str] = None
     created_at: datetime
     last_login: Optional[datetime] = None
-    experiment_count: int = 0
-    image_count: int = 0
-    storage_bytes: int = 0
+    experiment_count: int = Field(ge=0, default=0)
+    image_count: int = Field(ge=0, default=0)
+    storage_bytes: int = Field(ge=0, default=0)
 
     class Config:
         from_attributes = True
@@ -26,24 +26,24 @@ class AdminUserListItem(BaseModel):
 
 class AdminUserDetail(BaseModel):
     """Detailed user info for admin view."""
-    id: int
-    email: str
-    name: str
+    id: int = Field(gt=0)
+    email: str = Field(min_length=1)
+    name: str = Field(min_length=1)
     role: UserRole
     avatar_url: Optional[str] = None
     created_at: datetime
     last_login: Optional[datetime] = None
 
     # Counts
-    experiment_count: int = 0
-    image_count: int = 0
-    document_count: int = 0
-    chat_thread_count: int = 0
+    experiment_count: int = Field(ge=0, default=0)
+    image_count: int = Field(ge=0, default=0)
+    document_count: int = Field(ge=0, default=0)
+    chat_thread_count: int = Field(ge=0, default=0)
 
     # Storage breakdown
-    images_storage_bytes: int = 0
-    documents_storage_bytes: int = 0
-    total_storage_bytes: int = 0
+    images_storage_bytes: int = Field(ge=0, default=0)
+    documents_storage_bytes: int = Field(ge=0, default=0)
+    total_storage_bytes: int = Field(ge=0, default=0)
 
     class Config:
         from_attributes = True
@@ -57,46 +57,46 @@ class AdminUserUpdate(BaseModel):
 
 class AdminPasswordResetResponse(BaseModel):
     """Response after password reset."""
-    new_password: str
+    new_password: str = Field(min_length=1)
     message: str = "Password has been reset successfully"
 
 
 class AdminSystemStats(BaseModel):
     """System-wide statistics."""
-    total_users: int
-    total_experiments: int
-    total_images: int
-    total_documents: int
-    total_storage_bytes: int
+    total_users: int = Field(ge=0)
+    total_experiments: int = Field(ge=0)
+    total_images: int = Field(ge=0)
+    total_documents: int = Field(ge=0)
+    total_storage_bytes: int = Field(ge=0)
 
     # Role breakdown
-    admin_count: int
-    researcher_count: int
-    viewer_count: int
+    admin_count: int = Field(ge=0)
+    researcher_count: int = Field(ge=0)
+    viewer_count: int = Field(ge=0)
 
     # Storage breakdown
-    images_storage_bytes: int
-    documents_storage_bytes: int
+    images_storage_bytes: int = Field(ge=0)
+    documents_storage_bytes: int = Field(ge=0)
 
 
 class AdminTimelinePoint(BaseModel):
     """Single data point for timeline charts."""
     date: str  # ISO date string (YYYY-MM-DD)
-    registrations: int = 0
-    active_users: int = 0
+    registrations: int = Field(ge=0, default=0)
+    active_users: int = Field(ge=0, default=0)
 
 
 class AdminTimelineStats(BaseModel):
     """Timeline statistics for charts."""
     data: List[AdminTimelinePoint]
-    period_days: int = 30
+    period_days: int = Field(ge=7, le=90, default=30)
 
 
 class AdminChatThread(BaseModel):
     """Chat thread info for admin view."""
-    id: int
+    id: int = Field(gt=0)
     name: str
-    message_count: int = 0
+    message_count: int = Field(ge=0, default=0)
     created_at: datetime
     updated_at: datetime
 
@@ -106,7 +106,7 @@ class AdminChatThread(BaseModel):
 
 class AdminChatMessage(BaseModel):
     """Chat message for admin view."""
-    id: int
+    id: int = Field(gt=0)
     role: str
     content: str
     created_at: datetime
@@ -120,11 +120,11 @@ class AdminChatMessage(BaseModel):
 
 class AdminExperiment(BaseModel):
     """Experiment info for admin view."""
-    id: int
+    id: int = Field(gt=0)
     name: str
     description: Optional[str] = None
     status: str
-    image_count: int = 0
+    image_count: int = Field(ge=0, default=0)
     created_at: datetime
     updated_at: datetime
 
@@ -135,26 +135,26 @@ class AdminExperiment(BaseModel):
 class AdminUserListResponse(BaseModel):
     """Paginated user list response."""
     users: List[AdminUserListItem]
-    total: int
-    page: int
-    page_size: int
-    total_pages: int
+    total: int = Field(ge=0)
+    page: int = Field(ge=1)
+    page_size: int = Field(ge=1)
+    total_pages: int = Field(ge=0)
 
 
 class AdminChatThreadListResponse(BaseModel):
     """Chat threads response."""
     threads: List[AdminChatThread]
-    total: int
+    total: int = Field(ge=0)
 
 
 class AdminChatMessagesResponse(BaseModel):
     """Chat messages response."""
     messages: List[AdminChatMessage]
     thread_name: str
-    total: int
+    total: int = Field(ge=0)
 
 
 class AdminExperimentsResponse(BaseModel):
     """Experiments response."""
     experiments: List[AdminExperiment]
-    total: int
+    total: int = Field(ge=0)

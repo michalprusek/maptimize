@@ -14,12 +14,14 @@ import {
   ArrowRight,
 } from "lucide-react";
 import { api } from "@/lib/api";
-import { Spinner } from "@/components/ui";
 import { formatBytes, formatDate } from "@/lib/utils";
 import {
   AdminStatsCard,
   AdminTimelineChart,
   AdminStorageChart,
+  AdminLoadingState,
+  AdminErrorState,
+  roleColors,
 } from "@/components/admin";
 
 const containerVariants = {
@@ -39,27 +41,27 @@ export default function AdminDashboardPage() {
   const t = useTranslations("admin");
   const router = useRouter();
 
-  const { data: stats, isLoading: statsLoading } = useQuery({
+  const { data: stats, isLoading: statsLoading, isError: statsError, refetch: refetchStats } = useQuery({
     queryKey: ["admin", "stats"],
     queryFn: () => api.getAdminStats(),
   });
 
-  const { data: timeline, isLoading: timelineLoading } = useQuery({
+  const { data: timeline, isLoading: timelineLoading, isError: timelineError, refetch: refetchTimeline } = useQuery({
     queryKey: ["admin", "timeline"],
     queryFn: () => api.getAdminTimelineStats(30),
   });
 
-  const { data: users, isLoading: usersLoading } = useQuery({
+  const { data: users, isLoading: usersLoading, isError: usersError, refetch: refetchUsers } = useQuery({
     queryKey: ["admin", "users", "recent"],
     queryFn: () => api.getAdminUsers({ page: 1, page_size: 5, sort_by: "created_at", sort_order: "desc" }),
   });
 
   if (statsLoading) {
-    return (
-      <div className="flex items-center justify-center h-64">
-        <Spinner size="lg" />
-      </div>
-    );
+    return <AdminLoadingState />;
+  }
+
+  if (statsError) {
+    return <AdminErrorState onRetry={() => refetchStats()} />;
   }
 
   return (
@@ -125,9 +127,9 @@ export default function AdminDashboardPage() {
               </div>
             </div>
             {timelineLoading ? (
-              <div className="h-[300px] flex items-center justify-center">
-                <Spinner size="lg" />
-              </div>
+              <AdminLoadingState height="h-[300px]" />
+            ) : timelineError ? (
+              <AdminErrorState height="h-[300px]" iconSize="sm" onRetry={() => refetchTimeline()} />
             ) : timeline?.data ? (
               <AdminTimelineChart data={timeline.data} height={300} />
             ) : null}
@@ -177,25 +179,25 @@ export default function AdminDashboardPage() {
           </div>
 
           {usersLoading ? (
-            <div className="flex justify-center py-8">
-              <Spinner size="lg" />
-            </div>
+            <AdminLoadingState height="py-8" />
+          ) : usersError ? (
+            <AdminErrorState height="py-8" iconSize="sm" onRetry={() => refetchUsers()} />
           ) : (
             <div className="overflow-x-auto">
               <table className="w-full">
                 <thead>
                   <tr className="border-b border-white/10">
                     <th className="px-4 py-2 text-left text-xs font-medium text-text-secondary uppercase">
-                      User
+                      {t("users.table.user")}
                     </th>
                     <th className="px-4 py-2 text-left text-xs font-medium text-text-secondary uppercase">
-                      Role
+                      {t("users.table.role")}
                     </th>
                     <th className="px-4 py-2 text-left text-xs font-medium text-text-secondary uppercase">
-                      Registered
+                      {t("users.table.registered")}
                     </th>
                     <th className="px-4 py-2 text-right text-xs font-medium text-text-secondary uppercase">
-                      Experiments
+                      {t("users.table.experiments")}
                     </th>
                   </tr>
                 </thead>
@@ -218,13 +220,7 @@ export default function AdminDashboardPage() {
                         </div>
                       </td>
                       <td className="px-4 py-3">
-                        <span className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-medium ${
-                          user.role === "admin"
-                            ? "bg-purple-500/20 text-purple-400"
-                            : user.role === "researcher"
-                            ? "bg-blue-500/20 text-blue-400"
-                            : "bg-gray-500/20 text-gray-400"
-                        }`}>
+                        <span className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-medium ${roleColors[user.role]}`}>
                           {user.role}
                         </span>
                       </td>

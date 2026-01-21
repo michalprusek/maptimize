@@ -22,7 +22,11 @@
     "none": "Aucun",
     "all": "Tous",
     "showing": "Affichage de {count} sur {total}",
-    "noResults": "Aucun resultat trouve"
+    "noResults": "Aucun resultat trouve",
+    "previous": "Précédent",
+    "next": "Suivant",
+    "retry": "Réessayer",
+    "copyFailed": "Échec de la copie. Veuillez copier manuellement."
   },
   "auth": {
     "login": "Se connecter",
@@ -44,7 +48,8 @@
     "metrics": "Metriques",
     "chat": "MAPtalk",
     "settings": "Parametres",
-    "signOut": "Deconnexion"
+    "signOut": "Deconnexion",
+    "admin": "Panneau d'administration"
   },
   "footer": {
     "createdAt": "Créé à",
@@ -572,5 +577,122 @@
     "loadingWebPage": "Chargement de la page web...",
     "webPageLoadError": "Impossible de charger la page",
     "webPageLoadErrorDesc": "Ce site web n'autorise peut-être pas l'intégration. Essayez de l'ouvrir dans un nouvel onglet."
+  },
+  "admin": {
+    "title": "Panneau d'administration",
+    "subtitle": "Surveiller et gérer les utilisateurs, expériences et ressources du système",
+    "stats": {
+      "totalUsers": "Utilisateurs totaux",
+      "totalExperiments": "Expériences totales",
+      "totalImages": "Images totales",
+      "totalStorage": "Stockage total"
+    },
+    "charts": {
+      "activityTimeline": "Chronologie d'activité",
+      "last30Days": "Inscriptions et utilisateurs actifs sur les 30 derniers jours",
+      "storageBreakdown": "Répartition du stockage"
+    },
+    "recentUsers": {
+      "title": "Inscriptions récentes",
+      "subtitle": "Nouveaux utilisateurs sur la plateforme",
+      "viewAll": "Voir tous les utilisateurs"
+    },
+    "users": {
+      "title": "Gestion des utilisateurs",
+      "subtitle": "Gérer tous les utilisateurs inscrits",
+      "editUser": "Modifier l'utilisateur",
+      "deleteUser": "Supprimer l'utilisateur",
+      "deleteConfirmation": "Cela supprimera définitivement l'utilisateur et toutes ses données (expériences, images, documents, conversations). Cette action est irréversible.",
+      "form": {
+        "name": "Nom",
+        "role": "Rôle"
+      },
+      "table": {
+        "user": "Utilisateur",
+        "role": "Rôle",
+        "registered": "Inscrit",
+        "lastLogin": "Dernière connexion",
+        "experiments": "Expériences",
+        "images": "Images",
+        "storage": "Stockage",
+        "actions": "Actions",
+        "searchPlaceholder": "Rechercher par nom ou email...",
+        "allRoles": "Tous les rôles",
+        "roleAdmin": "Admin",
+        "roleResearcher": "Chercheur",
+        "roleViewer": "Lecteur",
+        "viewDetails": "Voir les détails",
+        "editUser": "Modifier l'utilisateur",
+        "deleteUser": "Supprimer l'utilisateur",
+        "pageOf": "Page {page} sur {total}",
+        "showing": "Affichage de {from} à {to} sur {total} utilisateurs"
+      }
+    },
+    "userDetail": {
+      "title": "Détails de l'utilisateur",
+      "edit": "Modifier",
+      "delete": "Supprimer",
+      "resetPassword": "Réinitialiser le mot de passe",
+      "experiments": "Expériences",
+      "images": "Images",
+      "documents": "Documents",
+      "conversations": "Conversations",
+      "registered": "Inscrit",
+      "lastLogin": "Dernière connexion",
+      "tabs": {
+        "conversations": "Conversations",
+        "experiments": "Expériences",
+        "storage": "Stockage"
+      },
+      "noExperiments": "Aucune expérience trouvée",
+      "experimentName": "Nom",
+      "status": "Statut",
+      "created": "Créé",
+      "storageBreakdown": "Répartition du stockage",
+      "totalStorage": "Stockage total",
+      "imagesStorage": "Images",
+      "documentsStorage": "Documents",
+      "resetPasswordConfirmation": "Cela générera un nouveau mot de passe aléatoire pour {email}. L'utilisateur devra utiliser ce nouveau mot de passe pour se connecter.",
+      "newPasswordGenerated": "Un nouveau mot de passe a été généré :",
+      "copyPasswordWarning": "Assurez-vous de copier ce mot de passe maintenant. Il ne sera plus affiché.",
+      "deleteWarning": "Cela supprimera définitivement l'utilisateur et toutes ses données, y compris les expériences, images, documents et historique de chat. Cette action est irréversible.",
+      "noConversations": "Aucune conversation trouvée",
+      "selectConversation": "Sélectionnez une conversation pour voir les messages",
+      "messagesCount": "{count} messages",
+      "conversationsCount": "Conversations ({count})",
+      "loadError": "Échec du chargement des données",
+      "retry": "Réessayer",
+      "citations": "Citations",
+      "imagesLabel": "Images",
+      "userNotFound": "Utilisateur non trouvé"
+    },
+    "charts": {
+      "activityTimeline": "Chronologie d'activité",
+      "last30Days": "Inscriptions et utilisateurs actifs sur les 30 derniers jours",
+      "storageBreakdown": "Répartition du stockage",
+      "registrations": "Inscriptions",
+      "activeUsers": "Utilisateurs actifs",
+      "images": "Images",
+      "documents": "Documents",
+      "totalStorage": "Stockage total",
+      "noStorageData": "Aucune donnée de stockage"
+    },
+    "common": {
+      "save": "Enregistrer",
+      "cancel": "Annuler",
+      "delete": "Supprimer",
+      "done": "Terminé",
+      "retry": "Réessayer",
+      "loading": "Chargement...",
+      "error": "Erreur",
+      "notFound": "Non trouvé",
+      "copyFailed": "Échec de la copie. Veuillez copier manuellement."
+    },
+    "errors": {
+      "loadFailed": "Échec du chargement des données",
+      "saveFailed": "Échec de l'enregistrement des modifications",
+      "deleteFailed": "Échec de la suppression",
+      "networkError": "Vérifiez votre connexion internet et réessayez"
+    }
   }
 }

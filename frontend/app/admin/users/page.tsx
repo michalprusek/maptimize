@@ -4,12 +4,17 @@ import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useTranslations } from "next-intl";
 import { motion } from "framer-motion";
-import { Users, Shield, ArrowLeft } from "lucide-react";
+import { Users, ArrowLeft } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { api } from "@/lib/api";
-import type { AdminUserListItem, UserRole, AdminUserUpdate } from "@/lib/api";
-import { Spinner, ConfirmModal, Dialog } from "@/components/ui";
-import { AdminUserTable } from "@/components/admin";
+import type { AdminUserListItem, AdminUserUpdate, UserRole } from "@/lib/api";
+import { ConfirmModal } from "@/components/ui";
+import {
+  AdminUserTable,
+  AdminEditUserForm,
+  AdminLoadingState,
+  AdminErrorState,
+} from "@/components/admin";
 
 export default function AdminUsersPage() {
   const t = useTranslations("admin");
@@ -29,7 +34,7 @@ export default function AdminUsersPage() {
   const [editForm, setEditForm] = useState<AdminUserUpdate>({});
 
   // Fetch users
-  const { data, isLoading } = useQuery({
+  const { data, isLoading, isError, refetch } = useQuery({
     queryKey: ["admin", "users", page, search, roleFilter, sortBy, sortOrder],
     queryFn: () =>
       api.getAdminUsers({
@@ -125,9 +130,9 @@ export default function AdminUsersPage() {
 
       {/* User Table */}
       {isLoading ? (
-        <div className="flex justify-center py-12">
-          <Spinner size="lg" />
-        </div>
+        <AdminLoadingState height="py-12" />
+      ) : isError ? (
+        <AdminErrorState height="py-12" onRetry={() => refetch()} />
       ) : data ? (
         <AdminUserTable
           data={data}
@@ -146,61 +151,15 @@ export default function AdminUsersPage() {
       ) : null}
 
       {/* Edit User Dialog */}
-      <Dialog
+      <AdminEditUserForm
         isOpen={!!editingUser}
         onClose={() => setEditingUser(null)}
-        title={t("users.editUser")}
-        icon={<Shield className="w-5 h-5 text-primary-400" />}
-        maxWidth="sm"
-      >
-        <div className="space-y-4">
-          <div>
-            <label className="block text-sm font-medium text-text-secondary mb-2">
-              {t("users.form.name")}
-            </label>
-            <input
-              type="text"
-              value={editForm.name || ""}
-              onChange={(e) => setEditForm({ ...editForm, name: e.target.value })}
-              className="input-field w-full"
-            />
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-text-secondary mb-2">
-              {t("users.form.role")}
-            </label>
-            <select
-              value={editForm.role || ""}
-              onChange={(e) => setEditForm({ ...editForm, role: e.target.value as UserRole })}
-              className="input-field w-full"
-            >
-              <option value="viewer">Viewer</option>
-              <option value="researcher">Researcher</option>
-              <option value="admin">Admin</option>
-            </select>
-          </div>
-          {updateMutation.error && (
-            <p className="text-sm text-accent-red">
-              {updateMutation.error.message}
-            </p>
-          )}
-          <div className="flex justify-end gap-3 pt-4">
-            <button
-              onClick={() => setEditingUser(null)}
-              className="btn-secondary"
-            >
-              {t("common.cancel")}
-            </button>
-            <button
-              onClick={handleSaveEdit}
-              disabled={updateMutation.isPending}
-              className="btn-primary"
-            >
-              {updateMutation.isPending ? <Spinner size="sm" /> : t("common.save")}
-            </button>
-          </div>
-        </div>
-      </Dialog>
+        editForm={editForm}
+        onFormChange={setEditForm}
+        onSave={handleSaveEdit}
+        isPending={updateMutation.isPending}
+        error={updateMutation.error}
+      />
 
       {/* Delete Confirmation */}
       <ConfirmModal

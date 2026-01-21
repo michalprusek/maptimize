@@ -2,7 +2,8 @@
 
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { MessageSquare, ChevronRight, User, Bot, FileText, Image as ImageIcon } from "lucide-react";
+import { useTranslations } from "next-intl";
+import { MessageSquare, ChevronRight, User, Bot, FileText, Image as ImageIcon, AlertCircle, RefreshCw } from "lucide-react";
 import { api } from "@/lib/api";
 import type { AdminChatMessage } from "@/lib/api";
 import { Spinner } from "@/components/ui";
@@ -13,14 +14,15 @@ interface AdminConversationViewerProps {
 }
 
 export function AdminConversationViewer({ userId }: AdminConversationViewerProps) {
+  const t = useTranslations("admin.userDetail");
   const [selectedThread, setSelectedThread] = useState<number | null>(null);
 
-  const { data: threadsData, isLoading: threadsLoading } = useQuery({
+  const { data: threadsData, isLoading: threadsLoading, isError: threadsError, refetch: refetchThreads } = useQuery({
     queryKey: ["admin", "user", userId, "conversations"],
     queryFn: () => api.getAdminUserConversations(userId),
   });
 
-  const { data: messagesData, isLoading: messagesLoading } = useQuery({
+  const { data: messagesData, isLoading: messagesLoading, isError: messagesError, refetch: refetchMessages } = useQuery({
     queryKey: ["admin", "user", userId, "conversation", selectedThread],
     queryFn: () => api.getAdminConversationMessages(userId, selectedThread!),
     enabled: !!selectedThread,
@@ -34,13 +36,29 @@ export function AdminConversationViewer({ userId }: AdminConversationViewerProps
     );
   }
 
+  if (threadsError) {
+    return (
+      <div className="text-center py-12">
+        <AlertCircle className="w-12 h-12 mx-auto mb-3 text-accent-red opacity-70" />
+        <p className="text-text-muted mb-4">{t("loadError")}</p>
+        <button
+          onClick={() => refetchThreads()}
+          className="btn-secondary inline-flex items-center gap-2"
+        >
+          <RefreshCw className="w-4 h-4" />
+          {t("retry")}
+        </button>
+      </div>
+    );
+  }
+
   const threads = threadsData?.threads || [];
 
   if (threads.length === 0) {
     return (
       <div className="text-center py-12 text-text-muted">
         <MessageSquare className="w-12 h-12 mx-auto mb-3 opacity-50" />
-        <p>No conversations found</p>
+        <p>{t("noConversations")}</p>
       </div>
     );
   }
@@ -51,7 +69,7 @@ export function AdminConversationViewer({ userId }: AdminConversationViewerProps
       <div className="w-1/3 glass-card overflow-hidden flex flex-col">
         <div className="px-4 py-3 border-b border-white/10">
           <h4 className="text-sm font-medium text-text-primary">
-            Conversations ({threads.length})
+            {t("conversationsCount", { count: threads.length })}
           </h4>
         </div>
         <div className="flex-1 overflow-y-auto">
@@ -70,7 +88,7 @@ export function AdminConversationViewer({ userId }: AdminConversationViewerProps
                 <ChevronRight className="w-4 h-4 text-text-muted flex-shrink-0" />
               </div>
               <div className="flex items-center gap-2 text-xs text-text-muted">
-                <span>{thread.message_count} messages</span>
+                <span>{t("messagesCount", { count: thread.message_count })}</span>
                 <span>-</span>
                 <span>{formatShortDateTime(thread.updated_at)}</span>
               </div>
@@ -83,11 +101,23 @@ export function AdminConversationViewer({ userId }: AdminConversationViewerProps
       <div className="flex-1 glass-card overflow-hidden flex flex-col">
         {!selectedThread ? (
           <div className="flex-1 flex items-center justify-center text-text-muted">
-            <p>Select a conversation to view messages</p>
+            <p>{t("selectConversation")}</p>
           </div>
         ) : messagesLoading ? (
           <div className="flex-1 flex items-center justify-center">
             <Spinner size="lg" />
+          </div>
+        ) : messagesError ? (
+          <div className="flex-1 flex flex-col items-center justify-center">
+            <AlertCircle className="w-8 h-8 text-accent-red opacity-70 mb-2" />
+            <p className="text-text-muted mb-3">{t("loadError")}</p>
+            <button
+              onClick={() => refetchMessages()}
+              className="btn-secondary inline-flex items-center gap-2 text-sm"
+            >
+              <RefreshCw className="w-4 h-4" />
+              {t("retry")}
+            </button>
           </div>
         ) : (
           <>
@@ -95,7 +125,9 @@ export function AdminConversationViewer({ userId }: AdminConversationViewerProps
               <h4 className="text-sm font-medium text-text-primary">
                 {messagesData?.thread_name}
               </h4>
-              <p className="text-xs text-text-muted">{messagesData?.total} messages</p>
+              <p className="text-xs text-text-muted">
+                {t("messagesCount", { count: messagesData?.total || 0 })}
+              </p>
             </div>
             <div className="flex-1 overflow-y-auto p-4 space-y-4">
               {messagesData?.messages.map((msg) => (
@@ -110,6 +142,7 @@ export function AdminConversationViewer({ userId }: AdminConversationViewerProps
 }
 
 function MessageBubble({ message }: { message: AdminChatMessage }) {
+  const t = useTranslations("admin.userDetail");
   const isUser = message.role === "user";
 
   return (
@@ -133,12 +166,12 @@ function MessageBubble({ message }: { message: AdminChatMessage }) {
           <span className="text-xs text-text-muted">{formatShortDateTime(message.created_at)}</span>
           {message.has_citations && (
             <span className="text-xs text-amber-400 flex items-center gap-1">
-              <FileText className="w-3 h-3" /> Citations
+              <FileText className="w-3 h-3" /> {t("citations")}
             </span>
           )}
           {message.has_images && (
             <span className="text-xs text-green-400 flex items-center gap-1">
-              <ImageIcon className="w-3 h-3" /> Images
+              <ImageIcon className="w-3 h-3" /> {t("imagesLabel")}
             </span>
           )}
         </div>

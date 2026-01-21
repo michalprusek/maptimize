@@ -23,10 +23,18 @@ import {
   Check,
 } from "lucide-react";
 import { api } from "@/lib/api";
-import type { AdminUserUpdate, UserRole } from "@/lib/api";
+import type { AdminUserUpdate } from "@/lib/api";
 import { Spinner, ConfirmModal, Dialog } from "@/components/ui";
 import { formatBytes, formatDate, formatDateTime } from "@/lib/utils";
-import { AdminStorageChart, AdminConversationViewer, roleColors } from "@/components/admin";
+import {
+  AdminStorageChart,
+  AdminConversationViewer,
+  AdminEditUserForm,
+  AdminLoadingState,
+  AdminErrorState,
+  AdminStatusBadge,
+  roleColors,
+} from "@/components/admin";
 
 type TabType = "conversations" | "experiments" | "storage";
 
@@ -48,13 +56,13 @@ export default function AdminUserDetailPage() {
   const [editForm, setEditForm] = useState<AdminUserUpdate>({});
 
   // Fetch user detail
-  const { data: user, isLoading } = useQuery({
+  const { data: user, isLoading, isError, refetch } = useQuery({
     queryKey: ["admin", "user", userId],
     queryFn: () => api.getAdminUserDetail(userId),
   });
 
   // Fetch experiments
-  const { data: experimentsData, isLoading: experimentsLoading } = useQuery({
+  const { data: experimentsData, isLoading: experimentsLoading, isError: experimentsError, refetch: refetchExperiments } = useQuery({
     queryKey: ["admin", "user", userId, "experiments"],
     queryFn: () => api.getAdminUserExperiments(userId),
     enabled: activeTab === "experiments",
@@ -107,26 +115,45 @@ export default function AdminUserDetailPage() {
     resetPasswordMutation.mutate();
   };
 
-  const handleCopyPassword = () => {
+  const handleCopyPassword = async () => {
     if (newPassword) {
-      navigator.clipboard.writeText(newPassword);
-      setCopiedPassword(true);
-      setTimeout(() => setCopiedPassword(false), 2000);
+      try {
+        await navigator.clipboard.writeText(newPassword);
+        setCopiedPassword(true);
+        setTimeout(() => setCopiedPassword(false), 2000);
+      } catch {
+        // Fallback for browsers that don't support clipboard API or when permission is denied
+        const textArea = document.createElement("textarea");
+        textArea.value = newPassword;
+        textArea.style.position = "fixed";
+        textArea.style.left = "-999999px";
+        document.body.appendChild(textArea);
+        textArea.select();
+        try {
+          document.execCommand("copy");
+          setCopiedPassword(true);
+          setTimeout(() => setCopiedPassword(false), 2000);
+        } catch {
+          // Show error to user - they need to copy manually
+          alert(t("common.copyFailed") || "Failed to copy. Please copy manually.");
+        }
+        document.body.removeChild(textArea);
+      }
     }
   };
 
   if (isLoading) {
-    return (
-      <div className="flex items-center justify-center h-64">
-        <Spinner size="lg" />
-      </div>
-    );
+    return <AdminLoadingState />;
+  }
+
+  if (isError) {
+    return <AdminErrorState message={t("userDetail.loadError")} onRetry={() => refetch()} />;
   }
 
   if (!user) {
     return (
       <div className="text-center py-12">
-        <p className="text-text-muted">User not found</p>
+        <p className="text-text-muted">{t("userDetail.userNotFound")}</p>
       </div>
     );
   }
@@ -276,9 +303,14 @@ export default function AdminUserDetailPage() {
         {activeTab === "experiments" && (
           <div className="glass-card">
             {experimentsLoading ? (
-              <div className="flex justify-center py-12">
-                <Spinner size="lg" />
-              </div>
+              <AdminLoadingState height="py-12" />
+            ) : experimentsError ? (
+              <AdminErrorState
+                height="py-12"
+                iconSize="md"
+                message={t("userDetail.loadError")}
+                onRetry={() => refetchExperiments()}
+              />
             ) : experimentsData?.experiments.length === 0 ? (
               <div className="text-center py-12 text-text-muted">
                 <Microscope className="w-12 h-12 mx-auto mb-3 opacity-50" />
@@ -315,15 +347,7 @@ export default function AdminUserDetailPage() {
                           )}
                         </td>
                         <td className="px-4 py-3">
-                          <span className={`inline-flex px-2 py-0.5 rounded text-xs font-medium ${
-                            exp.status === "completed"
-                              ? "bg-green-500/20 text-green-400"
-                              : exp.status === "active"
-                              ? "bg-blue-500/20 text-blue-400"
-                              : "bg-gray-500/20 text-gray-400"
-                          }`}>
-                            {exp.status}
-                          </span>
+                          <AdminStatusBadge status={exp.status} />
                         </td>
                         <td className="px-4 py-3 text-sm text-text-secondary text-right">
                           {exp.image_count}
@@ -382,56 +406,15 @@ export default function AdminUserDetailPage() {
       </div>
 
       {/* Edit Dialog */}
-      <Dialog
+      <AdminEditUserForm
         isOpen={isEditOpen}
         onClose={() => setIsEditOpen(false)}
-        title={t("users.editUser")}
-        icon={<Shield className="w-5 h-5 text-primary-400" />}
-        maxWidth="sm"
-      >
-        <div className="space-y-4">
-          <div>
-            <label className="block text-sm font-medium text-text-secondary mb-2">
-              {t("users.form.name")}
-            </label>
-            <input
-              type="text"
-              value={editForm.name || ""}
-              onChange={(e) => setEditForm({ ...editForm, name: e.target.value })}
-              className="input-field w-full"
-            />
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-text-secondary mb-2">
-              {t("users.form.role")}
-            </label>
-            <select
-              value={editForm.role || ""}
-              onChange={(e) => setEditForm({ ...editForm, role: e.target.value as UserRole })}
-              className="input-field w-full"
-            >
-              <option value="viewer">Viewer</option>
-              <option value="researcher">Researcher</option>
-              <option value="admin">Admin</option>
-            </select>
-          </div>
-          {updateMutation.error && (
-            <p className="text-sm text-accent-red">{updateMutation.error.message}</p>
-          )}
-          <div className="flex justify-end gap-3 pt-4">
-            <button onClick={() => setIsEditOpen(false)} className="btn-secondary">
-              {t("common.cancel")}
-            </button>
-            <button
-              onClick={handleSaveEdit}
-              disabled={updateMutation.isPending}
-              className="btn-primary"
-            >
-              {updateMutation.isPending ? <Spinner size="sm" /> : t("common.save")}
-            </button>
-          </div>
-        </div>
-      </Dialog>
+        editForm={editForm}
+        onFormChange={setEditForm}
+        onSave={handleSaveEdit}
+        isPending={updateMutation.isPending}
+        error={updateMutation.error}
+      />
 
       {/* Reset Password Dialog */}
       <Dialog

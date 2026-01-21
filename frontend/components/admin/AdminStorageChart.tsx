@@ -1,5 +1,6 @@
 "use client";
 
+import { useTranslations } from "next-intl";
 import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip } from "recharts";
 import { formatBytes } from "@/lib/utils";
 
@@ -39,9 +40,11 @@ function CustomTooltip({ active, payload }: CustomTooltipProps) {
 }
 
 export function AdminStorageChart({ data, height = 200 }: AdminStorageChartProps) {
+  const t = useTranslations("admin.charts");
+
   const chartData = [
-    { name: "Images", value: data.images_storage_bytes, color: COLORS[0] },
-    { name: "Documents", value: data.documents_storage_bytes, color: COLORS[1] },
+    { name: t("images"), value: data.images_storage_bytes, color: COLORS[0] },
+    { name: t("documents"), value: data.documents_storage_bytes, color: COLORS[1] },
   ].filter((d) => d.value > 0);
 
   const total = data.images_storage_bytes + data.documents_storage_bytes;
@@ -49,7 +52,7 @@ export function AdminStorageChart({ data, height = 200 }: AdminStorageChartProps
   if (total === 0) {
     return (
       <div className="flex items-center justify-center h-full text-text-muted">
-        No storage data
+        {t("noStorageData")}
       </div>
     );
   }
@@ -77,7 +80,7 @@ export function AdminStorageChart({ data, height = 200 }: AdminStorageChartProps
       <div className="flex-1 space-y-3">
         <div className="text-center mb-4">
           <p className="text-2xl font-bold text-text-primary">{formatBytes(total)}</p>
-          <p className="text-xs text-text-muted">Total Storage</p>
+          <p className="text-xs text-text-muted">{t("totalStorage")}</p>
         </div>
         {chartData.map((item, index) => (
           <div key={index} className="flex items-center justify-between">
