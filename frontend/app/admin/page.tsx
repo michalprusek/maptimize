@@ -41,17 +41,17 @@ export default function AdminDashboardPage() {
   const t = useTranslations("admin");
   const router = useRouter();
 
-  const { data: stats, isLoading: statsLoading, isError: statsError, refetch: refetchStats } = useQuery({
+  const { data: stats, isLoading: statsLoading, error: statsError, refetch: refetchStats } = useQuery({
     queryKey: ["admin", "stats"],
     queryFn: () => api.getAdminStats(),
   });
 
-  const { data: timeline, isLoading: timelineLoading, isError: timelineError, refetch: refetchTimeline } = useQuery({
+  const { data: timeline, isLoading: timelineLoading, error: timelineError, refetch: refetchTimeline } = useQuery({
     queryKey: ["admin", "timeline"],
     queryFn: () => api.getAdminTimelineStats(30),
   });
 
-  const { data: users, isLoading: usersLoading, isError: usersError, refetch: refetchUsers } = useQuery({
+  const { data: users, isLoading: usersLoading, error: usersError, refetch: refetchUsers } = useQuery({
     queryKey: ["admin", "users", "recent"],
     queryFn: () => api.getAdminUsers({ page: 1, page_size: 5, sort_by: "created_at", sort_order: "desc" }),
   });
@@ -61,7 +61,7 @@ export default function AdminDashboardPage() {
   }
 
   if (statsError) {
-    return <AdminErrorState onRetry={() => refetchStats()} />;
+    return <AdminErrorState message={statsError.message} onRetry={() => refetchStats()} />;
   }
 
   return (
@@ -129,7 +129,7 @@ export default function AdminDashboardPage() {
             {timelineLoading ? (
               <AdminLoadingState height="h-[300px]" />
             ) : timelineError ? (
-              <AdminErrorState height="h-[300px]" iconSize="sm" onRetry={() => refetchTimeline()} />
+              <AdminErrorState height="h-[300px]" iconSize="sm" message={timelineError.message} onRetry={() => refetchTimeline()} />
             ) : timeline?.data ? (
               <AdminTimelineChart data={timeline.data} height={300} />
             ) : null}
@@ -181,7 +181,7 @@ export default function AdminDashboardPage() {
           {usersLoading ? (
             <AdminLoadingState height="py-8" />
           ) : usersError ? (
-            <AdminErrorState height="py-8" iconSize="sm" onRetry={() => refetchUsers()} />
+            <AdminErrorState height="py-8" iconSize="sm" message={usersError.message} onRetry={() => refetchUsers()} />
           ) : (
             <div className="overflow-x-auto">
               <table className="w-full">

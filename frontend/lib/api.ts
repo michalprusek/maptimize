@@ -111,7 +111,12 @@ class ApiClient {
       return {} as T;
     }
 
-    return response.json();
+    try {
+      return await response.json();
+    } catch (parseError) {
+      console.error(`[API] Failed to parse success response from ${endpoint}:`, parseError);
+      throw new Error("Server returned invalid data format. Please try again.");
+    }
   }
 
   /**

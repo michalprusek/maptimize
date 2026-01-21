@@ -34,7 +34,7 @@ export default function AdminUsersPage() {
   const [editForm, setEditForm] = useState<AdminUserUpdate>({});
 
   // Fetch users
-  const { data, isLoading, isError, refetch } = useQuery({
+  const { data, isLoading, error, refetch } = useQuery({
     queryKey: ["admin", "users", page, search, roleFilter, sortBy, sortOrder],
     queryFn: () =>
       api.getAdminUsers({
@@ -56,6 +56,9 @@ export default function AdminUsersPage() {
       setEditingUser(null);
       setEditForm({});
     },
+    onError: (error, variables) => {
+      console.error(`[Admin] Failed to update user ${variables.userId}:`, error);
+    },
   });
 
   // Delete user mutation
@@ -65,6 +68,9 @@ export default function AdminUsersPage() {
       queryClient.invalidateQueries({ queryKey: ["admin", "users"] });
       queryClient.invalidateQueries({ queryKey: ["admin", "stats"] });
       setDeletingUser(null);
+    },
+    onError: (error, userId) => {
+      console.error(`[Admin] Failed to delete user ${userId}:`, error);
     },
   });
 
@@ -131,8 +137,8 @@ export default function AdminUsersPage() {
       {/* User Table */}
       {isLoading ? (
         <AdminLoadingState height="py-12" />
-      ) : isError ? (
-        <AdminErrorState height="py-12" onRetry={() => refetch()} />
+      ) : error ? (
+        <AdminErrorState height="py-12" message={error.message} onRetry={() => refetch()} />
       ) : data ? (
         <AdminUserTable
           data={data}

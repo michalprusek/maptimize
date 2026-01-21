@@ -650,7 +650,8 @@
       "cancel": "Cancel",
       "delete": "Delete",
       "done": "Done",
-      "retry": "Retry"
+      "retry": "Retry",
+      "copyFailed": "Failed to copy. Please copy manually."
     },
     "errors": {
       "loadFailed": "Failed to load data"

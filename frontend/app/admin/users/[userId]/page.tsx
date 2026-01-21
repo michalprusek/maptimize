@@ -56,13 +56,13 @@ export default function AdminUserDetailPage() {
   const [editForm, setEditForm] = useState<AdminUserUpdate>({});
 
   // Fetch user detail
-  const { data: user, isLoading, isError, refetch } = useQuery({
+  const { data: user, isLoading, error, refetch } = useQuery({
     queryKey: ["admin", "user", userId],
     queryFn: () => api.getAdminUserDetail(userId),
   });
 
   // Fetch experiments
-  const { data: experimentsData, isLoading: experimentsLoading, isError: experimentsError, refetch: refetchExperiments } = useQuery({
+  const { data: experimentsData, isLoading: experimentsLoading, error: experimentsError, refetch: refetchExperiments } = useQuery({
     queryKey: ["admin", "user", userId, "experiments"],
     queryFn: () => api.getAdminUserExperiments(userId),
     enabled: activeTab === "experiments",
@@ -76,6 +76,9 @@ export default function AdminUserDetailPage() {
       queryClient.invalidateQueries({ queryKey: ["admin", "users"] });
       setIsEditOpen(false);
     },
+    onError: (err) => {
+      console.error(`[Admin] Failed to update user ${userId}:`, err);
+    },
   });
 
   const deleteMutation = useMutation({
@@ -85,12 +88,18 @@ export default function AdminUserDetailPage() {
       queryClient.invalidateQueries({ queryKey: ["admin", "stats"] });
       router.push("/admin/users");
     },
+    onError: (err) => {
+      console.error(`[Admin] Failed to delete user ${userId}:`, err);
+    },
   });
 
   const resetPasswordMutation = useMutation({
     mutationFn: () => api.resetAdminUserPassword(userId),
     onSuccess: (data) => {
       setNewPassword(data.new_password);
+    },
+    onError: (err) => {
+      console.error(`[Admin] Failed to reset password for user ${userId}:`, err);
     },
   });
 
@@ -121,23 +130,31 @@ export default function AdminUserDetailPage() {
         await navigator.clipboard.writeText(newPassword);
         setCopiedPassword(true);
         setTimeout(() => setCopiedPassword(false), 2000);
-      } catch {
+      } catch (clipboardError) {
+        console.error("[Admin] Clipboard API failed, trying fallback:", clipboardError);
+
         // Fallback for browsers that don't support clipboard API or when permission is denied
-        const textArea = document.createElement("textarea");
-        textArea.value = newPassword;
-        textArea.style.position = "fixed";
-        textArea.style.left = "-999999px";
-        document.body.appendChild(textArea);
-        textArea.select();
         try {
-          document.execCommand("copy");
+          const textArea = document.createElement("textarea");
+          textArea.value = newPassword;
+          textArea.style.position = "fixed";
+          textArea.style.left = "-999999px";
+          document.body.appendChild(textArea);
+          textArea.select();
+
+          const success = document.execCommand("copy");
+          document.body.removeChild(textArea);
+
+          if (!success) {
+            throw new Error("execCommand('copy') returned false");
+          }
+
           setCopiedPassword(true);
           setTimeout(() => setCopiedPassword(false), 2000);
-        } catch {
-          // Show error to user - they need to copy manually
+        } catch (fallbackError) {
+          console.error("[Admin] Clipboard fallback also failed:", fallbackError);
           alert(t("common.copyFailed") || "Failed to copy. Please copy manually.");
         }
-        document.body.removeChild(textArea);
       }
     }
   };
@@ -146,8 +163,8 @@ export default function AdminUserDetailPage() {
     return <AdminLoadingState />;
   }
 
-  if (isError) {
-    return <AdminErrorState message={t("userDetail.loadError")} onRetry={() => refetch()} />;
+  if (error) {
+    return <AdminErrorState message={error.message} onRetry={() => refetch()} />;
   }
 
   if (!user) {
@@ -308,7 +325,7 @@ export default function AdminUserDetailPage() {
               <AdminErrorState
                 height="py-12"
                 iconSize="md"
-                message={t("userDetail.loadError")}
+                message={experimentsError.message}
                 onRetry={() => refetchExperiments()}
               />
             ) : experimentsData?.experiments.length === 0 ? (

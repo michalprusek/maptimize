@@ -212,7 +212,10 @@ async def list_users(
         total_result = await db.execute(count_query)
         total = total_result.scalar() or 0
 
-        # Sorting
+        # Sorting - explicit allowlist check for defense-in-depth
+        allowed_sort_columns = {"created_at", "last_login", "name", "email"}
+        if sort_by not in allowed_sort_columns:
+            raise HTTPException(status_code=400, detail=f"Invalid sort column: {sort_by}")
         sort_column = getattr(User, sort_by)
         if sort_order == "desc":
             query = query.order_by(sort_column.desc())

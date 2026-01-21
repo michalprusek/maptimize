@@ -1,8 +1,9 @@
 """Admin panel schemas."""
 from datetime import datetime
+from math import ceil
 from typing import Optional, List
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from models.user import UserRole
 
@@ -54,6 +55,13 @@ class AdminUserUpdate(BaseModel):
     name: Optional[str] = Field(None, min_length=2, max_length=255)
     role: Optional[UserRole] = None
 
+    @model_validator(mode="after")
+    def check_at_least_one_field(self):
+        """Ensure at least one field is provided for update."""
+        if self.name is None and self.role is None:
+            raise ValueError("At least one field (name or role) must be provided for update")
+        return self
+
 
 class AdminPasswordResetResponse(BaseModel):
     """Response after password reset."""
@@ -77,6 +85,25 @@ class AdminSystemStats(BaseModel):
     # Storage breakdown
     images_storage_bytes: int = Field(ge=0)
     documents_storage_bytes: int = Field(ge=0)
+
+    @model_validator(mode="after")
+    def validate_totals(self):
+        """Validate that breakdowns sum to totals."""
+        # Validate role counts sum to total users
+        role_sum = self.admin_count + self.researcher_count + self.viewer_count
+        if role_sum != self.total_users:
+            raise ValueError(
+                f"Role counts ({role_sum}) do not match total_users ({self.total_users})"
+            )
+
+        # Validate storage breakdown sums to total
+        storage_sum = self.images_storage_bytes + self.documents_storage_bytes
+        if storage_sum != self.total_storage_bytes:
+            raise ValueError(
+                f"Storage breakdown ({storage_sum}) does not match total_storage_bytes ({self.total_storage_bytes})"
+            )
+
+        return self
 
 
 class AdminTimelinePoint(BaseModel):
@@ -137,8 +164,30 @@ class AdminUserListResponse(BaseModel):
     users: List[AdminUserListItem]
     total: int = Field(ge=0)
     page: int = Field(ge=1)
-    page_size: int = Field(ge=1)
+    page_size: int = Field(ge=1, le=100)
     total_pages: int = Field(ge=0)
+
+    @model_validator(mode="after")
+    def validate_pagination(self):
+        """Validate pagination math consistency."""
+        # Calculate expected total_pages
+        expected_pages = ceil(self.total / self.page_size) if self.total > 0 else 0
+        if self.total_pages != expected_pages:
+            raise ValueError(
+                f"total_pages ({self.total_pages}) does not match calculated value ({expected_pages})"
+            )
+
+        # Validate current page is within range (allow page 1 even when no results)
+        if self.total_pages > 0 and self.page > self.total_pages:
+            raise ValueError(f"page ({self.page}) exceeds total_pages ({self.total_pages})")
+
+        # Validate users list size
+        if len(self.users) > self.page_size:
+            raise ValueError(
+                f"users list length ({len(self.users)}) exceeds page_size ({self.page_size})"
+            )
+
+        return self
 
 
 class AdminChatThreadListResponse(BaseModel):
