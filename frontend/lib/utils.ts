@@ -17,7 +17,8 @@ export function formatBytes(bytes: number, decimals = 2) {
   return parseFloat((bytes / Math.pow(k, i)).toFixed(dm)) + " " + sizes[i];
 }
 
-export function formatDate(date: string | Date) {
+export function formatDate(date: string | Date | null | undefined, fallback = "Never"): string {
+  if (!date) return fallback;
   return new Date(date).toLocaleDateString("en-US", {
     year: "numeric",
     month: "short",
@@ -25,9 +26,20 @@ export function formatDate(date: string | Date) {
   });
 }
 
-export function formatDateTime(date: string | Date) {
+export function formatDateTime(date: string | Date | null | undefined, fallback = "Never"): string {
+  if (!date) return fallback;
   return new Date(date).toLocaleString("en-US", {
     year: "numeric",
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+export function formatShortDateTime(date: string | Date | null | undefined, fallback = "Never"): string {
+  if (!date) return fallback;
+  return new Date(date).toLocaleDateString("en-US", {
     month: "short",
     day: "numeric",
     hour: "2-digit",

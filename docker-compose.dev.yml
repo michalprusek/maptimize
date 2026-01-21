@@ -68,10 +68,13 @@ services:
       # Admin
       - DEFAULT_ADMIN_EMAIL=admin@utia.cas.cz
       - DEFAULT_ADMIN_PASSWORD=maptimize_admin_2024
-      # GPU
+      # GPU - Reduced to share with SpheroSeg (priority: SpheroSeg > Maptimize)
       - CUDA_VISIBLE_DEVICES=0
-      - ML_MEMORY_LIMIT_GB=16
-      - GPU_MEMORY_FRACTION=0.65
+      - ML_MEMORY_LIMIT_GB=8
+      - GPU_MEMORY_FRACTION=0.35
+      # Low priority settings - Maptimize waits for SpheroSeg
+      - PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:256
+      - CUDA_LAUNCH_BLOCKING=0
     volumes:
       - ./backend:/app
       - ./data/uploads:/app/data/uploads

@@ -32,6 +32,7 @@ import {
   Bug,
   Dna,
   MessageSquare,
+  Shield,
 } from "lucide-react";
 import { Logo, BugReportModal } from "@/components/ui";
 import { clsx } from "clsx";
@@ -76,6 +77,10 @@ export function AppSidebar({
     { name: t("proteins"), href: "/dashboard/proteins", icon: Dna },
     { name: t("metrics"), href: "/dashboard/ranking", icon: Scale },
     { name: t("chat"), href: "/chat", icon: MessageSquare },
+    // Admin panel - only visible to admins
+    ...(user?.role === "admin"
+      ? [{ name: t("admin"), href: "/admin", icon: Shield }]
+      : []),
   ];
 
   const handleLogout = () => {

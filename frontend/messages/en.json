@@ -22,7 +22,11 @@
     "none": "None",
     "all": "All",
     "showing": "Showing {count} of {total}",
-    "noResults": "No results found"
+    "noResults": "No results found",
+    "previous": "Previous",
+    "next": "Next",
+    "retry": "Retry",
+    "copyFailed": "Failed to copy. Please copy manually."
   },
   "auth": {
     "login": "Sign In",
@@ -44,7 +48,8 @@
     "metrics": "Metrics",
     "chat": "MAPtalk",
     "settings": "Settings",
-    "signOut": "Sign Out"
+    "signOut": "Sign Out",
+    "admin": "Admin Panel"
   },
   "footer": {
     "createdAt": "Created at",
@@ -545,5 +550,111 @@
     "loadingWebPage": "Loading web page...",
     "webPageLoadError": "Unable to load page",
     "webPageLoadErrorDesc": "This website may not allow embedding. Try opening it in a new tab instead."
+  },
+  "admin": {
+    "title": "Admin Panel",
+    "subtitle": "Monitor and manage system users, experiments, and resources",
+    "stats": {
+      "totalUsers": "Total Users",
+      "totalExperiments": "Total Experiments",
+      "totalImages": "Total Images",
+      "totalStorage": "Total Storage"
+    },
+    "charts": {
+      "activityTimeline": "Activity Timeline",
+      "last30Days": "Registrations and active users over the last 30 days",
+      "storageBreakdown": "Storage Breakdown",
+      "images": "Images",
+      "documents": "Documents",
+      "totalStorage": "Total Storage",
+      "noStorageData": "No storage data",
+      "registrations": "Registrations",
+      "activeUsers": "Active Users"
+    },
+    "recentUsers": {
+      "title": "Recent Registrations",
+      "subtitle": "Newest users on the platform",
+      "viewAll": "View all users"
+    },
+    "users": {
+      "title": "User Management",
+      "subtitle": "Manage all registered users",
+      "editUser": "Edit User",
+      "deleteUser": "Delete User",
+      "deleteConfirmation": "This will permanently delete the user and all their data (experiments, images, documents, conversations). This action cannot be undone.",
+      "form": {
+        "name": "Name",
+        "role": "Role"
+      },
+      "table": {
+        "searchPlaceholder": "Search by name or email...",
+        "allRoles": "All roles",
+        "roleAdmin": "Admin",
+        "roleResearcher": "Researcher",
+        "roleViewer": "Viewer",
+        "user": "User",
+        "role": "Role",
+        "registered": "Registered",
+        "lastLogin": "Last Login",
+        "experiments": "Experiments",
+        "images": "Images",
+        "storage": "Storage",
+        "actions": "Actions",
+        "viewDetails": "View details",
+        "editUser": "Edit user",
+        "deleteUser": "Delete user",
+        "showing": "Showing {from} to {to} of {total} users",
+        "pageOf": "Page {page} of {total}"
+      }
+    },
+    "userDetail": {
+      "title": "User Details",
+      "edit": "Edit",
+      "delete": "Delete",
+      "resetPassword": "Reset Password",
+      "experiments": "Experiments",
+      "images": "Images",
+      "documents": "Documents",
+      "conversations": "Conversations",
+      "registered": "Registered",
+      "lastLogin": "Last Login",
+      "tabs": {
+        "conversations": "Conversations",
+        "experiments": "Experiments",
+        "storage": "Storage"
+      },
+      "noExperiments": "No experiments found",
+      "experimentName": "Name",
+      "status": "Status",
+      "created": "Created",
+      "storageBreakdown": "Storage Breakdown",
+      "totalStorage": "Total Storage",
+      "imagesStorage": "Images",
+      "documentsStorage": "Documents",
+      "resetPasswordConfirmation": "This will generate a new random password for {email}. The user will need to use this new password to log in.",
+      "newPasswordGenerated": "A new password has been generated:",
+      "copyPasswordWarning": "Make sure to copy this password now. It will not be shown again.",
+      "deleteWarning": "This will permanently delete the user and all their data including experiments, images, documents, and chat history. This action cannot be undone.",
+      "loadError": "Failed to load data",
+      "retry": "Retry",
+      "noConversations": "No conversations found",
+      "conversationsCount": "Conversations ({count})",
+      "messagesCount": "{count} messages",
+      "selectConversation": "Select a conversation to view messages",
+      "citations": "Citations",
+      "imagesLabel": "Images",
+      "userNotFound": "User not found"
+    },
+    "common": {
+      "save": "Save",
+      "cancel": "Cancel",
+      "delete": "Delete",
+      "done": "Done",
+      "retry": "Retry",
+      "copyFailed": "Failed to copy. Please copy manually."
+    },
+    "errors": {
+      "loadFailed": "Failed to load data"
+    }
   }
 }

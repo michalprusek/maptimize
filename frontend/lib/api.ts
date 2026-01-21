@@ -111,7 +111,12 @@ class ApiClient {
       return {} as T;
     }
 
-    return response.json();
+    try {
+      return await response.json();
+    } catch (parseError) {
+      console.error(`[API] Failed to parse success response from ${endpoint}:`, parseError);
+      throw new Error("Server returned invalid data format. Please try again.");
+    }
   }
 
   /**
@@ -1080,6 +1085,72 @@ class ApiClient {
     return this.request<BugReportListResponse>("/api/bug-reports");
   }
 
+  // ============================================================================
+  // Admin API
+  // ============================================================================
+
+  async getAdminStats() {
+    return this.request<AdminSystemStats>("/api/admin/stats");
+  }
+
+  async getAdminTimelineStats(days = 30) {
+    return this.request<AdminTimelineStats>(`/api/admin/stats/timeline?days=${days}`);
+  }
+
+  async getAdminUsers(params: {
+    page?: number;
+    page_size?: number;
+    search?: string;
+    role?: UserRole;
+    sort_by?: "created_at" | "last_login" | "name" | "email";
+    sort_order?: "asc" | "desc";
+  } = {}) {
+    const queryParams = new URLSearchParams();
+    if (params.page) queryParams.set("page", params.page.toString());
+    if (params.page_size) queryParams.set("page_size", params.page_size.toString());
+    if (params.search) queryParams.set("search", params.search);
+    if (params.role) queryParams.set("role", params.role);
+    if (params.sort_by) queryParams.set("sort_by", params.sort_by);
+    if (params.sort_order) queryParams.set("sort_order", params.sort_order);
+    const query = queryParams.toString();
+    return this.request<AdminUserListResponse>(`/api/admin/users${query ? `?${query}` : ""}`);
+  }
+
+  async getAdminUserDetail(userId: number) {
+    return this.request<AdminUserDetail>(`/api/admin/users/${userId}`);
+  }
+
+  async updateAdminUser(userId: number, data: AdminUserUpdate) {
+    return this.request<AdminUserDetail>(`/api/admin/users/${userId}`, {
+      method: "PATCH",
+      body: JSON.stringify(data),
+    });
+  }
+
+  async deleteAdminUser(userId: number) {
+    return this.request<void>(`/api/admin/users/${userId}`, {
+      method: "DELETE",
+    });
+  }
+
+  async resetAdminUserPassword(userId: number) {
+    return this.request<AdminPasswordResetResponse>(`/api/admin/users/${userId}/reset-password`, {
+      method: "POST",
+    });
+  }
+
+  async getAdminUserConversations(userId: number) {
+    return this.request<AdminChatThreadListResponse>(`/api/admin/users/${userId}/conversations`);
+  }
+
+  async getAdminConversationMessages(userId: number, threadId: number) {
+    return this.request<AdminChatMessagesResponse>(`/api/admin/users/${userId}/conversations/${threadId}`);
+  }
+
+  async getAdminUserExperiments(userId: number) {
+    return this.request<AdminExperimentsResponse>(`/api/admin/users/${userId}/experiments`);
+  }
+
   /**
    * Get the full URL for a user's avatar.
    * Returns undefined if the user has no avatar or if the path is invalid.
@@ -1831,6 +1902,127 @@ export interface RAGSearchResponse {
   query: string;
   documents: RAGDocumentSearchResult[];
   fov_images: RAGFOVSearchResult[];
+}
+
+// ============================================================================
+// Admin types
+// ============================================================================
+
+export type UserRole = "viewer" | "researcher" | "admin";
+
+export interface AdminUserListItem {
+  id: number;
+  email: string;
+  name: string;
+  role: UserRole;
+  avatar_url?: string;
+  created_at: string;
+  last_login?: string;
+  experiment_count: number;
+  image_count: number;
+  storage_bytes: number;
+}
+
+export interface AdminUserDetail {
+  id: number;
+  email: string;
+  name: string;
+  role: UserRole;
+  avatar_url?: string;
+  created_at: string;
+  last_login?: string;
+  experiment_count: number;
+  image_count: number;
+  document_count: number;
+  chat_thread_count: number;
+  images_storage_bytes: number;
+  documents_storage_bytes: number;
+  total_storage_bytes: number;
+}
+
+export interface AdminUserUpdate {
+  name?: string;
+  role?: UserRole;
+}
+
+export interface AdminPasswordResetResponse {
+  new_password: string;
+  message: string;
+}
+
+export interface AdminSystemStats {
+  total_users: number;
+  total_experiments: number;
+  total_images: number;
+  total_documents: number;
+  total_storage_bytes: number;
+  admin_count: number;
+  researcher_count: number;
+  viewer_count: number;
+  images_storage_bytes: number;
+  documents_storage_bytes: number;
+}
+
+export interface AdminTimelinePoint {
+  date: string;
+  registrations: number;
+  active_users: number;
+}
+
+export interface AdminTimelineStats {
+  data: AdminTimelinePoint[];
+  period_days: number;
+}
+
+export interface AdminChatThread {
+  id: number;
+  name: string;
+  message_count: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface AdminChatMessage {
+  id: number;
+  role: string;
+  content: string;
+  created_at: string;
+  has_citations: boolean;
+  has_images: boolean;
+}
+
+export interface AdminExperiment {
+  id: number;
+  name: string;
+  description?: string;
+  status: string;
+  image_count: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface AdminUserListResponse {
+  users: AdminUserListItem[];
+  total: number;
+  page: number;
+  page_size: number;
+  total_pages: number;
+}
+
+export interface AdminChatThreadListResponse {
+  threads: AdminChatThread[];
+  total: number;
+}
+
+export interface AdminChatMessagesResponse {
+  messages: AdminChatMessage[];
+  thread_name: string;
+  total: number;
+}
+
+export interface AdminExperimentsResponse {
+  experiments: AdminExperiment[];
+  total: number;
 }
 
 export const api = new ApiClient();
