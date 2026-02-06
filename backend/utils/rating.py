@@ -59,7 +59,7 @@ def estimate_remaining_comparisons(
     avg_sigma: float,
     initial_sigma: float,
     target_sigma: float,
-    image_count: int = 0,
+    rated_items_count: int = 0,
     total_comparisons: int = 0
 ) -> int:
     """
@@ -76,7 +76,7 @@ def estimate_remaining_comparisons(
         avg_sigma: Current average sigma
         initial_sigma: Initial sigma value
         target_sigma: Target sigma for full convergence
-        image_count: Number of images in the metric
+        rated_items_count: Number of rated items (cell crops) for this user/experiment
         total_comparisons: Number of comparisons already made
 
     Returns:
@@ -85,22 +85,22 @@ def estimate_remaining_comparisons(
     if avg_sigma <= target_sigma:
         return 0
 
-    # Estimate total comparisons needed based on image count
+    # Estimate total comparisons needed based on rated item count
     # Rule of thumb: N * 5 comparisons for reasonable convergence
-    # (each image needs ~10 comparisons, each comparison involves 2 images)
-    if image_count > 0:
-        estimated_total = max(50, image_count * 5)
+    # (each item needs ~10 comparisons, each comparison involves 2 items)
+    if rated_items_count > 0:
+        estimated_total = max(50, rated_items_count * 5)
     else:
         estimated_total = 200  # fallback
 
     # Scale by sigma ratio — reflects actual convergence progress
-    # remaining_ratio: 1.0 at start (no progress), 0.0 at convergence
+    # remaining_ratio: ~1.0 at start (no progress), approaches 0.0 near convergence
     sigma_range = initial_sigma - target_sigma
     if sigma_range > 0 and total_comparisons > 0:
-        remaining_ratio = (avg_sigma - target_sigma) / sigma_range
+        remaining_ratio = max(0.0, min(1.0, (avg_sigma - target_sigma) / sigma_range))
         remaining = int(estimated_total * remaining_ratio)
     else:
-        # No comparisons yet — use full heuristic estimate
+        # Fallback: no comparisons yet or invalid sigma range
         remaining = estimated_total - total_comparisons
 
     return max(0, remaining)

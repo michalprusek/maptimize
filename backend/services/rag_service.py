@@ -938,6 +938,9 @@ Return ONLY the JSON array. Return [] if nothing found. Maximum {max_passages} e
     except json.JSONDecodeError as e:
         logger.warning(f"Failed to parse passage extraction response: {e}")
         return []
+    except ValueError as e:
+        logger.warning(f"Gemini returned no usable text for doc {document_id} p.{page_number}: {e}")
+        return []
     except Exception as e:
         logger.exception(f"Error in passage extraction: {e}")
         return []

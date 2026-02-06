@@ -554,7 +554,9 @@ class ImageProcessor:
         """
         try:
             from services.rag_service import index_fov_image
-            success = await index_fov_image(image.id, db)
+            # Use savepoint so a DB error here doesn't corrupt the outer Phase 2 transaction
+            async with db.begin_nested():
+                success = await index_fov_image(image.id, db)
 
             if success:
                 logger.info(f"RAG embedding created for image {image.id}")
@@ -568,7 +570,7 @@ class ImageProcessor:
             # Not fatal - user can still use chat without image search
         except Exception as e:
             logger.warning(f"Unexpected RAG embedding error for image {image.id}: {e}")
-            # Not fatal - chat feature is optional
+            # Savepoint rolled back automatically; outer transaction is safe
 
     async def _save_crop(
         self,

@@ -2108,4 +2108,4 @@ async def execute_tool(tool_name: str, args: Dict[str, Any], user_id: int, db: A
         except Exception as rollback_error:
             # Log rollback errors instead of silently ignoring
             logger.error(f"Rollback failed after tool error in {tool_name}: {rollback_error}")
-        return {"error": str(e)}
+        return {"error": f"Tool '{tool_name}' failed. Please try again or rephrase your request."}
