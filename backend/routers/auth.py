@@ -1,4 +1,5 @@
 """Authentication routes."""
+import logging
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -9,12 +10,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from database import get_db
 from models.user import User
 from schemas.user import UserCreate, UserResponse, Token
+from services.user_data_provisioning import provision_new_user_data
 from utils.security import (
     hash_password,
     verify_password,
     create_access_token,
     get_current_user,
 )
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -40,8 +44,18 @@ async def register(
         password_hash=hash_password(user_data.password),
     )
     db.add(user)
-    await db.commit()
+    await db.flush()
     await db.refresh(user)
+
+    # Provision template data (experiments, images, crops, etc.)
+    # Use savepoint so failure rolls back only provisioning, not user creation
+    try:
+        async with db.begin_nested():
+            await provision_new_user_data(user.id, db)
+    except Exception:
+        logger.exception("Failed to provision data for user %d, continuing with empty account", user.id)
+
+    # get_db() auto-commits on success
 
     # Generate token
     access_token = create_access_token(user.id, user.role.value)

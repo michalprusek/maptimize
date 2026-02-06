@@ -54,6 +54,42 @@ export interface ProcessedImageUrl {
 }
 
 /**
+ * Parsed passage URL info.
+ * Format: passage:docId:pageNum:hash
+ */
+export interface ParsedPassageUrl {
+  docId: number;
+  pageNum: number;
+  hash: string;
+}
+
+/**
+ * Parse a passage: URL into its components.
+ * Returns null if the URL is invalid or not a passage URL.
+ */
+export function parsePassageUrl(src: string): ParsedPassageUrl | null {
+  if (!src.startsWith("passage:")) {
+    return null;
+  }
+
+  const parts = src.replace("passage:", "").split(":");
+  if (parts.length < 3) {
+    return null;
+  }
+
+  const docId = parseInt(parts[0], 10);
+  const pageNum = parseInt(parts[1], 10);
+  const hash = parts[2];
+
+  // Validate parsed values
+  if (isNaN(docId) || isNaN(pageNum) || !hash || hash.length !== 12) {
+    return null;
+  }
+
+  return { docId, pageNum, hash };
+}
+
+/**
  * Sanitize URL for logging - removes sensitive tokens from query parameters.
  * SECURITY: Never log full URLs that may contain authentication tokens.
  */
@@ -79,10 +115,27 @@ export function sanitizeUrlForLogging(url: string): string {
 
 /**
  * Process image URL to add backend prefix and auth token if needed.
- * Handles API paths, uploads paths, and base64 images.
+ * Handles API paths, uploads paths, base64 images, and passage: scheme.
  */
 export function processImageUrl(src: string): ProcessedImageUrl {
   let imageSrc = src || "";
+
+  // Handle passage: scheme (inline document excerpts)
+  const passage = parsePassageUrl(imageSrc);
+  if (passage) {
+    const apiUrl = process.env.NEXT_PUBLIC_API_URL || "";
+    imageSrc = `${apiUrl}/api/rag/documents/${passage.docId}/passages/${passage.hash}`;
+
+    // Add auth token
+    if (typeof window !== "undefined") {
+      const token = localStorage.getItem("token");
+      if (token) {
+        imageSrc = `${imageSrc}?token=${token}`;
+      }
+    }
+
+    return { url: imageSrc, isMicroscopy: false, isBase64: false };
+  }
 
   // Normalize URL - ensure it starts with /
   if (imageSrc.startsWith("api/")) {

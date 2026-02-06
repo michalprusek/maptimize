@@ -30,7 +30,7 @@ import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
 import rehypeKatex from "rehype-katex";
 import "katex/dist/katex.min.css";
-import { processImageUrl, sanitizeUrlForLogging } from "@/lib/utils";
+import { processImageUrl, sanitizeUrlForLogging, parsePassageUrl } from "@/lib/utils";
 import { MarkdownErrorBoundary } from "@/components/ui/ErrorBoundary";
 
 interface MessageBubbleProps {
@@ -110,6 +110,14 @@ function CodeBlock({ children, translations }: CodeBlockProps) {
     </div>
   );
 }
+
+// Shared styles for citation/passage link buttons used in markdown rendering
+const CITATION_BUTTON_CLASS = clsx(
+  "inline-flex items-center gap-1 px-2 py-0.5 mx-0.5 rounded",
+  "bg-primary-500/20 hover:bg-primary-500/30 border border-primary-500/30",
+  "text-primary-400 hover:text-primary-300 transition-all",
+  "no-underline font-medium text-sm cursor-pointer"
+);
 
 // Helper to extract image URLs from markdown content
 function extractImagesFromMarkdown(content: string, messageId: number): ChatImage[] {
@@ -390,33 +398,40 @@ export function MessageBubble({ message, isNew = false }: MessageBubbleProps) {
               <ReactMarkdown
                 remarkPlugins={[remarkGfm, remarkMath]}
                 rehypePlugins={[rehypeKatex]}
+                urlTransform={(url) => {
+                  // Allow our custom URL schemes for passages and citations
+                  if (url.startsWith("passage:") || url.startsWith("citation:")) {
+                    return url;
+                  }
+                  // For other URLs, use default behavior (allow http/https, block javascript: etc.)
+                  return url;
+                }}
                 components={{
                   // Customize link rendering - special handling for citations and file downloads
                   a: ({ href, children }) => {
-                    // Handle citation links (citation:docId:page)
-                    if (href?.startsWith("citation:")) {
-                      const parts = href.replace("citation:", "").split(":");
+                    // Handle citation links (citation:docId:page) and passage links (passage:docId:page:hash)
+                    if (href?.startsWith("citation:") || href?.startsWith("passage:")) {
+                      const isCitation = href.startsWith("citation:");
+                      const parts = href.replace(isCitation ? "citation:" : "passage:", "").split(":");
                       const docId = parseInt(parts[0], 10);
                       const page = parseInt(parts[1], 10) || 1;
 
-                      return (
-                        <button
-                          type="button"
-                          onClick={(e) => {
-                            e.preventDefault();
-                            e.stopPropagation();
-                            openPDFViewer(docId, page);
-                          }}
-                          className={clsx(
-                            "inline-flex items-center gap-1 px-2 py-0.5 mx-0.5 rounded",
-                            "bg-primary-500/20 hover:bg-primary-500/30 border border-primary-500/30",
-                            "text-primary-400 hover:text-primary-300 transition-all",
-                            "no-underline font-medium text-sm cursor-pointer"
-                          )}
-                        >
-                          {children}
-                        </button>
-                      );
+                      if (!isNaN(docId)) {
+                        return (
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.preventDefault();
+                              e.stopPropagation();
+                              openPDFViewer(docId, page);
+                            }}
+                            className={CITATION_BUTTON_CLASS}
+                          >
+                            {!isCitation && <FileText className="w-3.5 h-3.5" />}
+                            {children}
+                          </button>
+                        );
+                      }
                     }
 
                     const isDownloadLink = href && (
@@ -449,35 +464,6 @@ export function MessageBubble({ message, isNew = false }: MessageBubbleProps) {
                           <Download className="w-4 h-4 ml-1" />
                         </a>
                       );
-                    }
-
-                    // Fallback: check if this might be a citation link that wasn't caught
-                    if (href?.includes("citation:")) {
-                      console.warn("Uncaught citation link format:", href);
-                      // Try to extract docId and page from any citation: format
-                      const match = href.match(/citation:(\d+):?(\d+)?/);
-                      if (match) {
-                        const docId = parseInt(match[1], 10);
-                        const page = parseInt(match[2], 10) || 1;
-                        return (
-                          <button
-                            type="button"
-                            onClick={(e) => {
-                              e.preventDefault();
-                              e.stopPropagation();
-                              openPDFViewer(docId, page);
-                            }}
-                            className={clsx(
-                              "inline-flex items-center gap-1 px-2 py-0.5 mx-0.5 rounded",
-                              "bg-primary-500/20 hover:bg-primary-500/30 border border-primary-500/30",
-                              "text-primary-400 hover:text-primary-300 transition-all",
-                              "no-underline font-medium text-sm cursor-pointer"
-                            )}
-                          >
-                            {children}
-                          </button>
-                        );
-                      }
                     }
 
                     return (
@@ -575,7 +561,11 @@ export function MessageBubble({ message, isNew = false }: MessageBubbleProps) {
                   },
                   // Image rendering with auth token, backend URL, and LUT styling
                   img: ({ src, alt }) => {
-                    const processed = processImageUrl(src || "");
+                    // Skip rendering if src is empty or invalid
+                    // This can happen during React hydration or with malformed markdown
+                    if (!src || src.trim() === "") {
+                      return null;
+                    }
 
                     // Handle image load errors gracefully with logging
                     // SECURITY: Don't log full URL to avoid token exposure
@@ -586,6 +576,39 @@ export function MessageBubble({ message, isNew = false }: MessageBubbleProps) {
                       target.style.filter = "grayscale(1)";
                       target.alt = t("imageFailedToLoad");
                     };
+
+                    // Handle passage: links (inline document excerpts)
+                    const passage = parsePassageUrl(src);
+                    if (passage) {
+                      const passageProcessed = processImageUrl(src);
+
+                      return (
+                        <span className="passage-citation block my-4 p-4 bg-white/[0.03] rounded-xl border border-white/10 shadow-lg">
+                          <img
+                            src={passageProcessed.url}
+                            alt={alt || "Document passage"}
+                            className="w-full h-auto rounded-lg border border-white/10 cursor-pointer hover:opacity-90 transition-opacity bg-white"
+                            loading="lazy"
+                            onClick={() => handleImageClick(src, alt || "Document passage")}
+                            onError={handleImageError}
+                          />
+                          <span className="flex items-center gap-2 mt-3 text-sm text-text-secondary">
+                            <FileText className="w-4 h-4 text-primary-400" />
+                            <span className="font-medium">{alt || t("documentExcerpt")}</span>
+                            <span className="text-text-muted">• {t("page")} {passage.pageNum}</span>
+                            <button
+                              type="button"
+                              onClick={() => openPDFViewer(passage.docId, passage.pageNum)}
+                              className="ml-auto px-3 py-1 rounded-md bg-primary-500/20 text-primary-400 hover:bg-primary-500/30 transition-colors text-xs font-medium"
+                            >
+                              {t("viewInDocument")}
+                            </button>
+                          </span>
+                        </span>
+                      );
+                    }
+
+                    const processed = processImageUrl(src);
 
                     // Base64 plots: full width, no grid
                     if (processed.isBase64) {

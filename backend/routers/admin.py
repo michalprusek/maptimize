@@ -181,7 +181,7 @@ async def get_timeline_stats(
 @router.get("/users", response_model=AdminUserListResponse)
 async def list_users(
     page: int = Query(1, ge=1),
-    page_size: int = Query(20, ge=10, le=100),
+    page_size: int = Query(20, ge=1, le=100),
     search: Optional[str] = Query(None, min_length=1, max_length=100),
     role: Optional[UserRole] = None,
     sort_by: str = Query("created_at", regex="^(created_at|last_login|name|email)$"),

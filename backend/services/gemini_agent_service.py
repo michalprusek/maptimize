@@ -14,6 +14,7 @@ import asyncio
 import json
 import logging
 import ipaddress
+import re
 import uuid
 from datetime import datetime, date
 from typing import Optional, List, Dict, Any
@@ -115,6 +116,119 @@ ALLOWED_SQL_TABLES = {
     "rag_documents", "rag_document_pages", "ranking_comparisons",
     "user_ratings", "agent_memories",
 }
+
+
+def _fix_passage_links_in_response(
+    content: str,
+    valid_passages: List[str],
+    user_id: int
+) -> str:
+    """
+    Post-process agent response to fix passage links.
+
+    Problems this fixes:
+    1. Agent uses [text](passage:...) instead of ![text](passage:...)
+    2. Agent uses invalid/typo hashes that don't exist in cache
+
+    Args:
+        content: Agent's response text
+        valid_passages: List of valid passage markdown strings (![...](passage:...))
+        user_id: User ID for cache path verification
+
+    Returns:
+        Fixed content with valid passage links
+    """
+    if not content or not valid_passages:
+        return content
+
+    # Build set of valid hashes from valid_passages
+    valid_hashes = set()
+    for md in valid_passages:
+        match = re.search(r'passage:\d+:\d+:([a-f0-9]{12})', md)
+        if match:
+            valid_hashes.add(match.group(1))
+
+    # 1. Fix link format: [text](passage:...) -> ![text](passage:...)
+    # But don't match already correct format ![text](...)
+    content = re.sub(
+        r'(?<!!)\[([^\]]+)\]\((passage:[^)]+)\)',
+        r'![\1](\2)',
+        content
+    )
+
+    # 2. Find all passage references and validate hashes
+    pattern = r'!\[([^\]]*)\]\(passage:(\d+):(\d+):([a-f0-9]+)\)'
+    matches = list(re.finditer(pattern, content))
+
+    # Check for invalid hashes
+    replacements = []
+    for match in matches:
+        alt_text = match.group(1)
+        doc_id = match.group(2)
+        page_num = match.group(3)
+        hash_val = match.group(4)
+
+        # If hash is invalid (wrong length or not in valid set)
+        if len(hash_val) != 12 or hash_val not in valid_hashes:
+            # Try to find a valid passage for this doc_id and page
+            for valid_md in valid_passages:
+                valid_match = re.search(
+                    rf'!\[([^\]]*)\]\(passage:{doc_id}:{page_num}:([a-f0-9]{{12}})\)',
+                    valid_md
+                )
+                if valid_match:
+                    correct_hash = valid_match.group(2)
+                    new_md = f"![{alt_text}](passage:{doc_id}:{page_num}:{correct_hash})"
+                    replacements.append((match.group(0), new_md))
+                    logger.warning(
+                        f"Fixed invalid passage hash: {hash_val} -> {correct_hash}"
+                    )
+                    break
+            else:
+                # No valid passage found for this doc/page - remove the broken link
+                replacements.append((match.group(0), f"*[{alt_text}]*"))
+                logger.warning(
+                    f"Removed invalid passage link: {match.group(0)}"
+                )
+
+    # Apply replacements
+    for old, new in replacements:
+        content = content.replace(old, new, 1)
+
+    return content
+
+
+def _inject_user_id_filter(query_str: str, table: str) -> str:
+    """Inject a user_id filter into a SQL query for the given table.
+
+    Safely adds ``{table}.user_id = :user_id`` either into an existing WHERE
+    clause (wrapping the original conditions in parentheses to prevent
+    operator-precedence bypasses) or by inserting a new WHERE clause after
+    the FROM/JOIN block.
+    """
+    where_match = re.search(r'\bWHERE\b', query_str, re.IGNORECASE)
+    if where_match:
+        pos = where_match.end()
+        rest_of_query = query_str[pos:]
+        end_match = re.search(r'\b(GROUP\s+BY|ORDER\s+BY|LIMIT|HAVING|$)', rest_of_query, re.IGNORECASE)
+        if end_match:
+            where_conditions = rest_of_query[:end_match.start()].strip()
+            after_where = rest_of_query[end_match.start():]
+        else:
+            where_conditions = rest_of_query.strip()
+            after_where = ""
+        return query_str[:pos] + f" {table}.user_id = :user_id AND ({where_conditions}) {after_where}"
+
+    from_match = re.search(
+        r'\bFROM\b\s+\w+(?:\s+\w+)?(?:\s+(?:LEFT|RIGHT|INNER|OUTER)?\s*JOIN\s+\w+(?:\s+\w+)?(?:\s+ON\s+[^,]+)?)*',
+        query_str, re.IGNORECASE,
+    )
+    if from_match:
+        pos = from_match.end()
+        return query_str[:pos] + f" WHERE {table}.user_id = :user_id" + query_str[pos:]
+
+    return query_str.rstrip() + f" WHERE {table}.user_id = :user_id"
+
 
 # Approved external APIs
 APPROVED_APIS = {
@@ -296,7 +410,8 @@ Don't just tell the user about data - SHOW them visualizations!
 - **semantic_search**: MAIN SEARCH - searches BOTH documents AND images
 - **search_documents**: Search only documents
 - **search_fov_images**: Search only microscopy images
-- **get_document_content**: Read full text from a document
+- **get_document_content**: Read document pages (returns images for vision reading)
+- **extract_document_region**: Extract and display specific region (figure, table, equation) - returns markdown to include INLINE
 - **get_experiment_stats**: Get detailed experiment statistics
 - **get_protein_info**: Get protein information
 - **get_cell_detection_results**: Get cell detection results (bounding boxes) for an image
@@ -329,10 +444,20 @@ Use tools to answer questions. NEVER ask the user to look up data themselves.
 **MANDATORY: When searching documents, you MUST follow this process:**
 
 1. Use `semantic_search` or `search_documents` to find relevant pages
-2. **IMMEDIATELY CALL `get_document_content`** with the document_id and page_numbers from search results
-3. Read the returned text content
-4. Summarize the findings for the user
-5. Add citations like [Doc: "filename" p.X]
+2. **IMMEDIATELY CALL `get_document_content`** with `document_id` and `page_numbers` from search results
+3. Read the returned page images (sent as vision content)
+4. If you want to SHOW a specific figure, table, or text passage to the user:
+   - Call `extract_document_region` with the description of what to show
+   - The tool returns markdown like `![Figure 2](passage:42:3:abc123)`
+   - **INCLUDE this markdown IN YOUR RESPONSE at the appropriate location** where you discuss it
+5. Summarize the findings and add citations like [Doc: "filename" p.X]
+
+**DOCUMENT EXCERPTS (Agentic Vision):**
+You have FULL CONTROL over which parts of documents to show and WHERE they appear in your response:
+- Use `extract_document_region` to extract specific figures, tables, equations, or text blocks
+- The tool finds the region visually and returns markdown for you to include
+- Place the markdown **inline where you discuss the content** - NOT at the end!
+- Example: "As shown in the figure below:\n\n![Figure 2](passage:42:3:abc123)\n\nThis demonstrates..."
 
 **FORBIDDEN RESPONSES:**
 - ❌ "I found pages X, Y, Z. Would you like me to read them?" - NO! Just read them!
@@ -340,7 +465,7 @@ Use tools to answer questions. NEVER ask the user to look up data themselves.
 - ❌ Just listing page numbers without reading - NO! Always read the content!
 
 **CORRECT RESPONSE:**
-After search → call get_document_content → read → summarize → cite
+After search → call get_document_content with extract_passages=true → read → include passage images → summarize → cite
 
 ### 2. DISPLAY IMAGES
 You CAN display images using markdown:
@@ -524,7 +649,7 @@ AGENT_TOOLS = [
     # === READING CONTENT ===
     {
         "name": "get_document_content",
-        "description": "Read extracted text from a document's pages.",
+        "description": "Read document pages via vision (images sent to you for reading). To SHOW specific parts to the user, use extract_document_region tool separately.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -572,7 +697,7 @@ AGENT_TOOLS = [
     # === CODE EXECUTION ===
     {
         "name": "execute_python_code",
-        "description": "Execute Python code in secure sandbox with 4GB memory and 60s timeout. Available: numpy, pandas, scipy, matplotlib, seaborn, statistics. Returns stdout, return value, and plots as URLs. Can handle large datasets and complex computations.",
+        "description": "Execute Python code in secure sandbox with 16GB memory and 60s timeout. Available: numpy, pandas, scipy, matplotlib, seaborn, statistics. Returns stdout, return value, and plots as URLs. Can handle large datasets and complex computations.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -744,6 +869,22 @@ AGENT_TOOLS = [
             }
         }
     },
+
+    # === DOCUMENT REGION EXTRACTION (Agentic Vision) ===
+    {
+        "name": "extract_document_region",
+        "description": "Extract and display a specific region from a document page (figure, table, equation, text block). Returns markdown image that you MUST include in your response at the appropriate location. Use this when you want to SHOW the user a specific part of a document.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "document_id": {"type": "integer", "description": "Document ID"},
+                "page_number": {"type": "integer", "description": "Page number (1-indexed)"},
+                "description": {"type": "string", "description": "What to extract - e.g. 'Figure 2', 'the methods section', 'Table 1', 'the equation for velocity'"},
+                "bbox": {"type": "array", "items": {"type": "integer"}, "description": "Optional [ymin, xmin, ymax, xmax] normalized 0-1000 if you know exact coordinates"}
+            },
+            "required": ["document_id", "page_number", "description"]
+        }
+    },
 ]
 
 
@@ -813,6 +954,7 @@ async def generate_response(
     tool_calls_log = []
     citations = []
     image_refs = []
+    valid_passages_markdown = []  # Track valid passage markdown for hash validation
 
     # Generate a unique interaction ID for this response (thread_id + UUID for traceability)
     current_interaction_id = f"int_{thread_id}_{uuid.uuid4().hex[:12]}"
@@ -874,41 +1016,23 @@ async def generate_response(
 
         except Exception as e:
             logger.exception(f"Gemini API error at iteration {iteration}: {e}")
-            return {"content": f"Error calling AI service: {str(e)}", "citations": citations, "image_refs": image_refs, "tool_calls": tool_calls_log, "interaction_id": current_interaction_id}
+            return {"content": "An error occurred while processing your request. Please try again.", "citations": citations, "image_refs": image_refs, "tool_calls": tool_calls_log, "interaction_id": current_interaction_id}
 
         logger.debug(f"Gemini iteration {iteration}")
 
         if response.candidates and response.candidates[0].content.parts:
             parts = response.candidates[0].content.parts
-            function_call = None
 
+            # Collect ALL function calls from the response (Gemini 3 can return multiple parallel calls)
+            function_calls = []
             for part in parts:
                 if hasattr(part, 'function_call') and part.function_call:
-                    function_call = part.function_call
-                    break
+                    function_calls.append(part.function_call)
 
-            if function_call:
-                tool_name = function_call.name
-                tool_args = dict(function_call.args) if function_call.args else {}
-                logger.info(f"Executing tool: {tool_name} with args: {tool_args}")
+            if function_calls:
+                logger.info(f"Processing {len(function_calls)} function call(s)")
 
-                try:
-                    tool_result = await execute_tool(tool_name, tool_args, user_id, db)
-                    logger.info(f"Tool {tool_name} completed successfully")
-                except Exception as tool_error:
-                    logger.exception(f"Tool execution error for {tool_name}: {tool_error}")
-                    tool_result = {"error": f"Tool execution failed: {str(tool_error)}"}
-
-                # Serialize result to handle datetime and numpy objects before storing in JSONB
-                try:
-                    serialized_result = "..." if tool_name == "get_document_content" else _serialize_for_json(tool_result)
-                except Exception as ser_error:
-                    logger.exception(f"Serialization error for {tool_name} result: {ser_error}")
-                    serialized_result = {"error": f"Serialization failed: {str(ser_error)}"}
-                tool_calls_log.append({"tool": tool_name, "args": _serialize_for_json(tool_args), "result": serialized_result})
-
-                # Extract citations from search results (deduplicated)
-                # Citations now include confidence/relevance scores when available
+                # Helper functions for citations (defined once, used for all calls)
                 def add_doc_citation(doc_id, page, title, confidence=None):
                     """Add document citation if not already present"""
                     if not any(c.get("doc_id") == doc_id and c.get("page") == page for c in citations):
@@ -925,109 +1049,122 @@ async def generate_response(
                             citation["confidence"] = round(confidence, 2)
                         citations.append(citation)
 
-                if tool_name == "search_documents" and "results" in tool_result:
-                    for doc in tool_result["results"][:5]:
-                        add_doc_citation(
-                            doc.get("document_id"),
-                            doc.get("page_number"),
-                            doc.get("document_name"),
-                            doc.get("similarity_score")
-                        )
+                # Execute all function calls and collect results
+                function_response_parts = []
+                vision_content_parts = []  # For get_document_content vision responses
 
-                if tool_name == "semantic_search":
-                    # Document citations
-                    if "document_results" in tool_result:
-                        for doc in tool_result["document_results"].get("pages", [])[:5]:
-                            add_doc_citation(
-                                doc.get("document_id"),
-                                doc.get("page_number"),
-                                doc.get("document_name"),
-                                doc.get("similarity_score")
-                            )
-                    # FOV image citations
-                    if "image_results" in tool_result:
-                        for fov in tool_result["image_results"].get("images", [])[:5]:
-                            add_fov_citation(
-                                fov.get("image_id"),
-                                fov.get("experiment_id"),
-                                fov.get("filename"),
-                                fov.get("similarity_score")
-                            )
+                for function_call in function_calls:
+                    tool_name = function_call.name
+                    tool_args = dict(function_call.args) if function_call.args else {}
+                    logger.info(f"Executing tool: {tool_name} with args: {tool_args}")
 
-                # FOV citations from search_fov_images
-                if tool_name == "search_fov_images" and "results" in tool_result:
-                    for fov in tool_result["results"][:5]:
-                        add_fov_citation(
-                            fov.get("image_id"),
-                            fov.get("experiment_id"),
-                            fov.get("filename"),
-                            fov.get("similarity_score")
-                        )
+                    try:
+                        tool_result = await execute_tool(tool_name, tool_args, user_id, db)
+                        logger.info(f"Tool {tool_name} completed successfully")
+                    except Exception as tool_error:
+                        logger.exception(f"Tool execution error for {tool_name}: {tool_error}")
+                        tool_result = {"error": f"Tool execution failed: {str(tool_error)}"}
 
-                # FOV citations from list_images (no confidence - not from search)
-                if tool_name == "list_images" and "images" in tool_result:
-                    for img in tool_result["images"][:5]:
-                        add_fov_citation(img.get("id"), img.get("experiment_id"), img.get("filename"))
+                    # Serialize result to handle datetime and numpy objects before storing in JSONB
+                    try:
+                        serialized_result = "..." if tool_name == "get_document_content" else _serialize_for_json(tool_result)
+                    except Exception as ser_error:
+                        logger.exception(f"Serialization error for {tool_name} result: {ser_error}")
+                        serialized_result = {"error": f"Serialization failed: {str(ser_error)}"}
+                    tool_calls_log.append({"tool": tool_name, "args": _serialize_for_json(tool_args), "result": serialized_result})
 
-                # Web sources from google_search
-                if tool_name == "google_search" and "sources" in tool_result:
-                    for source in tool_result["sources"][:5]:
-                        url = source.get("url", "")
-                        title = source.get("title", "Web Source")
-                        # Skip if already present
-                        if not any(c.get("url") == url for c in citations):
-                            citations.append({"type": "web", "url": url, "title": title})
+                    # Extract citations from search results
+                    if tool_name == "search_documents" and "results" in tool_result:
+                        for doc in tool_result["results"][:5]:
+                            add_doc_citation(doc.get("document_id"), doc.get("page_number"), doc.get("document_name"), doc.get("similarity_score"))
 
-                # Append the original model content to preserve thought_signature (required for Gemini 3)
+                    if tool_name == "semantic_search":
+                        if "document_results" in tool_result:
+                            for doc in tool_result["document_results"].get("pages", [])[:5]:
+                                add_doc_citation(doc.get("document_id"), doc.get("page_number"), doc.get("document_name"), doc.get("similarity_score"))
+                        if "image_results" in tool_result:
+                            for fov in tool_result["image_results"].get("images", [])[:5]:
+                                add_fov_citation(fov.get("image_id"), fov.get("experiment_id"), fov.get("filename"), fov.get("similarity_score"))
+
+                    if tool_name == "search_fov_images" and "results" in tool_result:
+                        for fov in tool_result["results"][:5]:
+                            add_fov_citation(fov.get("image_id"), fov.get("experiment_id"), fov.get("filename"), fov.get("similarity_score"))
+
+                    if tool_name == "list_images" and "images" in tool_result:
+                        for img in tool_result["images"][:5]:
+                            add_fov_citation(img.get("id"), img.get("experiment_id"), img.get("filename"))
+
+                    if tool_name == "google_search" and "sources" in tool_result:
+                        for source in tool_result["sources"][:5]:
+                            url = source.get("url", "")
+                            title = source.get("title", "Web Source")
+                            if not any(c.get("url") == url for c in citations):
+                                citations.append({"type": "web", "url": url, "title": title})
+
+                    # Track valid passages from extract_document_region for hash validation
+                    if tool_name == "extract_document_region" and tool_result.get("markdown"):
+                        valid_passages_markdown.append(tool_result["markdown"])
+                        logger.info(f"Tracked valid passage: {tool_result['markdown'][:60]}...")
+
+                    # Handle get_document_content specially - collect vision content
+                    if tool_name == "get_document_content" and "pages" in tool_result:
+                        text_summary = f"Document: {tool_result.get('name', 'Unknown')}\n"
+                        text_summary += f"Total pages: {tool_result.get('total_pages', 0)}\n"
+                        text_summary += f"Showing pages: {[p['page_number'] for p in tool_result['pages']]}\n"
+                        text_summary += "\nREAD THE PAGE IMAGES BELOW to understand the content.\n"
+                        text_summary += "To SHOW specific parts to the user, use `extract_document_region` tool.\n"
+                        vision_content_parts.append(types.Part(text=text_summary))
+
+                        for page in tool_result["pages"]:
+                            if page.get("image_base64"):
+                                vision_content_parts.append(types.Part(text=f"\n--- Page {page['page_number']} ---"))
+                                vision_content_parts.append(types.Part(inline_data=types.Blob(
+                                    mime_type=page.get("image_mime_type", "image/png"),
+                                    data=page["image_base64"]
+                                )))
+                                add_doc_citation(tool_result.get("id"), page["page_number"], tool_result.get("name"))
+                    else:
+                        # Regular function response
+                        serialized_response = _serialize_for_json(tool_result)
+                        logger.info(f"Creating function_response for {tool_name}")
+                        function_response_parts.append(types.Part(function_response=types.FunctionResponse(
+                            name=tool_name,
+                            response=serialized_response
+                        )))
+
+                # Append the original model content (with all function calls) to preserve thought_signature
                 messages.append(response.candidates[0].content)
-                logger.info(f"Appended model content with function_call to messages")
+                logger.info(f"Appended model content with {len(function_calls)} function_call(s) to messages")
 
-                # Handle get_document_content specially - send images for vision reading
-                if tool_name == "get_document_content" and "pages" in tool_result:
-                    response_parts = []
-                    # Add text summary
-                    text_summary = f"Document: {tool_result.get('name', 'Unknown')}\n"
-                    text_summary += f"Total pages: {tool_result.get('total_pages', 0)}\n"
-                    text_summary += f"Showing pages: {[p['page_number'] for p in tool_result['pages']]}\n"
-                    text_summary += "READ THE PAGE IMAGES BELOW to understand the content:\n"
-                    response_parts.append(types.Part(text=text_summary))
+                # Append all function responses together in a single Content
+                if function_response_parts:
+                    messages.append(types.Content(parts=function_response_parts))
+                    logger.info(f"Appended {len(function_response_parts)} function_response(s) to messages")
 
-                    # Add page images for vision reading
-                    for page in tool_result["pages"]:
-                        if page.get("image_base64"):
-                            response_parts.append(types.Part(text=f"\n--- Page {page['page_number']} ---"))
-                            response_parts.append(types.Part(inline_data=types.Blob(
-                                mime_type=page.get("image_mime_type", "image/png"),
-                                data=page["image_base64"]
-                            )))
-                            # Add citation for this page
-                            add_doc_citation(tool_result.get("id"), page["page_number"], tool_result.get("name"))
+                # Append vision content if any (as user content for Gemini to read)
+                if vision_content_parts:
+                    messages.append(types.Content(role="user", parts=vision_content_parts))
+                    logger.info(f"Appended document vision content with {len(vision_content_parts)} parts")
 
-                    messages.append(types.Content(role="user", parts=response_parts))
-                    logger.info(f"Appended document content with {len(response_parts)} parts (vision mode)")
-                else:
-                    # Function response - create FunctionResponse Part WITHOUT role="user"
-                    # The google-genai SDK expects function responses without explicit role
-                    serialized_response = _serialize_for_json(tool_result)
-                    logger.info(f"Sending function_response for {tool_name}, response keys: {list(serialized_response.keys()) if isinstance(serialized_response, dict) else 'non-dict'}")
-                    function_response_part = types.Part(function_response=types.FunctionResponse(
-                        name=tool_name,
-                        response=serialized_response
-                    ))
-                    # Note: Trying without explicit role - let the SDK handle it
-                    messages.append(types.Content(parts=[function_response_part]))
-                    logger.info(f"Appended function_response to messages (no explicit role)")
                 continue
 
             text_parts = [p.text for p in parts if hasattr(p, 'text') and p.text]
             if text_parts:
+                content = "\n".join(text_parts)
+                # Validate passage hashes in the response (fix any invalid ones)
+                if valid_passages_markdown:
+                    content = _fix_passage_links_in_response(content, valid_passages_markdown, user_id)
                 logger.info(f"Returning text response with {len(text_parts)} parts")
-                return {"content": "\n".join(text_parts), "citations": citations, "image_refs": image_refs, "tool_calls": tool_calls_log, "interaction_id": current_interaction_id}
+                return {"content": content, "citations": citations, "image_refs": image_refs, "tool_calls": tool_calls_log, "interaction_id": current_interaction_id}
 
         # Try response.text as fallback
         if response.text:
-            logger.info(f"Returning response.text fallback ({len(response.text)} chars)")
-            return {"content": response.text, "citations": citations, "image_refs": image_refs, "tool_calls": tool_calls_log, "interaction_id": current_interaction_id}
+            content = response.text
+            # Validate passage hashes in the response (fix any invalid ones)
+            if valid_passages_markdown:
+                content = _fix_passage_links_in_response(content, valid_passages_markdown, user_id)
+            logger.info(f"Returning response.text fallback ({len(content)} chars)")
+            return {"content": content, "citations": citations, "image_refs": image_refs, "tool_calls": tool_calls_log, "interaction_id": current_interaction_id}
 
         # If we get here without text or function_call after having tool calls,
         # Gemini 3 sometimes returns empty response - retry once more
@@ -1144,16 +1281,22 @@ async def execute_tool(tool_name: str, args: Dict[str, Any], user_id: int, db: A
 
         elif tool_name == "get_document_content":
             if not args.get("document_id"): return {"error": "document_id required"}
+
+            document_id = args["document_id"]
+            page_numbers = args.get("page_numbers")
+
             content = await get_document_content(
-                document_id=args["document_id"],
+                document_id=document_id,
                 user_id=user_id,
                 db=db,
-                page_numbers=args.get("page_numbers"),
+                page_numbers=page_numbers,
                 include_images=True,  # Include base64 images for vision reading
             )
             if not content:
                 return {"error": "Document not found"}
+
             # Return content with images - Gemini will read them via vision
+            # To show specific regions, use extract_document_region tool separately
             return content
 
         elif tool_name == "get_experiment_stats":
@@ -1264,51 +1407,14 @@ async def execute_tool(tool_name: str, args: Dict[str, Any], user_id: int, db: A
 
                 # Safely inject user_id filter with proper parentheses to prevent operator precedence bypass
                 # SECURITY: Wrapping user conditions in () prevents: WHERE user_id=X AND (1=1 OR user_id=999)
-                if needs_exp_filter:
-                    # Find WHERE position case-insensitively
-                    where_match = re.search(r'\bWHERE\b', query_str, re.IGNORECASE)
-                    if where_match:
-                        pos = where_match.end()
-                        # Extract rest of the query after WHERE until GROUP BY/ORDER BY/LIMIT
-                        rest_of_query = query_str[pos:]
-                        # Find where the WHERE clause ends
-                        end_match = re.search(r'\b(GROUP\s+BY|ORDER\s+BY|LIMIT|HAVING|$)', rest_of_query, re.IGNORECASE)
-                        if end_match:
-                            where_conditions = rest_of_query[:end_match.start()].strip()
-                            after_where = rest_of_query[end_match.start():]
-                        else:
-                            where_conditions = rest_of_query.strip()
-                            after_where = ""
-                        # Wrap user's WHERE conditions in parentheses for safe AND
-                        base_q = query_str[:pos] + f" experiments.user_id = :user_id AND ({where_conditions}) {after_where}"
-                    else:
-                        # Find FROM clause to insert WHERE after it
-                        from_match = re.search(r'\bFROM\b\s+\w+(?:\s+\w+)?(?:\s+(?:LEFT|RIGHT|INNER|OUTER)?\s*JOIN\s+\w+(?:\s+\w+)?(?:\s+ON\s+[^,]+)?)*', query_str, re.IGNORECASE)
-                        if from_match:
-                            pos = from_match.end()
-                            base_q = query_str[:pos] + " WHERE experiments.user_id = :user_id" + query_str[pos:]
-                        else:
-                            base_q = query_str.rstrip() + " WHERE experiments.user_id = :user_id"
-                elif needs_doc_filter:
-                    where_match = re.search(r'\bWHERE\b', query_str, re.IGNORECASE)
-                    if where_match:
-                        pos = where_match.end()
-                        rest_of_query = query_str[pos:]
-                        end_match = re.search(r'\b(GROUP\s+BY|ORDER\s+BY|LIMIT|HAVING|$)', rest_of_query, re.IGNORECASE)
-                        if end_match:
-                            where_conditions = rest_of_query[:end_match.start()].strip()
-                            after_where = rest_of_query[end_match.start():]
-                        else:
-                            where_conditions = rest_of_query.strip()
-                            after_where = ""
-                        base_q = query_str[:pos] + f" rag_documents.user_id = :user_id AND ({where_conditions}) {after_where}"
-                    else:
-                        from_match = re.search(r'\bFROM\b\s+\w+(?:\s+\w+)?(?:\s+(?:LEFT|RIGHT|INNER|OUTER)?\s*JOIN\s+\w+(?:\s+\w+)?(?:\s+ON\s+[^,]+)?)*', query_str, re.IGNORECASE)
-                        if from_match:
-                            pos = from_match.end()
-                            base_q = query_str[:pos] + " WHERE rag_documents.user_id = :user_id" + query_str[pos:]
-                        else:
-                            base_q = query_str.rstrip() + " WHERE rag_documents.user_id = :user_id"
+                filter_table = (
+                    "experiments" if needs_exp_filter
+                    else "rag_documents" if needs_doc_filter
+                    else None
+                )
+
+                if filter_table:
+                    base_q = _inject_user_id_filter(query_str, filter_table)
                 else:
                     base_q = query_str
 
@@ -1914,6 +2020,84 @@ async def execute_tool(tool_name: str, args: Dict[str, Any], user_id: int, db: A
                 return {"memories": [{"key": m.key, "type": m.memory_type, "updated": m.updated_at.isoformat()} for m in mems]}
             return {"error": f"Unknown action: {action}"}
 
+        elif tool_name == "extract_document_region":
+            # Agentic Vision: Extract specific region from document page
+            # Agent explicitly requests what to show, gets markdown to include inline
+            if not args.get("document_id"):
+                return {"error": "document_id required"}
+            if not args.get("page_number"):
+                return {"error": "page_number required"}
+            if not args.get("description"):
+                return {"error": "description required (what to extract, e.g. 'Figure 2')"}
+
+            document_id = args["document_id"]
+            page_number = args["page_number"]
+            description = args["description"]
+            bbox = args.get("bbox")  # Optional: [ymin, xmin, ymax, xmax] normalized 0-1000
+
+            # Get passage -- either via Gemini vision search or direct bbox extraction
+            if not bbox:
+                from services.rag_service import extract_relevant_passages
+                passages = await extract_relevant_passages(
+                    document_id=document_id,
+                    page_number=page_number,
+                    query=description,
+                    user_id=user_id,
+                    db=db,
+                    max_passages=1,
+                )
+                if not passages:
+                    return {
+                        "error": f"Could not find '{description}' on page {page_number}",
+                        "suggestion": "Try a different description or check if the content is on this page",
+                        "fallback_markdown": f"*[Could not extract: {description}]*"
+                    }
+                passage = passages[0]
+            else:
+                from services.rag_service import extract_passage_image
+                passage = await extract_passage_image(
+                    document_id=document_id,
+                    page_number=page_number,
+                    bbox=bbox,
+                    user_id=user_id,
+                    db=db,
+                )
+                if not passage:
+                    return {
+                        "error": f"Failed to extract region with bbox {bbox}",
+                        "fallback_markdown": f"*[Could not extract region]*"
+                    }
+
+            # Build response from extracted passage
+            if passage.get("type") == "full_page":
+                return {
+                    "type": "full_page",
+                    "message": f"'{description}' spans most of page {page_number}",
+                    "markdown": f"![{description}](/api/rag/documents/{document_id}/pages/{page_number}/image)",
+                    "document_id": document_id,
+                    "page_number": page_number,
+                }
+
+            alt_text = passage.get('extracted_text', description)[:50]
+            alt_text = alt_text.replace('\n', ' ').replace('\r', ' ').replace('[', '(').replace(']', ')')
+            alt_text = ' '.join(alt_text.split())
+            markdown = f"![{alt_text}](passage:{passage['document_id']}:{passage['page_number']}:{passage['passage_hash']})"
+
+            result = {
+                "success": True,
+                "type": passage.get("passage_type", "region"),
+                "markdown": markdown,
+                "document_id": document_id,
+                "page_number": page_number,
+                "instruction": "INCLUDE the 'markdown' value in your response at the appropriate location to display this excerpt inline."
+            }
+            if bbox:
+                result["bbox"] = bbox
+            else:
+                result["description"] = description
+                result["confidence"] = passage.get("confidence", 0.5)
+            return result
+
         return {"error": f"Unknown tool: {tool_name}"}
 
     except Exception as e:
@@ -1924,4 +2108,4 @@ async def execute_tool(tool_name: str, args: Dict[str, Any], user_id: int, db: A
         except Exception as rollback_error:
             # Log rollback errors instead of silently ignoring
             logger.error(f"Rollback failed after tool error in {tool_name}: {rollback_error}")
-        return {"error": str(e)}
+        return {"error": f"Tool '{tool_name}' failed. Please try again or rephrase your request."}

@@ -26,7 +26,9 @@
     "previous": "Previous",
     "next": "Next",
     "retry": "Retry",
-    "copyFailed": "Failed to copy. Please copy manually."
+    "copyFailed": "Failed to copy. Please copy manually.",
+    "openInEditor": "Open in Editor",
+    "viewInDocument": "View in Document"
   },
   "auth": {
     "login": "Sign In",
@@ -542,6 +544,8 @@
     "codeCopied": "Copied!",
     "copyFailed": "Copy failed",
     "imageFailedToLoad": "Image failed to load",
+    "documentExcerpt": "Document excerpt",
+    "viewInDocument": "View in document",
     "preview": "Preview",
     "source": "source",
     "sources": "sources",

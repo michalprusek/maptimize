@@ -4,10 +4,15 @@ This service provides:
 - Document page search using vector similarity
 - FOV image search using vector similarity
 - Combined search across all knowledge sources
+- Passage extraction from document pages
 """
 
+import base64
+import hashlib
 import logging
-from typing import List, Optional
+from io import BytesIO
+from pathlib import Path
+from typing import List, Optional, Dict, Any
 
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -20,6 +25,9 @@ from models.experiment import Experiment
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
+
+# Directory for cached passage images (stored in rag_document_dir parent)
+PASSAGES_CACHE_DIR = "rag_passages"
 
 
 class RAGServiceError(Exception):
@@ -573,3 +581,366 @@ async def batch_index_fov_images(
             result["error_samples"].append(f"... and {failed - len(errors)} more errors")
 
     return result
+
+
+def _get_passage_hash(document_id: int, page_number: int, bbox: List[int]) -> str:
+    """Generate a unique hash for a passage based on its location."""
+    key = f"{document_id}_{page_number}_{bbox[0]}_{bbox[1]}_{bbox[2]}_{bbox[3]}"
+    return hashlib.md5(key.encode()).hexdigest()[:12]
+
+
+def _get_passages_cache_path(user_id: int) -> Path:
+    """Get the cache directory path for a user's passages."""
+    # Store passages alongside RAG documents (in data/rag_passages/{user_id}/)
+    cache_dir = settings.rag_document_dir.parent / PASSAGES_CACHE_DIR / str(user_id)
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    return cache_dir
+
+
+async def _get_document_page_image_path(
+    document_id: int,
+    page_number: int,
+    user_id: int,
+    db: AsyncSession,
+) -> tuple[Optional["RAGDocument"], Optional[Path]]:
+    """Load a document and return the filesystem path to a page image.
+
+    Returns (document, image_path) or (None, None) when the document, page,
+    or image file cannot be found.
+    """
+    result = await db.execute(
+        select(RAGDocument)
+        .options(selectinload(RAGDocument.pages))
+        .where(
+            RAGDocument.id == document_id,
+            RAGDocument.user_id == user_id
+        )
+    )
+    document = result.scalar_one_or_none()
+    if not document:
+        logger.warning(f"Document {document_id} not found for user {user_id}")
+        return None, None
+
+    page = next((p for p in document.pages if p.page_number == page_number), None)
+    if not page or not page.image_path:
+        logger.warning(f"Page {page_number} not found for document {document_id}")
+        return None, None
+
+    image_path = Path(page.image_path)
+    if not image_path.exists():
+        logger.warning(f"Page image not found: {image_path}")
+        return None, None
+
+    return document, image_path
+
+
+async def extract_passage_image(
+    document_id: int,
+    page_number: int,
+    bbox: List[int],
+    user_id: int,
+    db: AsyncSession,
+    padding: int = 30,
+) -> Optional[Dict[str, Any]]:
+    """
+    Extract a cropped region (passage) from a document page.
+
+    Args:
+        document_id: Document ID
+        page_number: Page number (1-indexed)
+        bbox: Bounding box [ymin, xmin, ymax, xmax] normalized 0-1000
+        user_id: User ID for ownership verification
+        db: Database session
+        padding: Pixels of padding to add around the crop
+
+    Returns:
+        Dict with image_base64, image_url, source metadata, or None if failed
+    """
+    from PIL import Image as PILImage
+
+    # Validate bbox format
+    if len(bbox) != 4:
+        logger.error(f"Invalid bbox format: {bbox}")
+        return None
+
+    ymin, xmin, ymax, xmax = bbox
+
+    # Validate bbox values (0-1000 range)
+    if not all(0 <= v <= 1000 for v in bbox):
+        logger.error(f"Invalid bbox values (must be 0-1000): {bbox}")
+        return None
+
+    # Validate bbox order
+    if ymin >= ymax or xmin >= xmax:
+        logger.error(f"Invalid bbox dimensions: ymin={ymin}, ymax={ymax}, xmin={xmin}, xmax={xmax}")
+        return None
+
+    document, image_path = await _get_document_page_image_path(document_id, page_number, user_id, db)
+    if not document or not image_path:
+        return None
+
+    try:
+        # Load the page image
+        with PILImage.open(image_path) as img:
+            width, height = img.size
+
+            # Denormalize coordinates (0-1000 -> pixels)
+            px_xmin = int(xmin * width / 1000)
+            px_xmax = int(xmax * width / 1000)
+            px_ymin = int(ymin * height / 1000)
+            px_ymax = int(ymax * height / 1000)
+
+            # Add padding
+            px_xmin = max(0, px_xmin - padding)
+            px_xmax = min(width, px_xmax + padding)
+            px_ymin = max(0, px_ymin - padding)
+            px_ymax = min(height, px_ymax + padding)
+
+            # Validate crop dimensions (min 50x50)
+            crop_width = px_xmax - px_xmin
+            crop_height = px_ymax - px_ymin
+            if crop_width < 50 or crop_height < 50:
+                logger.warning(f"Crop too small: {crop_width}x{crop_height}, skipping")
+                return None
+
+            # Skip if crop is >90% of page (just return full page reference)
+            if crop_width > width * 0.9 and crop_height > height * 0.9:
+                return {
+                    "type": "full_page",
+                    "document_id": document_id,
+                    "page_number": page_number,
+                    "document_name": document.name,
+                    "image_url": f"/api/rag/documents/{document_id}/pages/{page_number}/image",
+                    "message": "The relevant content spans most of the page."
+                }
+
+            # Crop the image
+            cropped = img.crop((px_xmin, px_ymin, px_xmax, px_ymax))
+
+            # Generate hash for caching
+            passage_hash = _get_passage_hash(document_id, page_number, bbox)
+
+            # Save to cache using atomic write (temp file + rename)
+            cache_path = _get_passages_cache_path(user_id)
+            output_path = cache_path / f"{passage_hash}.png"
+            temp_path = cache_path / f"{passage_hash}.tmp"
+            cropped.save(temp_path, "PNG", optimize=True)
+            temp_path.rename(output_path)  # Atomic on POSIX systems
+
+            # Generate base64 for inline display
+            buffer = BytesIO()
+            cropped.save(buffer, "PNG", optimize=True)
+            image_base64 = base64.b64encode(buffer.getvalue()).decode("utf-8")
+            buffer.close()  # Explicit cleanup
+            cropped.close()  # Explicit cleanup
+
+            logger.info(f"Extracted passage {passage_hash} from doc {document_id} p.{page_number}")
+
+            return {
+                "type": "passage",
+                "passage_hash": passage_hash,
+                "document_id": document_id,
+                "page_number": page_number,
+                "document_name": document.name,
+                "image_base64": image_base64,
+                "image_url": f"/api/rag/documents/{document_id}/passages/{passage_hash}",
+                "bbox_pixels": {
+                    "x": px_xmin,
+                    "y": px_ymin,
+                    "w": crop_width,
+                    "h": crop_height,
+                },
+                "bbox_normalized": bbox,
+            }
+
+    except Exception as e:
+        logger.exception(f"Error extracting passage from doc {document_id} p.{page_number}: {e}")
+        return None
+
+
+async def get_cached_passage(
+    document_id: int,
+    passage_hash: str,
+    user_id: int,
+    db: AsyncSession,
+) -> Optional[Path]:
+    """
+    Get a cached passage image file path.
+
+    Args:
+        document_id: Document ID for ownership verification
+        passage_hash: Hash of the passage
+        user_id: User ID
+        db: Database session
+
+    Returns:
+        Path to the cached image file, or None if not found/unauthorized
+    """
+    # Verify user owns the document
+    result = await db.execute(
+        select(RAGDocument.id).where(
+            RAGDocument.id == document_id,
+            RAGDocument.user_id == user_id
+        )
+    )
+    if not result.scalar_one_or_none():
+        logger.warning(f"Document {document_id} not found for user {user_id}")
+        return None
+
+    # Check cache
+    cache_path = _get_passages_cache_path(user_id)
+    passage_path = cache_path / f"{passage_hash}.png"
+
+    # Security: Verify path is within expected cache directory (prevent path traversal)
+    if not passage_path.resolve().is_relative_to(cache_path.resolve()):
+        logger.warning(f"Path traversal attempt detected: {passage_path}")
+        return None
+
+    if passage_path.exists():
+        return passage_path
+
+    logger.warning(f"Cached passage not found: {passage_path}")
+    return None
+
+
+async def extract_relevant_passages(
+    document_id: int,
+    page_number: int,
+    query: str,
+    user_id: int,
+    db: AsyncSession,
+    max_passages: int = 3,
+) -> List[Dict[str, Any]]:
+    """
+    Use Gemini vision to find and extract relevant passages from a page.
+
+    Args:
+        document_id: Document ID
+        page_number: Page number (1-indexed)
+        query: What to look for in the page
+        user_id: User ID
+        db: Database session
+        max_passages: Maximum passages to extract
+
+    Returns:
+        List of extracted passage dicts
+    """
+    import google.genai as genai
+    from google.genai import types
+
+    if not settings.gemini_api_key:
+        logger.error("GEMINI_API_KEY not configured for passage extraction")
+        return []
+
+    document, image_path = await _get_document_page_image_path(document_id, page_number, user_id, db)
+    if not document or not image_path:
+        logger.warning(f"Cannot extract passages: doc {document_id} p.{page_number} not found for user {user_id}")
+        return []
+
+    # Load image as base64
+    with open(image_path, "rb") as f:
+        image_bytes = f.read()
+    image_base64 = base64.b64encode(image_bytes).decode("utf-8")
+
+    # Prompt for spatial understanding - optimized for complete element extraction
+    extraction_prompt = f"""Analyze this document page and find the element matching: "{query}"
+
+Return a JSON array with the bounding box of the COMPLETE element:
+{{
+    "text": "Brief description (max 200 chars)",
+    "box_2d": [ymin, xmin, ymax, xmax],
+    "type": "figure" | "table" | "text" | "equation",
+    "confidence": 0.0-1.0
+}}
+
+CRITICAL RULES FOR BOUNDING BOXES:
+1. **FIGURES**: Include the ENTIRE figure - the image/chart/graph AND its caption (e.g., "Figure 1: ...") AND any legend/colorbar. The caption is usually below or above the figure.
+2. **TABLES**: Include the ENTIRE table - header row, ALL data rows, AND the caption (e.g., "Table 1: ...").
+3. **EQUATIONS**: Include the equation AND its number (e.g., "(1)") if present.
+4. **TEXT**: Include the complete paragraph or section, not just a single line.
+
+COORDINATE SYSTEM:
+- Values are 0-1000 (0=top/left, 1000=bottom/right)
+- ymin = top edge, ymax = bottom edge
+- xmin = left edge, xmax = right edge
+- Add 20-30 pixel margin around the element to avoid cutting off edges
+
+Return ONLY the JSON array. Return [] if nothing found. Maximum {max_passages} elements."""
+
+    try:
+        client = genai.Client(api_key=settings.gemini_api_key)
+
+        response = await client.aio.models.generate_content(
+            model="gemini-2.0-flash",
+            contents=[
+                types.Content(
+                    role="user",
+                    parts=[
+                        types.Part(inline_data=types.Blob(
+                            mime_type="image/png",
+                            data=image_base64
+                        )),
+                        types.Part(text=extraction_prompt)
+                    ]
+                )
+            ],
+            config=types.GenerateContentConfig(
+                temperature=0.1,  # Low temperature for precise extraction
+            )
+        )
+
+        # Parse the response
+        response_text = response.text.strip()
+
+        # Handle markdown code blocks
+        if response_text.startswith("```"):
+            # Remove ```json and ``` markers
+            lines = response_text.split("\n")
+            response_text = "\n".join(lines[1:-1] if lines[-1] == "```" else lines[1:])
+
+        import json
+        passages_data = json.loads(response_text)
+
+        if not isinstance(passages_data, list):
+            logger.warning(f"Unexpected response format for passage extraction: {type(passages_data)}")
+            return []
+
+        # Extract each passage
+        extracted = []
+        for passage_info in passages_data[:max_passages]:
+            bbox = passage_info.get("box_2d", [])
+            if len(bbox) != 4:
+                continue
+
+            # Use larger padding for figures and tables (they have captions)
+            passage_type = passage_info.get("type", "text")
+            padding = 50 if passage_type in ("figure", "table") else 30
+
+            passage = await extract_passage_image(
+                document_id=document_id,
+                page_number=page_number,
+                bbox=bbox,
+                user_id=user_id,
+                db=db,
+                padding=padding,
+            )
+
+            if passage:
+                # Add metadata from Gemini
+                passage["extracted_text"] = passage_info.get("text", "")
+                passage["passage_type"] = passage_info.get("type", "text")
+                passage["confidence"] = passage_info.get("confidence", 0.5)
+                extracted.append(passage)
+
+        logger.info(f"Extracted {len(extracted)} passages from doc {document_id} p.{page_number}")
+        return extracted
+
+    except json.JSONDecodeError as e:
+        logger.warning(f"Failed to parse passage extraction response: {e}")
+        return []
+    except ValueError as e:
+        logger.warning(f"Gemini returned no usable text for doc {document_id} p.{page_number}: {e}")
+        return []
+    except Exception as e:
+        logger.exception(f"Error in passage extraction: {e}")
+        return []

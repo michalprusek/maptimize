@@ -439,7 +439,7 @@ async def get_progress(
     db: AsyncSession = Depends(get_db)
 ):
     """Get ranking progress and convergence info."""
-    # Count comparisons
+    # Count comparisons (scoped to experiment if filtered)
     count_query = (
         select(func.count(Comparison.id))
         .where(
@@ -447,6 +447,10 @@ async def get_progress(
             Comparison.undone == False
         )
     )
+    if experiment_id:
+        count_query = count_query.join(
+            CellCrop, Comparison.crop_a_id == CellCrop.id
+        ).join(Image).where(Image.experiment_id == experiment_id)
     count_result = await db.execute(count_query)
     total_comparisons = count_result.scalar() or 0
 
@@ -463,9 +467,22 @@ async def get_progress(
     sigma_result = await db.execute(sigma_query)
     avg_sigma = sigma_result.scalar() or settings.initial_sigma
 
+    # Count rated crops (must match experiment_id filter used for sigma)
+    rated_count_query = (
+        select(func.count(UserRating.id))
+        .join(CellCrop)
+        .join(Image)
+        .where(UserRating.user_id == current_user.id)
+    )
+    if experiment_id:
+        rated_count_query = rated_count_query.where(Image.experiment_id == experiment_id)
+    rated_count_result = await db.execute(rated_count_query)
+    rated_items_count = rated_count_result.scalar() or 0
+
     convergence = calculate_convergence(avg_sigma, settings.initial_sigma, settings.target_sigma)
     estimated_remaining = estimate_remaining_comparisons(
-        avg_sigma, settings.initial_sigma, settings.target_sigma
+        avg_sigma, settings.initial_sigma, settings.target_sigma,
+        rated_items_count=rated_items_count, total_comparisons=total_comparisons
     )
 
     # Determine phase

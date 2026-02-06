@@ -59,21 +59,48 @@ def estimate_remaining_comparisons(
     avg_sigma: float,
     initial_sigma: float,
     target_sigma: float,
-    full_convergence_estimate: int = 200
+    rated_items_count: int = 0,
+    total_comparisons: int = 0
 ) -> int:
     """
     Estimate remaining comparisons needed for convergence.
+
+    Combines two signals:
+    1. Image count heuristic: ~N*5 total comparisons needed for N images
+    2. Sigma ratio: how far sigma still needs to drop (actual convergence progress)
+
+    The sigma-based estimate adapts dynamically — if convergence is faster/slower
+    than the heuristic predicts, the estimate adjusts accordingly.
 
     Args:
         avg_sigma: Current average sigma
         initial_sigma: Initial sigma value
         target_sigma: Target sigma for full convergence
-        full_convergence_estimate: Estimated comparisons for full convergence
+        rated_items_count: Number of rated items (cell crops) for this user/experiment
+        total_comparisons: Number of comparisons already made
 
     Returns:
         Estimated number of remaining comparisons
     """
     if avg_sigma <= target_sigma:
         return 0
-    remaining_ratio = (avg_sigma - target_sigma) / (initial_sigma - target_sigma)
-    return int(remaining_ratio * full_convergence_estimate)
+
+    # Estimate total comparisons needed based on rated item count
+    # Rule of thumb: N * 5 comparisons for reasonable convergence
+    # (each item needs ~10 comparisons, each comparison involves 2 items)
+    if rated_items_count > 0:
+        estimated_total = max(50, rated_items_count * 5)
+    else:
+        estimated_total = 200  # fallback
+
+    # Scale by sigma ratio — reflects actual convergence progress
+    # remaining_ratio: ~1.0 at start (no progress), approaches 0.0 near convergence
+    sigma_range = initial_sigma - target_sigma
+    if sigma_range > 0 and total_comparisons > 0:
+        remaining_ratio = max(0.0, min(1.0, (avg_sigma - target_sigma) / sigma_range))
+        remaining = int(estimated_total * remaining_ratio)
+    else:
+        # Fallback: no comparisons yet or invalid sigma range
+        remaining = estimated_total - total_comparisons
+
+    return max(0, remaining)
