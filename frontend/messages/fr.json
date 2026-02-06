@@ -26,7 +26,9 @@
     "previous": "Précédent",
     "next": "Suivant",
     "retry": "Réessayer",
-    "copyFailed": "Échec de la copie. Veuillez copier manuellement."
+    "copyFailed": "Échec de la copie. Veuillez copier manuellement.",
+    "openInEditor": "Ouvrir dans l'éditeur",
+    "viewInDocument": "Voir dans le document"
   },
   "auth": {
     "login": "Se connecter",
@@ -569,6 +571,8 @@
     "codeCopied": "Copié !",
     "copyFailed": "Échec de la copie",
     "imageFailedToLoad": "Échec du chargement de l'image",
+    "documentExcerpt": "Extrait du document",
+    "viewInDocument": "Voir dans le document",
     "preview": "Aperçu",
     "source": "source",
     "sources": "sources",

@@ -390,6 +390,14 @@ export function MessageBubble({ message, isNew = false }: MessageBubbleProps) {
               <ReactMarkdown
                 remarkPlugins={[remarkGfm, remarkMath]}
                 rehypePlugins={[rehypeKatex]}
+                urlTransform={(url) => {
+                  // Allow our custom URL schemes for passages and citations
+                  if (url.startsWith("passage:") || url.startsWith("citation:")) {
+                    return url;
+                  }
+                  // For other URLs, use default behavior (allow http/https, block javascript: etc.)
+                  return url;
+                }}
                 components={{
                   // Customize link rendering - special handling for citations and file downloads
                   a: ({ href, children }) => {
@@ -417,6 +425,36 @@ export function MessageBubble({ message, isNew = false }: MessageBubbleProps) {
                           {children}
                         </button>
                       );
+                    }
+
+                    // Handle passage links (passage:docId:page:hash) - open PDF in sidebar
+                    if (href?.startsWith("passage:")) {
+                      const parts = href.replace("passage:", "").split(":");
+                      if (parts.length >= 2) {
+                        const docId = parseInt(parts[0], 10);
+                        const page = parseInt(parts[1], 10) || 1;
+
+                        return (
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.preventDefault();
+                              e.stopPropagation();
+                              console.log("Opening PDF viewer for passage:", docId, page);
+                              openPDFViewer(docId, page);
+                            }}
+                            className={clsx(
+                              "inline-flex items-center gap-1 px-2 py-0.5 mx-0.5 rounded",
+                              "bg-primary-500/20 hover:bg-primary-500/30 border border-primary-500/30",
+                              "text-primary-400 hover:text-primary-300 transition-all",
+                              "no-underline font-medium text-sm cursor-pointer"
+                            )}
+                          >
+                            <FileText className="w-3.5 h-3.5" />
+                            {children}
+                          </button>
+                        );
+                      }
                     }
 
                     const isDownloadLink = href && (
@@ -575,7 +613,11 @@ export function MessageBubble({ message, isNew = false }: MessageBubbleProps) {
                   },
                   // Image rendering with auth token, backend URL, and LUT styling
                   img: ({ src, alt }) => {
-                    const processed = processImageUrl(src || "");
+                    // Skip rendering if src is empty or invalid
+                    // This can happen during React hydration or with malformed markdown
+                    if (!src || src.trim() === "") {
+                      return null;
+                    }
 
                     // Handle image load errors gracefully with logging
                     // SECURITY: Don't log full URL to avoid token exposure
@@ -586,6 +628,48 @@ export function MessageBubble({ message, isNew = false }: MessageBubbleProps) {
                       target.style.filter = "grayscale(1)";
                       target.alt = t("imageFailedToLoad");
                     };
+
+                    // Handle passage: links (inline document excerpts)
+                    // Format: passage:docId:page:hash
+                    if (src.startsWith("passage:")) {
+                      const parts = src.replace("passage:", "").split(":");
+                      if (parts.length >= 3) {
+                        const docId = parts[0];
+                        const pageNum = parts[1];
+                        const hash = parts[2];
+                        const apiUrl = process.env.NEXT_PUBLIC_API_URL || "";
+                        // Get token from localStorage (same approach as processImageUrl)
+                        const token = typeof window !== "undefined" ? localStorage.getItem("token") : null;
+                        const passageUrl = `${apiUrl}/api/rag/documents/${docId}/passages/${hash}${token ? `?token=${token}` : ""}`;
+
+                        return (
+                          <span className="passage-citation block my-4 p-4 bg-white/[0.03] rounded-xl border border-white/10 shadow-lg">
+                            <img
+                              src={passageUrl}
+                              alt={alt || "Document passage"}
+                              className="w-full h-auto rounded-lg border border-white/10 cursor-pointer hover:opacity-90 transition-opacity bg-white"
+                              loading="lazy"
+                              onClick={() => handleImageClick(src || "", alt || "Document passage")}
+                              onError={handleImageError}
+                            />
+                            <span className="flex items-center gap-2 mt-3 text-sm text-text-secondary">
+                              <FileText className="w-4 h-4 text-primary-400" />
+                              <span className="font-medium">{alt || t("documentExcerpt")}</span>
+                              <span className="text-text-muted">• {t("page")} {pageNum}</span>
+                              <button
+                                type="button"
+                                onClick={() => openPDFViewer(parseInt(docId, 10), parseInt(pageNum, 10))}
+                                className="ml-auto px-3 py-1 rounded-md bg-primary-500/20 text-primary-400 hover:bg-primary-500/30 transition-colors text-xs font-medium"
+                              >
+                                {t("viewInDocument")}
+                              </button>
+                            </span>
+                          </span>
+                        );
+                      }
+                    }
+
+                    const processed = processImageUrl(src || "");
 
                     // Base64 plots: full width, no grid
                     if (processed.isBase64) {

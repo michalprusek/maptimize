@@ -18,7 +18,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import { X, ChevronLeft, ChevronRight, Download, Loader2, Check, ExternalLink } from "lucide-react";
 import { clsx } from "clsx";
 import { useSettingsStore, LUT_CLASSES } from "@/stores/settingsStore";
-import { processImageUrl } from "@/lib/utils";
+import { processImageUrl, isPassageUrl } from "@/lib/utils";
 
 export interface PreviewImage {
   src: string;
@@ -57,6 +57,9 @@ export function ImagePreviewModal({
     if (!currentImage) return null;
     return processImageUrl(currentImage.src);
   }, [currentImage]);
+
+  // Check if current image is a document passage
+  const isPassageImage = currentImage ? isPassageUrl(currentImage.src) : false;
 
   // Process all image URLs for thumbnails
   const processedImages = useMemo(() => {
@@ -184,7 +187,7 @@ export function ImagePreviewModal({
               )}
             </div>
             <div className="flex items-center gap-2">
-              {/* Open in Editor button */}
+              {/* Open in Editor / View in Document button */}
               {onOpenInEditor && (
                 <button
                   onClick={(e) => {
@@ -193,7 +196,7 @@ export function ImagePreviewModal({
                     onClose();
                   }}
                   className="p-2 rounded-lg hover:bg-white/10 text-text-secondary hover:text-text-primary transition-colors"
-                  title={t("openInEditor")}
+                  title={isPassageImage ? t("viewInDocument") : t("openInEditor")}
                 >
                   <ExternalLink className="w-5 h-5" />
                 </button>

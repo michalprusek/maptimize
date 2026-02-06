@@ -463,9 +463,18 @@ async def get_progress(
     sigma_result = await db.execute(sigma_query)
     avg_sigma = sigma_result.scalar() or settings.initial_sigma
 
+    # Count images for better estimate
+    image_count_query = (
+        select(func.count(UserRating.id))
+        .where(UserRating.user_id == current_user.id)
+    )
+    image_count_result = await db.execute(image_count_query)
+    image_count = image_count_result.scalar() or 0
+
     convergence = calculate_convergence(avg_sigma, settings.initial_sigma, settings.target_sigma)
     estimated_remaining = estimate_remaining_comparisons(
-        avg_sigma, settings.initial_sigma, settings.target_sigma
+        avg_sigma, settings.initial_sigma, settings.target_sigma,
+        image_count=image_count, total_comparisons=total_comparisons
     )
 
     # Determine phase

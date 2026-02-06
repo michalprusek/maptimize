@@ -39,6 +39,7 @@ from services.rag_service import (
     search_fov_images,
     combined_search,
     batch_index_fov_images,
+    get_cached_passage,
 )
 
 logger = logging.getLogger(__name__)
@@ -372,6 +373,44 @@ async def serve_page_image(
 
     return FileResponse(
         path=image_path,
+        media_type="image/png",
+    )
+
+
+@router.get("/documents/{document_id}/passages/{passage_hash}")
+async def serve_passage_image(
+    document_id: int,
+    passage_hash: str,
+    current_user: User = Depends(get_current_user_from_query),
+    db: AsyncSession = Depends(get_db)
+):
+    """Serve a cropped passage image from a document page.
+
+    Uses query parameter token auth for browser-native image loading.
+    Passages are cached crops extracted by Gemini spatial understanding.
+    """
+    # Validate passage_hash format (12 char hex)
+    if not passage_hash or len(passage_hash) != 12 or not all(c in '0123456789abcdef' for c in passage_hash):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid passage hash format"
+        )
+
+    passage_path = await get_cached_passage(
+        document_id=document_id,
+        passage_hash=passage_hash,
+        user_id=current_user.id,
+        db=db
+    )
+
+    if not passage_path:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Passage not found or expired"
+        )
+
+    return FileResponse(
+        path=passage_path,
         media_type="image/png",
     )
 

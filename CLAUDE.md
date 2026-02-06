@@ -4,6 +4,13 @@ CRITICAL: před každou novou implementací zkontroluj, jestli už to není naim
 
 CRITICAL: po každé nové implementaci spust code-simplifier agenty ať projdou celé repo a zjednoduší kód a zkontrolujou DRY a SSOT principy.
 
+CRITICAL: Pro rebuild VŽDY používej PRODUKČNÍ docker-compose (`docker-compose.prod.yml`), NE dev! Příklad:
+```bash
+docker compose -f docker-compose.prod.yml build maptimize-backend --no-cache
+docker compose -f docker-compose.prod.yml up -d maptimize-backend
+```
+⚠️ NIKDY nepoužívej `docker compose down -v` - smaže to databázi!
+
 Neboj se dělat velké a rozsáhlé změny a mazat kód. Legacy implementace maž kdykoliv na ně narazíš. Codebase udržuje maximálně clean a přehlednou.
 
 ## 🤖 AI Chat Agent

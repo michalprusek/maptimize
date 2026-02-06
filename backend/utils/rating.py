@@ -59,21 +59,35 @@ def estimate_remaining_comparisons(
     avg_sigma: float,
     initial_sigma: float,
     target_sigma: float,
-    full_convergence_estimate: int = 200
+    image_count: int = 0,
+    total_comparisons: int = 0
 ) -> int:
     """
     Estimate remaining comparisons needed for convergence.
+
+    Uses a model based on image count: approximately N * 5 comparisons needed
+    for good convergence (each image compared ~10 times on average).
 
     Args:
         avg_sigma: Current average sigma
         initial_sigma: Initial sigma value
         target_sigma: Target sigma for full convergence
-        full_convergence_estimate: Estimated comparisons for full convergence
+        image_count: Number of images in the metric
+        total_comparisons: Number of comparisons already made
 
     Returns:
         Estimated number of remaining comparisons
     """
     if avg_sigma <= target_sigma:
         return 0
-    remaining_ratio = (avg_sigma - target_sigma) / (initial_sigma - target_sigma)
-    return int(remaining_ratio * full_convergence_estimate)
+
+    # Estimate total comparisons needed based on image count
+    # Rule of thumb: N * 5 comparisons for reasonable convergence
+    # (each image needs ~10 comparisons, each comparison involves 2 images)
+    if image_count > 0:
+        estimated_total = max(50, image_count * 5)
+    else:
+        estimated_total = 200  # fallback
+
+    remaining = estimated_total - total_comparisons
+    return max(0, remaining)

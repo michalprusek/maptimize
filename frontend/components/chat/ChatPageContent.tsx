@@ -21,6 +21,7 @@ import { IndexingProgress } from "./IndexingProgress";
 import { PDFViewerPanel } from "./PDFViewerPanel";
 import { WebLinkPanel } from "./WebLinkPanel";
 import { ImagePreviewModal } from "@/components/ui";
+import { parsePassageUrl } from "@/lib/utils";
 import { clsx } from "clsx";
 
 // Breakpoints for responsive design
@@ -389,6 +390,13 @@ export function ChatPageContent() {
         isOpen={isImagePreviewOpen}
         onClose={closeImagePreview}
         onNavigate={navigateImagePreview}
+        onOpenInEditor={(image) => {
+          // Check if this is a passage: link - if so, open PDF viewer
+          const passage = parsePassageUrl(image.src);
+          if (passage) {
+            openPDFViewer(passage.docId, passage.pageNum);
+          }
+        }}
       />
     </div>
   );

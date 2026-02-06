@@ -159,8 +159,8 @@ class ImageProcessor:
                     original_path.unlink()
                     logger.info(f"Deleted original Z-stack: {original_path}")
 
-                # Trigger SAM embedding computation (non-blocking, runs in background)
-                await self._trigger_sam_embedding(db, image)
+                # Note: SAM embedding moved to Phase 2 (triggered on-demand during segmentation)
+                # This prevents blocking the upload with heavy GPU computation
 
                 logger.info(f"Phase 1 complete for image {image.id}")
                 return True
@@ -267,8 +267,8 @@ class ImageProcessor:
                 # Extract FOV embedding (always, regardless of detect_cells)
                 await self._extract_fov_embedding(db, image)
 
-                # Extract RAG embedding for chat search (non-blocking)
-                await self._extract_rag_embedding(db, image)
+                # Compute SAM embedding for segmentation (synchronous, not background)
+                await self._compute_sam_embedding(db, image)
 
                 await db.commit()
                 logger.info(f"Phase 2 complete for image {image.id}")
@@ -501,6 +501,42 @@ class ImageProcessor:
             logger.error(f"DINOv3 model error during FOV feature extraction: {e}")
         except Exception as e:
             logger.exception(f"Unexpected FOV feature extraction error: {e}")
+
+    async def _compute_sam_embedding(
+        self,
+        db: AsyncSession,
+        image: Image
+    ) -> None:
+        """
+        Compute SAM embedding for segmentation (synchronous, during Phase 2).
+
+        This enables interactive segmentation in the editor. Computed during
+        'Process Images' to ensure embeddings are ready when user opens editor.
+        """
+        try:
+            from services.segmentation_service import compute_sam_embedding
+
+            logger.info(f"Computing SAM embedding for image {image.id}...")
+            result = await compute_sam_embedding(image.id, db)
+
+            if result.get('success'):
+                logger.info(
+                    f"SAM embedding computed for image {image.id}: "
+                    f"{result.get('embedding_size', 0) / 1024 / 1024:.1f}MB"
+                )
+            else:
+                logger.warning(
+                    f"SAM embedding failed for image {image.id}: {result.get('error')}"
+                )
+        except ImportError as e:
+            logger.warning(f"SAM segmentation service not available: {e}")
+            # Not fatal - segmentation is optional
+        except RuntimeError as e:
+            logger.warning(f"SAM model error during embedding computation: {e}")
+            # Not fatal - user can still use other features
+        except Exception as e:
+            logger.warning(f"Unexpected SAM embedding error for image {image.id}: {e}")
+            # Not fatal - segmentation is optional feature
 
     async def _extract_rag_embedding(
         self,

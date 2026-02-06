@@ -104,7 +104,7 @@ export default function UploadPage(): JSX.Element {
 
   // Poll for status updates on processing images only
   const { data: uploadedImages, error: uploadedImagesError } = useQuery({
-    queryKey: ["uploaded-images-status", experimentId],
+    queryKey: ["uploaded-images-status", experimentId, imageCache.size],
     queryFn: async () => {
       if (imageCache.size === 0) return [];
 
