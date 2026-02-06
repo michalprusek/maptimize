@@ -597,6 +597,43 @@ def _get_passages_cache_path(user_id: int) -> Path:
     return cache_dir
 
 
+async def _get_document_page_image_path(
+    document_id: int,
+    page_number: int,
+    user_id: int,
+    db: AsyncSession,
+) -> tuple[Optional["RAGDocument"], Optional[Path]]:
+    """Load a document and return the filesystem path to a page image.
+
+    Returns (document, image_path) or (None, None) when the document, page,
+    or image file cannot be found.
+    """
+    result = await db.execute(
+        select(RAGDocument)
+        .options(selectinload(RAGDocument.pages))
+        .where(
+            RAGDocument.id == document_id,
+            RAGDocument.user_id == user_id
+        )
+    )
+    document = result.scalar_one_or_none()
+    if not document:
+        logger.warning(f"Document {document_id} not found for user {user_id}")
+        return None, None
+
+    page = next((p for p in document.pages if p.page_number == page_number), None)
+    if not page or not page.image_path:
+        logger.warning(f"Page {page_number} not found for document {document_id}")
+        return None, None
+
+    image_path = Path(page.image_path)
+    if not image_path.exists():
+        logger.warning(f"Page image not found: {image_path}")
+        return None, None
+
+    return document, image_path
+
+
 async def extract_passage_image(
     document_id: int,
     page_number: int,
@@ -638,29 +675,8 @@ async def extract_passage_image(
         logger.error(f"Invalid bbox dimensions: ymin={ymin}, ymax={ymax}, xmin={xmin}, xmax={xmax}")
         return None
 
-    # Get document and page
-    result = await db.execute(
-        select(RAGDocument)
-        .options(selectinload(RAGDocument.pages))
-        .where(
-            RAGDocument.id == document_id,
-            RAGDocument.user_id == user_id
-        )
-    )
-    document = result.scalar_one_or_none()
-    if not document:
-        logger.warning(f"Document {document_id} not found for user {user_id}")
-        return None
-
-    # Find the specific page
-    page = next((p for p in document.pages if p.page_number == page_number), None)
-    if not page or not page.image_path:
-        logger.warning(f"Page {page_number} not found for document {document_id}")
-        return None
-
-    image_path = Path(page.image_path)
-    if not image_path.exists():
-        logger.warning(f"Page image not found: {image_path}")
+    document, image_path = await _get_document_page_image_path(document_id, page_number, user_id, db)
+    if not document or not image_path:
         return None
 
     try:
@@ -776,13 +792,8 @@ async def get_cached_passage(
     passage_path = cache_path / f"{passage_hash}.png"
 
     # Security: Verify path is within expected cache directory (prevent path traversal)
-    try:
-        if not passage_path.resolve().is_relative_to(cache_path.resolve()):
-            logger.warning(f"Path traversal attempt detected: {passage_path}")
-            return None
-    except ValueError:
-        # is_relative_to raises ValueError if paths are on different drives (Windows)
-        logger.warning(f"Invalid path detected: {passage_path}")
+    if not passage_path.resolve().is_relative_to(cache_path.resolve()):
+        logger.warning(f"Path traversal attempt detected: {passage_path}")
         return None
 
     if passage_path.exists():
@@ -821,25 +832,9 @@ async def extract_relevant_passages(
         logger.error("GEMINI_API_KEY not configured for passage extraction")
         return []
 
-    # Get the page image
-    result = await db.execute(
-        select(RAGDocument)
-        .options(selectinload(RAGDocument.pages))
-        .where(
-            RAGDocument.id == document_id,
-            RAGDocument.user_id == user_id
-        )
-    )
-    document = result.scalar_one_or_none()
-    if not document:
-        return []
-
-    page = next((p for p in document.pages if p.page_number == page_number), None)
-    if not page or not page.image_path:
-        return []
-
-    image_path = Path(page.image_path)
-    if not image_path.exists():
+    document, image_path = await _get_document_page_image_path(document_id, page_number, user_id, db)
+    if not document or not image_path:
+        logger.warning(f"Cannot extract passages: doc {document_id} p.{page_number} not found for user {user_id}")
         return []
 
     # Load image as base64
@@ -875,7 +870,7 @@ Return ONLY the JSON array. Return [] if nothing found. Maximum {max_passages} e
     try:
         client = genai.Client(api_key=settings.gemini_api_key)
 
-        response = client.models.generate_content(
+        response = await client.aio.models.generate_content(
             model="gemini-2.0-flash",
             contents=[
                 types.Content(

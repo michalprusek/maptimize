@@ -159,8 +159,7 @@ class ImageProcessor:
                     original_path.unlink()
                     logger.info(f"Deleted original Z-stack: {original_path}")
 
-                # Note: SAM embedding moved to Phase 2 (triggered on-demand during segmentation)
-                # This prevents blocking the upload with heavy GPU computation
+                # SAM embedding is computed inline during Phase 2 (not here in Phase 1)
 
                 logger.info(f"Phase 1 complete for image {image.id}")
                 return True
@@ -267,8 +266,11 @@ class ImageProcessor:
                 # Extract FOV embedding (always, regardless of detect_cells)
                 await self._extract_fov_embedding(db, image)
 
-                # Compute SAM embedding for segmentation (synchronous, not background)
+                # Compute SAM embedding for segmentation (inline, not background)
                 await self._compute_sam_embedding(db, image)
+
+                # Extract RAG embedding for chat search (non-fatal on failure)
+                await self._extract_rag_embedding(db, image)
 
                 await db.commit()
                 logger.info(f"Phase 2 complete for image {image.id}")
@@ -508,7 +510,7 @@ class ImageProcessor:
         image: Image
     ) -> None:
         """
-        Compute SAM embedding for segmentation (synchronous, during Phase 2).
+        Compute SAM embedding for segmentation (inline during Phase 2, not queued as background task).
 
         This enables interactive segmentation in the editor. Computed during
         'Process Images' to ensure embeddings are ready when user opens editor.
@@ -535,7 +537,7 @@ class ImageProcessor:
             logger.warning(f"SAM model error during embedding computation: {e}")
             # Not fatal - user can still use other features
         except Exception as e:
-            logger.warning(f"Unexpected SAM embedding error for image {image.id}: {e}")
+            logger.exception(f"Unexpected SAM embedding error for image {image.id}: {e}")
             # Not fatal - segmentation is optional feature
 
     async def _extract_rag_embedding(
@@ -567,35 +569,6 @@ class ImageProcessor:
         except Exception as e:
             logger.warning(f"Unexpected RAG embedding error for image {image.id}: {e}")
             # Not fatal - chat feature is optional
-
-    async def _trigger_sam_embedding(
-        self,
-        db: AsyncSession,
-        image: Image
-    ) -> None:
-        """
-        Trigger SAM embedding computation (non-blocking, runs in background).
-
-        Sets image status to 'pending' and queues embedding computation.
-        The embedding is computed asynchronously to avoid blocking upload.
-        """
-        try:
-            from services.segmentation_service import queue_sam_embedding
-
-            # Set status to pending
-            image.sam_embedding_status = "pending"
-            await db.commit()
-
-            # Queue background computation (will be processed by worker)
-            await queue_sam_embedding(image.id)
-
-            logger.info(f"SAM embedding queued for image {image.id}")
-        except ImportError as e:
-            logger.warning(f"SAM segmentation service not available: {e}")
-            # Not fatal - segmentation is optional
-        except Exception as e:
-            logger.warning(f"Failed to queue SAM embedding for image {image.id}: {e}")
-            # Not fatal - user can trigger manually later
 
     async def _save_crop(
         self,

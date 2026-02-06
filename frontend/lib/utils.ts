@@ -90,13 +90,6 @@ export function parsePassageUrl(src: string): ParsedPassageUrl | null {
 }
 
 /**
- * Check if a URL is a passage: scheme URL.
- */
-export function isPassageUrl(src: string): boolean {
-  return src.startsWith("passage:");
-}
-
-/**
  * Sanitize URL for logging - removes sensitive tokens from query parameters.
  * SECURITY: Never log full URLs that may contain authentication tokens.
  */

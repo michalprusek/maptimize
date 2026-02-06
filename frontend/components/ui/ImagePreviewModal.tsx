@@ -18,7 +18,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import { X, ChevronLeft, ChevronRight, Download, Loader2, Check, ExternalLink } from "lucide-react";
 import { clsx } from "clsx";
 import { useSettingsStore, LUT_CLASSES } from "@/stores/settingsStore";
-import { processImageUrl, isPassageUrl } from "@/lib/utils";
+import { processImageUrl, parsePassageUrl } from "@/lib/utils";
 
 export interface PreviewImage {
   src: string;
@@ -59,7 +59,7 @@ export function ImagePreviewModal({
   }, [currentImage]);
 
   // Check if current image is a document passage
-  const isPassageImage = currentImage ? isPassageUrl(currentImage.src) : false;
+  const isPassageImage = currentImage ? parsePassageUrl(currentImage.src) !== null : false;
 
   // Process all image URLs for thumbnails
   const processedImages = useMemo(() => {

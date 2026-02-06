@@ -197,6 +197,39 @@ def _fix_passage_links_in_response(
 
     return content
 
+
+def _inject_user_id_filter(query_str: str, table: str) -> str:
+    """Inject a user_id filter into a SQL query for the given table.
+
+    Safely adds ``{table}.user_id = :user_id`` either into an existing WHERE
+    clause (wrapping the original conditions in parentheses to prevent
+    operator-precedence bypasses) or by inserting a new WHERE clause after
+    the FROM/JOIN block.
+    """
+    where_match = re.search(r'\bWHERE\b', query_str, re.IGNORECASE)
+    if where_match:
+        pos = where_match.end()
+        rest_of_query = query_str[pos:]
+        end_match = re.search(r'\b(GROUP\s+BY|ORDER\s+BY|LIMIT|HAVING|$)', rest_of_query, re.IGNORECASE)
+        if end_match:
+            where_conditions = rest_of_query[:end_match.start()].strip()
+            after_where = rest_of_query[end_match.start():]
+        else:
+            where_conditions = rest_of_query.strip()
+            after_where = ""
+        return query_str[:pos] + f" {table}.user_id = :user_id AND ({where_conditions}) {after_where}"
+
+    from_match = re.search(
+        r'\bFROM\b\s+\w+(?:\s+\w+)?(?:\s+(?:LEFT|RIGHT|INNER|OUTER)?\s*JOIN\s+\w+(?:\s+\w+)?(?:\s+ON\s+[^,]+)?)*',
+        query_str, re.IGNORECASE,
+    )
+    if from_match:
+        pos = from_match.end()
+        return query_str[:pos] + f" WHERE {table}.user_id = :user_id" + query_str[pos:]
+
+    return query_str.rstrip() + f" WHERE {table}.user_id = :user_id"
+
+
 # Approved external APIs
 APPROVED_APIS = {
     "uniprot": {
@@ -664,7 +697,7 @@ AGENT_TOOLS = [
     # === CODE EXECUTION ===
     {
         "name": "execute_python_code",
-        "description": "Execute Python code in secure sandbox with 4GB memory and 60s timeout. Available: numpy, pandas, scipy, matplotlib, seaborn, statistics. Returns stdout, return value, and plots as URLs. Can handle large datasets and complex computations.",
+        "description": "Execute Python code in secure sandbox with 16GB memory and 60s timeout. Available: numpy, pandas, scipy, matplotlib, seaborn, statistics. Returns stdout, return value, and plots as URLs. Can handle large datasets and complex computations.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -983,7 +1016,7 @@ async def generate_response(
 
         except Exception as e:
             logger.exception(f"Gemini API error at iteration {iteration}: {e}")
-            return {"content": f"Error calling AI service: {str(e)}", "citations": citations, "image_refs": image_refs, "tool_calls": tool_calls_log, "interaction_id": current_interaction_id}
+            return {"content": "An error occurred while processing your request. Please try again.", "citations": citations, "image_refs": image_refs, "tool_calls": tool_calls_log, "interaction_id": current_interaction_id}
 
         logger.debug(f"Gemini iteration {iteration}")
 
@@ -1374,51 +1407,14 @@ async def execute_tool(tool_name: str, args: Dict[str, Any], user_id: int, db: A
 
                 # Safely inject user_id filter with proper parentheses to prevent operator precedence bypass
                 # SECURITY: Wrapping user conditions in () prevents: WHERE user_id=X AND (1=1 OR user_id=999)
-                if needs_exp_filter:
-                    # Find WHERE position case-insensitively
-                    where_match = re.search(r'\bWHERE\b', query_str, re.IGNORECASE)
-                    if where_match:
-                        pos = where_match.end()
-                        # Extract rest of the query after WHERE until GROUP BY/ORDER BY/LIMIT
-                        rest_of_query = query_str[pos:]
-                        # Find where the WHERE clause ends
-                        end_match = re.search(r'\b(GROUP\s+BY|ORDER\s+BY|LIMIT|HAVING|$)', rest_of_query, re.IGNORECASE)
-                        if end_match:
-                            where_conditions = rest_of_query[:end_match.start()].strip()
-                            after_where = rest_of_query[end_match.start():]
-                        else:
-                            where_conditions = rest_of_query.strip()
-                            after_where = ""
-                        # Wrap user's WHERE conditions in parentheses for safe AND
-                        base_q = query_str[:pos] + f" experiments.user_id = :user_id AND ({where_conditions}) {after_where}"
-                    else:
-                        # Find FROM clause to insert WHERE after it
-                        from_match = re.search(r'\bFROM\b\s+\w+(?:\s+\w+)?(?:\s+(?:LEFT|RIGHT|INNER|OUTER)?\s*JOIN\s+\w+(?:\s+\w+)?(?:\s+ON\s+[^,]+)?)*', query_str, re.IGNORECASE)
-                        if from_match:
-                            pos = from_match.end()
-                            base_q = query_str[:pos] + " WHERE experiments.user_id = :user_id" + query_str[pos:]
-                        else:
-                            base_q = query_str.rstrip() + " WHERE experiments.user_id = :user_id"
-                elif needs_doc_filter:
-                    where_match = re.search(r'\bWHERE\b', query_str, re.IGNORECASE)
-                    if where_match:
-                        pos = where_match.end()
-                        rest_of_query = query_str[pos:]
-                        end_match = re.search(r'\b(GROUP\s+BY|ORDER\s+BY|LIMIT|HAVING|$)', rest_of_query, re.IGNORECASE)
-                        if end_match:
-                            where_conditions = rest_of_query[:end_match.start()].strip()
-                            after_where = rest_of_query[end_match.start():]
-                        else:
-                            where_conditions = rest_of_query.strip()
-                            after_where = ""
-                        base_q = query_str[:pos] + f" rag_documents.user_id = :user_id AND ({where_conditions}) {after_where}"
-                    else:
-                        from_match = re.search(r'\bFROM\b\s+\w+(?:\s+\w+)?(?:\s+(?:LEFT|RIGHT|INNER|OUTER)?\s*JOIN\s+\w+(?:\s+\w+)?(?:\s+ON\s+[^,]+)?)*', query_str, re.IGNORECASE)
-                        if from_match:
-                            pos = from_match.end()
-                            base_q = query_str[:pos] + " WHERE rag_documents.user_id = :user_id" + query_str[pos:]
-                        else:
-                            base_q = query_str.rstrip() + " WHERE rag_documents.user_id = :user_id"
+                filter_table = (
+                    "experiments" if needs_exp_filter
+                    else "rag_documents" if needs_doc_filter
+                    else None
+                )
+
+                if filter_table:
+                    base_q = _inject_user_id_filter(query_str, filter_table)
                 else:
                     base_q = query_str
 
@@ -2039,58 +2035,25 @@ async def execute_tool(tool_name: str, args: Dict[str, Any], user_id: int, db: A
             description = args["description"]
             bbox = args.get("bbox")  # Optional: [ymin, xmin, ymax, xmax] normalized 0-1000
 
-            # If bbox not provided, use Gemini vision to find the region
+            # Get passage -- either via Gemini vision search or direct bbox extraction
             if not bbox:
                 from services.rag_service import extract_relevant_passages
-                # Use extract_relevant_passages with the description as query to find bbox
                 passages = await extract_relevant_passages(
                     document_id=document_id,
                     page_number=page_number,
                     query=description,
                     user_id=user_id,
                     db=db,
-                    max_passages=1,  # Only need the best match
+                    max_passages=1,
                 )
-
                 if not passages:
                     return {
                         "error": f"Could not find '{description}' on page {page_number}",
                         "suggestion": "Try a different description or check if the content is on this page",
                         "fallback_markdown": f"*[Could not extract: {description}]*"
                     }
-
-                # Got a passage - return the markdown for inline display
                 passage = passages[0]
-                if passage.get("type") == "full_page":
-                    # Region spans most of the page - return page reference
-                    return {
-                        "type": "full_page",
-                        "message": f"'{description}' spans most of page {page_number}",
-                        "markdown": f"![{description}](/api/rag/documents/{document_id}/pages/{page_number}/image)",
-                        "document_id": document_id,
-                        "page_number": page_number,
-                    }
-
-                # Return passage markdown for agent to include in response
-                alt_text = passage.get('extracted_text', description)[:50]
-                alt_text = alt_text.replace('\n', ' ').replace('\r', ' ').replace('[', '(').replace(']', ')')
-                alt_text = ' '.join(alt_text.split())
-
-                markdown = f"![{alt_text}](passage:{passage['document_id']}:{passage['page_number']}:{passage['passage_hash']})"
-
-                return {
-                    "success": True,
-                    "type": passage.get("passage_type", "region"),
-                    "markdown": markdown,
-                    "document_id": document_id,
-                    "page_number": page_number,
-                    "description": description,
-                    "confidence": passage.get("confidence", 0.5),
-                    "instruction": "INCLUDE the 'markdown' value in your response at the appropriate location to display this excerpt inline."
-                }
-
             else:
-                # bbox provided - extract directly
                 from services.rag_service import extract_passage_image
                 passage = await extract_passage_image(
                     document_id=document_id,
@@ -2099,34 +2062,41 @@ async def execute_tool(tool_name: str, args: Dict[str, Any], user_id: int, db: A
                     user_id=user_id,
                     db=db,
                 )
-
                 if not passage:
                     return {
                         "error": f"Failed to extract region with bbox {bbox}",
                         "fallback_markdown": f"*[Could not extract region]*"
                     }
 
-                if passage.get("type") == "full_page":
-                    return {
-                        "type": "full_page",
-                        "message": "Specified region spans most of the page",
-                        "markdown": f"![{description}](/api/rag/documents/{document_id}/pages/{page_number}/image)",
-                        "document_id": document_id,
-                        "page_number": page_number,
-                    }
-
-                alt_text = description[:50].replace('\n', ' ').replace('[', '(').replace(']', ')')
-                markdown = f"![{alt_text}](passage:{passage['document_id']}:{passage['page_number']}:{passage['passage_hash']})"
-
+            # Build response from extracted passage
+            if passage.get("type") == "full_page":
                 return {
-                    "success": True,
-                    "type": "region",
-                    "markdown": markdown,
+                    "type": "full_page",
+                    "message": f"'{description}' spans most of page {page_number}",
+                    "markdown": f"![{description}](/api/rag/documents/{document_id}/pages/{page_number}/image)",
                     "document_id": document_id,
                     "page_number": page_number,
-                    "bbox": bbox,
-                    "instruction": "INCLUDE the 'markdown' value in your response at the appropriate location to display this excerpt inline."
                 }
+
+            alt_text = passage.get('extracted_text', description)[:50]
+            alt_text = alt_text.replace('\n', ' ').replace('\r', ' ').replace('[', '(').replace(']', ')')
+            alt_text = ' '.join(alt_text.split())
+            markdown = f"![{alt_text}](passage:{passage['document_id']}:{passage['page_number']}:{passage['passage_hash']})"
+
+            result = {
+                "success": True,
+                "type": passage.get("passage_type", "region"),
+                "markdown": markdown,
+                "document_id": document_id,
+                "page_number": page_number,
+                "instruction": "INCLUDE the 'markdown' value in your response at the appropriate location to display this excerpt inline."
+            }
+            if bbox:
+                result["bbox"] = bbox
+            else:
+                result["description"] = description
+                result["confidence"] = passage.get("confidence", 0.5)
+            return result
 
         return {"error": f"Unknown tool: {tool_name}"}
 

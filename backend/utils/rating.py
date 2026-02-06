@@ -65,8 +65,12 @@ def estimate_remaining_comparisons(
     """
     Estimate remaining comparisons needed for convergence.
 
-    Uses a model based on image count: approximately N * 5 comparisons needed
-    for good convergence (each image compared ~10 times on average).
+    Combines two signals:
+    1. Image count heuristic: ~N*5 total comparisons needed for N images
+    2. Sigma ratio: how far sigma still needs to drop (actual convergence progress)
+
+    The sigma-based estimate adapts dynamically — if convergence is faster/slower
+    than the heuristic predicts, the estimate adjusts accordingly.
 
     Args:
         avg_sigma: Current average sigma
@@ -89,5 +93,14 @@ def estimate_remaining_comparisons(
     else:
         estimated_total = 200  # fallback
 
-    remaining = estimated_total - total_comparisons
+    # Scale by sigma ratio — reflects actual convergence progress
+    # remaining_ratio: 1.0 at start (no progress), 0.0 at convergence
+    sigma_range = initial_sigma - target_sigma
+    if sigma_range > 0 and total_comparisons > 0:
+        remaining_ratio = (avg_sigma - target_sigma) / sigma_range
+        remaining = int(estimated_total * remaining_ratio)
+    else:
+        # No comparisons yet — use full heuristic estimate
+        remaining = estimated_total - total_comparisons
+
     return max(0, remaining)

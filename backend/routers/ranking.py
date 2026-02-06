@@ -463,11 +463,15 @@ async def get_progress(
     sigma_result = await db.execute(sigma_query)
     avg_sigma = sigma_result.scalar() or settings.initial_sigma
 
-    # Count images for better estimate
+    # Count rated images (must match experiment_id filter used for sigma)
     image_count_query = (
         select(func.count(UserRating.id))
+        .join(CellCrop)
+        .join(Image)
         .where(UserRating.user_id == current_user.id)
     )
+    if experiment_id:
+        image_count_query = image_count_query.where(Image.experiment_id == experiment_id)
     image_count_result = await db.execute(image_count_query)
     image_count = image_count_result.scalar() or 0
 
