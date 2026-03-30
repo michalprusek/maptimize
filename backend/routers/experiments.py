@@ -3,7 +3,7 @@ import logging
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status, Query
-from sqlalchemy import select, func, distinct, update
+from sqlalchemy import select, func, distinct, update, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -12,6 +12,7 @@ from models.user import User
 from models.experiment import Experiment
 from models.image import Image, MapProtein
 from models.cell_crop import CellCrop
+from models.group import GroupMember
 from schemas.experiment import (
     ExperimentCreate,
     ExperimentUpdate,
@@ -25,16 +26,30 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
+async def get_user_group_id(user_id: int, db: AsyncSession) -> Optional[int]:
+    """Get the group_id for a user, or None if not in a group."""
+    result = await db.execute(
+        select(GroupMember.group_id).where(GroupMember.user_id == user_id)
+    )
+    return result.scalar_one_or_none()
+
+
 async def get_experiment_for_user(
     db: AsyncSession,
     experiment_id: int,
     user_id: int
 ) -> Experiment:
-    """Get experiment and verify ownership. Raises 404 if not found."""
+    """Get experiment and verify ownership or group membership. Raises 404 if not found."""
+    group_id = await get_user_group_id(user_id, db)
+
+    conditions = [Experiment.user_id == user_id]
+    if group_id is not None:
+        conditions.append(Experiment.group_id == group_id)
+
     result = await db.execute(
         select(Experiment).where(
             Experiment.id == experiment_id,
-            Experiment.user_id == user_id
+            or_(*conditions)
         )
     )
     experiment = result.scalar_one_or_none()
@@ -53,7 +68,14 @@ async def list_experiments(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
-    """List user's experiments with image and cell counts in a single query."""
+    """List user's experiments (and group experiments) with image and cell counts."""
+    group_id = await get_user_group_id(current_user.id, db)
+
+    # Build ownership/group filter
+    conditions = [Experiment.user_id == current_user.id]
+    if group_id is not None:
+        conditions.append(Experiment.group_id == group_id)
+
     # Get experiments with counts using a single query with aggregates
     # Also count images with sum projections (sum_path IS NOT NULL)
     result = await db.execute(
@@ -61,13 +83,15 @@ async def list_experiments(
             Experiment,
             func.count(distinct(Image.id)).label("image_count"),
             func.count(CellCrop.id).label("cell_count"),
-            func.count(distinct(Image.id)).filter(Image.sum_path.isnot(None)).label("sum_count")
+            func.count(distinct(Image.id)).filter(Image.sum_path.isnot(None)).label("sum_count"),
+            User.name.label("creator_name")
         )
         .options(selectinload(Experiment.map_protein))
         .outerjoin(Image, Experiment.id == Image.experiment_id)
         .outerjoin(CellCrop, Image.id == CellCrop.image_id)
-        .where(Experiment.user_id == current_user.id)
-        .group_by(Experiment.id)
+        .join(User, Experiment.user_id == User.id)
+        .where(or_(*conditions))
+        .group_by(Experiment.id, User.name)
         .order_by(Experiment.updated_at.desc())
         .offset(skip)
         .limit(limit)
@@ -75,11 +99,12 @@ async def list_experiments(
     rows = result.unique().all()
 
     response = []
-    for exp, image_count, cell_count, sum_count in rows:
+    for exp, image_count, cell_count, sum_count, creator_name in rows:
         exp_response = ExperimentResponse.model_validate(exp)
         exp_response.image_count = image_count or 0
         exp_response.cell_count = cell_count or 0
         exp_response.has_sum_projections = (sum_count or 0) > 0
+        exp_response.creator_name = creator_name
         response.append(exp_response)
 
     return response
@@ -91,7 +116,7 @@ async def create_experiment(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
-    """Create a new experiment."""
+    """Create a new experiment. Auto-assigns group_id if user is in a group."""
     # Verify protein exists if provided
     if data.map_protein_id is not None:
         protein_result = await db.execute(
@@ -103,10 +128,13 @@ async def create_experiment(
                 detail="MAP protein not found"
             )
 
+    group_id = await get_user_group_id(current_user.id, db)
+
     experiment = Experiment(
         name=data.name,
         description=data.description,
         user_id=current_user.id,
+        group_id=group_id,
         map_protein_id=data.map_protein_id,
         fasta_sequence=data.fasta_sequence,
     )
@@ -114,7 +142,9 @@ async def create_experiment(
     await db.commit()
     await db.refresh(experiment, attribute_names=["map_protein"])
 
-    return ExperimentResponse.model_validate(experiment)
+    exp_response = ExperimentResponse.model_validate(experiment)
+    exp_response.creator_name = current_user.name
+    return exp_response
 
 
 @router.get("/{experiment_id}", response_model=ExperimentDetailResponse)
@@ -124,15 +154,22 @@ async def get_experiment(
     db: AsyncSession = Depends(get_db)
 ):
     """Get experiment details with images."""
+    group_id = await get_user_group_id(current_user.id, db)
+
+    conditions = [Experiment.user_id == current_user.id]
+    if group_id is not None:
+        conditions.append(Experiment.group_id == group_id)
+
     result = await db.execute(
         select(Experiment)
         .options(
             selectinload(Experiment.images),
-            selectinload(Experiment.map_protein)
+            selectinload(Experiment.map_protein),
+            selectinload(Experiment.user)
         )
         .where(
             Experiment.id == experiment_id,
-            Experiment.user_id == current_user.id
+            or_(*conditions)
         )
     )
     experiment = result.scalar_one_or_none()

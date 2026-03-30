@@ -16,6 +16,7 @@ import {
   Trash2,
   ArrowRight,
   X,
+  User,
 } from "lucide-react";
 
 function CreateMetricDialog({
@@ -127,6 +128,7 @@ export default function RankingPage(): JSX.Element {
   const queryClient = useQueryClient();
   const t = useTranslations("ranking");
   const tCommon = useTranslations("common");
+  const tGroups = useTranslations("groups");
 
   const { data: metricsData, isLoading } = useQuery({
     queryKey: ["metrics"],
@@ -200,6 +202,12 @@ export default function RankingPage(): JSX.Element {
                     {metric.description && (
                       <p className="text-sm text-text-muted truncate">
                         {metric.description}
+                      </p>
+                    )}
+                    {metric.creator_name && metric.group_id && (
+                      <p className="flex items-center gap-1.5 text-xs text-text-muted mt-1">
+                        <User className="w-3 h-3" />
+                        {tGroups("createdBy", { name: metric.creator_name })}
                       </p>
                     )}
                   </div>

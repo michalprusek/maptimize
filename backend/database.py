@@ -138,42 +138,71 @@ async def ensure_schema_updates():
             # RAG embedding for FOV images (2048-dim for Qwen VL)
             ("images", "rag_embedding", "vector(2048)"),
             ("images", "rag_indexed_at", "TIMESTAMP WITH TIME ZONE"),
+            # Group support for shared experiments and metrics
+            ("experiments", "group_id", "INTEGER REFERENCES groups(id) ON DELETE SET NULL"),
+            ("metrics", "group_id", "INTEGER REFERENCES groups(id) ON DELETE SET NULL"),
+            ("metric_ratings", "user_id", "INTEGER REFERENCES users(id) ON DELETE CASCADE"),
+            ("metric_comparisons", "user_id", "INTEGER REFERENCES users(id) ON DELETE CASCADE"),
         ]
 
         for table, column, col_type in updates:
             try:
+                # Use savepoint so a failure doesn't abort the whole transaction
+                await conn.execute(text("SAVEPOINT col_update"))
                 await conn.execute(text(
                     f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {column} {col_type}"
                 ))
+                await conn.execute(text("RELEASE SAVEPOINT col_update"))
                 logger.debug(f"Ensured column exists: {table}.{column}")
-            except ProgrammingError as e:
+            except Exception as e:
+                await conn.execute(text("ROLLBACK TO SAVEPOINT col_update"))
                 error_msg = str(e).lower()
                 if "already exists" in error_msg:
                     logger.debug(f"Column {table}.{column} already exists")
                 else:
-                    logger.error(f"Failed to add column {table}.{column}: {e}")
+                    logger.warning(f"Failed to add column {table}.{column}: {e}")
                     failed_updates.append(f"{table}.{column}")
-            except OperationalError as e:
-                logger.error(f"Database error adding {table}.{column}: {e}")
-                failed_updates.append(f"{table}.{column}")
 
-        # Ensure enum values exist
-        enum_updates = [
-            ("uploadstatus", "UPLOADED", "UPLOADING"),
-        ]
+        # Migrate unique constraint on metric_ratings (old: metric_id+metric_image_id, new: +user_id)
+        try:
+            await conn.execute(text("SAVEPOINT constraint_update"))
+            await conn.execute(text(
+                "ALTER TABLE metric_ratings DROP CONSTRAINT IF EXISTS uq_metric_image_rating"
+            ))
+            await conn.execute(text("RELEASE SAVEPOINT constraint_update"))
+        except Exception as e:
+            await conn.execute(text("ROLLBACK TO SAVEPOINT constraint_update"))
+            logger.debug(f"Could not drop uq_metric_image_rating: {e}")
 
-        for enum_name, new_value, after_value in enum_updates:
-            try:
-                await conn.execute(text(
-                    f"ALTER TYPE {enum_name} ADD VALUE IF NOT EXISTS '{new_value}' AFTER '{after_value}'"
-                ))
-                logger.debug(f"Ensured enum value exists: {enum_name}.{new_value}")
-            except ProgrammingError as e:
-                # PostgreSQL cannot add enum values within multi-statement transactions
-                # This is expected and acceptable - the value likely already exists
-                logger.debug(f"Enum update {enum_name}.{new_value}: {e}")
-            except OperationalError as e:
-                logger.warning(f"Failed to add enum value {enum_name}.{new_value}: {e}")
+        try:
+            await conn.execute(text("SAVEPOINT constraint_create"))
+            await conn.execute(text(
+                "ALTER TABLE metric_ratings ADD CONSTRAINT uq_metric_image_user_rating "
+                "UNIQUE (metric_id, metric_image_id, user_id)"
+            ))
+            await conn.execute(text("RELEASE SAVEPOINT constraint_create"))
+        except Exception as e:
+            await conn.execute(text("ROLLBACK TO SAVEPOINT constraint_create"))
+            logger.debug(f"Could not create uq_metric_image_user_rating: {e}")
+
+        # Ensure enum values exist (must be outside transaction for PostgreSQL)
+        # We run this in a separate autocommit connection
+    try:
+        async with engine.connect() as raw_conn:
+            await raw_conn.execution_options(isolation_level="AUTOCOMMIT")
+            enum_updates = [
+                ("uploadstatus", "UPLOADED", "UPLOADING"),
+            ]
+            for enum_name, new_value, after_value in enum_updates:
+                try:
+                    await raw_conn.execute(text(
+                        f"ALTER TYPE {enum_name} ADD VALUE IF NOT EXISTS '{new_value}' AFTER '{after_value}'"
+                    ))
+                    logger.debug(f"Ensured enum value: {enum_name}.{new_value}")
+                except Exception as e:
+                    logger.debug(f"Enum update {enum_name}.{new_value}: {e}")
+    except Exception as e:
+        logger.warning(f"Enum updates failed: {e}")
 
         # Note: RAG embeddings use 2048 dimensions (Qwen3 VL) which exceeds
         # pgvector's 2000-dimension limit for HNSW/ivfflat indexes.

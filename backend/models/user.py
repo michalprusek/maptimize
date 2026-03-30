@@ -17,6 +17,7 @@ if TYPE_CHECKING:
     from .chat import ChatThread
     from .rag_document import RAGDocument
     from .agent_memory import AgentMemory
+    from .group import GroupMember
 
 
 class UserRole(str, PyEnum):
@@ -86,6 +87,10 @@ class User(Base):
     agent_memories: Mapped[List["AgentMemory"]] = relationship(
         back_populates="user",
         cascade="all, delete-orphan"
+    )
+    group_membership: Mapped[Optional["GroupMember"]] = relationship(
+        back_populates="user",
+        uselist=False
     )
 
     def __repr__(self) -> str:

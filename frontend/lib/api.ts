@@ -1151,6 +1151,56 @@ class ApiClient {
     return this.request<AdminExperimentsResponse>(`/api/admin/users/${userId}/experiments`);
   }
 
+  // ============================================================================
+  // Groups API
+  // ============================================================================
+
+  async getGroups(): Promise<Group[]> {
+    return this.request<Group[]>("/api/groups");
+  }
+
+  async getMyGroup(): Promise<MyGroupResponse> {
+    return this.request<MyGroupResponse>("/api/groups/me");
+  }
+
+  async createGroup(data: { name: string; description?: string }): Promise<GroupDetail> {
+    return this.request<GroupDetail>("/api/groups", {
+      method: "POST",
+      body: JSON.stringify(data),
+    });
+  }
+
+  async joinGroup(groupId: number): Promise<GroupMember> {
+    return this.request<GroupMember>(`/api/groups/${groupId}/join`, {
+      method: "POST",
+    });
+  }
+
+  async leaveGroup(groupId: number): Promise<void> {
+    return this.request<void>(`/api/groups/${groupId}/leave`, {
+      method: "POST",
+    });
+  }
+
+  async deleteGroup(groupId: number): Promise<void> {
+    return this.request<void>(`/api/groups/${groupId}`, {
+      method: "DELETE",
+    });
+  }
+
+  async updateGroup(groupId: number, data: { name?: string; description?: string }): Promise<Group> {
+    return this.request<Group>(`/api/groups/${groupId}`, {
+      method: "PATCH",
+      body: JSON.stringify(data),
+    });
+  }
+
+  async kickMember(groupId: number, userId: number): Promise<void> {
+    return this.request<void>(`/api/groups/${groupId}/members/${userId}`, {
+      method: "DELETE",
+    });
+  }
+
   /**
    * Get the full URL for a user's avatar.
    * Returns undefined if the user has no avatar or if the path is invalid.
@@ -1191,6 +1241,37 @@ export interface Experiment {
   image_count: number;
   cell_count: number;
   has_sum_projections: boolean;
+  group_id?: number | null;
+  creator_name?: string | null;
+}
+
+// Group types
+export interface Group {
+  id: number;
+  name: string;
+  description: string | null;
+  created_by_user_id: number;
+  creator_name: string;
+  member_count: number;
+  created_at: string;
+}
+
+export interface GroupDetail extends Group {
+  members: GroupMember[];
+}
+
+export interface GroupMember {
+  id: number;
+  user_id: number;
+  user_name: string;
+  user_email: string;
+  role: string;
+  joined_at: string;
+}
+
+export interface MyGroupResponse {
+  group: GroupDetail | null;
+  membership: GroupMember | null;
 }
 
 export interface MapProtein {
@@ -1381,6 +1462,8 @@ export interface Metric {
   comparison_count: number;
   created_at: string;
   updated_at: string;
+  group_id?: number | null;
+  creator_name?: string | null;
 }
 
 export interface MetricListResponse {
