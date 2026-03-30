@@ -16,7 +16,6 @@ from models.experiment import Experiment
 from models.image import Image
 from models.cell_crop import CellCrop
 from models.metric import Metric, MetricImage, MetricRating, MetricComparison
-from models.group import GroupMember
 from schemas.metric import (
     MetricCreate,
     MetricUpdate,
@@ -35,6 +34,7 @@ from schemas.metric import (
     ExperimentForImport,
 )
 from utils.security import get_current_user
+from utils.groups import get_user_group_id
 
 router = APIRouter()
 settings = get_settings()
@@ -43,14 +43,6 @@ settings = get_settings()
 # =============================================================================
 # Helper Functions (DRY)
 # =============================================================================
-
-
-async def get_user_group_id(user_id: int, db: AsyncSession) -> Optional[int]:
-    """Get the group_id for a user, or None if not in a group."""
-    result = await db.execute(
-        select(GroupMember.group_id).where(GroupMember.user_id == user_id)
-    )
-    return result.scalar_one_or_none()
 
 
 async def get_metric_for_user(
@@ -109,10 +101,15 @@ async def get_metric_counts(
 
 def build_metric_response(metric: Metric, image_count: int, comparison_count: int) -> MetricResponse:
     """Build MetricResponse from metric and counts."""
+    creator_name = None
+    if hasattr(metric, "user") and metric.user:
+        creator_name = metric.user.name
     return MetricResponse(
         id=metric.id,
         name=metric.name,
         description=metric.description,
+        group_id=metric.group_id,
+        creator_name=creator_name,
         image_count=image_count,
         comparison_count=comparison_count,
         created_at=metric.created_at,
@@ -167,6 +164,7 @@ async def list_metrics(
 
     result = await db.execute(
         select(Metric)
+        .options(selectinload(Metric.user))
         .where(or_(*conditions))
         .order_by(Metric.created_at.desc())
     )
@@ -225,8 +223,10 @@ async def update_metric(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
-    """Update metric."""
+    """Update metric (owner only)."""
     metric = await get_metric_for_user(db, metric_id, current_user.id)
+    if metric.user_id != current_user.id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only the metric owner can update it")
 
     if data.name is not None:
         metric.name = data.name
@@ -245,8 +245,10 @@ async def delete_metric(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
-    """Delete metric and all associated data."""
+    """Delete metric and all associated data (owner only)."""
     metric = await get_metric_for_user(db, metric_id, current_user.id)
+    if metric.user_id != current_user.id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only the metric owner can delete it")
 
     # Delete uploaded files
     for img in metric.images:

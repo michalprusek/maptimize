@@ -582,7 +582,7 @@ function GroupSection(): JSX.Element {
   });
 
   const myGroup = myGroupData?.group ?? null;
-  const myMembership = myGroupData?.membership ?? null;
+  const myRole = myGroupData?.role ?? null;
   const isCreator = myGroup && user && myGroup.created_by_user_id === user.id;
 
   // Clear success message after delay
@@ -774,7 +774,7 @@ function GroupSection(): JSX.Element {
                       <div>
                         <div className="flex items-center gap-2">
                           <span className="text-sm font-medium text-text-primary">{member.user_name}</span>
-                          {member.role === "creator" && (
+                          {member.role === "admin" && (
                             <span className="px-1.5 py-0.5 text-xs rounded bg-primary-500/20 text-primary-400">
                               {tg("creator")}
                             </span>

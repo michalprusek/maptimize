@@ -1156,11 +1156,12 @@ class ApiClient {
   // ============================================================================
 
   async getGroups(): Promise<Group[]> {
-    return this.request<Group[]>("/api/groups");
+    const res = await this.request<{ items: Group[]; total: number }>("/api/groups");
+    return res.items;
   }
 
   async getMyGroup(): Promise<MyGroupResponse> {
-    return this.request<MyGroupResponse>("/api/groups/me");
+    return this.request<MyGroupResponse>("/api/groups/my");
   }
 
   async createGroup(data: { name: string; description?: string }): Promise<GroupDetail> {
@@ -1271,7 +1272,7 @@ export interface GroupMember {
 
 export interface MyGroupResponse {
   group: GroupDetail | null;
-  membership: GroupMember | null;
+  role: string | null;
 }
 
 export interface MapProtein {

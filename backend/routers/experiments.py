@@ -12,7 +12,6 @@ from models.user import User
 from models.experiment import Experiment
 from models.image import Image, MapProtein
 from models.cell_crop import CellCrop
-from models.group import GroupMember
 from schemas.experiment import (
     ExperimentCreate,
     ExperimentUpdate,
@@ -20,18 +19,11 @@ from schemas.experiment import (
     ExperimentDetailResponse,
 )
 from utils.security import get_current_user
+from utils.groups import get_user_group_id
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
-
-
-async def get_user_group_id(user_id: int, db: AsyncSession) -> Optional[int]:
-    """Get the group_id for a user, or None if not in a group."""
-    result = await db.execute(
-        select(GroupMember.group_id).where(GroupMember.user_id == user_id)
-    )
-    return result.scalar_one_or_none()
 
 
 async def get_experiment_for_user(
@@ -206,8 +198,10 @@ async def update_experiment(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
-    """Update an experiment."""
+    """Update an experiment (owner only)."""
     experiment = await get_experiment_for_user(db, experiment_id, current_user.id)
+    if experiment.user_id != current_user.id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only the experiment owner can update it")
 
     # Update fields
     update_data = data.model_dump(exclude_unset=True)
@@ -226,8 +220,10 @@ async def delete_experiment(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
-    """Delete an experiment and all its images."""
+    """Delete an experiment and all its images (owner only)."""
     experiment = await get_experiment_for_user(db, experiment_id, current_user.id)
+    if experiment.user_id != current_user.id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only the experiment owner can delete it")
     await db.delete(experiment)
     await db.commit()
 
