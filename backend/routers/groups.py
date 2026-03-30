@@ -4,6 +4,7 @@ from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select, func
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -322,7 +323,14 @@ async def join_group(
         role="member",
     )
     db.add(membership)
-    await db.commit()
+    try:
+        await db.commit()
+    except IntegrityError:
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="You are already in a group."
+        )
 
     # Reload with relationships
     result = await db.execute(
@@ -357,6 +365,17 @@ async def leave_group(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="You are not a member of this group"
+        )
+
+    # Prevent creator from leaving (must delete the group instead)
+    result = await db.execute(
+        select(Group).where(Group.id == group_id)
+    )
+    group = result.scalar_one_or_none()
+    if group and group.created_by_user_id == current_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Group creator cannot leave. Delete the group instead."
         )
 
     await db.delete(membership)

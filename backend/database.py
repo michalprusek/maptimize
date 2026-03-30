@@ -160,7 +160,7 @@ async def ensure_schema_updates():
                 if "already exists" in error_msg:
                     logger.debug(f"Column {table}.{column} already exists")
                 else:
-                    logger.warning(f"Failed to add column {table}.{column}: {e}")
+                    logger.error(f"Failed to add column {table}.{column}: {e}")
                     failed_updates.append(f"{table}.{column}")
 
         # Migrate unique constraint on metric_ratings (old: metric_id+metric_image_id, new: +user_id)
@@ -183,7 +183,30 @@ async def ensure_schema_updates():
             await conn.execute(text("RELEASE SAVEPOINT constraint_create"))
         except Exception as e:
             await conn.execute(text("ROLLBACK TO SAVEPOINT constraint_create"))
-            logger.debug(f"Could not create uq_metric_image_user_rating: {e}")
+            error_msg = str(e).lower()
+            if "already exists" in error_msg:
+                logger.debug("Constraint uq_metric_image_user_rating already exists")
+            else:
+                logger.error(f"Failed to create uq_metric_image_user_rating: {e}")
+                failed_updates.append("metric_ratings.uq_constraint")
+
+        # Backfill user_id for existing metric_ratings and metric_comparisons
+        # Old rows have user_id=NULL — assign to the metric owner
+        try:
+            await conn.execute(text("SAVEPOINT backfill_user_id"))
+            await conn.execute(text("""
+                UPDATE metric_ratings SET user_id = m.user_id
+                FROM metrics m WHERE metric_ratings.metric_id = m.id AND metric_ratings.user_id IS NULL
+            """))
+            await conn.execute(text("""
+                UPDATE metric_comparisons SET user_id = m.user_id
+                FROM metrics m WHERE metric_comparisons.metric_id = m.id AND metric_comparisons.user_id IS NULL
+            """))
+            await conn.execute(text("RELEASE SAVEPOINT backfill_user_id"))
+            logger.info("Backfilled user_id on metric_ratings/metric_comparisons")
+        except Exception as e:
+            await conn.execute(text("ROLLBACK TO SAVEPOINT backfill_user_id"))
+            logger.debug(f"Backfill user_id skipped: {e}")
 
         # Ensure enum values exist (must be outside transaction for PostgreSQL)
         # We run this in a separate autocommit connection
@@ -204,17 +227,14 @@ async def ensure_schema_updates():
     except Exception as e:
         logger.warning(f"Enum updates failed: {e}")
 
-        # Note: RAG embeddings use 2048 dimensions (Qwen3 VL) which exceeds
-        # pgvector's 2000-dimension limit for HNSW/ivfflat indexes.
-        # We skip index creation - exact search will be used instead.
-        # For production with large datasets, consider dimensionality reduction
-        # or using a dedicated vector database like Qdrant/Pinecone.
-        logger.debug("Skipping RAG vector index creation (2048 dims > pgvector 2000 limit)")
+    # Note: RAG embeddings use 2048 dimensions (Qwen3 VL) which exceeds
+    # pgvector's 2000-dimension limit for HNSW/ivfflat indexes.
+    logger.debug("Skipping RAG vector index creation (2048 dims > pgvector 2000 limit)")
 
-        if failed_updates:
-            logger.error(f"Schema updates FAILED for: {', '.join(failed_updates)}")
-        else:
-            logger.info("Schema updates applied successfully")
+    if failed_updates:
+        logger.error(f"Schema updates FAILED for: {', '.join(failed_updates)}")
+    else:
+        logger.info("Schema updates applied successfully")
 
 
 async def seed_default_data():
