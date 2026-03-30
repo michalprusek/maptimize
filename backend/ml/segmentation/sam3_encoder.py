@@ -485,8 +485,11 @@ class SAM3Encoder:
         self._current_state = None
         self._current_image_path = None
 
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
+        try:
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except Exception:
+            logger.warning("torch.cuda.empty_cache() failed during SAM3Encoder reset", exc_info=True)
 
         logger.info("SAM 3 encoder reset")
 

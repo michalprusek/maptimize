@@ -279,8 +279,11 @@ class SAMEncoder:
         del self._model
         self._model = None
 
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
+        try:
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except Exception:
+            logger.warning("torch.cuda.empty_cache() failed during SAMEncoder reset", exc_info=True)
 
         logger.info("SAM encoder reset")
 

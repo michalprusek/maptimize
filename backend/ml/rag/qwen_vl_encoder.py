@@ -345,8 +345,11 @@ class QwenVLEncoder:
         self.processor = None
         self.is_loaded = False
 
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
+        try:
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except Exception:
+            logger.warning("torch.cuda.empty_cache() failed during QwenVLEncoder reset", exc_info=True)
 
         logger.info("Qwen VL encoder reset")
 
