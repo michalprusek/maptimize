@@ -47,13 +47,7 @@ async def register(
     await db.flush()
     await db.refresh(user)
 
-    # Provision template data (experiments, images, crops, etc.)
-    # Use savepoint so failure rolls back only provisioning, not user creation
-    try:
-        async with db.begin_nested():
-            await provision_new_user_data(user.id, db)
-    except Exception:
-        logger.exception("Failed to provision data for user %d, continuing with empty account", user.id)
+    # New users start with 0 experiments (data is shared via groups)
 
     # get_db() auto-commits on success
 

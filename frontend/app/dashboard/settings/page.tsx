@@ -807,8 +807,8 @@ function GroupSection(): JSX.Element {
               </div>
             </div>
 
-            {/* Leave button */}
-            {!isCreator && (
+            {/* Actions */}
+            <div className="flex flex-wrap items-center gap-3 pt-2 border-t border-white/5">
               <button
                 onClick={() => setConfirmLeave(true)}
                 className="flex items-center gap-2 text-sm text-accent-red hover:text-accent-red/80 transition-colors"
@@ -816,7 +816,56 @@ function GroupSection(): JSX.Element {
                 <LogOut className="w-4 h-4" />
                 {tg("leaveGroup")}
               </button>
-            )}
+              <button
+                onClick={() => setShowBrowseGroups(!showBrowseGroups)}
+                className="flex items-center gap-2 text-sm text-text-secondary hover:text-text-primary transition-colors"
+              >
+                {showBrowseGroups ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+                {tg("browseGroups")}
+              </button>
+              <button
+                onClick={() => setShowCreateDialog(true)}
+                className="flex items-center gap-2 text-sm text-text-secondary hover:text-text-primary transition-colors"
+              >
+                <Plus className="w-3.5 h-3.5" />
+                {tg("createGroup")}
+              </button>
+            </div>
+
+            {/* Browse Groups (when in a group) */}
+            <AnimatePresence>
+              {showBrowseGroups && (
+                <motion.div
+                  initial={{ height: 0, opacity: 0 }}
+                  animate={{ height: "auto", opacity: 1 }}
+                  exit={{ height: 0, opacity: 0 }}
+                  className="overflow-hidden"
+                >
+                  <div className="space-y-2 pt-2">
+                    {isLoadingGroups ? (
+                      <div className="flex justify-center py-4">
+                        <Loader2 className="w-5 h-5 text-primary-500 animate-spin" />
+                      </div>
+                    ) : allGroups && allGroups.length > 0 ? (
+                      allGroups.filter(g => g.id !== myGroup?.id).map((group) => (
+                        <div
+                          key={group.id}
+                          className="flex items-center justify-between p-3 rounded-xl border border-white/10 bg-white/[0.02]"
+                        >
+                          <div>
+                            <h4 className="text-sm font-medium text-text-primary">{group.name}</h4>
+                            <span className="text-xs text-text-muted">{tg("memberCount", { count: group.member_count })}</span>
+                          </div>
+                          <span className="text-xs text-text-muted">{tg("createdBy", { name: group.creator_name })}</span>
+                        </div>
+                      ))
+                    ) : (
+                      <p className="text-sm text-text-muted text-center py-4">{tg("noGroupsAvailable")}</p>
+                    )}
+                  </div>
+                </motion.div>
+              )}
+            </AnimatePresence>
           </div>
         ) : (
           /* ---- User is not in a group ---- */

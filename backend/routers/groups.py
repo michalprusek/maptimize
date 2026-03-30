@@ -367,16 +367,29 @@ async def leave_group(
             detail="You are not a member of this group"
         )
 
-    # Prevent creator from leaving (must delete the group instead)
+    # If creator is leaving, transfer ownership to another member or delete group
     result = await db.execute(
         select(Group).where(Group.id == group_id)
     )
     group = result.scalar_one_or_none()
     if group and group.created_by_user_id == current_user.id:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Group creator cannot leave. Delete the group instead."
+        # Find another member to transfer ownership to
+        other_result = await db.execute(
+            select(GroupMember).where(
+                GroupMember.group_id == group_id,
+                GroupMember.user_id != current_user.id
+            ).limit(1)
         )
+        other_member = other_result.scalar_one_or_none()
+        if other_member:
+            group.created_by_user_id = other_member.user_id
+            other_member.role = "admin"
+            logger.info(f"Group {group_id} ownership transferred to user {other_member.user_id}")
+        else:
+            # Last member leaving — delete group
+            await db.delete(group)
+            await db.commit()
+            return
 
     await db.delete(membership)
     await db.commit()
