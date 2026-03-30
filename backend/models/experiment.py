@@ -11,6 +11,7 @@ from database import Base
 if TYPE_CHECKING:
     from .user import User
     from .image import Image, MapProtein
+    from .group import Group
 
 
 class ExperimentStatus(str, PyEnum):
@@ -34,6 +35,11 @@ class Experiment(Base):
         ForeignKey("map_proteins.id"),
         nullable=True
     )
+    group_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("groups.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True
+    )
     fasta_sequence: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     status: Mapped[ExperimentStatus] = mapped_column(
         Enum(ExperimentStatus),
@@ -51,6 +57,7 @@ class Experiment(Base):
 
     # Relationships
     user: Mapped["User"] = relationship(back_populates="experiments")
+    group: Mapped[Optional["Group"]] = relationship()
     map_protein: Mapped[Optional["MapProtein"]] = relationship()
     images: Mapped[List["Image"]] = relationship(
         back_populates="experiment",

@@ -361,8 +361,9 @@ async def index_fov_image(image_id: int, db: AsyncSession) -> bool:
         if not image:
             raise RAGServiceError(f"Image {image_id} not found for RAG indexing")
 
-        # Get image path
-        image_path = Path(settings.upload_dir) / image.file_path
+        # Get image path — prefer MIP (web-friendly PNG) over original TIFF
+        raw_path = image.mip_path or image.file_path
+        image_path = Path(raw_path)
         if not image_path.exists():
             raise RAGServiceError(f"Image file not found: {image_path}")
 

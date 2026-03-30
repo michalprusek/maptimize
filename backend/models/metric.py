@@ -11,6 +11,7 @@ from config import get_settings
 if TYPE_CHECKING:
     from .user import User
     from .cell_crop import CellCrop
+    from .group import Group
 
 settings = get_settings()
 
@@ -23,6 +24,11 @@ class Metric(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     user_id: Mapped[int] = mapped_column(
         ForeignKey("users.id", ondelete="CASCADE"),
+        index=True
+    )
+    group_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("groups.id", ondelete="SET NULL"),
+        nullable=True,
         index=True
     )
     name: Mapped[str] = mapped_column(String(100))
@@ -39,6 +45,7 @@ class Metric(Base):
 
     # Relationships
     user: Mapped["User"] = relationship(back_populates="metrics")
+    group: Mapped[Optional["Group"]] = relationship()
     images: Mapped[List["MetricImage"]] = relationship(
         back_populates="metric",
         cascade="all, delete-orphan"
@@ -89,9 +96,8 @@ class MetricImage(Base):
     # Relationships
     metric: Mapped["Metric"] = relationship(back_populates="images")
     cell_crop: Mapped[Optional["CellCrop"]] = relationship()
-    rating: Mapped[Optional["MetricRating"]] = relationship(
+    ratings: Mapped[List["MetricRating"]] = relationship(
         back_populates="metric_image",
-        uselist=False,
         cascade="all, delete-orphan"
     )
 
@@ -111,7 +117,7 @@ class MetricRating(Base):
 
     __tablename__ = "metric_ratings"
     __table_args__ = (
-        UniqueConstraint("metric_id", "metric_image_id", name="uq_metric_image_rating"),
+        UniqueConstraint("metric_id", "metric_image_id", "user_id", name="uq_metric_image_user_rating"),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -121,6 +127,11 @@ class MetricRating(Base):
     )
     metric_image_id: Mapped[int] = mapped_column(
         ForeignKey("metric_images.id", ondelete="CASCADE"),
+        index=True
+    )
+    user_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=True,
         index=True
     )
 
@@ -142,7 +153,7 @@ class MetricRating(Base):
 
     # Relationships
     metric: Mapped["Metric"] = relationship(back_populates="ratings")
-    metric_image: Mapped["MetricImage"] = relationship(back_populates="rating")
+    metric_image: Mapped["MetricImage"] = relationship(back_populates="ratings")
 
     @property
     def ordinal_score(self) -> float:
@@ -161,6 +172,11 @@ class MetricComparison(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     metric_id: Mapped[int] = mapped_column(
         ForeignKey("metrics.id", ondelete="CASCADE"),
+        index=True
+    )
+    user_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=True,
         index=True
     )
     image_a_id: Mapped[int] = mapped_column(ForeignKey("metric_images.id"))

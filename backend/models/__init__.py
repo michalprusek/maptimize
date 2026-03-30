@@ -12,6 +12,7 @@ from .segmentation import SegmentationMask, UserSegmentationPrompt, FOVSegmentat
 from .chat import ChatThread, ChatMessage, ChatRole
 from .rag_document import RAGDocument, RAGDocumentPage, DocumentStatus, DocumentType
 from .agent_memory import AgentMemory, MemoryType
+from .group import Group, GroupMember
 
 __all__ = [
     "User",
@@ -46,4 +47,6 @@ __all__ = [
     "DocumentType",
     "AgentMemory",
     "MemoryType",
+    "Group",
+    "GroupMember",
 ]

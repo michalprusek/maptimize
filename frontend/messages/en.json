@@ -664,5 +664,40 @@
     "errors": {
       "loadFailed": "Failed to load data"
     }
+  },
+  "groups": {
+    "title": "Group",
+    "noGroup": "You are not in any group",
+    "noGroupDesc": "Create a new group or browse existing groups to join.",
+    "createGroup": "Create Group",
+    "browseGroups": "Browse Groups",
+    "joinGroup": "Join",
+    "leaveGroup": "Leave Group",
+    "deleteGroup": "Delete Group",
+    "editGroup": "Edit Group",
+    "kickMember": "Remove",
+    "groupName": "Group Name",
+    "groupDescription": "Description",
+    "members": "Members",
+    "creator": "Creator",
+    "member": "Member",
+    "role": "Role",
+    "joinedAt": "Joined",
+    "confirmLeave": "Are you sure you want to leave this group? Your experiments will remain shared.",
+    "confirmDelete": "Are you sure you want to delete this group? This cannot be undone.",
+    "confirmKick": "Remove this member from the group?",
+    "alreadyInGroup": "You are already in a group. Leave your current group first.",
+    "createdBy": "by {name}",
+    "memberCount": "{count, plural, =1 {# member} other {# members}}",
+    "noGroupsAvailable": "No groups available",
+    "createSuccess": "Group created successfully",
+    "joinSuccess": "Joined group successfully",
+    "leaveSuccess": "Left group successfully",
+    "deleteSuccess": "Group deleted successfully",
+    "updateSuccess": "Group updated successfully",
+    "kickSuccess": "Member removed successfully",
+    "error": "An error occurred",
+    "saving": "Saving...",
+    "creating": "Creating..."
   }
 }

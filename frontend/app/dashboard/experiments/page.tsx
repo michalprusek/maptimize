@@ -20,6 +20,7 @@ import {
   ChevronDown,
   Download,
   Upload,
+  User,
 } from "lucide-react";
 import { ExportModal, ImportModal } from "@/components/export";
 
@@ -28,6 +29,7 @@ export default function ExperimentsPage(): JSX.Element {
   const tCommon = useTranslations("common");
   const tProteins = useTranslations("proteins");
   const tExportImport = useTranslations("exportImport");
+  const tGroups = useTranslations("groups");
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [showExportModal, setShowExportModal] = useState(false);
   const [showImportModal, setShowImportModal] = useState(false);
@@ -202,9 +204,16 @@ export default function ExperimentsPage(): JSX.Element {
                     </button>
                   </div>
 
-                  <h3 className="font-display font-semibold text-lg text-text-primary mb-2 group-hover:text-primary-400 transition-colors">
+                  <h3 className="font-display font-semibold text-lg text-text-primary mb-1 group-hover:text-primary-400 transition-colors">
                     {exp.name}
                   </h3>
+
+                  {exp.creator_name && exp.group_id && (
+                    <p className="flex items-center gap-1.5 text-xs text-text-muted mb-2">
+                      <User className="w-3 h-3" />
+                      {tGroups("createdBy", { name: exp.creator_name })}
+                    </p>
+                  )}
 
                   {exp.description && (
                     <p className="text-sm text-text-secondary mb-4 line-clamp-2">

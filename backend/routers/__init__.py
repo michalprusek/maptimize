@@ -15,6 +15,7 @@ from .export_import import router as export_import_router
 from .chat import router as chat_router
 from .rag import router as rag_router
 from .admin import router as admin_router
+from .groups import router as groups_router
 
 api_router = APIRouter()
 
@@ -32,3 +33,4 @@ api_router.include_router(export_import_router, prefix="/data", tags=["Export/Im
 api_router.include_router(chat_router, prefix="/chat", tags=["Chat"])
 api_router.include_router(rag_router, prefix="/rag", tags=["RAG"])
 api_router.include_router(admin_router, prefix="/admin", tags=["Admin"])
+api_router.include_router(groups_router, prefix="/groups", tags=["Groups"])

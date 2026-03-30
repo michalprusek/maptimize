@@ -11,6 +11,7 @@ Image processing service - handles the full pipeline:
 
 import asyncio
 import logging
+import time
 from pathlib import Path
 from typing import List, Optional, Tuple
 from datetime import datetime, timezone
@@ -89,6 +90,7 @@ class ImageProcessor:
                     logger.error(f"Image {self.image_id} not found")
                     return False
 
+                phase1_start = time.monotonic()
                 logger.info(f"Phase 1 processing image {image.id}: {image.original_filename}")
 
                 # Update status
@@ -96,9 +98,11 @@ class ImageProcessor:
                 await db.commit()
 
                 # Load image
+                t0 = time.monotonic()
                 data = await self._load_image(image.file_path)
                 if data is None:
                     raise ValueError(f"Failed to load image: {image.file_path}")
+                logger.info("⏱ Phase1 [%d] load_image: %.2fs", image.id, time.monotonic() - t0)
 
                 # Check if Z-stack (3D) or 2D image
                 is_zstack = len(data.shape) == 3
@@ -117,14 +121,18 @@ class ImageProcessor:
                     logger.info(f"Processing Z-stack with {data.shape[0]} slices...")
 
                     # Create MIP projection
+                    t0 = time.monotonic()
                     mip = create_mip(data)
                     mip_path = await self._save_projection(image, mip, "mip")
                     image.mip_path = str(mip_path)
+                    logger.info("⏱ Phase1 [%d] MIP: %.2fs", image.id, time.monotonic() - t0)
 
                     # Create SUM projection
+                    t0 = time.monotonic()
                     sum_proj = create_sum_projection(data)
                     sum_path = await self._save_projection(image, sum_proj, "sum")
                     image.sum_path = str(sum_path)
+                    logger.info("⏱ Phase1 [%d] SUM: %.2fs", image.id, time.monotonic() - t0)
 
                     # Mark source as discarded (will delete after commit succeeds)
                     image.source_discarded = True
@@ -134,34 +142,34 @@ class ImageProcessor:
                     mip = data
 
                     # For 2D images in non-web-compatible formats (TIFF), convert to PNG
-                    # Browsers can't display TIFF, so we need a web-friendly version
                     file_ext = Path(image.file_path).suffix.lower()
                     if file_ext in ['.tif', '.tiff']:
                         logger.info("Converting 2D TIFF to PNG for web display")
                         mip_path = await self._save_projection(image, mip, "mip")
                         image.mip_path = str(mip_path)
-                        # Keep the original TIFF for scientific accuracy
                         original_path = None
                     else:
-                        # For web-compatible formats (PNG, JPEG), use original directly
                         original_path = None
 
                 # Save thumbnail (always from MIP)
+                t0 = time.monotonic()
                 thumb_path = await self._save_thumbnail(image, mip)
                 image.thumbnail_path = str(thumb_path)
+                logger.info("⏱ Phase1 [%d] thumbnail: %.2fs", image.id, time.monotonic() - t0)
 
                 # Set status to UPLOADED (Phase 1 complete)
                 image.status = UploadStatus.UPLOADED
                 await db.commit()
 
-                # Delete original Z-stack file AFTER successful commit (prevents data loss on rollback)
+                # Delete original Z-stack file AFTER successful commit
                 if original_path and original_path.exists():
                     original_path.unlink()
                     logger.info(f"Deleted original Z-stack: {original_path}")
 
-                # SAM embedding is computed inline during Phase 2 (not here in Phase 1)
-
-                logger.info(f"Phase 1 complete for image {image.id}")
+                logger.info(
+                    "⏱ Phase1 [%d] TOTAL: %.2fs",
+                    image.id, time.monotonic() - phase1_start,
+                )
                 return True
 
             except Exception as e:
@@ -213,6 +221,7 @@ class ImageProcessor:
                 if image.status not in [UploadStatus.UPLOADED, UploadStatus.READY, UploadStatus.ERROR]:
                     logger.warning(f"Image {image.id} has status {image.status}, expected UPLOADED")
 
+                phase2_start = time.monotonic()
                 logger.info(f"Phase 2 processing image {image.id}: detect_cells={detect_cells}")
 
                 # Update settings
@@ -223,24 +232,21 @@ class ImageProcessor:
                 await db.commit()
 
                 # Load MIP projection (should already exist from Phase 1)
+                t0 = time.monotonic()
                 mip_fallback_used = False
                 if image.mip_path and Path(image.mip_path).exists():
                     mip = await self._load_image(image.mip_path)
                 elif not image.mip_path and Path(image.file_path).exists():
-                    # For 2D images, mip_path is not set - use original file directly
                     logger.info(f"2D image {image.id}: using original file as MIP")
                     mip = await self._load_image(image.file_path)
                 else:
-                    # Fallback: try to load from original file if MIP is missing
                     mip_fallback_used = True
                     logger.warning(
                         f"MIP projection missing for image {image.id} (mip_path={image.mip_path}), "
-                        f"falling back to original file: {image.file_path}. "
-                        f"This may indicate Phase 1 did not complete properly."
+                        f"falling back to original file: {image.file_path}."
                     )
                     mip = await self._load_image(image.file_path)
                     if mip is not None:
-                        # Record that fallback was used (visible in error_message field)
                         existing_msg = image.error_message or ""
                         warning_msg = "Warning: Phase 1 may be incomplete (MIP fallback used). "
                         if warning_msg not in existing_msg:
@@ -248,6 +254,7 @@ class ImageProcessor:
 
                 if mip is None:
                     raise ValueError(f"Cannot load MIP for image {image.id}")
+                logger.info("⏱ Phase2 [%d] load_mip: %.2fs", image.id, time.monotonic() - t0)
 
                 # Load SUM projection if exists
                 sum_proj = None
@@ -258,22 +265,30 @@ class ImageProcessor:
                     # Run detection pipeline
                     await self._run_detection(db, image, mip, sum_proj, sum_proj is not None)
                 else:
-                    # No detection - just mark as ready (FOV only)
                     logger.info("Detection disabled - FOV will be shown without crops")
                     image.status = UploadStatus.READY
                     image.processed_at = datetime.now(timezone.utc)
 
                 # Extract FOV embedding (always, regardless of detect_cells)
+                t0 = time.monotonic()
                 await self._extract_fov_embedding(db, image)
+                logger.info("⏱ Phase2 [%d] fov_embedding: %.2fs", image.id, time.monotonic() - t0)
 
-                # Compute SAM embedding for segmentation (inline, not background)
+                # Compute SAM embedding for segmentation
+                t0 = time.monotonic()
                 await self._compute_sam_embedding(db, image)
+                logger.info("⏱ Phase2 [%d] sam_embedding: %.2fs", image.id, time.monotonic() - t0)
 
-                # Extract RAG embedding for chat search (non-fatal on failure)
+                # Extract RAG embedding for chat search
+                t0 = time.monotonic()
                 await self._extract_rag_embedding(db, image)
+                logger.info("⏱ Phase2 [%d] rag_embedding: %.2fs", image.id, time.monotonic() - t0)
 
                 await db.commit()
-                logger.info(f"Phase 2 complete for image {image.id}")
+                logger.info(
+                    "⏱ Phase2 [%d] TOTAL: %.2fs",
+                    image.id, time.monotonic() - phase2_start,
+                )
                 return True
 
             except Exception as e:
@@ -318,22 +333,23 @@ class ImageProcessor:
         is_zstack: bool
     ):
         """Run YOLO detection and create cell crops."""
-        # Update status for detection
         image.status = UploadStatus.DETECTING
         await db.commit()
 
         # Run detection on normalized MIP
-        logger.info("Running YOLO detection...")
+        t0 = time.monotonic()
         mip_normalized = normalize_image(mip)
         detections = await detect_cells_in_image(mip_normalized)
+        logger.info(
+            "⏱ Phase2 [%d] yolo_detect: %.2fs (%d cells)",
+            image.id, time.monotonic() - t0, len(detections),
+        )
 
-        logger.info(f"Found {len(detections)} cells")
-
-        # Update status for feature extraction
         image.status = UploadStatus.EXTRACTING_FEATURES
         await db.commit()
 
         # Create cell crops
+        t0 = time.monotonic()
         new_crops = []
         for det in detections:
             mip_crop = self._crop_cell(mip, det)
@@ -354,9 +370,19 @@ class ImageProcessor:
             )
             db.add(cell_crop)
             new_crops.append(cell_crop)
+        logger.info(
+            "⏱ Phase2 [%d] create_crops: %.2fs (%d crops)",
+            image.id, time.monotonic() - t0, len(new_crops),
+        )
 
         await db.flush()
+
+        t0 = time.monotonic()
         await self._extract_features_for_crops(new_crops, db)
+        logger.info(
+            "⏱ Phase2 [%d] dinov3_crops: %.2fs (%d crops)",
+            image.id, time.monotonic() - t0, len(new_crops),
+        )
 
         # Mark as complete
         image.status = UploadStatus.READY

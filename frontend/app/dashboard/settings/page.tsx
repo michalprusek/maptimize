@@ -10,8 +10,8 @@
  */
 
 import { useState, useRef, useEffect } from "react";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { motion } from "framer-motion";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { motion, AnimatePresence } from "framer-motion";
 import { useTranslations } from "next-intl";
 import {
   User,
@@ -27,10 +27,20 @@ import {
   AlertCircle,
   Eye,
   EyeOff,
+  Users,
+  Plus,
+  LogOut,
+  X,
+  ChevronDown,
+  ChevronUp,
+  Crown,
+  Pencil,
+  UserMinus,
 } from "lucide-react";
 import { useAuthStore } from "@/stores/authStore";
 import { useSettingsStore, DisplayMode, Theme, Language } from "@/stores/settingsStore";
-import { api } from "@/lib/api";
+import { api, GroupDetail, GroupMember } from "@/lib/api";
+import { ConfirmModal } from "@/components/ui";
 
 // Display mode visual configuration (labels come from translations)
 const displayModeConfig: Record<DisplayMode, { bgColor: string; fgColor: string }> = {
@@ -532,6 +542,622 @@ export default function SettingsPage(): JSX.Element {
           ))}
         </div>
       </motion.section>
+
+      {/* Group Section */}
+      <GroupSection />
     </div>
+  );
+}
+
+// =============================================================================
+// Group Management Section
+// =============================================================================
+
+function GroupSection(): JSX.Element {
+  const tg = useTranslations("groups");
+  const tCommon = useTranslations("common");
+  const queryClient = useQueryClient();
+  const { user } = useAuthStore();
+
+  // State
+  const [showCreateDialog, setShowCreateDialog] = useState(false);
+  const [showEditDialog, setShowEditDialog] = useState(false);
+  const [showBrowseGroups, setShowBrowseGroups] = useState(false);
+  const [confirmLeave, setConfirmLeave] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const [confirmKickUserId, setConfirmKickUserId] = useState<number | null>(null);
+  const [groupError, setGroupError] = useState<string | null>(null);
+  const [groupSuccess, setGroupSuccess] = useState<string | null>(null);
+
+  // Queries
+  const { data: myGroupData, isLoading: isLoadingMyGroup } = useQuery({
+    queryKey: ["myGroup"],
+    queryFn: () => api.getMyGroup(),
+  });
+
+  const { data: allGroups, isLoading: isLoadingGroups } = useQuery({
+    queryKey: ["groups"],
+    queryFn: () => api.getGroups(),
+    enabled: showBrowseGroups,
+  });
+
+  const myGroup = myGroupData?.group ?? null;
+  const myRole = myGroupData?.role ?? null;
+  const isCreator = myGroup && user && myGroup.created_by_user_id === user.id;
+
+  // Clear success message after delay
+  useEffect(() => {
+    if (groupSuccess) {
+      const timer = setTimeout(() => setGroupSuccess(null), 3000);
+      return () => clearTimeout(timer);
+    }
+  }, [groupSuccess]);
+
+  // Mutations
+  const createGroupMutation = useMutation({
+    mutationFn: (data: { name: string; description?: string }) => api.createGroup(data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["myGroup"] });
+      queryClient.invalidateQueries({ queryKey: ["groups"] });
+      setShowCreateDialog(false);
+      setGroupSuccess(tg("createSuccess"));
+      setGroupError(null);
+    },
+    onError: (err: Error) => {
+      setGroupError(err.message);
+    },
+  });
+
+  const joinGroupMutation = useMutation({
+    mutationFn: (groupId: number) => api.joinGroup(groupId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["myGroup"] });
+      queryClient.invalidateQueries({ queryKey: ["groups"] });
+      setShowBrowseGroups(false);
+      setGroupSuccess(tg("joinSuccess"));
+      setGroupError(null);
+    },
+    onError: (err: Error) => {
+      setGroupError(err.message);
+    },
+  });
+
+  const leaveGroupMutation = useMutation({
+    mutationFn: (groupId: number) => api.leaveGroup(groupId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["myGroup"] });
+      queryClient.invalidateQueries({ queryKey: ["groups"] });
+      setConfirmLeave(false);
+      setGroupSuccess(tg("leaveSuccess"));
+      setGroupError(null);
+    },
+    onError: (err: Error) => {
+      setGroupError(err.message);
+    },
+  });
+
+  const deleteGroupMutation = useMutation({
+    mutationFn: (groupId: number) => api.deleteGroup(groupId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["myGroup"] });
+      queryClient.invalidateQueries({ queryKey: ["groups"] });
+      setConfirmDelete(false);
+      setGroupSuccess(tg("deleteSuccess"));
+      setGroupError(null);
+    },
+    onError: (err: Error) => {
+      setGroupError(err.message);
+    },
+  });
+
+  const updateGroupMutation = useMutation({
+    mutationFn: ({ groupId, data }: { groupId: number; data: { name?: string; description?: string } }) =>
+      api.updateGroup(groupId, data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["myGroup"] });
+      queryClient.invalidateQueries({ queryKey: ["groups"] });
+      setShowEditDialog(false);
+      setGroupSuccess(tg("updateSuccess"));
+      setGroupError(null);
+    },
+    onError: (err: Error) => {
+      setGroupError(err.message);
+    },
+  });
+
+  const kickMemberMutation = useMutation({
+    mutationFn: ({ groupId, userId }: { groupId: number; userId: number }) =>
+      api.kickMember(groupId, userId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["myGroup"] });
+      setConfirmKickUserId(null);
+      setGroupSuccess(tg("kickSuccess"));
+      setGroupError(null);
+    },
+    onError: (err: Error) => {
+      setGroupError(err.message);
+    },
+  });
+
+  return (
+    <>
+      <motion.section
+        initial={{ opacity: 0, y: 20 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ delay: 0.4 }}
+        className="glass-card p-6 space-y-6"
+      >
+        <div className="flex items-center gap-3">
+          <Users className="w-5 h-5 text-primary-400" />
+          <h2 className="text-xl font-display font-semibold text-text-primary">{tg("title")}</h2>
+        </div>
+
+        {/* Error/Success Messages */}
+        {groupError && (
+          <div className="flex items-center gap-2 text-accent-red text-sm">
+            <AlertCircle className="w-4 h-4" />
+            {groupError}
+            <button onClick={() => setGroupError(null)} className="ml-auto text-text-muted hover:text-text-primary">
+              <X className="w-3 h-3" />
+            </button>
+          </div>
+        )}
+        {groupSuccess && (
+          <div className="flex items-center gap-2 text-primary-400 text-sm">
+            <Check className="w-4 h-4" />
+            {groupSuccess}
+          </div>
+        )}
+
+        {isLoadingMyGroup ? (
+          <div className="flex justify-center py-6">
+            <Loader2 className="w-6 h-6 text-primary-500 animate-spin" />
+          </div>
+        ) : myGroup ? (
+          /* ---- User is in a group ---- */
+          <div className="space-y-6">
+            {/* Group info */}
+            <div className="p-4 rounded-xl border border-white/10 bg-white/[0.02] space-y-3">
+              <div className="flex items-center justify-between">
+                <div>
+                  <h3 className="text-lg font-display font-semibold text-text-primary">{myGroup.name}</h3>
+                  {myGroup.description && (
+                    <p className="text-sm text-text-secondary mt-1">{myGroup.description}</p>
+                  )}
+                </div>
+                <div className="flex items-center gap-2">
+                  {isCreator && (
+                    <>
+                      <button
+                        onClick={() => setShowEditDialog(true)}
+                        className="p-2 hover:bg-white/5 rounded-lg transition-colors text-text-muted hover:text-primary-400"
+                        title={tg("editGroup")}
+                      >
+                        <Pencil className="w-4 h-4" />
+                      </button>
+                      <button
+                        onClick={() => setConfirmDelete(true)}
+                        className="p-2 hover:bg-accent-red/10 rounded-lg transition-colors text-text-muted hover:text-accent-red"
+                        title={tg("deleteGroup")}
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    </>
+                  )}
+                </div>
+              </div>
+              <div className="flex items-center gap-4 text-sm text-text-muted">
+                <span className="flex items-center gap-1.5">
+                  <Users className="w-3.5 h-3.5" />
+                  {tg("memberCount", { count: myGroup.member_count })}
+                </span>
+                <span className="flex items-center gap-1.5">
+                  <Crown className="w-3.5 h-3.5" />
+                  {tg("createdBy", { name: myGroup.creator_name })}
+                </span>
+              </div>
+            </div>
+
+            {/* Member list */}
+            <div className="space-y-3">
+              <h4 className="text-sm font-medium text-text-secondary">{tg("members")}</h4>
+              <div className="space-y-2">
+                {myGroup.members.map((member) => (
+                  <div
+                    key={member.id}
+                    className="flex items-center justify-between p-3 rounded-lg border border-white/5 bg-white/[0.01]"
+                  >
+                    <div className="flex items-center gap-3">
+                      <div className="w-8 h-8 rounded-full bg-primary-500/20 flex items-center justify-center">
+                        <User className="w-4 h-4 text-primary-400" />
+                      </div>
+                      <div>
+                        <div className="flex items-center gap-2">
+                          <span className="text-sm font-medium text-text-primary">{member.user_name}</span>
+                          {member.role === "admin" && (
+                            <span className="px-1.5 py-0.5 text-xs rounded bg-primary-500/20 text-primary-400">
+                              {tg("creator")}
+                            </span>
+                          )}
+                          {member.role === "member" && (
+                            <span className="px-1.5 py-0.5 text-xs rounded bg-white/5 text-text-muted">
+                              {tg("member")}
+                            </span>
+                          )}
+                        </div>
+                        <span className="text-xs text-text-muted">{member.user_email}</span>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-3">
+                      <span className="text-xs text-text-muted">
+                        {new Date(member.joined_at).toLocaleDateString()}
+                      </span>
+                      {isCreator && member.user_id !== user?.id && (
+                        <button
+                          onClick={() => setConfirmKickUserId(member.user_id)}
+                          className="p-1.5 hover:bg-accent-red/10 rounded-lg transition-colors text-text-muted hover:text-accent-red"
+                          title={tg("kickMember")}
+                        >
+                          <UserMinus className="w-3.5 h-3.5" />
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {/* Leave button */}
+            {!isCreator && (
+              <button
+                onClick={() => setConfirmLeave(true)}
+                className="flex items-center gap-2 text-sm text-accent-red hover:text-accent-red/80 transition-colors"
+              >
+                <LogOut className="w-4 h-4" />
+                {tg("leaveGroup")}
+              </button>
+            )}
+          </div>
+        ) : (
+          /* ---- User is not in a group ---- */
+          <div className="space-y-6">
+            <div className="text-center py-4">
+              <div className="w-14 h-14 bg-primary-500/10 rounded-2xl flex items-center justify-center mx-auto mb-4">
+                <Users className="w-7 h-7 text-primary-400" />
+              </div>
+              <p className="text-text-secondary mb-1">{tg("noGroup")}</p>
+              <p className="text-sm text-text-muted">{tg("noGroupDesc")}</p>
+            </div>
+
+            <div className="flex flex-col sm:flex-row gap-3">
+              <button
+                onClick={() => setShowCreateDialog(true)}
+                className="btn-primary flex-1 flex items-center justify-center gap-2"
+              >
+                <Plus className="w-4 h-4" />
+                {tg("createGroup")}
+              </button>
+              <button
+                onClick={() => setShowBrowseGroups(!showBrowseGroups)}
+                className="btn-secondary flex-1 flex items-center justify-center gap-2"
+              >
+                {showBrowseGroups ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
+                {tg("browseGroups")}
+              </button>
+            </div>
+
+            {/* Browse Groups Expandable */}
+            <AnimatePresence>
+              {showBrowseGroups && (
+                <motion.div
+                  initial={{ height: 0, opacity: 0 }}
+                  animate={{ height: "auto", opacity: 1 }}
+                  exit={{ height: 0, opacity: 0 }}
+                  className="overflow-hidden"
+                >
+                  <div className="space-y-2 pt-2">
+                    {isLoadingGroups ? (
+                      <div className="flex justify-center py-4">
+                        <Loader2 className="w-5 h-5 text-primary-500 animate-spin" />
+                      </div>
+                    ) : allGroups && allGroups.length > 0 ? (
+                      allGroups.map((group) => (
+                        <div
+                          key={group.id}
+                          className="flex items-center justify-between p-4 rounded-xl border border-white/10 bg-white/[0.02]"
+                        >
+                          <div>
+                            <h4 className="text-sm font-medium text-text-primary">{group.name}</h4>
+                            {group.description && (
+                              <p className="text-xs text-text-muted mt-0.5">{group.description}</p>
+                            )}
+                            <div className="flex items-center gap-3 mt-1 text-xs text-text-muted">
+                              <span>{tg("memberCount", { count: group.member_count })}</span>
+                              <span>{tg("createdBy", { name: group.creator_name })}</span>
+                            </div>
+                          </div>
+                          <button
+                            onClick={() => joinGroupMutation.mutate(group.id)}
+                            disabled={joinGroupMutation.isPending}
+                            className="btn-primary text-sm px-4 py-1.5"
+                          >
+                            {joinGroupMutation.isPending ? (
+                              <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                            ) : (
+                              tg("joinGroup")
+                            )}
+                          </button>
+                        </div>
+                      ))
+                    ) : (
+                      <p className="text-sm text-text-muted text-center py-4">{tg("noGroupsAvailable")}</p>
+                    )}
+                  </div>
+                </motion.div>
+              )}
+            </AnimatePresence>
+          </div>
+        )}
+      </motion.section>
+
+      {/* Create Group Dialog */}
+      <AnimatePresence>
+        {showCreateDialog && (
+          <CreateGroupDialog
+            onClose={() => setShowCreateDialog(false)}
+            onSubmit={(data) => createGroupMutation.mutate(data)}
+            isPending={createGroupMutation.isPending}
+          />
+        )}
+      </AnimatePresence>
+
+      {/* Edit Group Dialog */}
+      <AnimatePresence>
+        {showEditDialog && myGroup && (
+          <EditGroupDialog
+            group={myGroup}
+            onClose={() => setShowEditDialog(false)}
+            onSubmit={(data) =>
+              updateGroupMutation.mutate({ groupId: myGroup.id, data })
+            }
+            isPending={updateGroupMutation.isPending}
+          />
+        )}
+      </AnimatePresence>
+
+      {/* Confirm Leave Modal */}
+      <ConfirmModal
+        isOpen={confirmLeave}
+        onClose={() => setConfirmLeave(false)}
+        onConfirm={() => myGroup && leaveGroupMutation.mutate(myGroup.id)}
+        title={tg("leaveGroup")}
+        message={tg("confirmLeave")}
+        confirmLabel={tg("leaveGroup")}
+        cancelLabel={tCommon("cancel")}
+        isLoading={leaveGroupMutation.isPending}
+        variant="danger"
+      />
+
+      {/* Confirm Delete Modal */}
+      <ConfirmModal
+        isOpen={confirmDelete}
+        onClose={() => setConfirmDelete(false)}
+        onConfirm={() => myGroup && deleteGroupMutation.mutate(myGroup.id)}
+        title={tg("deleteGroup")}
+        message={tg("confirmDelete")}
+        confirmLabel={tg("deleteGroup")}
+        cancelLabel={tCommon("cancel")}
+        isLoading={deleteGroupMutation.isPending}
+        variant="danger"
+      />
+
+      {/* Confirm Kick Modal */}
+      <ConfirmModal
+        isOpen={confirmKickUserId !== null}
+        onClose={() => setConfirmKickUserId(null)}
+        onConfirm={() =>
+          myGroup &&
+          confirmKickUserId !== null &&
+          kickMemberMutation.mutate({ groupId: myGroup.id, userId: confirmKickUserId })
+        }
+        title={tg("kickMember")}
+        message={tg("confirmKick")}
+        confirmLabel={tg("kickMember")}
+        cancelLabel={tCommon("cancel")}
+        isLoading={kickMemberMutation.isPending}
+        variant="danger"
+      />
+    </>
+  );
+}
+
+// =============================================================================
+// Create Group Dialog
+// =============================================================================
+
+function CreateGroupDialog({
+  onClose,
+  onSubmit,
+  isPending,
+}: {
+  onClose: () => void;
+  onSubmit: (data: { name: string; description?: string }) => void;
+  isPending: boolean;
+}): JSX.Element {
+  const tg = useTranslations("groups");
+  const tCommon = useTranslations("common");
+  const [name, setName] = useState("");
+  const [description, setDescription] = useState("");
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    onSubmit({ name, description: description || undefined });
+  };
+
+  return (
+    <motion.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-[100] p-4"
+      onClick={onClose}
+    >
+      <motion.div
+        initial={{ scale: 0.95, opacity: 0 }}
+        animate={{ scale: 1, opacity: 1 }}
+        exit={{ scale: 0.95, opacity: 0 }}
+        className="glass-card p-6 w-full max-w-md"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between mb-6">
+          <h3 className="text-lg font-display font-semibold text-text-primary">{tg("createGroup")}</h3>
+          <button onClick={onClose} className="p-2 hover:bg-white/5 rounded-lg transition-colors">
+            <X className="w-5 h-5 text-text-muted" />
+          </button>
+        </div>
+
+        <form onSubmit={handleSubmit} className="space-y-4">
+          <div>
+            <label className="block text-sm font-medium text-text-secondary mb-2">{tg("groupName")}</label>
+            <input
+              type="text"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              className="input-field"
+              required
+              autoFocus
+            />
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-text-secondary mb-2">{tg("groupDescription")}</label>
+            <textarea
+              value={description}
+              onChange={(e) => setDescription(e.target.value)}
+              className="input-field min-h-[80px] resize-none"
+            />
+          </div>
+
+          <div className="flex gap-3 pt-4">
+            <button type="button" onClick={onClose} className="btn-secondary flex-1">
+              {tCommon("cancel")}
+            </button>
+            <button
+              type="submit"
+              disabled={isPending || !name.trim()}
+              className="btn-primary flex-1 flex items-center justify-center gap-2"
+            >
+              {isPending ? (
+                <>
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                  {tg("creating")}
+                </>
+              ) : (
+                tg("createGroup")
+              )}
+            </button>
+          </div>
+        </form>
+      </motion.div>
+    </motion.div>
+  );
+}
+
+// =============================================================================
+// Edit Group Dialog
+// =============================================================================
+
+function EditGroupDialog({
+  group,
+  onClose,
+  onSubmit,
+  isPending,
+}: {
+  group: GroupDetail;
+  onClose: () => void;
+  onSubmit: (data: { name?: string; description?: string }) => void;
+  isPending: boolean;
+}): JSX.Element {
+  const tg = useTranslations("groups");
+  const tCommon = useTranslations("common");
+  const [name, setName] = useState(group.name);
+  const [description, setDescription] = useState(group.description || "");
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    const updates: { name?: string; description?: string } = {};
+    if (name !== group.name) updates.name = name;
+    if (description !== (group.description || "")) updates.description = description;
+    if (Object.keys(updates).length > 0) {
+      onSubmit(updates);
+    }
+  };
+
+  return (
+    <motion.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-[100] p-4"
+      onClick={onClose}
+    >
+      <motion.div
+        initial={{ scale: 0.95, opacity: 0 }}
+        animate={{ scale: 1, opacity: 1 }}
+        exit={{ scale: 0.95, opacity: 0 }}
+        className="glass-card p-6 w-full max-w-md"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between mb-6">
+          <h3 className="text-lg font-display font-semibold text-text-primary">{tg("editGroup")}</h3>
+          <button onClick={onClose} className="p-2 hover:bg-white/5 rounded-lg transition-colors">
+            <X className="w-5 h-5 text-text-muted" />
+          </button>
+        </div>
+
+        <form onSubmit={handleSubmit} className="space-y-4">
+          <div>
+            <label className="block text-sm font-medium text-text-secondary mb-2">{tg("groupName")}</label>
+            <input
+              type="text"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              className="input-field"
+              required
+              autoFocus
+            />
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-text-secondary mb-2">{tg("groupDescription")}</label>
+            <textarea
+              value={description}
+              onChange={(e) => setDescription(e.target.value)}
+              className="input-field min-h-[80px] resize-none"
+            />
+          </div>
+
+          <div className="flex gap-3 pt-4">
+            <button type="button" onClick={onClose} className="btn-secondary flex-1">
+              {tCommon("cancel")}
+            </button>
+            <button
+              type="submit"
+              disabled={isPending || !name.trim()}
+              className="btn-primary flex-1 flex items-center justify-center gap-2"
+            >
+              {isPending ? (
+                <>
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                  {tg("saving")}
+                </>
+              ) : (
+                tCommon("save")
+              )}
+            </button>
+          </div>
+        </form>
+      </motion.div>
+    </motion.div>
   );
 }

@@ -34,6 +34,7 @@ from schemas.metric import (
     ExperimentForImport,
 )
 from utils.security import get_current_user
+from utils.groups import get_user_group_id
 
 router = APIRouter()
 settings = get_settings()
@@ -49,11 +50,17 @@ async def get_metric_for_user(
     metric_id: int,
     user_id: int
 ) -> Metric:
-    """Get metric and verify ownership."""
+    """Get metric and verify ownership or group membership."""
+    group_id = await get_user_group_id(user_id, db)
+
+    conditions = [Metric.user_id == user_id]
+    if group_id is not None:
+        conditions.append(Metric.group_id == group_id)
+
     result = await db.execute(
         select(Metric)
         .options(selectinload(Metric.images))
-        .where(Metric.id == metric_id, Metric.user_id == user_id)
+        .where(Metric.id == metric_id, or_(*conditions))
     )
     metric = result.scalar_one_or_none()
     if not metric:
@@ -64,21 +71,29 @@ async def get_metric_for_user(
     return metric
 
 
-async def get_metric_counts(db: AsyncSession, metric_id: int) -> tuple[int, int]:
-    """Get image and comparison counts for a metric."""
+async def get_metric_counts(
+    db: AsyncSession,
+    metric_id: int,
+    user_id: Optional[int] = None
+) -> tuple[int, int]:
+    """Get image and comparison counts for a metric. Optionally filter comparisons by user."""
     img_result = await db.execute(
         select(func.count(MetricImage.id))
         .where(MetricImage.metric_id == metric_id)
     )
     image_count = img_result.scalar() or 0
 
-    comp_result = await db.execute(
+    comp_query = (
         select(func.count(MetricComparison.id))
         .where(
             MetricComparison.metric_id == metric_id,
             MetricComparison.undone == False
         )
     )
+    if user_id is not None:
+        comp_query = comp_query.where(MetricComparison.user_id == user_id)
+
+    comp_result = await db.execute(comp_query)
     comparison_count = comp_result.scalar() or 0
 
     return image_count, comparison_count
@@ -86,10 +101,15 @@ async def get_metric_counts(db: AsyncSession, metric_id: int) -> tuple[int, int]
 
 def build_metric_response(metric: Metric, image_count: int, comparison_count: int) -> MetricResponse:
     """Build MetricResponse from metric and counts."""
+    creator_name = None
+    if hasattr(metric, "user") and metric.user:
+        creator_name = metric.user.name
     return MetricResponse(
         id=metric.id,
         name=metric.name,
         description=metric.description,
+        group_id=metric.group_id,
+        creator_name=creator_name,
         image_count=image_count,
         comparison_count=comparison_count,
         created_at=metric.created_at,
@@ -100,21 +120,25 @@ def build_metric_response(metric: Metric, image_count: int, comparison_count: in
 async def get_or_create_metric_rating(
     db: AsyncSession,
     metric_id: int,
-    metric_image_id: int
+    metric_image_id: int,
+    user_id: Optional[int] = None
 ) -> MetricRating:
-    """Get existing rating or create new one."""
-    result = await db.execute(
-        select(MetricRating).where(
-            MetricRating.metric_id == metric_id,
-            MetricRating.metric_image_id == metric_image_id
-        )
+    """Get existing rating or create new one. Filters by user_id if provided."""
+    query = select(MetricRating).where(
+        MetricRating.metric_id == metric_id,
+        MetricRating.metric_image_id == metric_image_id
     )
+    if user_id is not None:
+        query = query.where(MetricRating.user_id == user_id)
+
+    result = await db.execute(query)
     rating = result.scalar_one_or_none()
 
     if not rating:
         rating = MetricRating(
             metric_id=metric_id,
             metric_image_id=metric_image_id,
+            user_id=user_id,
             mu=settings.initial_mu,
             sigma=settings.initial_sigma,
         )
@@ -131,17 +155,26 @@ async def list_metrics(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
-    """List all metrics for current user."""
+    """List all metrics for current user (and group metrics)."""
+    group_id = await get_user_group_id(current_user.id, db)
+
+    conditions = [Metric.user_id == current_user.id]
+    if group_id is not None:
+        conditions.append(Metric.group_id == group_id)
+
     result = await db.execute(
         select(Metric)
-        .where(Metric.user_id == current_user.id)
+        .options(selectinload(Metric.user))
+        .where(or_(*conditions))
         .order_by(Metric.created_at.desc())
     )
     metrics = result.scalars().all()
 
     items = []
     for metric in metrics:
-        image_count, comparison_count = await get_metric_counts(db, metric.id)
+        image_count, comparison_count = await get_metric_counts(
+            db, metric.id, user_id=current_user.id
+        )
         items.append(build_metric_response(metric, image_count, comparison_count))
 
     return MetricListResponse(items=items, total=len(items))
@@ -153,9 +186,12 @@ async def create_metric(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
-    """Create a new metric."""
+    """Create a new metric. Auto-assigns group_id if user is in a group."""
+    group_id = await get_user_group_id(current_user.id, db)
+
     metric = Metric(
         user_id=current_user.id,
+        group_id=group_id,
         name=data.name,
         description=data.description,
     )
@@ -174,7 +210,9 @@ async def get_metric(
 ):
     """Get metric details."""
     metric = await get_metric_for_user(db, metric_id, current_user.id)
-    image_count, comparison_count = await get_metric_counts(db, metric.id)
+    image_count, comparison_count = await get_metric_counts(
+        db, metric.id, user_id=current_user.id
+    )
     return build_metric_response(metric, image_count, comparison_count)
 
 
@@ -185,8 +223,10 @@ async def update_metric(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
-    """Update metric."""
+    """Update metric (owner only)."""
     metric = await get_metric_for_user(db, metric_id, current_user.id)
+    if metric.user_id != current_user.id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only the metric owner can update it")
 
     if data.name is not None:
         metric.name = data.name
@@ -205,8 +245,10 @@ async def delete_metric(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
-    """Delete metric and all associated data."""
+    """Delete metric and all associated data (owner only)."""
     metric = await get_metric_for_user(db, metric_id, current_user.id)
+    if metric.user_id != current_user.id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only the metric owner can delete it")
 
     # Delete uploaded files
     for img in metric.images:
@@ -234,7 +276,7 @@ async def list_metric_images(
         select(MetricImage)
         .options(
             selectinload(MetricImage.cell_crop).selectinload(CellCrop.map_protein),
-            selectinload(MetricImage.rating)
+            selectinload(MetricImage.ratings)
         )
         .where(MetricImage.metric_id == metric_id)
         .order_by(MetricImage.created_at.desc())
@@ -243,7 +285,11 @@ async def list_metric_images(
 
     response = []
     for img in images:
-        rating = img.rating
+        # Find rating for current user
+        rating = next(
+            (r for r in img.ratings if r.user_id == current_user.id),
+            None
+        )
         # Get protein info from cell_crop if available
         protein_name = None
         protein_color = None
@@ -286,12 +332,17 @@ async def import_crops_to_metric(
             detail="No experiment IDs provided"
         )
 
-    # Verify experiments belong to user
+    # Verify experiments belong to user or their group
+    group_id = await get_user_group_id(current_user.id, db)
+    exp_conditions = [Experiment.user_id == current_user.id]
+    if group_id is not None:
+        exp_conditions.append(Experiment.group_id == group_id)
+
     result = await db.execute(
         select(Experiment.id)
         .where(
             Experiment.id.in_(data.experiment_ids),
-            Experiment.user_id == current_user.id
+            or_(*exp_conditions)
         )
     )
     valid_ids = set(result.scalars().all())
@@ -300,7 +351,7 @@ async def import_crops_to_metric(
     if invalid_ids:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Experiments not found or not owned: {invalid_ids}"
+            detail=f"Experiments not found or not accessible: {invalid_ids}"
         )
 
     # Get existing cell_crop_ids in metric
@@ -356,7 +407,13 @@ async def list_experiments_for_import(
     """List experiments available for importing crops into this metric."""
     metric = await get_metric_for_user(db, metric_id, current_user.id)
 
-    # Get all user's experiments with image and crop counts
+    group_id = await get_user_group_id(current_user.id, db)
+
+    conditions = [Experiment.user_id == current_user.id]
+    if group_id is not None:
+        conditions.append(Experiment.group_id == group_id)
+
+    # Get user's (and group's) experiments with image and crop counts
     experiments_query = (
         select(
             Experiment.id,
@@ -366,7 +423,7 @@ async def list_experiments_for_import(
         )
         .outerjoin(Image, Experiment.id == Image.experiment_id)
         .outerjoin(CellCrop, Image.id == CellCrop.image_id)
-        .where(Experiment.user_id == current_user.id)
+        .where(or_(*conditions))
         .group_by(Experiment.id, Experiment.name)
         .order_by(Experiment.name)
     )
@@ -473,21 +530,23 @@ async def get_metric_pair(
             detail="Not enough images for comparison (need at least 2)"
         )
 
-    # Get comparison count
+    # Get comparison count for current user
     count_result = await db.execute(
         select(func.count(MetricComparison.id))
         .where(
             MetricComparison.metric_id == metric_id,
+            MetricComparison.user_id == current_user.id,
             MetricComparison.undone == False
         )
     )
     total_comparisons = count_result.scalar() or 0
 
-    # Get recent comparisons to avoid repetition
+    # Get recent comparisons by this user to avoid repetition
     recent_result = await db.execute(
         select(MetricComparison)
         .where(
             MetricComparison.metric_id == metric_id,
+            MetricComparison.user_id == current_user.id,
             MetricComparison.undone == False
         )
         .order_by(MetricComparison.created_at.desc())
@@ -497,10 +556,12 @@ async def get_metric_pair(
     recent_pairs = {(c.image_a_id, c.image_b_id) for c in recent}
     recent_pairs.update({(c.image_b_id, c.image_a_id) for c in recent})
 
-    # Get or create ratings for all images
+    # Get or create ratings for all images (per user)
     ratings = {}
     for img in images:
-        rating = await get_or_create_metric_rating(db, metric_id, img.id)
+        rating = await get_or_create_metric_rating(
+            db, metric_id, img.id, user_id=current_user.id
+        )
         ratings[img.id] = rating
 
     # Select pair based on phase
@@ -615,12 +676,16 @@ async def submit_metric_comparison(
                 detail=f"Image {img_id} not found in metric"
             )
 
-    # Get ratings
+    # Get ratings (per user)
     winner_id = data.winner_id
     loser_id = data.image_a_id if data.winner_id == data.image_b_id else data.image_b_id
 
-    winner_rating = await get_or_create_metric_rating(db, metric_id, winner_id)
-    loser_rating = await get_or_create_metric_rating(db, metric_id, loser_id)
+    winner_rating = await get_or_create_metric_rating(
+        db, metric_id, winner_id, user_id=current_user.id
+    )
+    loser_rating = await get_or_create_metric_rating(
+        db, metric_id, loser_id, user_id=current_user.id
+    )
 
     # Update ratings
     (new_winner_mu, new_winner_sigma), (new_loser_mu, new_loser_sigma) = update_ratings(
@@ -639,6 +704,7 @@ async def submit_metric_comparison(
     # Create comparison record
     comparison = MetricComparison(
         metric_id=metric_id,
+        user_id=current_user.id,
         image_a_id=data.image_a_id,
         image_b_id=data.image_b_id,
         winner_id=data.winner_id,
@@ -657,13 +723,14 @@ async def undo_metric_comparison(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
-    """Undo the last comparison in this metric."""
+    """Undo the last comparison in this metric by current user."""
     metric = await get_metric_for_user(db, metric_id, current_user.id)
 
     result = await db.execute(
         select(MetricComparison)
         .where(
             MetricComparison.metric_id == metric_id,
+            MetricComparison.user_id == current_user.id,
             MetricComparison.undone == False
         )
         .order_by(MetricComparison.created_at.desc())
@@ -680,12 +747,13 @@ async def undo_metric_comparison(
     # Mark as undone
     comparison.undone = True
 
-    # Reduce comparison counts
+    # Reduce comparison counts for current user's ratings
     for img_id in [comparison.image_a_id, comparison.image_b_id]:
         result = await db.execute(
             select(MetricRating).where(
                 MetricRating.metric_id == metric_id,
-                MetricRating.metric_image_id == img_id
+                MetricRating.metric_image_id == img_id,
+                MetricRating.user_id == current_user.id
             )
         )
         rating = result.scalar_one_or_none()
@@ -705,24 +773,30 @@ async def get_metric_leaderboard(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
-    """Get ranking leaderboard for this metric (all images by default)."""
+    """Get ranking leaderboard for this metric (per-user ratings)."""
     metric = await get_metric_for_user(db, metric_id, current_user.id)
 
-    # Get total count
+    # Get total count for current user
     count_result = await db.execute(
         select(func.count(MetricRating.id))
-        .where(MetricRating.metric_id == metric_id)
+        .where(
+            MetricRating.metric_id == metric_id,
+            MetricRating.user_id == current_user.id
+        )
     )
     total = count_result.scalar() or 0
 
-    # Get paginated ratings
+    # Get paginated ratings for current user
     result = await db.execute(
         select(MetricRating)
         .options(
             selectinload(MetricRating.metric_image)
             .selectinload(MetricImage.cell_crop)
         )
-        .where(MetricRating.metric_id == metric_id)
+        .where(
+            MetricRating.metric_id == metric_id,
+            MetricRating.user_id == current_user.id
+        )
         .order_by((MetricRating.mu - 3 * MetricRating.sigma).desc())
         .offset((page - 1) * per_page)
         .limit(per_page)
@@ -764,14 +838,15 @@ async def get_metric_progress(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
-    """Get ranking progress for this metric."""
+    """Get ranking progress for this metric (per-user)."""
     metric = await get_metric_for_user(db, metric_id, current_user.id)
 
-    # Count comparisons
+    # Count comparisons for current user
     count_result = await db.execute(
         select(func.count(MetricComparison.id))
         .where(
             MetricComparison.metric_id == metric_id,
+            MetricComparison.user_id == current_user.id,
             MetricComparison.undone == False
         )
     )
@@ -784,10 +859,13 @@ async def get_metric_progress(
     )
     image_count = img_count_result.scalar() or 0
 
-    # Get average sigma
+    # Get average sigma for current user's ratings
     sigma_result = await db.execute(
         select(func.avg(MetricRating.sigma))
-        .where(MetricRating.metric_id == metric_id)
+        .where(
+            MetricRating.metric_id == metric_id,
+            MetricRating.user_id == current_user.id
+        )
     )
     avg_sigma = sigma_result.scalar() or settings.initial_sigma
 
