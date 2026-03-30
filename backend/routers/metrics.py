@@ -794,7 +794,7 @@ async def get_metric_progress(
     convergence = calculate_convergence(avg_sigma, settings.initial_sigma, settings.target_sigma)
     estimated_remaining = estimate_remaining_comparisons(
         avg_sigma, settings.initial_sigma, settings.target_sigma,
-        image_count=image_count, total_comparisons=total_comparisons
+        rated_items_count=image_count, total_comparisons=total_comparisons
     )
 
     # Determine phase

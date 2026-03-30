@@ -279,8 +279,11 @@ class SAMEncoder:
         del self._model
         self._model = None
 
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
+        try:
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except Exception:
+            logger.warning("torch.cuda.empty_cache() failed during SAMEncoder reset", exc_info=True)
 
         logger.info("SAM encoder reset")
 
@@ -289,13 +292,19 @@ class SAMEncoder:
 _encoder: Optional[SAMEncoder] = None
 
 
-def get_mobilesam_encoder() -> SAMEncoder:
-    """Get or create the global MobileSAM encoder instance."""
+def _get_mobilesam_encoder_raw() -> SAMEncoder:
+    """Internal: get or create the MobileSAM singleton (called by GPU manager on every acquire)."""
     global _encoder
     if _encoder is None:
         logger.info("Initializing MobileSAM encoder (first use)...")
         _encoder = SAMEncoder()
     return _encoder
+
+
+def get_mobilesam_encoder() -> SAMEncoder:
+    """Get MobileSAM encoder via GPU model manager (tracks usage, enables auto-unload)."""
+    from ml.gpu_manager import get_gpu_manager
+    return get_gpu_manager().acquire("mobilesam")
 
 
 # Alias for backward compatibility

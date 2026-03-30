@@ -136,6 +136,25 @@ class BaseEncoder(ABC):
 
         raise ValueError(f"Unknown pooling mode: {self.pooling}")
 
+    def reset(self) -> None:
+        """Release model from GPU memory."""
+        if self.model is not None:
+            del self.model
+            self.model = None
+        if self.processor is not None:
+            del self.processor
+            self.processor = None
+        self.is_loaded = False
+        try:
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except Exception:
+            import logging
+            logging.getLogger(__name__).warning(
+                "torch.cuda.empty_cache() failed during %s reset", self.__class__.__name__,
+                exc_info=True,
+            )
+
     def get_effective_embedding_dim(self) -> int:
         """Get the effective embedding dimension after pooling."""
         if self.pooling == "cls_mean":

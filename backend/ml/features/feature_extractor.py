@@ -25,8 +25,8 @@ TARGET_SIZE = 224  # ViT input size
 _encoder: Optional[DINOv3Encoder] = None
 
 
-def get_encoder() -> DINOv3Encoder:
-    """Get or create the global DINOv3 encoder instance."""
+def _get_encoder_raw() -> DINOv3Encoder:
+    """Internal: get or create the DINOv3 singleton (called by GPU manager on every acquire)."""
     global _encoder
     if _encoder is None:
         logger.info("Initializing DINOv3-large encoder (first use)...")
@@ -35,9 +35,17 @@ def get_encoder() -> DINOv3Encoder:
     return _encoder
 
 
+def get_encoder() -> DINOv3Encoder:
+    """Get DINOv3 encoder via GPU model manager (tracks usage, enables auto-unload)."""
+    from ml.gpu_manager import get_gpu_manager
+    return get_gpu_manager().acquire("dinov3")
+
+
 def reset_encoder() -> None:
     """Reset the global encoder instance (forces reload on next use)."""
     global _encoder
+    if _encoder is not None:
+        _encoder.reset()
     _encoder = None
     logger.info("Encoder reset - will reload on next use")
 

@@ -26,6 +26,10 @@
     "previous": "Previous",
     "next": "Next",
     "retry": "Retry",
+    "tryAgain": "Try again",
+    "somethingWentWrong": "Something went wrong",
+    "errorDescription": "An unexpected error occurred. Please try again or refresh the page.",
+    "errorReference": "Error reference: {digest}",
     "copyFailed": "Failed to copy. Please copy manually.",
     "openInEditor": "Open in Editor",
     "viewInDocument": "View in Document"

@@ -168,6 +168,19 @@ class CellDetector:
         logger.info(f"Detected {len(detections)} cells")
         return detections
 
+    def reset(self) -> None:
+        """Release model from GPU memory."""
+        if self._model is not None:
+            del self._model
+            self._model = None
+            try:
+                import torch
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+            except Exception:
+                logger.warning("torch.cuda.empty_cache() failed during CellDetector reset", exc_info=True)
+            logger.info("CellDetector model released from memory")
+
     async def detect_async(
         self,
         image: np.ndarray,
@@ -182,17 +195,25 @@ class CellDetector:
 _detector: Optional[CellDetector] = None
 
 
-def get_detector() -> CellDetector:
-    """Get or create the global detector instance."""
+def _get_detector_raw() -> CellDetector:
+    """Internal: get or create the detector singleton (called by GPU manager on every acquire)."""
     global _detector
     if _detector is None:
         _detector = CellDetector()
     return _detector
 
 
+def get_detector() -> CellDetector:
+    """Get the detector via GPU model manager (tracks usage, enables auto-unload)."""
+    from ml.gpu_manager import get_gpu_manager
+    return get_gpu_manager().acquire("yolov8")
+
+
 def reset_detector() -> None:
     """Reset the global detector instance (forces reload on next use)."""
     global _detector
+    if _detector is not None:
+        _detector.reset()
     _detector = None
     logger.info("Detector reset - will reload on next use")
 

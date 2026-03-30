@@ -485,8 +485,11 @@ class SAM3Encoder:
         self._current_state = None
         self._current_image_path = None
 
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
+        try:
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except Exception:
+            logger.warning("torch.cuda.empty_cache() failed during SAM3Encoder reset", exc_info=True)
 
         logger.info("SAM 3 encoder reset")
 
@@ -495,13 +498,19 @@ class SAM3Encoder:
 _sam3_encoder: Optional[SAM3Encoder] = None
 
 
-def get_sam3_encoder() -> SAM3Encoder:
-    """Get or create the global SAM 3 encoder instance."""
+def _get_sam3_encoder_raw() -> SAM3Encoder:
+    """Internal: get or create the SAM 3 singleton (called by GPU manager on every acquire)."""
     global _sam3_encoder
     if _sam3_encoder is None:
         logger.info("Initializing SAM 3 encoder (first use)...")
         _sam3_encoder = SAM3Encoder()
     return _sam3_encoder
+
+
+def get_sam3_encoder() -> SAM3Encoder:
+    """Get SAM 3 encoder via GPU model manager (tracks usage, enables auto-unload)."""
+    from ml.gpu_manager import get_gpu_manager
+    return get_gpu_manager().acquire("sam3")
 
 
 def reset_sam3_encoder() -> None:

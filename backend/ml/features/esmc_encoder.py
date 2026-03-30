@@ -221,8 +221,11 @@ class ESMCEncoder:
         self.model = None
         self.is_loaded = False
 
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
+        try:
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except Exception:
+            logger.warning("torch.cuda.empty_cache() failed during ESMCEncoder reset", exc_info=True)
 
         logger.info("ESM-C encoder reset")
 
@@ -231,13 +234,19 @@ class ESMCEncoder:
 _esmc_encoder: Optional[ESMCEncoder] = None
 
 
-def get_esmc_encoder() -> ESMCEncoder:
-    """Get or create the global ESM-C encoder instance."""
+def _get_esmc_encoder_raw() -> ESMCEncoder:
+    """Internal: get or create the ESM-C singleton (called by GPU manager on every acquire)."""
     global _esmc_encoder
     if _esmc_encoder is None:
         logger.info("Initializing ESM-C encoder (first use)...")
         _esmc_encoder = ESMCEncoder()
     return _esmc_encoder
+
+
+def get_esmc_encoder() -> ESMCEncoder:
+    """Get ESM-C encoder via GPU model manager (tracks usage, enables auto-unload)."""
+    from ml.gpu_manager import get_gpu_manager
+    return get_gpu_manager().acquire("esmc")
 
 
 def reset_esmc_encoder() -> None:

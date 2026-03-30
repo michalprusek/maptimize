@@ -697,3 +697,44 @@ async def get_user_experiments(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to load experiments. Please try again."
         )
+
+
+# --- GPU Model Management ---
+
+@router.get("/gpu/status")
+async def get_gpu_status(
+    current_admin: User = Depends(get_current_admin),
+):
+    """Get GPU memory status and loaded models info."""
+    from ml.gpu_manager import get_gpu_manager
+    return get_gpu_manager().get_status()
+
+
+@router.post("/gpu/unload/{model_name}")
+async def unload_model(
+    model_name: str,
+    current_admin: User = Depends(get_current_admin),
+):
+    """Manually unload a specific model from GPU."""
+    from ml.gpu_manager import get_gpu_manager
+    manager = get_gpu_manager()
+    success = manager.release(model_name)
+    if not success:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Model '{model_name}' not found or not currently loaded"
+        )
+    logger.info(f"Admin {current_admin.email} manually unloaded model '{model_name}'")
+    return {"status": "ok", "message": f"Model '{model_name}' unloaded"}
+
+
+@router.post("/gpu/unload-all")
+async def unload_all_models(
+    current_admin: User = Depends(get_current_admin),
+):
+    """Unload all models from GPU memory."""
+    from ml.gpu_manager import get_gpu_manager
+    manager = get_gpu_manager()
+    count = manager.release_all()
+    logger.info(f"Admin {current_admin.email} unloaded all models ({count} released)")
+    return {"status": "ok", "models_unloaded": count}

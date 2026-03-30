@@ -29,6 +29,11 @@ class Settings(BaseSettings):
     # ML Models
     yolo_model_path: Path = Path("weights/best.pt")  # Relative for local dev, override in Docker
 
+    # GPU Model Lifecycle
+    gpu_model_idle_timeout_seconds: int = 300  # 5 minutes - unload idle models
+    gpu_model_cleanup_interval_seconds: int = 60  # Check for idle models every minute
+    ml_memory_limit_gb: float = 16.0  # Max GPU memory budget for ML models
+
     # TrueSkill parameters
     initial_mu: float = 25.0
     initial_sigma: float = 25.0 / 3
