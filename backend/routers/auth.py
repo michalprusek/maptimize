@@ -10,7 +10,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from database import get_db
 from models.user import User
 from schemas.user import UserCreate, UserResponse, Token
-from services.user_data_provisioning import provision_new_user_data
 from utils.security import (
     hash_password,
     verify_password,

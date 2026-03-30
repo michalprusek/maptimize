@@ -5,7 +5,7 @@ from typing import Optional, Union
 
 import numpy as np
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, status
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -29,9 +29,18 @@ from services.umap_service import (
     compute_umap_online,
 )
 from utils.security import get_current_user
+from utils.groups import get_user_group_id
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
+
+
+def _experiment_owner_filter(user_id: int, group_id=None):
+    """Build experiment ownership filter including group membership."""
+    conditions = [Experiment.user_id == user_id]
+    if group_id is not None:
+        conditions.append(Experiment.group_id == group_id)
+    return or_(*conditions)
 
 
 @router.get("/umap")
@@ -51,9 +60,10 @@ async def get_umap_visualization(
 
     Uses pre-computed coordinates when available, otherwise computes on-the-fly.
     """
+    group_id = await get_user_group_id(current_user.id, db)
     if umap_type == UmapType.FOV:
-        return await _get_fov_umap(experiment_id, current_user, db)
-    return await _get_cropped_umap(experiment_id, n_neighbors, min_dist, current_user, db)
+        return await _get_fov_umap(experiment_id, current_user, group_id, db)
+    return await _get_cropped_umap(experiment_id, n_neighbors, min_dist, current_user, group_id, db)
 
 
 async def _verify_experiment_ownership(
@@ -61,11 +71,12 @@ async def _verify_experiment_ownership(
     user_id: int,
     db: AsyncSession,
 ) -> None:
-    """Verify that user owns the experiment. Raises HTTPException if not found."""
+    """Verify that user owns the experiment or is in the same group."""
+    group_id = await get_user_group_id(user_id, db)
     result = await db.execute(
         select(Experiment).where(
             Experiment.id == experiment_id,
-            Experiment.user_id == user_id,
+            _experiment_owner_filter(user_id, group_id),
         )
     )
     if not result.scalar_one_or_none():
@@ -80,6 +91,7 @@ async def _get_cropped_umap(
     n_neighbors: int,
     min_dist: float,
     current_user: User,
+    group_id: Optional[int],
     db: AsyncSession,
 ) -> UmapDataResponse:
     """Get UMAP visualization for cell crops."""
@@ -92,7 +104,7 @@ async def _get_cropped_umap(
             selectinload(CellCrop.image),
         )
         .where(
-            Experiment.user_id == current_user.id,
+            _experiment_owner_filter(current_user.id, group_id),
             CellCrop.embedding.isnot(None),
         )
     )
@@ -156,6 +168,7 @@ async def _get_cropped_umap(
 async def _get_fov_umap(
     experiment_id: Optional[int],
     current_user: User,
+    group_id: Optional[int],
     db: AsyncSession,
 ) -> UmapFovDataResponse:
     """Get UMAP visualization for FOV images."""
@@ -164,7 +177,7 @@ async def _get_fov_umap(
         .join(Experiment, Image.experiment_id == Experiment.id)
         .options(selectinload(Image.map_protein))
         .where(
-            Experiment.user_id == current_user.id,
+            _experiment_owner_filter(current_user.id, group_id),
             Image.embedding.isnot(None),
         )
     )
@@ -314,7 +327,8 @@ async def get_embedding_status(
     db: AsyncSession = Depends(get_db),
 ) -> FeatureExtractionStatus:
     """Get feature extraction status for user's crops."""
-    base_conditions = [Experiment.user_id == current_user.id]
+    group_id = await get_user_group_id(current_user.id, db)
+    base_conditions = [_experiment_owner_filter(current_user.id, group_id)]
     if experiment_id:
         base_conditions.append(Image.experiment_id == experiment_id)
 
@@ -429,8 +443,9 @@ async def trigger_fov_feature_extraction(
     db: AsyncSession = Depends(get_db),
 ) -> FeatureExtractionTriggerResponse:
     """Trigger FOV embedding extraction for images without embeddings. Runs in background."""
+    group_id = await get_user_group_id(current_user.id, db)
     base_conditions = [
-        Experiment.user_id == current_user.id,
+        _experiment_owner_filter(current_user.id, group_id),
         Image.embedding.is_(None),
     ]
 
