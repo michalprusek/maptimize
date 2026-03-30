@@ -59,7 +59,6 @@ async def get_metric_for_user(
 
     result = await db.execute(
         select(Metric)
-        .options(selectinload(Metric.images))
         .where(Metric.id == metric_id, or_(*conditions))
     )
     metric = result.scalar_one_or_none()
@@ -162,20 +161,34 @@ async def list_metrics(
     if group_id is not None:
         conditions.append(Metric.group_id == group_id)
 
+    # Single aggregated query instead of N+1 (was 2N+1 queries)
+    from sqlalchemy import and_
     result = await db.execute(
-        select(Metric)
+        select(
+            Metric,
+            func.count(distinct(MetricImage.id)).label("image_count"),
+            func.count(distinct(MetricComparison.id)).label("comparison_count"),
+        )
+        .outerjoin(MetricImage, MetricImage.metric_id == Metric.id)
+        .outerjoin(
+            MetricComparison,
+            and_(
+                MetricComparison.metric_id == Metric.id,
+                MetricComparison.undone == False,
+                MetricComparison.user_id == current_user.id,
+            )
+        )
         .options(selectinload(Metric.user))
         .where(or_(*conditions))
+        .group_by(Metric.id)
         .order_by(Metric.created_at.desc())
     )
-    metrics = result.scalars().all()
+    rows = result.all()
 
-    items = []
-    for metric in metrics:
-        image_count, comparison_count = await get_metric_counts(
-            db, metric.id, user_id=current_user.id
-        )
-        items.append(build_metric_response(metric, image_count, comparison_count))
+    items = [
+        build_metric_response(metric, image_count, comparison_count)
+        for metric, image_count, comparison_count in rows
+    ]
 
     return MetricListResponse(items=items, total=len(items))
 
@@ -236,7 +249,10 @@ async def update_metric(
     await db.commit()
     await db.refresh(metric)
 
-    return await get_metric(metric_id, current_user, db)
+    image_count, comparison_count = await get_metric_counts(
+        db, metric.id, user_id=current_user.id
+    )
+    return build_metric_response(metric, image_count, comparison_count)
 
 
 @router.delete("/{metric_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -250,8 +266,11 @@ async def delete_metric(
     if metric.user_id != current_user.id:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only the metric owner can delete it")
 
-    # Delete uploaded files
-    for img in metric.images:
+    # Load and delete uploaded files
+    img_result = await db.execute(
+        select(MetricImage).where(MetricImage.metric_id == metric.id)
+    )
+    for img in img_result.scalars():
         if img.file_path and os.path.exists(img.file_path):
             os.remove(img.file_path)
 
