@@ -207,7 +207,7 @@ class TestLogin:
         response = client.post(
             "/api/auth/login",
             data={
-                "username": f"nonexistent_{uuid4().hex[:8]}@testmaptimize.local",
+                "username": f"nonexistent_{_random_email()}",
                 "password": "anypassword",
             },
         )

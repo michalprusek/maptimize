@@ -27,7 +27,7 @@ class ModelState(Enum):
 
 @dataclass
 class ManagedModel:
-    """Metadata for a registered model."""
+    """Tracks registration info and runtime state for a GPU-managed model."""
     name: str
     get_fn: Callable[[], Any]
     reset_fn: Callable[[], None]
@@ -42,7 +42,8 @@ class GPUModelManager:
     """
     Centralized GPU model lifecycle manager.
 
-    Thread-safe singleton. All model access goes through acquire().
+    Thread-safe singleton. External model access should go through acquire()
+    to ensure usage tracking and memory management.
     A background asyncio task periodically evicts idle models.
     """
 
@@ -193,16 +194,27 @@ class GPUModelManager:
             return count
 
     def _unload_model(self, model: ManagedModel) -> None:
-        """Unload a model. Must be called with self._lock held."""
+        """Unload a model by calling its reset function.
+
+        Must be called with self._lock held.
+        Note: reset_fn() may perform slow GPU operations while the lock is held.
+        """
         logger.info(f"Unloading model '{model.name}'...")
         try:
             model.reset_fn()
-        except Exception as e:
-            logger.error(f"Error resetting model '{model.name}': {e}")
+        except Exception:
+            logger.exception(
+                "Failed to reset model '%s' -- marking as UNLOADED but GPU memory "
+                "may still be consumed",
+                model.name,
+            )
         model.state = ModelState.UNLOADED
 
     def _evict_if_needed(self, required_mb: int, exclude: str = "") -> None:
-        """Evict LRU models if loading would exceed memory budget. Lock must be held."""
+        """Evict LRU models if loading would exceed memory budget.
+
+        Note: Caller must hold self._lock.
+        """
         current_usage = self._get_estimated_usage_mb()
 
         if current_usage + required_mb <= self.memory_limit_mb:
@@ -238,8 +250,23 @@ class GPUModelManager:
 
     async def start_cleanup_task(self) -> None:
         """Start the periodic idle model cleanup task."""
-        self._cleanup_task = asyncio.create_task(self._periodic_cleanup())
+        self._cleanup_task = asyncio.create_task(
+            self._periodic_cleanup(), name="gpu-cleanup"
+        )
+        self._cleanup_task.add_done_callback(self._on_cleanup_done)
         logger.info("GPU cleanup task started")
+
+    @staticmethod
+    def _on_cleanup_done(task: asyncio.Task) -> None:
+        """Log if the cleanup task exits unexpectedly."""
+        if task.cancelled():
+            return
+        exc = task.exception()
+        if exc is not None:
+            logger.error(
+                "GPU cleanup task died unexpectedly: %s: %s",
+                type(exc).__name__, exc, exc_info=exc,
+            )
 
     async def stop_cleanup_task(self) -> None:
         """Stop the periodic cleanup task."""
@@ -255,30 +282,36 @@ class GPUModelManager:
     async def _periodic_cleanup(self) -> None:
         """Periodically unload idle models."""
         while True:
-            await asyncio.sleep(self.cleanup_interval)
-            now = time.monotonic()
-            unloaded = []
+            try:
+                await asyncio.sleep(self.cleanup_interval)
+                now = time.monotonic()
+                unloaded = []
 
-            with self._lock:
-                for model in self._models.values():
-                    if (
-                        model.state == ModelState.LOADED
-                        and (now - model.last_used) > self.idle_timeout
-                    ):
-                        idle_secs = now - model.last_used
-                        logger.info(
-                            f"Idle timeout: unloading '{model.name}' "
-                            f"(idle {idle_secs:.0f}s > {self.idle_timeout}s)"
-                        )
-                        self._unload_model(model)
-                        unloaded.append(model.name)
+                with self._lock:
+                    for model in list(self._models.values()):
+                        if (
+                            model.state == ModelState.LOADED
+                            and (now - model.last_used) > self.idle_timeout
+                        ):
+                            idle_secs = now - model.last_used
+                            logger.info(
+                                f"Idle timeout: unloading '{model.name}' "
+                                f"(idle {idle_secs:.0f}s > {self.idle_timeout}s)"
+                            )
+                            self._unload_model(model)
+                            unloaded.append(model.name)
 
-            if unloaded:
-                logger.info(f"Cleanup cycle: unloaded {unloaded}")
+                if unloaded:
+                    logger.info(f"Cleanup cycle: unloaded {unloaded}")
+
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("GPU cleanup cycle failed -- will retry next interval")
 
     def get_status(self) -> dict:
         """Get GPU memory status and per-model state for admin API."""
-        gpu_info = {"available": False}
+        gpu_info: dict = {"available": False}
 
         try:
             import torch
@@ -295,8 +328,15 @@ class GPUModelManager:
                         / (1024 * 1024)
                     ),
                 }
+        except ImportError:
+            gpu_info = {"available": False, "error": "torch not installed"}
+            logger.error("torch import failed in GPU status check")
+        except RuntimeError as e:
+            gpu_info = {"available": False, "error": f"CUDA error: {e}"}
+            logger.error("CUDA error in GPU status check: %s", e, exc_info=True)
         except Exception as e:
-            logger.warning(f"Failed to query GPU info: {e}")
+            gpu_info = {"available": False, "error": f"{type(e).__name__}: {e}"}
+            logger.exception("Unexpected error querying GPU info")
 
         now = time.monotonic()
         models_info = []
@@ -311,6 +351,7 @@ class GPUModelManager:
                     ),
                     "load_count": m.load_count,
                 })
+            total_usage = self._get_estimated_usage_mb()
 
         return {
             "gpu": gpu_info,
@@ -320,7 +361,7 @@ class GPUModelManager:
                 "cleanup_interval_seconds": self.cleanup_interval,
             },
             "models": models_info,
-            "total_estimated_usage_mb": self._get_estimated_usage_mb(),
+            "total_estimated_usage_mb": total_usage,
         }
 
 

@@ -11,7 +11,7 @@ from ml.gpu_manager import get_gpu_manager
 
 logger = logging.getLogger(__name__)
 
-# Each entry: (name, module_path, raw_getter_name, reset_fn_name, estimated_vram_mb)
+# Each entry: (name, module_path, get_fn_name, reset_fn_name, estimated_vram_mb)
 _MODEL_DEFINITIONS: List[Tuple[str, str, str, str, int]] = [
     ("yolov8",   "ml.detection.detector",          "_get_detector_raw",           "reset_detector",           100),
     ("mobilesam", "ml.segmentation.sam_encoder",    "_get_mobilesam_encoder_raw",  "reset_mobilesam_encoder",  200),

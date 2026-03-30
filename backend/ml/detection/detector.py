@@ -173,9 +173,12 @@ class CellDetector:
         if self._model is not None:
             del self._model
             self._model = None
-            import torch
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
+            try:
+                import torch
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+            except Exception:
+                logger.warning("torch.cuda.empty_cache() failed during CellDetector reset", exc_info=True)
             logger.info("CellDetector model released from memory")
 
     async def detect_async(
@@ -193,7 +196,7 @@ _detector: Optional[CellDetector] = None
 
 
 def _get_detector_raw() -> CellDetector:
-    """Internal: create the detector instance (called by GPU manager)."""
+    """Internal: get or create the detector singleton (called by GPU manager on every acquire)."""
     global _detector
     if _detector is None:
         _detector = CellDetector()

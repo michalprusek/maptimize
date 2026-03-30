@@ -1,7 +1,7 @@
 """Pytest configuration and fixtures.
 
 Integration tests run against a live backend server.
-Make sure the backend is running: docker-compose up -d
+Make sure the backend is running: docker compose -f docker-compose.dev.yml up -d
 
 Environment variables:
     TEST_API_URL: Backend URL (default: http://localhost:8000)

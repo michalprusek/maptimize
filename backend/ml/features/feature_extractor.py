@@ -26,7 +26,7 @@ _encoder: Optional[DINOv3Encoder] = None
 
 
 def _get_encoder_raw() -> DINOv3Encoder:
-    """Internal: create the DINOv3 encoder (called by GPU manager)."""
+    """Internal: get or create the DINOv3 singleton (called by GPU manager on every acquire)."""
     global _encoder
     if _encoder is None:
         logger.info("Initializing DINOv3-large encoder (first use)...")

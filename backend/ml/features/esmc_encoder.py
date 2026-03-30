@@ -232,7 +232,7 @@ _esmc_encoder: Optional[ESMCEncoder] = None
 
 
 def _get_esmc_encoder_raw() -> ESMCEncoder:
-    """Internal: create the ESM-C encoder (called by GPU manager)."""
+    """Internal: get or create the ESM-C singleton (called by GPU manager on every acquire)."""
     global _esmc_encoder
     if _esmc_encoder is None:
         logger.info("Initializing ESM-C encoder (first use)...")

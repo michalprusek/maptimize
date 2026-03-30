@@ -148,9 +148,10 @@ class QwenVLEncoder:
             self.load_model()
 
     def _pool_and_normalize(self, inputs: dict) -> np.ndarray:
-        """Run model inference, mean-pool hidden states, normalize, and fit to EMBEDDING_DIM.
+        """Run model inference, mean-pool hidden states, L2-normalize, and truncate/zero-pad to EMBEDDING_DIM (2048).
 
         Shared logic for both document and query encoding.
+        Returns a float32 numpy array of shape (EMBEDDING_DIM,).
         """
         outputs = self.model(**inputs, output_hidden_states=True)
         hidden_states = outputs.hidden_states[-1]
@@ -309,12 +310,27 @@ class QwenVLEncoder:
         self.ensure_loaded()
 
         results = []
+        failures = 0
         for i, img in enumerate(images):
             try:
                 results.append(self.encode_document(img))
             except Exception as e:
-                logger.warning("Failed to encode image %d: %s", i, e)
+                failures += 1
+                logger.error("Failed to encode document image %d/%d: %s", i, len(images), e)
                 results.append(np.zeros(self.EMBEDDING_DIM, dtype=np.float32))
+                # Detect systemic failure (e.g. GPU OOM) — abort early
+                if failures >= 3 and failures > len(images) // 2:
+                    raise RuntimeError(
+                        f"Systemic encoding failure: {failures}/{i + 1} documents failed. "
+                        f"Last error: {e}"
+                    ) from e
+
+        if failures:
+            logger.warning(
+                "Batch encoding completed with %d/%d failures -- "
+                "failed documents will not be searchable",
+                failures, len(images),
+            )
 
         return results
 
@@ -340,7 +356,7 @@ _qwen_vl_encoder: Optional[QwenVLEncoder] = None
 
 
 def _get_qwen_vl_encoder_raw() -> QwenVLEncoder:
-    """Internal: create the Qwen VL encoder (called by GPU manager)."""
+    """Internal: get or create the Qwen VL singleton (called by GPU manager on every acquire)."""
     global _qwen_vl_encoder
     if _qwen_vl_encoder is None:
         logger.info("Initializing Qwen VL encoder (first use)...")

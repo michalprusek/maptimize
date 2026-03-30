@@ -252,9 +252,25 @@ class TestAdminGPU:
     """Test suite for GPU status endpoint."""
 
     def test_gpu_status_returns_info(self, client, admin_headers):
-        """GET /api/admin/gpu/status returns GPU model info."""
+        """GET /api/admin/gpu/status returns GPU model info with expected structure."""
         response = client.get("/api/admin/gpu/status", headers=admin_headers)
         assert response.status_code == 200
         data = response.json()
-        # The GPU manager returns a dict with model/memory info
         assert isinstance(data, dict)
+        # Validate top-level structure
+        assert "gpu" in data
+        assert "config" in data
+        assert "models" in data
+        assert "total_estimated_usage_mb" in data
+        # Validate config structure
+        config = data["config"]
+        assert "memory_limit_mb" in config
+        assert "idle_timeout_seconds" in config
+        assert "cleanup_interval_seconds" in config
+        # Validate models is a list with expected fields
+        assert isinstance(data["models"], list)
+        for model in data["models"]:
+            assert "name" in model
+            assert "state" in model
+            assert "estimated_vram_mb" in model
+            assert model["state"] in ["unloaded", "loading", "loaded"]

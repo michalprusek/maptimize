@@ -26,6 +26,10 @@
     "previous": "Précédent",
     "next": "Suivant",
     "retry": "Réessayer",
+    "tryAgain": "Réessayer",
+    "somethingWentWrong": "Une erreur est survenue",
+    "errorDescription": "Une erreur inattendue s'est produite. Veuillez réessayer ou rafraîchir la page.",
+    "errorReference": "Référence de l'erreur : {digest}",
     "copyFailed": "Échec de la copie. Veuillez copier manuellement.",
     "openInEditor": "Ouvrir dans l'éditeur",
     "viewInDocument": "Voir dans le document"

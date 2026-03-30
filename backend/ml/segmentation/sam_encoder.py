@@ -290,7 +290,7 @@ _encoder: Optional[SAMEncoder] = None
 
 
 def _get_mobilesam_encoder_raw() -> SAMEncoder:
-    """Internal: create the MobileSAM encoder (called by GPU manager)."""
+    """Internal: get or create the MobileSAM singleton (called by GPU manager on every acquire)."""
     global _encoder
     if _encoder is None:
         logger.info("Initializing MobileSAM encoder (first use)...")

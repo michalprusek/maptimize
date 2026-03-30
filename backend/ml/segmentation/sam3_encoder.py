@@ -496,7 +496,7 @@ _sam3_encoder: Optional[SAM3Encoder] = None
 
 
 def _get_sam3_encoder_raw() -> SAM3Encoder:
-    """Internal: create the SAM 3 encoder (called by GPU manager)."""
+    """Internal: get or create the SAM 3 singleton (called by GPU manager on every acquire)."""
     global _sam3_encoder
     if _sam3_encoder is None:
         logger.info("Initializing SAM 3 encoder (first use)...")
