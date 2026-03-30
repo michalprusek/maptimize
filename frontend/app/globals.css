@@ -27,19 +27,19 @@
     --color-primary-600: #00b894;
   }
 
-  /* Light theme - muted, easy on eyes */
+  /* Light theme - very light, close to white */
   .light {
-    --background: 210 15% 82%;
+    --background: 210 20% 97%;
     --foreground: 210 33% 15%;
 
-    --color-bg-primary: #c8d0d8;
-    --color-bg-secondary: #bec7d0;
-    --color-bg-elevated: #d4dce4;
-    --color-bg-hover: #b0bac4;
+    --color-bg-primary: #f5f7f9;
+    --color-bg-secondary: #eff2f5;
+    --color-bg-elevated: #ffffff;
+    --color-bg-hover: #e8ecf0;
     --color-text-primary: #1a2535;
     --color-text-secondary: #3d4d5c;
-    --color-text-muted: #5a6a7a;
-    --color-border: rgba(0, 0, 0, 0.15);
+    --color-text-muted: #6b7c8d;
+    --color-border: rgba(0, 0, 0, 0.1);
 
     /* Primary accent colors - darker for light bg */
     --color-primary-400: #00a080;

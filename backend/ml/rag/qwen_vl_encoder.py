@@ -147,6 +147,36 @@ class QwenVLEncoder:
         if not self.is_loaded:
             self.load_model()
 
+    def _pool_and_normalize(self, inputs: dict) -> np.ndarray:
+        """Run model inference, mean-pool hidden states, normalize, and fit to EMBEDDING_DIM.
+
+        Shared logic for both document and query encoding.
+        """
+        outputs = self.model(**inputs, output_hidden_states=True)
+        hidden_states = outputs.hidden_states[-1]
+
+        # Mean pool over sequence (masked to exclude padding)
+        if "attention_mask" in inputs:
+            mask = inputs["attention_mask"].unsqueeze(-1)
+            embedding = (hidden_states * mask).sum(dim=1) / mask.sum(dim=1)
+        else:
+            embedding = hidden_states.mean(dim=1)
+
+        embedding = embedding.squeeze(0)
+        embedding = embedding / (embedding.norm() + 1e-8)
+
+        # Fit to target dimension (truncate or pad)
+        hidden_dim = embedding.shape[0]
+        if hidden_dim == self.EMBEDDING_DIM:
+            result = embedding
+        elif hidden_dim > self.EMBEDDING_DIM:
+            result = embedding[:self.EMBEDDING_DIM]
+        else:
+            result = torch.zeros(self.EMBEDDING_DIM, device=self.device, dtype=embedding.dtype)
+            result[:hidden_dim] = embedding
+
+        return result.cpu().float().numpy()
+
     @torch.no_grad()
     def encode_document(
         self,
@@ -197,36 +227,7 @@ class QwenVLEncoder:
             )
             inputs = {k: v.to(self.device) for k, v in inputs.items()}
 
-            # Get embeddings from the model's hidden states
-            outputs = self.model(**inputs, output_hidden_states=True)
-
-            # Use the last hidden state's mean as embedding
-            hidden_states = outputs.hidden_states[-1]  # (batch, seq_len, hidden_dim)
-
-            # Mean pool over sequence dimension (excluding padding if present)
-            if "attention_mask" in inputs:
-                mask = inputs["attention_mask"].unsqueeze(-1)  # (batch, seq_len, 1)
-                masked_hidden = hidden_states * mask
-                embedding = masked_hidden.sum(dim=1) / mask.sum(dim=1)  # (batch, hidden_dim)
-            else:
-                embedding = hidden_states.mean(dim=1)  # (batch, hidden_dim)
-
-            embedding = embedding.squeeze(0)
-
-            # Normalize the embedding
-            embedding = embedding / (embedding.norm() + 1e-8)
-
-            # Handle dimension mismatch - truncate or pad to target dimension
-            hidden_dim = embedding.shape[0]
-            if hidden_dim == self.EMBEDDING_DIM:
-                result = embedding
-            elif hidden_dim > self.EMBEDDING_DIM:
-                result = embedding[:self.EMBEDDING_DIM]
-            else:
-                result = torch.zeros(self.EMBEDDING_DIM, device=self.device, dtype=embedding.dtype)
-                result[:hidden_dim] = embedding
-
-            return result.cpu().float().numpy()
+            return self._pool_and_normalize(inputs)
 
         except torch.cuda.OutOfMemoryError as e:
             torch.cuda.empty_cache()
@@ -274,36 +275,7 @@ class QwenVLEncoder:
             )
             inputs = {k: v.to(self.device) for k, v in inputs.items()}
 
-            # Get embeddings from the model's hidden states
-            outputs = self.model(**inputs, output_hidden_states=True)
-
-            # Use the last hidden state's mean as embedding
-            hidden_states = outputs.hidden_states[-1]
-
-            # Mean pool over sequence dimension (excluding padding if present)
-            if "attention_mask" in inputs:
-                mask = inputs["attention_mask"].unsqueeze(-1)
-                masked_hidden = hidden_states * mask
-                embedding = masked_hidden.sum(dim=1) / mask.sum(dim=1)
-            else:
-                embedding = hidden_states.mean(dim=1)
-
-            embedding = embedding.squeeze(0)
-
-            # Normalize
-            embedding = embedding / (embedding.norm() + 1e-8)
-
-            # Handle dimension mismatch
-            hidden_dim = embedding.shape[0]
-            if hidden_dim == self.EMBEDDING_DIM:
-                result = embedding
-            elif hidden_dim > self.EMBEDDING_DIM:
-                result = embedding[:self.EMBEDDING_DIM]
-            else:
-                result = torch.zeros(self.EMBEDDING_DIM, device=self.device, dtype=embedding.dtype)
-                result[:hidden_dim] = embedding
-
-            return result.cpu().float().numpy()
+            return self._pool_and_normalize(inputs)
 
         except torch.cuda.OutOfMemoryError as e:
             torch.cuda.empty_cache()
@@ -321,14 +293,15 @@ class QwenVLEncoder:
     def encode_documents_batch(
         self,
         images: List[Union[Image.Image, str, Path]],
-        batch_size: int = 4,
     ) -> List[np.ndarray]:
         """
-        Encode multiple document images in batches.
+        Encode multiple document images sequentially.
+
+        Each image is encoded individually (model processes one at a time).
+        Failed images get a zero-vector embedding so indices stay aligned.
 
         Args:
             images: List of PIL Images or file paths.
-            batch_size: Number of images to process at once.
 
         Returns:
             List of 2048-dimensional numpy arrays.
@@ -336,16 +309,12 @@ class QwenVLEncoder:
         self.ensure_loaded()
 
         results = []
-        for i in range(0, len(images), batch_size):
-            batch = images[i:i + batch_size]
-            for img in batch:
-                try:
-                    embedding = self.encode_document(img)
-                    results.append(embedding)
-                except Exception as e:
-                    logger.warning(f"Failed to encode image {i}: {e}")
-                    # Return zero embedding for failed images
-                    results.append(np.zeros(self.EMBEDDING_DIM, dtype=np.float32))
+        for i, img in enumerate(images):
+            try:
+                results.append(self.encode_document(img))
+            except Exception as e:
+                logger.warning("Failed to encode image %d: %s", i, e)
+                results.append(np.zeros(self.EMBEDDING_DIM, dtype=np.float32))
 
         return results
 
@@ -370,13 +339,19 @@ class QwenVLEncoder:
 _qwen_vl_encoder: Optional[QwenVLEncoder] = None
 
 
-def get_qwen_vl_encoder() -> QwenVLEncoder:
-    """Get or create the global Qwen VL encoder instance."""
+def _get_qwen_vl_encoder_raw() -> QwenVLEncoder:
+    """Internal: create the Qwen VL encoder (called by GPU manager)."""
     global _qwen_vl_encoder
     if _qwen_vl_encoder is None:
         logger.info("Initializing Qwen VL encoder (first use)...")
         _qwen_vl_encoder = QwenVLEncoder()
     return _qwen_vl_encoder
+
+
+def get_qwen_vl_encoder() -> QwenVLEncoder:
+    """Get Qwen VL encoder via GPU model manager (tracks usage, enables auto-unload)."""
+    from ml.gpu_manager import get_gpu_manager
+    return get_gpu_manager().acquire("qwen_vl")
 
 
 def reset_qwen_vl_encoder() -> None:

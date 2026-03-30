@@ -26,7 +26,7 @@ services:
       - maptimize-network
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "wget", "-q", "--spider", "http://localhost:3000"]
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:3000"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -53,6 +53,9 @@ services:
       - ML_MEMORY_LIMIT_GB=${ML_MEMORY_LIMIT_GB:-16}
       - GPU_MEMORY_FRACTION=${GPU_MEMORY_FRACTION:-0.65}
       - PYTORCH_CUDA_ALLOC_CONF=${PYTORCH_CUDA_ALLOC_CONF:-max_split_size_mb:512}
+      # GPU Model Lifecycle (auto-unload idle models)
+      - GPU_MODEL_IDLE_TIMEOUT_SECONDS=${GPU_MODEL_IDLE_TIMEOUT_SECONDS:-300}
+      - GPU_MODEL_CLEANUP_INTERVAL_SECONDS=${GPU_MODEL_CLEANUP_INTERVAL_SECONDS:-60}
       # YOLOv8 Configuration
       - YOLO_MODEL_PATH=/app/weights/best.pt
       - YOLO_CONFIDENCE_THRESHOLD=${YOLO_CONFIDENCE_THRESHOLD:-0.25}

@@ -289,13 +289,19 @@ class SAMEncoder:
 _encoder: Optional[SAMEncoder] = None
 
 
-def get_mobilesam_encoder() -> SAMEncoder:
-    """Get or create the global MobileSAM encoder instance."""
+def _get_mobilesam_encoder_raw() -> SAMEncoder:
+    """Internal: create the MobileSAM encoder (called by GPU manager)."""
     global _encoder
     if _encoder is None:
         logger.info("Initializing MobileSAM encoder (first use)...")
         _encoder = SAMEncoder()
     return _encoder
+
+
+def get_mobilesam_encoder() -> SAMEncoder:
+    """Get MobileSAM encoder via GPU model manager (tracks usage, enables auto-unload)."""
+    from ml.gpu_manager import get_gpu_manager
+    return get_gpu_manager().acquire("mobilesam")
 
 
 # Alias for backward compatibility

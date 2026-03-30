@@ -37,8 +37,18 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"Startup cleanup failed: {e}")
 
+    # Start GPU model lifecycle manager
+    from ml.gpu_registry import register_all_models
+    from ml.gpu_manager import get_gpu_manager
+    register_all_models()
+    gpu_manager = get_gpu_manager()
+    await gpu_manager.start_cleanup_task()
+
     yield
-    # Shutdown (cleanup if needed)
+
+    # Shutdown: stop GPU cleanup and release all models
+    await gpu_manager.stop_cleanup_task()
+    gpu_manager.release_all()
 
 
 app = FastAPI(
