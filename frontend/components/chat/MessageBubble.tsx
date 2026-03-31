@@ -245,8 +245,8 @@ export function MessageBubble({ message, isNew = false }: MessageBubbleProps) {
       // Navigate to the image editor
       router.push(`/editor/${citation.experiment_id}/${citation.image_id}`);
     } else if (citation.type === "web" && citation.url) {
-      // Open web link in preview panel
-      openWebLinkPreview(citation.url, citation.title || citation.url);
+      // Open web links directly in browser (not in iframe panel)
+      window.open(citation.url, "_blank", "noopener,noreferrer");
     } else {
       // Log malformed citation for debugging
       console.error("Citation click failed - missing required fields:", {
@@ -466,6 +466,27 @@ export function MessageBubble({ message, isNew = false }: MessageBubbleProps) {
                       );
                     }
 
+                    // Check if the URL points to an indexed RAG document
+                    const ragDocMatch = href?.match(/\/api\/rag\/documents\/(\d+)(?:\/pdf)?/);
+                    if (ragDocMatch) {
+                      const docId = parseInt(ragDocMatch[1], 10);
+                      return (
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            openPDFViewer(docId, 1);
+                          }}
+                          className={CITATION_BUTTON_CLASS}
+                        >
+                          <FileText className="w-3.5 h-3.5" />
+                          {children}
+                        </button>
+                      );
+                    }
+
+                    // Regular web link — open directly in browser
                     return (
                       <a
                         href={href}
