@@ -127,18 +127,25 @@ async def _get_cropped_umap(
     # Extract embeddings (needed for silhouette calculation on raw features)
     embeddings = np.array([c.embedding for c in crops])
 
-    # Check if we have pre-computed coordinates
-    all_have_umap = all(c.umap_x is not None and c.umap_y is not None for c in crops)
+    # Use pre-computed coordinates only — never compute on-the-fly during page load
+    crops_with_umap = [c for c in crops if c.umap_x is not None and c.umap_y is not None]
 
-    if all_have_umap:
-        logger.info(f"Using pre-computed UMAP for {len(crops)} crops")
-        projection = np.array([[c.umap_x, c.umap_y] for c in crops])
-        silhouette = compute_silhouette(embeddings, crops)
-    else:
-        logger.info(f"Computing UMAP on-the-fly for {len(crops)} crops")
-        projection, silhouette = _compute_umap_with_error_handling(
-            embeddings, crops, n_neighbors, min_dist
+    if not crops_with_umap:
+        # No pre-computed UMAP — return empty (user must trigger /umap/recompute)
+        logger.info(f"No pre-computed UMAP for {len(crops)} crops — returning empty")
+        return UmapDataResponse(
+            points=[],
+            total_crops=len(crops),
+            n_neighbors=n_neighbors,
+            min_dist=min_dist,
+            silhouette_score=None,
         )
+
+    logger.info(f"Using pre-computed UMAP for {len(crops_with_umap)}/{len(crops)} crops")
+    crops = crops_with_umap
+    embeddings = np.array([c.embedding for c in crops])
+    projection = np.array([[c.umap_x, c.umap_y] for c in crops])
+    silhouette = compute_silhouette(embeddings, crops)
 
     # Build response
     points = [
@@ -200,21 +207,26 @@ async def _get_fov_umap(
     # Extract embeddings (needed for silhouette calculation on raw features)
     embeddings = np.array([img.embedding for img in images])
 
-    # Check if we have pre-computed coordinates
-    all_have_umap = all(img.umap_x is not None and img.umap_y is not None for img in images)
+    # Use pre-computed coordinates only — never compute on-the-fly during page load
+    images_with_umap = [img for img in images if img.umap_x is not None and img.umap_y is not None]
     computed_at = None
 
-    if all_have_umap:
-        logger.info(f"Using pre-computed UMAP for {len(images)} FOV images")
-        projection = np.array([[img.umap_x, img.umap_y] for img in images])
-        silhouette = compute_silhouette(embeddings, images)
-        computed_times = [img.umap_computed_at for img in images if img.umap_computed_at]
-        computed_at = min(computed_times) if computed_times else None
-    else:
-        logger.info(f"Computing FOV UMAP on-the-fly for {len(images)} images")
-        projection, silhouette = _compute_umap_with_error_handling(
-            embeddings, images, 15, 0.1
+    if not images_with_umap:
+        logger.info(f"No pre-computed FOV UMAP for {len(images)} images — returning empty")
+        return UmapFovDataResponse(
+            points=[],
+            total_images=len(images),
+            silhouette_score=None,
+            computed_at=None,
         )
+
+    logger.info(f"Using pre-computed UMAP for {len(images_with_umap)}/{len(images)} FOV images")
+    images = images_with_umap
+    embeddings = np.array([img.embedding for img in images])
+    projection = np.array([[img.umap_x, img.umap_y] for img in images])
+    silhouette = compute_silhouette(embeddings, images)
+    computed_times = [img.umap_computed_at for img in images if img.umap_computed_at]
+    computed_at = min(computed_times) if computed_times else None
 
     # Build response
     points = [
@@ -332,23 +344,19 @@ async def get_embedding_status(
     if experiment_id:
         base_conditions.append(Image.experiment_id == experiment_id)
 
-    # Total crops query
-    total_query = (
-        select(func.count(CellCrop.id))
+    # Single query for both total and with-embeddings counts
+    result = await db.execute(
+        select(
+            func.count(CellCrop.id).label("total"),
+            func.count(CellCrop.id).filter(CellCrop.embedding.isnot(None)).label("with_emb"),
+        )
         .join(Image, CellCrop.image_id == Image.id)
         .join(Experiment, Image.experiment_id == Experiment.id)
         .where(*base_conditions)
     )
-    total = (await db.execute(total_query)).scalar() or 0
-
-    # Crops with embeddings
-    with_emb_query = (
-        select(func.count(CellCrop.id))
-        .join(Image, CellCrop.image_id == Image.id)
-        .join(Experiment, Image.experiment_id == Experiment.id)
-        .where(*base_conditions, CellCrop.embedding.isnot(None))
-    )
-    with_embeddings = (await db.execute(with_emb_query)).scalar() or 0
+    row = result.one()
+    total = row.total or 0
+    with_embeddings = row.with_emb or 0
 
     without_embeddings = total - with_embeddings
     percentage = (with_embeddings / total * 100) if total > 0 else 0
