@@ -140,6 +140,9 @@ class MetricRating(Base):
     sigma: Mapped[float] = mapped_column(Float, default=settings.initial_sigma)
     comparison_count: Mapped[int] = mapped_column(Integer, default=0)
 
+    # Per-user exclusion (soft-delete from user's view without affecting others)
+    excluded: Mapped[bool] = mapped_column(Boolean, default=False)
+
     # Timestamps
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),

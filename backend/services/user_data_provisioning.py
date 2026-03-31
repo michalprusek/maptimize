@@ -176,8 +176,7 @@ async def provision_new_user_data(new_user_id: int, db: AsyncSession) -> None:
                 {"new_img_id": new_img_id, "old_img_id": old_img_id},
             )
 
-    # 6. Copy all metrics for new user
-    await _copy_metrics(db, new_user_id, crop_id_map)
+    # Metrics are shared via groups — not copied per user
 
     logger.info(
         "Provisioned user %d: %d experiments, %d crop mappings",

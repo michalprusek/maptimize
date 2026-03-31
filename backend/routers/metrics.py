@@ -70,16 +70,28 @@ async def get_metric_for_user(
     return metric
 
 
+def _excluded_image_ids(metric_id: int, user_id: int):
+    """Subquery returning MetricImage IDs excluded by a specific user."""
+    return (
+        select(MetricRating.metric_image_id)
+        .where(
+            MetricRating.metric_id == metric_id,
+            MetricRating.user_id == user_id,
+            MetricRating.excluded == True,
+        )
+    )
+
+
 async def get_metric_counts(
     db: AsyncSession,
     metric_id: int,
     user_id: Optional[int] = None
 ) -> tuple[int, int]:
-    """Get image and comparison counts for a metric. Optionally filter comparisons by user."""
-    img_result = await db.execute(
-        select(func.count(MetricImage.id))
-        .where(MetricImage.metric_id == metric_id)
-    )
+    """Get image and comparison counts for a metric. Respects per-user exclusions."""
+    img_query = select(func.count(MetricImage.id)).where(MetricImage.metric_id == metric_id)
+    if user_id is not None:
+        img_query = img_query.where(MetricImage.id.notin_(_excluded_image_ids(metric_id, user_id)))
+    img_result = await db.execute(img_query)
     image_count = img_result.scalar() or 0
 
     comp_query = (
@@ -161,34 +173,23 @@ async def list_metrics(
     if group_id is not None:
         conditions.append(Metric.group_id == group_id)
 
-    # Single aggregated query instead of N+1 (was 2N+1 queries)
-    from sqlalchemy import and_
+    # Simpler approach: fetch metrics then get counts (avoids complex JOIN ambiguity)
     result = await db.execute(
-        select(
-            Metric,
-            func.count(distinct(MetricImage.id)).label("image_count"),
-            func.count(distinct(MetricComparison.id)).label("comparison_count"),
-        )
-        .outerjoin(MetricImage, MetricImage.metric_id == Metric.id)
-        .outerjoin(
-            MetricComparison,
-            and_(
-                MetricComparison.metric_id == Metric.id,
-                MetricComparison.undone == False,
-                MetricComparison.user_id == current_user.id,
-            )
-        )
+        select(Metric)
         .options(selectinload(Metric.user))
         .where(or_(*conditions))
-        .group_by(Metric.id)
         .order_by(Metric.created_at.desc())
     )
-    rows = result.all()
+    metrics = result.scalars().all()
 
-    items = [
-        build_metric_response(metric, image_count, comparison_count)
-        for metric, image_count, comparison_count in rows
-    ]
+    rows = []
+    for metric in metrics:
+        image_count, comparison_count = await get_metric_counts(
+            db, metric.id, user_id=current_user.id
+        )
+        rows.append((metric, image_count, comparison_count))
+
+    items = [build_metric_response(m, ic, cc) for m, ic, cc in rows]
 
     return MetricListResponse(items=items, total=len(items))
 
@@ -297,7 +298,10 @@ async def list_metric_images(
             selectinload(MetricImage.cell_crop).selectinload(CellCrop.map_protein),
             selectinload(MetricImage.ratings)
         )
-        .where(MetricImage.metric_id == metric_id)
+        .where(
+            MetricImage.metric_id == metric_id,
+            MetricImage.id.notin_(_excluded_image_ids(metric_id, current_user.id)),
+        )
         .order_by(MetricImage.created_at.desc())
     )
     images = result.scalars().all()
@@ -306,7 +310,7 @@ async def list_metric_images(
     for img in images:
         # Find rating for current user
         rating = next(
-            (r for r in img.ratings if r.user_id == current_user.id),
+            (r for r in img.ratings if r.user_id == current_user.id and not r.excluded),
             None
         )
         # Get protein info from cell_crop if available
@@ -483,7 +487,11 @@ async def remove_metric_image(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
-    """Remove an image from a metric."""
+    """Remove an image from the current user's view of a metric (soft-exclude).
+
+    The image stays in the metric for other users. Only the requesting
+    user's MetricRating is marked as excluded.
+    """
     metric = await get_metric_for_user(db, metric_id, current_user.id)
 
     result = await db.execute(
@@ -500,27 +508,11 @@ async def remove_metric_image(
             detail="Image not found in metric"
         )
 
-    # Delete related comparisons first (where this image is involved)
-    await db.execute(
-        delete(MetricComparison).where(
-            or_(
-                MetricComparison.image_a_id == image_id,
-                MetricComparison.image_b_id == image_id,
-                MetricComparison.winner_id == image_id
-            )
-        )
+    # Soft-exclude: mark the user's rating as excluded (don't delete shared data)
+    rating = await get_or_create_metric_rating(
+        db, metric_id, image_id, user_id=current_user.id
     )
-
-    # Delete related rating
-    await db.execute(
-        delete(MetricRating).where(MetricRating.metric_image_id == image_id)
-    )
-
-    # Delete file if it's a direct upload
-    if image.file_path and os.path.exists(image.file_path):
-        os.remove(image.file_path)
-
-    await db.delete(image)
+    rating.excluded = True
     await db.commit()
 
 
@@ -535,11 +527,14 @@ async def get_metric_pair(
     """Get next pair of images for comparison in this metric."""
     metric = await get_metric_for_user(db, metric_id, current_user.id)
 
-    # Get all images in metric
+    # Get all images in metric (excluding user's soft-deleted images)
     result = await db.execute(
         select(MetricImage)
         .options(selectinload(MetricImage.cell_crop))
-        .where(MetricImage.metric_id == metric_id)
+        .where(
+            MetricImage.metric_id == metric_id,
+            MetricImage.id.notin_(_excluded_image_ids(metric_id, current_user.id)),
+        )
     )
     images = result.scalars().all()
 
@@ -795,17 +790,18 @@ async def get_metric_leaderboard(
     """Get ranking leaderboard for this metric (per-user ratings)."""
     metric = await get_metric_for_user(db, metric_id, current_user.id)
 
-    # Get total count for current user
+    # Get total count for current user (excluding soft-deleted)
     count_result = await db.execute(
         select(func.count(MetricRating.id))
         .where(
             MetricRating.metric_id == metric_id,
-            MetricRating.user_id == current_user.id
+            MetricRating.user_id == current_user.id,
+            MetricRating.excluded != True,
         )
     )
     total = count_result.scalar() or 0
 
-    # Get paginated ratings for current user
+    # Get paginated ratings for current user (excluding soft-deleted)
     result = await db.execute(
         select(MetricRating)
         .options(
@@ -814,7 +810,8 @@ async def get_metric_leaderboard(
         )
         .where(
             MetricRating.metric_id == metric_id,
-            MetricRating.user_id == current_user.id
+            MetricRating.user_id == current_user.id,
+            MetricRating.excluded != True,
         )
         .order_by((MetricRating.mu - 3 * MetricRating.sigma).desc())
         .offset((page - 1) * per_page)
@@ -871,19 +868,23 @@ async def get_metric_progress(
     )
     total_comparisons = count_result.scalar() or 0
 
-    # Count images
+    # Count images (excluding user's soft-deleted)
     img_count_result = await db.execute(
         select(func.count(MetricImage.id))
-        .where(MetricImage.metric_id == metric_id)
+        .where(
+            MetricImage.metric_id == metric_id,
+            MetricImage.id.notin_(_excluded_image_ids(metric_id, current_user.id)),
+        )
     )
     image_count = img_count_result.scalar() or 0
 
-    # Get average sigma for current user's ratings
+    # Get average sigma for current user's non-excluded ratings
     sigma_result = await db.execute(
         select(func.avg(MetricRating.sigma))
         .where(
             MetricRating.metric_id == metric_id,
-            MetricRating.user_id == current_user.id
+            MetricRating.user_id == current_user.id,
+            MetricRating.excluded != True,
         )
     )
     avg_sigma = sigma_result.scalar() or settings.initial_sigma

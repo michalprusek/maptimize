@@ -143,6 +143,8 @@ async def ensure_schema_updates():
             ("metrics", "group_id", "INTEGER REFERENCES groups(id) ON DELETE SET NULL"),
             ("metric_ratings", "user_id", "INTEGER REFERENCES users(id) ON DELETE CASCADE"),
             ("metric_comparisons", "user_id", "INTEGER REFERENCES users(id) ON DELETE CASCADE"),
+            # Per-user image exclusion (soft-delete from user's view)
+            ("metric_ratings", "excluded", "BOOLEAN DEFAULT FALSE"),
         ]
 
         for table, column, col_type in updates:
