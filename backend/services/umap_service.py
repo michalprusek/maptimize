@@ -232,13 +232,21 @@ async def compute_crop_umap(
     Returns:
         dict with success count, silhouette score, and computed_at
     """
+    from sqlalchemy import or_
+    from utils.groups import get_user_group_id
+
+    group_id = await get_user_group_id(user_id, db)
+    owner_conditions = [Experiment.user_id == user_id]
+    if group_id is not None:
+        owner_conditions.append(Experiment.group_id == group_id)
+
     query = (
         select(CellCrop)
         .join(Image, CellCrop.image_id == Image.id)
         .join(Experiment, Image.experiment_id == Experiment.id)
         .options(selectinload(CellCrop.map_protein))
         .where(
-            Experiment.user_id == user_id,
+            or_(*owner_conditions),
             CellCrop.embedding.isnot(None),
         )
         .order_by(CellCrop.id)
@@ -269,12 +277,20 @@ async def compute_fov_umap(
     Returns:
         dict with success count, silhouette score, and computed_at
     """
+    from sqlalchemy import or_
+    from utils.groups import get_user_group_id
+
+    group_id = await get_user_group_id(user_id, db)
+    owner_conditions = [Experiment.user_id == user_id]
+    if group_id is not None:
+        owner_conditions.append(Experiment.group_id == group_id)
+
     query = (
         select(Image)
         .join(Experiment, Image.experiment_id == Experiment.id)
         .options(selectinload(Image.map_protein))
         .where(
-            Experiment.user_id == user_id,
+            or_(*owner_conditions),
             Image.embedding.isnot(None),
         )
         .order_by(Image.id)
