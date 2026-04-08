@@ -115,13 +115,15 @@ def build_metric_response(
     metric: Metric,
     image_count: int,
     comparison_count: int,
-    creator_name: Optional[str] = None,
+    *,
+    creator_name: Optional[str],
 ) -> MetricResponse:
-    """Build MetricResponse from metric and counts.
+    """Build MetricResponse from metric, counts, and an explicit creator name.
 
-    The caller must pass `creator_name` explicitly. Accessing `metric.user` here
-    would trigger a synchronous lazy-load and crash with MissingGreenlet under
-    asyncpg — so we never touch the relationship in this helper.
+    `creator_name` is keyword-only and required: callers must resolve it themselves
+    and pass it in. Touching `metric.user` here is unsafe because async SQLAlchemy
+    raises `MissingGreenlet` whenever the relationship happens not to be eagerly
+    loaded — and a future caller could easily forget the `selectinload`.
     """
     return MetricResponse(
         id=metric.id,
@@ -269,7 +271,7 @@ async def update_metric(
     image_count, comparison_count = await get_metric_counts(
         db, metric.id, user_id=current_user.id
     )
-    # Owner check above guarantees current_user is the creator.
+    # update_metric already enforced ownership, so current_user == creator.
     return build_metric_response(
         metric, image_count, comparison_count, creator_name=current_user.name
     )

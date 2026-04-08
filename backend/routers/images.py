@@ -130,16 +130,21 @@ async def get_image_for_read(
     db: AsyncSession,
     image_id: int,
     user_id: int,
+    *,
+    extra_options: tuple = (),
 ) -> Image:
     """Load an image the user can read (owner or group member). Raises 404 otherwise.
 
-    Loads only the parent experiment relationship — callers that need cell_crops
-    or map_protein should request them explicitly.
+    Always eagerly loads `Image.experiment` (needed for the access check itself).
+    Pass additional `selectinload(...)` options via `extra_options` when the caller
+    needs more relationships in the same query — this avoids a second round-trip
+    and the race window it would create.
     """
     access_filter = await _experiment_access_filter(user_id, db)
+    options = (selectinload(Image.experiment), *extra_options)
     result = await db.execute(
         select(Image)
-        .options(selectinload(Image.experiment))
+        .options(*options)
         .join(Experiment, Image.experiment_id == Experiment.id)
         .where(Image.id == image_id, access_filter)
     )
@@ -157,7 +162,11 @@ async def get_crop_for_read(
     crop_id: int,
     user_id: int,
 ) -> CellCrop:
-    """Load a cell crop the user can read (owner or group member). Raises 404 otherwise."""
+    """Load a cell crop the user can read (owner or group member). Raises 404 otherwise.
+
+    Eagerly loads `CellCrop.image -> Image.experiment` so write-access callers
+    can inspect ownership without triggering a lazy-load.
+    """
     access_filter = await _experiment_access_filter(user_id, db)
     result = await db.execute(
         select(CellCrop)
@@ -171,6 +180,44 @@ async def get_crop_for_read(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Cell crop not found"
+        )
+    return crop
+
+
+async def get_image_for_write(
+    db: AsyncSession,
+    image_id: int,
+    user_id: int,
+    *,
+    extra_options: tuple = (),
+) -> Image:
+    """Load an image the user can mutate (must be the experiment owner).
+
+    First confirms read access (returns 404 if the user can't even see the image),
+    then enforces ownership with 403. This mirrors the update/delete pattern in
+    routers/experiments.py and avoids the previous "404 Image not found" UX where
+    a group member could view an image but not delete or reprocess it.
+    """
+    image = await get_image_for_read(db, image_id, user_id, extra_options=extra_options)
+    if image.experiment.user_id != user_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only the experiment owner can modify this image"
+        )
+    return image
+
+
+async def get_crop_for_write(
+    db: AsyncSession,
+    crop_id: int,
+    user_id: int,
+) -> CellCrop:
+    """Load a cell crop the user can mutate (must be the experiment owner)."""
+    crop = await get_crop_for_read(db, crop_id, user_id)
+    if crop.image.experiment.user_id != user_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only the experiment owner can modify this cell crop"
         )
     return crop
 
@@ -569,7 +616,6 @@ async def list_fov_crops(
     db: AsyncSession = Depends(get_db)
 ):
     """List all cell crops for a specific FOV image."""
-    # Verify read access (owner or group member)
     await get_image_for_read(db, fov_id, current_user.id)
 
     # Build query with optional exclusion filter
@@ -634,20 +680,7 @@ async def delete_cell_crop(
     If the crop has ranking comparisons, you must pass confirm_delete_comparisons=true
     to acknowledge that comparison history will be permanently deleted.
     """
-    result = await db.execute(
-        select(CellCrop)
-        .options(
-            selectinload(CellCrop.image).selectinload(Image.experiment)
-        )
-        .where(CellCrop.id == crop_id)
-    )
-    crop = result.scalar_one_or_none()
-
-    if not crop or crop.image.experiment.user_id != current_user.id:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Cell crop not found"
-        )
+    crop = await get_crop_for_write(db, crop_id, current_user.id)
 
     # Check for ranking comparisons that will be deleted (CASCADE)
     comparison_count_result = await db.execute(
@@ -1164,20 +1197,15 @@ async def get_image(
     db: AsyncSession = Depends(get_db)
 ):
     """Get image details with detected cells."""
-    # Verify read access first
-    await get_image_for_read(db, image_id, current_user.id)
-
-    # Reload with the relationships needed for the detail response
-    result = await db.execute(
-        select(Image)
-        .options(
+    image = await get_image_for_read(
+        db,
+        image_id,
+        current_user.id,
+        extra_options=(
             selectinload(Image.map_protein),
             selectinload(Image.cell_crops),
-            selectinload(Image.experiment),
-        )
-        .where(Image.id == image_id)
+        ),
     )
-    image = result.scalar_one()
 
     response = ImageDetailResponse.model_validate(image)
     response.cell_count = len(image.cell_crops)
@@ -1227,18 +1255,7 @@ async def delete_image(
     db: AsyncSession = Depends(get_db)
 ):
     """Delete an image and its cells."""
-    result = await db.execute(
-        select(Image)
-        .options(selectinload(Image.experiment))
-        .where(Image.id == image_id)
-    )
-    image = result.scalar_one_or_none()
-
-    if not image or image.experiment.user_id != current_user.id:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Image not found"
-        )
+    image = await get_image_for_write(db, image_id, current_user.id)
 
     # Delete files (including SUM projection)
     for path in [image.file_path, image.mip_path, image.sum_path, image.thumbnail_path]:
@@ -1263,18 +1280,12 @@ async def reprocess_image(
     reprocessing will fail. This only works if the image still has
     its source files (MIP/SUM projections or original).
     """
-    result = await db.execute(
-        select(Image)
-        .options(selectinload(Image.experiment), selectinload(Image.map_protein))
-        .where(Image.id == image_id)
+    image = await get_image_for_write(
+        db,
+        image_id,
+        current_user.id,
+        extra_options=(selectinload(Image.map_protein),),
     )
-    image = result.scalar_one_or_none()
-
-    if not image or image.experiment.user_id != current_user.id:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Image not found"
-        )
 
     # Check if source files exist
     if image.source_discarded:
@@ -1344,29 +1355,37 @@ async def batch_redetect_cells(
             detail="No image IDs provided"
         )
 
-    # Fetch all images and verify ownership
+    # Fetch every image the user can read (owner or group member),
+    # then enforce ownership for the destructive operation.
+    access_filter = await _experiment_access_filter(current_user.id, db)
     result = await db.execute(
         select(Image)
         .options(selectinload(Image.experiment), selectinload(Image.map_protein))
-        .where(Image.id.in_(request.image_ids))
+        .join(Experiment, Image.experiment_id == Experiment.id)
+        .where(Image.id.in_(request.image_ids), access_filter)
     )
     images = result.scalars().all()
 
-    # Filter to only images owned by user
-    user_images = [
-        img for img in images
-        if img.experiment.user_id == current_user.id
-    ]
-
-    if not user_images:
+    visible_ids = {img.id for img in images}
+    missing_ids = sorted(set(request.image_ids) - visible_ids)
+    if missing_ids:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="No valid images found"
+            detail=f"Images not found: {missing_ids}"
+        )
+
+    non_owned_ids = sorted(
+        img.id for img in images if img.experiment.user_id != current_user.id
+    )
+    if non_owned_ids:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"Only the experiment owner can re-detect cells: {non_owned_ids}"
         )
 
     processed_count = 0
 
-    for image in user_images:
+    for image in images:
         # Skip if source files were discarded
         if image.source_discarded:
             logger.warning(f"Skipping image {image.id}: source files discarded")
