@@ -44,6 +44,7 @@ from schemas.image import (
     CropBatchUpdateResponse,
 )
 from utils.security import get_current_user, decode_token, TokenPayload
+from utils.groups import get_user_group_id
 from services.image_processor import (
     process_image_background,
     process_upload_only_background,
@@ -91,6 +92,87 @@ async def verify_experiment_ownership(
             detail="Experiment not found"
         )
     return experiment
+
+
+async def _experiment_access_filter(user_id: int, db: AsyncSession):
+    """Build a SQL filter that matches experiments the user can read.
+
+    Read access = direct ownership OR membership in the experiment's group.
+    Mirrors the pattern used in routers/experiments.py and routers/metrics.py.
+    """
+    group_id = await get_user_group_id(user_id, db)
+    conditions = [Experiment.user_id == user_id]
+    if group_id is not None:
+        conditions.append(Experiment.group_id == group_id)
+    return or_(*conditions)
+
+
+async def verify_experiment_read_access(
+    experiment_id: int,
+    user_id: int,
+    db: AsyncSession,
+) -> Experiment:
+    """Verify the user can read an experiment (owner or group member). Raises 404 otherwise."""
+    access_filter = await _experiment_access_filter(user_id, db)
+    result = await db.execute(
+        select(Experiment).where(Experiment.id == experiment_id, access_filter)
+    )
+    experiment = result.scalar_one_or_none()
+    if not experiment:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Experiment not found"
+        )
+    return experiment
+
+
+async def get_image_for_read(
+    db: AsyncSession,
+    image_id: int,
+    user_id: int,
+) -> Image:
+    """Load an image the user can read (owner or group member). Raises 404 otherwise.
+
+    Loads only the parent experiment relationship — callers that need cell_crops
+    or map_protein should request them explicitly.
+    """
+    access_filter = await _experiment_access_filter(user_id, db)
+    result = await db.execute(
+        select(Image)
+        .options(selectinload(Image.experiment))
+        .join(Experiment, Image.experiment_id == Experiment.id)
+        .where(Image.id == image_id, access_filter)
+    )
+    image = result.scalar_one_or_none()
+    if not image:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Image not found"
+        )
+    return image
+
+
+async def get_crop_for_read(
+    db: AsyncSession,
+    crop_id: int,
+    user_id: int,
+) -> CellCrop:
+    """Load a cell crop the user can read (owner or group member). Raises 404 otherwise."""
+    access_filter = await _experiment_access_filter(user_id, db)
+    result = await db.execute(
+        select(CellCrop)
+        .options(selectinload(CellCrop.image).selectinload(Image.experiment))
+        .join(Image, CellCrop.image_id == Image.id)
+        .join(Experiment, Image.experiment_id == Experiment.id)
+        .where(CellCrop.id == crop_id, access_filter)
+    )
+    crop = result.scalar_one_or_none()
+    if not crop:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Cell crop not found"
+        )
+    return crop
 
 
 def safe_remove_file(path: Optional[str]) -> bool:
@@ -361,7 +443,7 @@ async def list_fovs(
     Note: limit is optional. If not provided, all FOVs are returned.
     Frontend handles pagination for display.
     """
-    await verify_experiment_ownership(experiment_id, current_user.id, db)
+    await verify_experiment_read_access(experiment_id, current_user.id, db)
 
     # Get images with protein info and cell counts
     query = (
@@ -418,7 +500,7 @@ async def list_images(
     db: AsyncSession = Depends(get_db)
 ):
     """List images in an experiment with cell counts in a single query."""
-    await verify_experiment_ownership(experiment_id, current_user.id, db)
+    await verify_experiment_read_access(experiment_id, current_user.id, db)
 
     # Get images with protein info and cell counts in a single query
     query = (
@@ -456,7 +538,7 @@ async def list_cell_crops(
     db: AsyncSession = Depends(get_db)
 ):
     """List all cell crops for an experiment."""
-    await verify_experiment_ownership(experiment_id, current_user.id, db)
+    await verify_experiment_read_access(experiment_id, current_user.id, db)
 
     # Build query with optional exclusion filter
     query = (
@@ -487,21 +569,8 @@ async def list_fov_crops(
     db: AsyncSession = Depends(get_db)
 ):
     """List all cell crops for a specific FOV image."""
-    # Verify image ownership
-    result = await db.execute(
-        select(Image)
-        .join(Experiment, Image.experiment_id == Experiment.id)
-        .where(
-            Image.id == fov_id,
-            Experiment.user_id == current_user.id
-        )
-    )
-    image = result.scalar_one_or_none()
-    if not image:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Image not found"
-        )
+    # Verify read access (owner or group member)
+    await get_image_for_read(db, fov_id, current_user.id)
 
     # Build query with optional exclusion filter
     query = (
@@ -533,29 +602,7 @@ async def get_crop_image(
     """Get a cell crop image (MIP or SUM projection)."""
     payload = validate_image_token(token)
 
-    result = await db.execute(select(User).where(User.id == payload.sub))
-    user = result.scalar_one_or_none()
-
-    if not user:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="User not found"
-        )
-
-    result = await db.execute(
-        select(CellCrop)
-        .options(
-            selectinload(CellCrop.image).selectinload(Image.experiment)
-        )
-        .where(CellCrop.id == crop_id)
-    )
-    crop = result.scalar_one_or_none()
-
-    if not crop or crop.image.experiment.user_id != user.id:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Cell crop not found"
-        )
+    crop = await get_crop_for_read(db, crop_id, payload.sub)
 
     # Select file path based on type
     if type == "sum" and crop.sum_crop_path:
@@ -1117,22 +1164,20 @@ async def get_image(
     db: AsyncSession = Depends(get_db)
 ):
     """Get image details with detected cells."""
+    # Verify read access first
+    await get_image_for_read(db, image_id, current_user.id)
+
+    # Reload with the relationships needed for the detail response
     result = await db.execute(
         select(Image)
         .options(
             selectinload(Image.map_protein),
             selectinload(Image.cell_crops),
-            selectinload(Image.experiment)
+            selectinload(Image.experiment),
         )
         .where(Image.id == image_id)
     )
-    image = result.scalar_one_or_none()
-
-    if not image or image.experiment.user_id != current_user.id:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Image not found"
-        )
+    image = result.scalar_one()
 
     response = ImageDetailResponse.model_validate(image)
     response.cell_count = len(image.cell_crops)
@@ -1154,27 +1199,7 @@ async def get_image_file(
     """
     payload = validate_image_token(token)
 
-    result = await db.execute(select(User).where(User.id == payload.sub))
-    user = result.scalar_one_or_none()
-
-    if not user:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="User not found"
-        )
-
-    result = await db.execute(
-        select(Image)
-        .options(selectinload(Image.experiment))
-        .where(Image.id == image_id)
-    )
-    image = result.scalar_one_or_none()
-
-    if not image or image.experiment.user_id != user.id:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Image not found"
-        )
+    image = await get_image_for_read(db, image_id, payload.sub)
 
     # Select file path based on type
     if type == "mip" and image.mip_path:
