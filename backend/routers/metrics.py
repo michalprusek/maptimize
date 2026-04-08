@@ -59,6 +59,7 @@ async def get_metric_for_user(
 
     result = await db.execute(
         select(Metric)
+        .options(selectinload(Metric.user))
         .where(Metric.id == metric_id, or_(*conditions))
     )
     metric = result.scalar_one_or_none()
@@ -110,11 +111,20 @@ async def get_metric_counts(
     return image_count, comparison_count
 
 
-def build_metric_response(metric: Metric, image_count: int, comparison_count: int) -> MetricResponse:
-    """Build MetricResponse from metric and counts."""
-    creator_name = None
-    if hasattr(metric, "user") and metric.user:
-        creator_name = metric.user.name
+def build_metric_response(
+    metric: Metric,
+    image_count: int,
+    comparison_count: int,
+    *,
+    creator_name: Optional[str],
+) -> MetricResponse:
+    """Build MetricResponse from metric, counts, and an explicit creator name.
+
+    `creator_name` is keyword-only and required: callers must resolve it themselves
+    and pass it in. Touching `metric.user` here is unsafe because async SQLAlchemy
+    raises `MissingGreenlet` whenever the relationship happens not to be eagerly
+    loaded — and a future caller could easily forget the `selectinload`.
+    """
     return MetricResponse(
         id=metric.id,
         name=metric.name,
@@ -189,7 +199,10 @@ async def list_metrics(
         )
         rows.append((metric, image_count, comparison_count))
 
-    items = [build_metric_response(m, ic, cc) for m, ic, cc in rows]
+    items = [
+        build_metric_response(m, ic, cc, creator_name=m.user.name if m.user else None)
+        for m, ic, cc in rows
+    ]
 
     return MetricListResponse(items=items, total=len(items))
 
@@ -213,7 +226,7 @@ async def create_metric(
     await db.commit()
     await db.refresh(metric)
 
-    return build_metric_response(metric, 0, 0)
+    return build_metric_response(metric, 0, 0, creator_name=current_user.name)
 
 
 @router.get("/{metric_id}", response_model=MetricResponse)
@@ -227,7 +240,12 @@ async def get_metric(
     image_count, comparison_count = await get_metric_counts(
         db, metric.id, user_id=current_user.id
     )
-    return build_metric_response(metric, image_count, comparison_count)
+    return build_metric_response(
+        metric,
+        image_count,
+        comparison_count,
+        creator_name=metric.user.name if metric.user else None,
+    )
 
 
 @router.patch("/{metric_id}", response_model=MetricResponse)
@@ -253,7 +271,10 @@ async def update_metric(
     image_count, comparison_count = await get_metric_counts(
         db, metric.id, user_id=current_user.id
     )
-    return build_metric_response(metric, image_count, comparison_count)
+    # update_metric already enforced ownership, so current_user == creator.
+    return build_metric_response(
+        metric, image_count, comparison_count, creator_name=current_user.name
+    )
 
 
 @router.delete("/{metric_id}", status_code=status.HTTP_204_NO_CONTENT)
