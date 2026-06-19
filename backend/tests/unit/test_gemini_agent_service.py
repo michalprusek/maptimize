@@ -674,18 +674,35 @@ async def test_query_database_with_cte_single_select_branch(mock_db):
     assert res["error"] == "WITH (CTE) queries not allowed"
 
 
-async def test_query_database_unfiltered_table_executes(mock_db):
-    # A non-whitelisted table like ``users`` is not in ALLOWED_SQL_TABLES, but
-    # sqlparse tokenizes bare identifiers with a Name ttype (not None), so the
-    # protected-table rejection branch never fires for this form. The query
-    # passes validation and reaches execution (empty result from the mock DB).
-    result = make_result(fetchall=[])
-    result.keys.return_value = []
-    mock_db.execute.return_value = result
+async def test_query_database_blocks_non_whitelisted_table(mock_db):
+    # `users` (password hashes!) is not in ALLOWED_SQL_TABLES -> denied, and the
+    # query never reaches the DB.
     res = await execute_tool("query_database",
                              {"query": "SELECT * FROM users"}, 1, mock_db)
+    assert "Access denied" in res["error"] and "users" in res["error"]
+    mock_db.execute.assert_not_awaited()
+
+
+async def test_query_database_indirect_table_requires_anchor(mock_db):
+    # images/cell_crops have no user_id column -> must JOIN experiments so the
+    # per-user filter can scope them. A bare query is rejected (no data leak).
+    res = await execute_tool("query_database",
+                             {"query": "SELECT * FROM cell_crops"}, 1, mock_db)
+    assert "must JOIN experiments" in res["error"]
+    mock_db.execute.assert_not_awaited()
+
+
+async def test_query_database_direct_scoped_table_is_filtered(mock_db):
+    # A directly user-scoped table (agent_memories) is filtered on user_id even
+    # though it is neither experiments nor rag_documents.
+    result = make_result(fetchall=[]); result.keys.return_value = []
+    mock_db.execute.return_value = result
+    res = await execute_tool("query_database",
+                             {"query": "SELECT key FROM agent_memories"}, 9, mock_db)
     assert res["success"] is True
-    assert res["row_count"] == 0
+    stmt = str(mock_db.execute.await_args.args[0])
+    assert "agent_memories.user_id = :user_id" in stmt
+    assert mock_db.execute.await_args.args[1]["user_id"] == 9
 
 
 async def test_query_database_parse_error(mock_db):
@@ -705,6 +722,11 @@ async def test_query_database_success_injects_filter(mock_db):
     assert res["columns"] == ["id", "name"]
     assert res["rows"] == [{"id": 1, "name": "n"}]
     assert res["row_count"] == 1
+    # the user_id filter must actually be injected into the executed SQL (not just
+    # assumed) and bound to the caller's id
+    stmt = str(mock_db.execute.await_args.args[0])
+    assert "experiments.user_id = :user_id" in stmt
+    assert mock_db.execute.await_args.args[1]["user_id"] == 7
 
 
 async def test_query_database_success_doc_filter_and_limit(mock_db):
