@@ -1,0 +1,24 @@
+# Build artifacts and caches that must never be baked into the image.
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Coverage harness outputs (see run-coverage.sh)
+.coverage
+.coverage.*
+.coverage_*
+coverage.json
+htmlcov/
+
+# Local caches (HF models etc.) and runtime data — provided via volumes in prod.
+.cache/
+data/
+
+# Backups / editor cruft
+*.bak
+*.bak.*
+.env
+.env.*
