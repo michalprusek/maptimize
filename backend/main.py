@@ -7,6 +7,7 @@ from fastapi import FastAPI, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.exceptions import RequestValidationError
+from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
@@ -71,9 +72,12 @@ app = FastAPI(
 @app.exception_handler(RequestValidationError)
 async def validation_exception_handler(request: Request, exc: RequestValidationError):
     logger.error(f"Validation error for {request.method} {request.url}: {exc.errors()}")
+    # 422 Unprocessable Entity is the conventional status for request-validation
+    # failures (FastAPI's default). The frontend treats all non-401/5xx errors
+    # generically, so this is safe and matches client/test expectations.
     return JSONResponse(
-        status_code=400,
-        content={"detail": exc.errors()},
+        status_code=422,
+        content={"detail": jsonable_encoder(exc.errors())},
     )
 
 # HTTP exception handler to log all HTTP exceptions

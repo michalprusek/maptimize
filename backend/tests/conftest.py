@@ -21,8 +21,12 @@ def unique_name(prefix: str = "Test") -> str:
 
 
 def random_email() -> str:
-    """Generate a unique email for test registration."""
-    return f"test_{uuid4().hex[:8]}@testmaptimize.local"
+    """Generate a unique email for test registration.
+
+    Uses the @utia.cas.cz domain because (1) registration is whitelisted to it and
+    (2) email-validator rejects reserved/special-use TLDs like .local.
+    """
+    return f"test_{uuid4().hex[:8]}@utia.cas.cz"
 
 # Test against running backend
 BASE_URL = os.environ.get("TEST_API_URL", "http://localhost:8000")

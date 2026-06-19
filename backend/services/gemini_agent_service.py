@@ -1456,7 +1456,6 @@ async def execute_tool(tool_name: str, args: Dict[str, Any], user_id: int, db: A
                 return {"error": "experiment_ids required (list of IDs)"}
 
             import pandas as pd
-            from datetime import datetime
             from pathlib import Path
             from config import get_settings
 
@@ -1873,7 +1872,6 @@ async def execute_tool(tool_name: str, args: Dict[str, Any], user_id: int, db: A
 
         elif tool_name == "render_segmentation_overlay":
             import uuid
-            from datetime import datetime
             from pathlib import Path
             from PIL import Image as PILImage, ImageDraw
             import numpy as np

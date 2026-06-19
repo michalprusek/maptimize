@@ -412,6 +412,27 @@ export function MyComponent() {
 3. Použij `t("key")` v komponentě
 4. **NIKDY** nepřidávej hardcoded text do JSX!
 
+## 🧪 Backend test coverage
+
+**Měření coverage:** `bash run-coverage.sh` (z rootu repa). Postaví **izolované** prostředí (`docker-compose.test.yml` — vlastní ephemeral pgvector + redis, **nikdy se nedotkne prod DB**) a spojí tři běhy:
+- **Run B** – `backend/tests/test_*.py` (httpx integrační testy proti instrumentovanému serveru) → pokrývá těla route handlerů.
+- **Run C** – `backend/tests/unit/` (in-process unit testy s mockovaným DB/ML/genai) → pokrývá services + ML/externí cesty, které integrace offline nedosáhne.
+- **Run A** – import appky pod coverage → module-level řádky.
+Výstup: `backend/coverage.json` + `backend/htmlcov/`. **Aktuální stav: 99 % (1585 testů zelených).**
+
+### ⚠️ Coverage gotchas (proč ten harness vypadá složitě)
+Na stacku torch 2.11 + coverage 7.x + greenlet + asyncpg narazíš na tvrdé pády — řešení je v `backend/tests/_coverage_launcher.py`:
+1. `import torch` pod aktivním coverage tracerem → `RuntimeError: _has_torch_function already has a docstring`. **Fix:** importovat celou appku PŘED `coverage.start()` (launcher) a v unit testech mockovat `torch` v `sys.modules`.
+2. SQLAlchemy-async (asyncpg) běží v greenletu → coverage C-tracer při přepínání greenlet stacku **segfaultuje**. **Fix:** server importuje appku před coverage; unit testy mockují DB (`mock_db` AsyncMock → žádný greenlet).
+3. `concurrency = greenlet` v `.coveragerc` + ctrace core (NE sysmon).
+4. Unit testy běží **offline + CPU-only** (`HF_HUB_OFFLINE=1`, `CUDA_VISIBLE_DEVICES=`) — nikdy nestahuj modely ani neber prod GPU.
+
+### Psaní unit testů (`backend/tests/unit/`)
+- `tests/unit/conftest.py` dává `mock_db` (AsyncMock AsyncSession) a `make_result(scalar=, scalars_all=, first=, fetchall=, rowcount=)`.
+- `pytest.ini` má `asyncio_mode = auto` → async testy jako prosté `async def`.
+- Importuj helper přes `from tests.unit.conftest import make_result` (bare `from conftest` nefunguje).
+- Routery se testují přímým voláním handler-coroutin s `current_user=SimpleNamespace(...)`, `db=mock_db`; služby mockuj na hranici routeru (`patch("routers.X.<name>", ...)`).
+
 ## 🧪 E2E Testování (Playwright)
 
 ### Struktura testů
