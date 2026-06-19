@@ -34,7 +34,7 @@ class TestAuthRequired:
     """Verify that protected endpoints return 401 without authentication."""
 
     PROTECTED_ENDPOINTS = [
-        ("GET", "/api/experiments/"),
+        ("GET", "/api/experiments"),
         ("GET", "/api/settings"),
         ("GET", "/api/chat/threads"),
         ("GET", "/api/rag/documents"),
@@ -64,8 +64,12 @@ class TestInvalidToken:
         assert response.status_code == 401
 
     def test_empty_bearer(self, client):
-        """Empty Bearer value returns 401."""
-        headers = {"Authorization": "Bearer "}
+        """Bearer scheme with no token returns 401.
+
+        (httpx rejects a header value with a trailing space, so the empty-token
+        case is expressed as the bare ``Bearer`` scheme without a credential.)
+        """
+        headers = {"Authorization": "Bearer"}
         response = client.get("/api/auth/me", headers=headers)
         assert response.status_code == 401
 

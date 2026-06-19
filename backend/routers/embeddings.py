@@ -247,7 +247,7 @@ async def _get_fov_umap(
         points=points,
         total_images=len(images),
         silhouette_score=silhouette,
-        is_precomputed=all_have_umap,
+        is_precomputed=True,  # this branch only runs when pre-computed coords exist
         computed_at=computed_at,
     )
 

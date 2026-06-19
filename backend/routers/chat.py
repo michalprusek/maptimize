@@ -457,6 +457,9 @@ async def update_thread(
     thread = await get_thread_for_user(db, thread_id, current_user.id)
     thread.name = data.name
     await db.commit()
+    # Reload server-side onupdate columns (updated_at) before sync serialization,
+    # otherwise pydantic triggers a lazy DB load outside the async greenlet.
+    await db.refresh(thread)
 
     return ChatThreadResponse.model_validate(thread)
 

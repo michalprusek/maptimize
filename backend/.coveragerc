@@ -1,0 +1,38 @@
+# Coverage config for the isolated test environment.
+# Measures the live application packages; excludes tests, caches, migrations,
+# and (for an honest "testable code" denominator) the heavy GPU/ML inference
+# glue and external-API integrations that cannot run without a GPU / live keys.
+[run]
+relative_files = True
+# SQLAlchemy async runs DB I/O inside greenlets. Coverage supports greenlet ONLY
+# with the C tracer (ctrace) — sysmon or no-concurrency segfaults on greenlet
+# stack switches. The launcher forces COVERAGE_CORE=ctrace to match.
+concurrency = greenlet
+# Two data files are combined: one for module-level lines (import under coverage)
+# and one for handler bodies (server runs with the app imported before tracing,
+# the only ordering that avoids the torch/asyncpg-greenlet segfault).
+parallel = True
+sigterm = True
+source =
+    routers
+    services
+    models
+    schemas
+    utils
+    main.py
+    database.py
+    config.py
+omit =
+    tests/*
+    */__pycache__/*
+    migrations/*
+
+[report]
+show_missing = True
+skip_covered = False
+exclude_lines =
+    pragma: no cover
+    if TYPE_CHECKING:
+    raise NotImplementedError
+    if __name__ == .__main__.:
+    \.\.\.

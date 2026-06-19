@@ -295,6 +295,11 @@ async def compute_protein_embedding_endpoint(
 
     try:
         return await compute_protein_embedding(protein_id, db)
+    except LookupError as e:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(e)
+        )
     except ValueError as e:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,

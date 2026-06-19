@@ -58,7 +58,8 @@ async def compute_protein_embedding(
     protein = result.scalar_one_or_none()
 
     if not protein:
-        raise ValueError(f"Protein with ID {protein_id} not found")
+        # LookupError -> 404 at the endpoint (distinct from ValueError -> 400)
+        raise LookupError(f"Protein with ID {protein_id} not found")
 
     if not protein.fasta_sequence:
         raise ValueError(

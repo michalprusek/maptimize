@@ -237,29 +237,33 @@ async def export_ranking_comparisons(
     Returns:
         dict with file_path and metadata
     """
-    # Get comparisons
+    # Get comparisons. The Comparison model stores the two candidates as
+    # crop_a_id/crop_b_id plus winner_id and a `timestamp` (there is no
+    # loser_id/source/created_at column), so the loser is derived in Python.
     result = await db.execute(
         select(
             Comparison.id,
+            Comparison.crop_a_id,
+            Comparison.crop_b_id,
             Comparison.winner_id,
-            Comparison.loser_id,
-            Comparison.source,
-            Comparison.created_at,
+            Comparison.undone,
+            Comparison.timestamp,
         )
         .where(Comparison.user_id == user_id)
-        .order_by(Comparison.created_at.desc())
+        .order_by(Comparison.timestamp.desc())
         .limit(MAX_EXPORT_ROWS)
     )
     rows = result.all()
 
     data = []
     for row in rows:
+        loser_id = row.crop_b_id if row.winner_id == row.crop_a_id else row.crop_a_id
         data.append({
             "comparison_id": row.id,
             "winner_cell_id": row.winner_id,
-            "loser_cell_id": row.loser_id,
-            "source": row.source.value if hasattr(row.source, "value") else str(row.source),
-            "created_at": row.created_at.isoformat() if row.created_at else None,
+            "loser_cell_id": loser_id,
+            "undone": bool(row.undone),
+            "created_at": row.timestamp.isoformat() if row.timestamp else None,
         })
 
     df = pd.DataFrame(data)
