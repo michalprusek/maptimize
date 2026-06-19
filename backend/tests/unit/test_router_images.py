@@ -147,13 +147,20 @@ def no_group():
 
 async def test_experiment_access_filter_no_group(mock_db, no_group):
     f = await r._experiment_access_filter(1, mock_db)
-    assert f is not None
+    sql = str(f.compile(compile_kwargs={"literal_binds": True}))
+    # Owner-only filter when the user is in no group.
+    assert "user_id" in sql and "1" in sql
+    assert "group_id" not in sql
 
 
 async def test_experiment_access_filter_with_group(mock_db):
     with patch("routers.images.get_user_group_id", new=AsyncMock(return_value=7)):
         f = await r._experiment_access_filter(1, mock_db)
-    assert f is not None
+    sql = str(f.compile(compile_kwargs={"literal_binds": True})).upper()
+    # Shared access = own experiments OR the group's, joined by OR (the exact
+    # shape that regressed in prod once — guard it behaviourally, not just != None).
+    assert "USER_ID" in sql and "GROUP_ID" in sql
+    assert "7" in sql and " OR " in sql
 
 
 async def test_verify_experiment_ownership_found(mock_db):

@@ -18,6 +18,7 @@ Not used in production - only launched by the test compose.
 import atexit
 import faulthandler
 import os
+import sys
 
 faulthandler.enable()
 
@@ -39,8 +40,8 @@ def _finish() -> None:
     try:
         _cov.stop()
         _cov.save()
-    except Exception:
-        pass
+    except Exception as exc:  # don't crash shutdown, but don't hide it either
+        print(f"coverage save failed: {exc!r}", file=sys.stderr)
 
 
 atexit.register(_finish)

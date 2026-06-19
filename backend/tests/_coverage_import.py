@@ -8,6 +8,7 @@ import faulthandler
 import importlib
 import os
 import pkgutil
+import sys
 
 faulthandler.enable()
 os.environ["COVERAGE_CORE"] = "ctrace"
@@ -25,10 +26,12 @@ _cov.start()
 
 # Import the app entrypoint, then walk every source package so module-level code
 # in lazily-referenced modules is also recorded.
+_main_failed = False
 try:
     import main  # noqa: F401
 except Exception as exc:  # pragma: no cover
     print("MAIN_IMPORT_FAIL", type(exc).__name__, exc)
+    _main_failed = True
 
 for _pkg in ("routers", "services", "models", "schemas", "utils"):
     try:
@@ -44,3 +47,8 @@ for _pkg in ("routers", "services", "models", "schemas", "utils"):
 _cov.stop()
 _cov.save()
 print("RUN_A_DONE")
+
+# Fail loudly if the app entrypoint did not import — otherwise a real regression
+# would silently produce a low-but-nonzero coverage number on a "green" run.
+if _main_failed:
+    sys.exit(1)

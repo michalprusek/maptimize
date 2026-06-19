@@ -418,7 +418,7 @@ export function MyComponent() {
 - **Run B** – `backend/tests/test_*.py` (httpx integrační testy proti instrumentovanému serveru) → pokrývá těla route handlerů.
 - **Run C** – `backend/tests/unit/` (in-process unit testy s mockovaným DB/ML/genai) → pokrývá services + ML/externí cesty, které integrace offline nedosáhne.
 - **Run A** – import appky pod coverage → module-level řádky.
-Výstup: `backend/coverage.json` + `backend/htmlcov/`. **Aktuální stav: 99 % (1585 testů zelených).**
+Výstup: `backend/coverage.json` + `backend/htmlcov/`. **Cíl: ~99 % line coverage, celá suite musí zůstat zelená** (autoritativní čísla jsou v generovaném `coverage.json`, ne v tomto textu).
 
 ### ⚠️ Coverage gotchas (proč ten harness vypadá složitě)
 Na stacku torch 2.11 + coverage 7.x + greenlet + asyncpg narazíš na tvrdé pády — řešení je v `backend/tests/_coverage_launcher.py`:

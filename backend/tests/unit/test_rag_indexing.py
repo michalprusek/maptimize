@@ -80,10 +80,12 @@ async def _ctx(db):
 # rag_service.search_documents
 # ============================================================================ #
 async def test_search_documents_nothing_indexed_returns_empty(mock_db):
-    # has_indexed.first() -> None  => early return []
+    # has_indexed.first() -> None  => early return [] WITHOUT loading the encoder.
     mock_db.execute.return_value = make_result(first=None)
-    out = await rag.search_documents("q", 7, mock_db)
+    with patch("ml.rag.get_qwen_vl_encoder") as get_enc:
+        out = await rag.search_documents("q", 7, mock_db)
     assert out == []
+    get_enc.assert_not_called()  # the whole point: skip the expensive model load
 
 
 async def test_search_documents_with_results_text_truncation(mock_db):
@@ -139,7 +141,9 @@ async def test_search_documents_error_raises_ragerror(mock_db):
 # ============================================================================ #
 async def test_search_fov_nothing_indexed(mock_db):
     mock_db.execute.return_value = make_result(first=None)
-    assert await rag.search_fov_images("q", 7, mock_db) == []
+    with patch("ml.rag.get_qwen_vl_encoder") as get_enc:
+        assert await rag.search_fov_images("q", 7, mock_db) == []
+    get_enc.assert_not_called()  # skip the expensive model load when nothing indexed
 
 
 async def test_search_fov_with_experiment_filter(mock_db):
@@ -666,10 +670,8 @@ async def test_extract_passages_json_decode_error(mock_db, tmp_path):
 
 
 async def test_extract_passages_value_error(mock_db, tmp_path):
-    # The `except ValueError` handler is only reachable once `import json` has
-    # run (line 926) — an earlier ValueError would hit `except json.JSONDecodeError`
-    # first and the `json` name is still unbound (a real code quirk). So we let
-    # json.loads succeed and raise ValueError from inside the extraction loop.
+    # json.loads succeeds; a ValueError raised from inside the extraction loop
+    # exercises the `except ValueError` handler.
     img = make_png(tmp_path / "p.png", size=(1000, 1000))
     doc = document(pages=[page(page_number=1, image_path=str(img))])
     mock_db.execute.return_value = make_result(scalar=doc)

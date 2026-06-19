@@ -34,6 +34,8 @@ services:
     depends_on:
       test-db:
         condition: service_healthy
+      test-redis:
+        condition: service_started
     # Root + ephemeral /app/data so import-time mkdir() (uploads/temp) succeeds
     # without polluting the host working tree.
     user: root

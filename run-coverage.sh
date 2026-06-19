@@ -1,17 +1,19 @@
 #!/usr/bin/env bash
-# Measure backend coverage in the isolated test environment.
+# Measure backend coverage in the isolated test environment (3-way combine).
 #   Run B (server): handler bodies, driven by the httpx integration suite.
-#   Run A (import):  module-level lines.
-#   combine -> report.
-# Nothing here touches the production database.
+#   Run C (unit):   services + routers, in-process unit tests (DB/ML/genai mocked).
+#   Run A (import): module-level lines (import under coverage).
+#   combine -> report (backend/coverage.json + backend/htmlcov).
+# Exit status is non-zero if ANY phase fails. Nothing here touches the prod DB.
 set -uo pipefail
 
 CF="docker-compose.test.yml"
 DC="docker compose -f $CF"
 PIP="pip install --quiet --no-input 'coverage[toml]' pytest pytest-asyncio >/dev/null 2>&1"
 # Admin = the user init_db seeds automatically; regular = a RESEARCHER we register.
-ADMIN_EMAIL="12bprusek@gym-nymburk.cz"
-ADMIN_PW="82c17878"
+# Password is overridable via env so it need not live in the repo.
+ADMIN_EMAIL="${TEST_ADMIN_EMAIL:-12bprusek@gym-nymburk.cz}"
+ADMIN_PW="${TEST_ADMIN_PW:-82c17878}"
 REG_EMAIL="pytest_regular@utia.cas.cz"
 REG_PW="securepass123"
 PYTEST_ARGS="${PYTEST_ARGS:--m \"not slow\" -q -p no:cacheprovider}"
@@ -28,6 +30,13 @@ for i in $(seq 1 60); do
   st=$(docker inspect maptimize-test-backend-1 --format '{{.State.Running}}' 2>/dev/null)
   [ "$st" = "false" ] && { echo "   SERVER DOWN"; $DC logs --tail=20 test-backend; exit 1; }
   sleep 3
+done
+
+# Wait for Redis too — a few endpoints (export status, rate limiting) hit it, and
+# a cold redis right after `up` makes them 500 instead of their expected status.
+for i in $(seq 1 20); do
+  [ "$($DC exec -T test-redis redis-cli ping 2>/dev/null | tr -d '\r')" = "PONG" ] && break
+  sleep 1
 done
 
 echo "== ensure a regular (non-admin) test user exists =="
@@ -52,9 +61,15 @@ $DC stop -t 30 test-backend >/dev/null 2>&1
 
 echo "== Run A (module-level coverage) =="
 $DC run --rm --no-deps -T test-backend "$PIP; python /app/tests/_coverage_import.py"
+RUNA_RC=$?
+[ "$RUNA_RC" -ne 0 ] && echo "   WARNING: Run A (module-level import) failed rc=$RUNA_RC"
 
 echo "== combine + report =="
 $DC run --rm --no-deps -T test-backend "$PIP; cd /app && COVERAGE_CORE=ctrace python -m coverage combine && COVERAGE_CORE=ctrace python -m coverage report --precision=1 && COVERAGE_CORE=ctrace python -m coverage json -o /app/coverage.json -q && COVERAGE_CORE=ctrace python -m coverage html -d /app/htmlcov -q"
+COMBINE_RC=$?
 
-echo "== done (pytest exit was $TEST_RC) =="
-exit $TEST_RC
+# Fail the run if ANY phase failed (so CI cannot get a green run from a red suite).
+RC=0
+for c in "$TEST_RC" "$UNIT_RC" "$RUNA_RC" "$COMBINE_RC"; do [ "$c" -gt "$RC" ] && RC=$c; done
+echo "== done (integration=$TEST_RC unit=$UNIT_RC runA=$RUNA_RC combine=$COMBINE_RC) =="
+exit $RC

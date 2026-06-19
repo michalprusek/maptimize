@@ -152,6 +152,26 @@ async def test_get_next_pair_uses_ranking_sources(mock_db):
     assert resp.total_comparisons == 5
 
 
+async def test_get_next_pair_skips_recently_compared(mock_db):
+    # 3 crops with pair (1,2) recently compared -> a fresh pair (incl. crop 3)
+    # must be chosen. With only 2 crops the algorithm falls back to "any pair",
+    # so >=3 crops is required to actually prove exclusion works.
+    crops = [crop(1), crop(2), crop(3)]
+    mock_db.execute.side_effect = [
+        make_result(scalars_all=crops),                              # crops
+        make_result(scalar=0),                                       # total (exploration)
+        make_result(scalars_all=[comparison(crop_a=1, crop_b=2)]),   # recent -> (1,2)
+        make_result(scalar=rating(1)),
+        make_result(scalar=rating(2)),
+        make_result(scalar=rating(3)),
+    ]
+    resp = await r.get_next_pair(experiment_id=42, current_user=fake_user(),
+                                 db=mock_db)
+    pair = {resp.crop_a.id, resp.crop_b.id}
+    assert pair != {1, 2}   # the recently-compared pair is skipped...
+    assert 3 in pair        # ...in favour of a fresh pair involving crop 3
+
+
 async def test_get_next_pair_insufficient_items_error(mock_db):
     crops = [crop(1), crop(2)]
     mock_db.execute.side_effect = [
@@ -212,10 +232,13 @@ async def test_submit_comparison_success_winner_is_a(mock_db):
     resp = await r.submit_comparison(payload, current_user=fake_user(),
                                      db=mock_db)
     assert resp.crop_a_id == 1 and resp.crop_b_id == 2 and resp.winner_id == 1
-    # winner/loser counts incremented, ratings changed
+    # counts incremented and TrueSkill actually updated (not a no-op):
     assert win_rating.comparison_count == 3
     assert lose_rating.comparison_count == 3
-    assert win_rating.mu >= 25.0  # winner mu should not decrease
+    assert win_rating.mu > 25.0    # winner skill rises above the equal prior
+    assert lose_rating.mu < 25.0   # loser skill falls below it
+    assert win_rating.sigma < 8.0  # uncertainty shrinks for both
+    assert lose_rating.sigma < 8.0
     mock_db.commit.assert_awaited_once()
 
 
