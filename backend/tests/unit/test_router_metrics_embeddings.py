@@ -509,6 +509,26 @@ async def test_get_metric_pair_exploration_recent_fallback(mock_db, no_group):
     assert {out.image_a.id, out.image_b.id} == {10, 11}
 
 
+async def test_get_metric_pair_skip_excludes_current_pair(mock_db, no_group):
+    # Skip passes exclude_a/exclude_b -> that pair must NOT be returned again.
+    metric = metric_obj()
+    imgs = [metric_image(img_id=i, cell_crop=SimpleNamespace()) for i in (10, 11, 12)]
+    mock_db.execute.side_effect = [
+        make_result(scalar=metric),
+        make_result(scalars_all=imgs),
+        make_result(scalar=0),            # exploration phase
+        make_result(scalars_all=[]),      # no recorded recent comparisons
+        make_result(scalars_all=[]),      # existing ratings batch (create all)
+    ]
+    with patch.object(m.random, "choice", side_effect=lambda seq: seq[0]), \
+         patch.object(m.random, "random", return_value=0.1):  # no swap
+        out = await m.get_metric_pair(
+            1, exclude_a=10, exclude_b=11, current_user=user(), db=mock_db
+        )
+    # The excluded (10,11) pair is skipped; a fresh pair is returned instead.
+    assert {out.image_a.id, out.image_b.id} != {10, 11}
+
+
 async def test_get_metric_pair_exploitation_phase(mock_db, no_group):
     metric = metric_obj()
     imgs = [metric_image(img_id=i, cell_crop=SimpleNamespace()) for i in (10, 11, 12)]

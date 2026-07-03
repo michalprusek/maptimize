@@ -542,10 +542,17 @@ async def remove_metric_image(
 @router.get("/{metric_id}/pair", response_model=MetricPairResponse)
 async def get_metric_pair(
     metric_id: int,
+    exclude_a: Optional[int] = Query(None),
+    exclude_b: Optional[int] = Query(None),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
-    """Get next pair of images for comparison in this metric."""
+    """Get next pair of images for comparison in this metric.
+
+    `exclude_a`/`exclude_b` name a pair to avoid returning again — the frontend
+    passes the currently-shown pair when the user hits "Skip" so selection (which
+    is otherwise deterministic in the exploitation phase) yields a different pair.
+    """
     metric = await get_metric_for_user(db, metric_id, current_user.id)
 
     # Get all images in metric (excluding user's soft-deleted images)
@@ -590,6 +597,12 @@ async def get_metric_pair(
     recent = recent_result.scalars().all()
     recent_pairs = {(c.image_a_id, c.image_b_id) for c in recent}
     recent_pairs.update({(c.image_b_id, c.image_a_id) for c in recent})
+
+    # Skipping records nothing, so without this the same pair would be
+    # re-selected. Treat the skipped pair as "recent" for this request only.
+    if exclude_a is not None and exclude_b is not None:
+        recent_pairs.add((exclude_a, exclude_b))
+        recent_pairs.add((exclude_b, exclude_a))
 
     # Get or create ratings for all images (per user) in a single round-trip.
     # Previously this looped one SELECT per image (N+1), which dominated pair

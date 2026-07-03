@@ -164,6 +164,9 @@ export default function MetricDetailPage(): JSX.Element {
   // Synchronous guard against double-submits (state updates are async, so a
   // second rapid click could slip past `compareMutation.isPending`).
   const submittingRef = useRef(false);
+  // Pair to exclude on the next fetch (set when the user skips, so the backend
+  // returns a different pair instead of re-selecting the deterministic best one).
+  const excludePairRef = useRef<[number, number] | null>(null);
 
   // Image gallery filter state
   const [searchQuery, setSearchQuery] = useState("");
@@ -198,7 +201,12 @@ export default function MetricDetailPage(): JSX.Element {
     refetch: refetchPair,
   } = useQuery({
     queryKey: ["metric-pair", metricId],
-    queryFn: () => api.getMetricPair(metricId),
+    queryFn: () => {
+      // Consume the skip-exclusion once, so it only affects that one fetch.
+      const exclude = excludePairRef.current;
+      excludePairRef.current = null;
+      return api.getMetricPair(metricId, exclude ?? undefined);
+    },
     enabled: activeTab === "ranking",
     retry: false,
   });
@@ -409,11 +417,13 @@ export default function MetricDetailPage(): JSX.Element {
     [compareMutation, pairFetching]
   );
 
-  // Skip to next pair without voting
+  // Skip to next pair without voting. Exclude the current pair so the backend
+  // returns a genuinely different one instead of re-selecting the same pair.
   const handleSkip = useCallback(() => {
     if (compareMutation.isPending || pairFetching) return;
+    if (pair) excludePairRef.current = [pair.image_a.id, pair.image_b.id];
     refetchPair();
-  }, [compareMutation.isPending, pairFetching, refetchPair]);
+  }, [compareMutation.isPending, pairFetching, refetchPair, pair]);
 
   // Keyboard shortcuts for ranking
   const handleKeyPress = useCallback(
