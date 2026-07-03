@@ -19,6 +19,8 @@ import { clsx } from "clsx";
 interface MicroscopyImageProps extends React.ImgHTMLAttributes<HTMLImageElement> {
   src: string;
   alt: string;
+  /** Load eagerly with high fetch priority (for above-the-fold images). */
+  priority?: boolean;
 }
 
 const lutClasses: Record<DisplayMode, string> = {
@@ -32,6 +34,7 @@ export function MicroscopyImage({
   src,
   alt,
   className,
+  priority = false,
   ...props
 }: MicroscopyImageProps): JSX.Element {
   const displayMode = useSettingsStore((state) => state.displayMode);
@@ -47,7 +50,8 @@ export function MicroscopyImage({
       alt={alt}
       data-microscopy-image
       className={imageClass}
-      loading="lazy"
+      loading={priority ? "eager" : "lazy"}
+      fetchPriority={priority ? "high" : "auto"}
       {...props}
     />
   );

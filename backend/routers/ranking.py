@@ -140,11 +140,28 @@ async def get_next_pair(
     recent_pairs = {(c.crop_a_id, c.crop_b_id) for c in recent}
     recent_pairs.update({(c.crop_b_id, c.crop_a_id) for c in recent})
 
-    # Get or create ratings for all crops
-    ratings = {}
-    for crop in crops:
-        rating = await get_or_create_rating(db, current_user.id, crop.id)
-        ratings[crop.id] = rating
+    # Get or create ratings for all crops in a single round-trip (avoids N+1).
+    crop_ids = [crop.id for crop in crops]
+    existing_result = await db.execute(
+        select(UserRating).where(
+            UserRating.user_id == current_user.id,
+            UserRating.cell_crop_id.in_(crop_ids),
+        )
+    )
+    ratings = {r.cell_crop_id: r for r in existing_result.scalars().all()}
+
+    missing_ids = [cid for cid in crop_ids if cid not in ratings]
+    for cid in missing_ids:
+        rating = UserRating(
+            user_id=current_user.id,
+            cell_crop_id=cid,
+            mu=settings.initial_mu,
+            sigma=settings.initial_sigma,
+        )
+        db.add(rating)
+        ratings[cid] = rating
+    if missing_ids:
+        await db.flush()
 
     # Select pair using adaptive sampling utility
     try:

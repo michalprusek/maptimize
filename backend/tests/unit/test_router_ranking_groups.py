@@ -118,14 +118,12 @@ async def test_get_next_pair_success_explicit_experiment(mock_db):
     crops = [crop(1), crop(2), crop(3)]
     # Query order with explicit experiment_id:
     # 1) crops, 2) comparison count, 3) recent comparisons,
-    # then get_or_create_rating per crop (3x scalar_one_or_none).
+    # 4) batch-fetch existing ratings (empty here -> all created in-memory).
     mock_db.execute.side_effect = [
         make_result(scalars_all=crops),   # crops
         make_result(scalar=0),            # total_comparisons count
         make_result(scalars_all=[]),      # recent comparisons
-        make_result(scalar=None),         # rating crop 1 (create)
-        make_result(scalar=None),         # rating crop 2 (create)
-        make_result(scalar=None),         # rating crop 3 (create)
+        make_result(scalars_all=[]),      # existing ratings batch (none -> create all)
     ]
     resp = await r.get_next_pair(experiment_id=42, current_user=fake_user(),
                                  db=mock_db)
@@ -143,8 +141,7 @@ async def test_get_next_pair_uses_ranking_sources(mock_db):
         make_result(scalars_all=crops),   # crops
         make_result(scalar=5),            # total_comparisons
         make_result(scalars_all=[comparison(crop_a=1, crop_b=2)]),  # recent
-        make_result(scalar=rating(1)),    # existing rating crop 1
-        make_result(scalar=rating(2)),    # existing rating crop 2
+        make_result(scalars_all=[rating(1), rating(2)]),  # existing ratings batch
     ]
     resp = await r.get_next_pair(experiment_id=None, current_user=fake_user(),
                                  db=mock_db)
@@ -161,9 +158,7 @@ async def test_get_next_pair_skips_recently_compared(mock_db):
         make_result(scalars_all=crops),                              # crops
         make_result(scalar=0),                                       # total (exploration)
         make_result(scalars_all=[comparison(crop_a=1, crop_b=2)]),   # recent -> (1,2)
-        make_result(scalar=rating(1)),
-        make_result(scalar=rating(2)),
-        make_result(scalar=rating(3)),
+        make_result(scalars_all=[rating(1), rating(2), rating(3)]),  # existing ratings batch
     ]
     resp = await r.get_next_pair(experiment_id=42, current_user=fake_user(),
                                  db=mock_db)
@@ -178,8 +173,7 @@ async def test_get_next_pair_insufficient_items_error(mock_db):
         make_result(scalars_all=crops),
         make_result(scalar=0),
         make_result(scalars_all=[]),
-        make_result(scalar=None),
-        make_result(scalar=None),
+        make_result(scalars_all=[]),   # existing ratings batch
     ]
     with patch.object(r, "select_pair",
                       side_effect=r.InsufficientItemsError("boom")):
