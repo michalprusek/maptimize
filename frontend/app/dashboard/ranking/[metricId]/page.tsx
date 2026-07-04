@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback, useMemo } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
 import { motion, AnimatePresence } from "framer-motion";
@@ -94,6 +94,7 @@ function ComparisonCard({
               src={imageUrl}
               alt={`Image ${image.id}`}
               className="max-h-[280px] object-contain"
+              priority
             />
           ) : (
             <div className="flex items-center justify-center p-12">
@@ -160,6 +161,12 @@ export default function MetricDetailPage(): JSX.Element {
   const [startTime, setStartTime] = useState<number>(0);
   const [selectedWinner, setSelectedWinner] = useState<number | null>(null);
   const [showKeyboardHint, setShowKeyboardHint] = useState(true);
+  // Synchronous guard against double-submits (state updates are async, so a
+  // second rapid click could slip past `compareMutation.isPending`).
+  const submittingRef = useRef(false);
+  // Pair to exclude on the next fetch (set when the user skips, so the backend
+  // returns a different pair instead of re-selecting the deterministic best one).
+  const excludePairRef = useRef<[number, number] | null>(null);
 
   // Image gallery filter state
   const [searchQuery, setSearchQuery] = useState("");
@@ -187,9 +194,19 @@ export default function MetricDetailPage(): JSX.Element {
     refetchInterval: activeTab === "ranking" ? 5000 : false,
   });
 
-  const { data: pair, isLoading: pairLoading, error: pairError, refetch: refetchPair } = useQuery({
+  const {
+    data: pair,
+    isFetching: pairFetching,
+    error: pairError,
+    refetch: refetchPair,
+  } = useQuery({
     queryKey: ["metric-pair", metricId],
-    queryFn: () => api.getMetricPair(metricId),
+    queryFn: () => {
+      // Consume the skip-exclusion once, so it only affects that one fetch.
+      const exclude = excludePairRef.current;
+      excludePairRef.current = null;
+      return api.getMetricPair(metricId, exclude ?? undefined);
+    },
     enabled: activeTab === "ranking",
     retry: false,
   });
@@ -351,13 +368,17 @@ export default function MetricDetailPage(): JSX.Element {
       });
     },
     onSuccess: () => {
+      submittingRef.current = false;
       setSelectedWinner(null);
       setMutationError(null);
       queryClient.invalidateQueries({ queryKey: ["metric-progress", metricId] });
-      setTimeout(() => refetchPair(), 300);
+      // Fetch the next pair immediately; the comparison is already persisted
+      // (the POST awaited its commit), so it won't be re-selected.
+      refetchPair();
     },
     onError: (err: Error) => {
       console.error("Failed to submit comparison:", err);
+      submittingRef.current = false;
       setMutationError(err.message || "Failed to submit comparison. Please try again.");
       setSelectedWinner(null);
     },
@@ -383,25 +404,38 @@ export default function MetricDetailPage(): JSX.Element {
     }
   }, [pair]);
 
-  // Skip to next pair without voting
+  // Submit a vote. Fires the mutation synchronously (no artificial delay) and
+  // guards against double-submits / voting on a stale pair that is still being
+  // replaced by a refetch.
+  const handleSelect = useCallback(
+    (winnerId: number) => {
+      if (submittingRef.current || compareMutation.isPending || pairFetching) return;
+      submittingRef.current = true;
+      setSelectedWinner(winnerId);
+      compareMutation.mutate(winnerId);
+    },
+    [compareMutation, pairFetching]
+  );
+
+  // Skip to next pair without voting. Exclude the current pair so the backend
+  // returns a genuinely different one instead of re-selecting the same pair.
   const handleSkip = useCallback(() => {
-    if (compareMutation.isPending) return;
+    if (compareMutation.isPending || pairFetching) return;
+    if (pair) excludePairRef.current = [pair.image_a.id, pair.image_b.id];
     refetchPair();
-  }, [compareMutation.isPending, refetchPair]);
+  }, [compareMutation.isPending, pairFetching, refetchPair, pair]);
 
   // Keyboard shortcuts for ranking
   const handleKeyPress = useCallback(
     (e: KeyboardEvent) => {
-      if (activeTab !== "ranking" || !pair || compareMutation.isPending) return;
+      if (activeTab !== "ranking" || !pair) return;
 
       if (e.key === "ArrowLeft") {
         e.preventDefault();
-        setSelectedWinner(pair.image_a.id);
-        setTimeout(() => compareMutation.mutate(pair.image_a.id), 200);
+        handleSelect(pair.image_a.id);
       } else if (e.key === "ArrowRight") {
         e.preventDefault();
-        setSelectedWinner(pair.image_b.id);
-        setTimeout(() => compareMutation.mutate(pair.image_b.id), 200);
+        handleSelect(pair.image_b.id);
       } else if (e.key === " " || e.key === "Spacebar") {
         e.preventDefault();
         handleSkip();
@@ -410,19 +444,13 @@ export default function MetricDetailPage(): JSX.Element {
         undoMutation.mutate();
       }
     },
-    [activeTab, pair, compareMutation, undoMutation, handleSkip]
+    [activeTab, pair, handleSelect, handleSkip, undoMutation]
   );
 
   useEffect(() => {
     window.addEventListener("keydown", handleKeyPress);
     return () => window.removeEventListener("keydown", handleKeyPress);
   }, [handleKeyPress]);
-
-  const handleSelect = (winnerId: number) => {
-    if (compareMutation.isPending) return;
-    setSelectedWinner(winnerId);
-    setTimeout(() => compareMutation.mutate(winnerId), 200);
-  };
 
   const getImageUrl = (img: MetricImage) => {
     if (img.cell_crop_id) {
@@ -787,8 +815,8 @@ export default function MetricDetailPage(): JSX.Element {
 
               {/* Comparison cards - stable container with min-height */}
               <div className="relative min-h-[400px]">
-                {/* Loading overlay */}
-                {pairLoading && (
+                {/* Loading overlay (covers the old pair while the next one loads) */}
+                {pairFetching && (
                   <div className="absolute inset-0 flex items-center justify-center bg-bg-primary/50 backdrop-blur-sm z-10 rounded-xl">
                     <div className="text-center">
                       <Loader2 className="w-10 h-10 text-primary-500 animate-spin mx-auto mb-4" />
@@ -805,7 +833,7 @@ export default function MetricDetailPage(): JSX.Element {
                       imageUrl={getAuthImageUrl(pair.image_a.image_url)}
                       isSelected={selectedWinner === pair.image_a.id}
                       isOtherSelected={selectedWinner !== null && selectedWinner !== pair.image_a.id}
-                      isPending={compareMutation.isPending}
+                      isPending={compareMutation.isPending || pairFetching}
                       keyboardHint="←"
                       onSelect={() => handleSelect(pair.image_a.id)}
                       onDelete={() => handleDeleteClick(pair.image_a.id, pair.image_a.original_filename || `Image #${pair.image_a.id}`)}
@@ -816,7 +844,7 @@ export default function MetricDetailPage(): JSX.Element {
                       imageUrl={getAuthImageUrl(pair.image_b.image_url)}
                       isSelected={selectedWinner === pair.image_b.id}
                       isOtherSelected={selectedWinner !== null && selectedWinner !== pair.image_b.id}
-                      isPending={compareMutation.isPending}
+                      isPending={compareMutation.isPending || pairFetching}
                       keyboardHint="→"
                       onSelect={() => handleSelect(pair.image_b.id)}
                       onDelete={() => handleDeleteClick(pair.image_b.id, pair.image_b.original_filename || `Image #${pair.image_b.id}`)}

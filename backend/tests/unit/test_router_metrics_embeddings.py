@@ -80,10 +80,11 @@ def metric_image(img_id=10, metric_id=1, cell_crop_id=None, file_path=None,
 
 
 def rating_obj(mu=25.0, sigma=8.0, comparison_count=0, user_id=1, excluded=False,
-               ordinal_score=1.0, metric_image=None):
+               ordinal_score=1.0, metric_image=None, metric_image_id=None):
     return SimpleNamespace(
         mu=mu, sigma=sigma, comparison_count=comparison_count, user_id=user_id,
         excluded=excluded, ordinal_score=ordinal_score, metric_image=metric_image,
+        metric_image_id=metric_image_id,
     )
 
 
@@ -474,8 +475,7 @@ async def test_get_metric_pair_exploration_phase(mock_db, no_group):
         make_result(scalars_all=[img_a, img_b]),          # images
         make_result(scalar=0),                            # total_comparisons (< exploration_pairs)
         make_result(scalars_all=[]),                      # recent comparisons
-        make_result(scalar=None),                         # rating for img_a (create)
-        make_result(scalar=None),                         # rating for img_b (create)
+        make_result(scalars_all=[]),                      # existing ratings batch (none -> both created)
     ]
     with patch.object(m.random, "choice", side_effect=lambda seq: seq[0]), \
          patch.object(m.random, "random", return_value=0.1):  # no swap
@@ -498,13 +498,35 @@ async def test_get_metric_pair_exploration_recent_fallback(mock_db, no_group):
         make_result(scalars_all=[img_a, img_b]),
         make_result(scalar=0),
         make_result(scalars_all=[recent]),  # recent pair (10,11)
-        make_result(scalar=rating_obj()),
-        make_result(scalar=rating_obj()),
+        make_result(scalars_all=[            # existing ratings batch
+            rating_obj(metric_image_id=10),
+            rating_obj(metric_image_id=11),
+        ]),
     ]
     with patch.object(m.random, "choice", side_effect=lambda seq: seq[0]), \
          patch.object(m.random, "random", return_value=0.9):  # swap
         out = await m.get_metric_pair(1, current_user=user(), db=mock_db)
     assert {out.image_a.id, out.image_b.id} == {10, 11}
+
+
+async def test_get_metric_pair_skip_excludes_current_pair(mock_db, no_group):
+    # Skip passes exclude_a/exclude_b -> that pair must NOT be returned again.
+    metric = metric_obj()
+    imgs = [metric_image(img_id=i, cell_crop=SimpleNamespace()) for i in (10, 11, 12)]
+    mock_db.execute.side_effect = [
+        make_result(scalar=metric),
+        make_result(scalars_all=imgs),
+        make_result(scalar=0),            # exploration phase
+        make_result(scalars_all=[]),      # no recorded recent comparisons
+        make_result(scalars_all=[]),      # existing ratings batch (create all)
+    ]
+    with patch.object(m.random, "choice", side_effect=lambda seq: seq[0]), \
+         patch.object(m.random, "random", return_value=0.1):  # no swap
+        out = await m.get_metric_pair(
+            1, exclude_a=10, exclude_b=11, current_user=user(), db=mock_db
+        )
+    # The excluded (10,11) pair is skipped; a fresh pair is returned instead.
+    assert {out.image_a.id, out.image_b.id} != {10, 11}
 
 
 async def test_get_metric_pair_exploitation_phase(mock_db, no_group):
@@ -515,9 +537,11 @@ async def test_get_metric_pair_exploitation_phase(mock_db, no_group):
         make_result(scalars_all=imgs),
         make_result(scalar=999),       # total_comparisons >> exploration_pairs
         make_result(scalars_all=[]),   # recent
-        make_result(scalar=rating_obj(mu=25, sigma=9)),
-        make_result(scalar=rating_obj(mu=20, sigma=8)),
-        make_result(scalar=rating_obj(mu=15, sigma=2)),
+        make_result(scalars_all=[      # existing ratings batch
+            rating_obj(mu=25, sigma=9, metric_image_id=10),
+            rating_obj(mu=20, sigma=8, metric_image_id=11),
+            rating_obj(mu=15, sigma=2, metric_image_id=12),
+        ]),
     ]
     with patch.object(m.random, "random", return_value=0.1):
         out = await m.get_metric_pair(1, current_user=user(), db=mock_db)
@@ -534,8 +558,10 @@ async def test_get_metric_pair_exploitation_all_recent_random_fallback(mock_db, 
         make_result(scalars_all=imgs),
         make_result(scalar=999),
         make_result(scalars_all=[recent]),
-        make_result(scalar=rating_obj(mu=25, sigma=9)),
-        make_result(scalar=rating_obj(mu=25, sigma=9)),
+        make_result(scalars_all=[      # existing ratings batch
+            rating_obj(mu=25, sigma=9, metric_image_id=10),
+            rating_obj(mu=25, sigma=9, metric_image_id=11),
+        ]),
     ]
     with patch.object(m.random, "sample", side_effect=lambda seq, n: list(seq)[:n]), \
          patch.object(m.random, "random", return_value=0.1):

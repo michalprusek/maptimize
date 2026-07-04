@@ -542,10 +542,17 @@ async def remove_metric_image(
 @router.get("/{metric_id}/pair", response_model=MetricPairResponse)
 async def get_metric_pair(
     metric_id: int,
+    exclude_a: Optional[int] = Query(None),
+    exclude_b: Optional[int] = Query(None),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
-    """Get next pair of images for comparison in this metric."""
+    """Get next pair of images for comparison in this metric.
+
+    `exclude_a`/`exclude_b` name a pair to avoid returning again — the frontend
+    passes the currently-shown pair when the user hits "Skip" so selection (which
+    is otherwise deterministic in the exploitation phase) yields a different pair.
+    """
     metric = await get_metric_for_user(db, metric_id, current_user.id)
 
     # Get all images in metric (excluding user's soft-deleted images)
@@ -591,13 +598,38 @@ async def get_metric_pair(
     recent_pairs = {(c.image_a_id, c.image_b_id) for c in recent}
     recent_pairs.update({(c.image_b_id, c.image_a_id) for c in recent})
 
-    # Get or create ratings for all images (per user)
-    ratings = {}
-    for img in images:
-        rating = await get_or_create_metric_rating(
-            db, metric_id, img.id, user_id=current_user.id
+    # Skipping records nothing, so without this the same pair would be
+    # re-selected. Treat the skipped pair as "recent" for this request only.
+    if exclude_a is not None and exclude_b is not None:
+        recent_pairs.add((exclude_a, exclude_b))
+        recent_pairs.add((exclude_b, exclude_a))
+
+    # Get or create ratings for all images (per user) in a single round-trip.
+    # Previously this looped one SELECT per image (N+1), which dominated pair
+    # latency for larger metrics.
+    image_ids = [img.id for img in images]
+    existing_result = await db.execute(
+        select(MetricRating).where(
+            MetricRating.metric_id == metric_id,
+            MetricRating.user_id == current_user.id,
+            MetricRating.metric_image_id.in_(image_ids),
         )
-        ratings[img.id] = rating
+    )
+    ratings = {r.metric_image_id: r for r in existing_result.scalars().all()}
+
+    missing_ids = [iid for iid in image_ids if iid not in ratings]
+    for iid in missing_ids:
+        rating = MetricRating(
+            metric_id=metric_id,
+            metric_image_id=iid,
+            user_id=current_user.id,
+            mu=settings.initial_mu,
+            sigma=settings.initial_sigma,
+        )
+        db.add(rating)
+        ratings[iid] = rating
+    if missing_ids:
+        await db.flush()
 
     # Select pair based on phase
     if total_comparisons < settings.exploration_pairs:
@@ -940,7 +972,7 @@ async def get_metric_image_file(
     db: AsyncSession = Depends(get_db)
 ):
     """Get the image file for a directly uploaded metric image."""
-    from fastapi.responses import FileResponse
+    from routers.images import serve_image_file
 
     metric = await get_metric_for_user(db, metric_id, current_user.id)
 
@@ -964,4 +996,5 @@ async def get_metric_image_file(
             detail="Image file not found"
         )
 
-    return FileResponse(image.file_path)
+    # Reuse the shared image server (handles on-the-fly TIFF→PNG + caching)
+    return serve_image_file(image.file_path)

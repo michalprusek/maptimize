@@ -54,6 +54,9 @@ from services.image_processor import (
 router = APIRouter()
 settings = get_settings()
 
+# Cache policy for served image bytes (per-user, revalidate after 1h).
+IMAGE_CACHE_HEADERS = {"Cache-Control": "private, max-age=3600"}
+
 
 # =============================================================================
 # Helper Functions (DRY)
@@ -283,13 +286,13 @@ def serve_image_file(file_path: str) -> Response | FileResponse:
                 return Response(
                     content=buffer.getvalue(),
                     media_type="image/png",
-                    headers={"Cache-Control": "max-age=3600"}
+                    headers=IMAGE_CACHE_HEADERS,
                 )
         except Exception as e:
             logger.error(f"Failed to convert TIFF to PNG: {e}")
             # Fall through to return original file if conversion fails
 
-    return FileResponse(file_path)
+    return FileResponse(file_path, headers=IMAGE_CACHE_HEADERS)
 
 
 def validate_image_token(token: Optional[str]) -> TokenPayload:

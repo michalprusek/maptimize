@@ -439,8 +439,11 @@ class ApiClient {
     });
   }
 
-  async getMetricPair(metricId: number) {
-    return this.request<MetricPairResponse>(`/api/metrics/${metricId}/pair`);
+  async getMetricPair(metricId: number, excludePair?: [number, number]) {
+    const qs = excludePair
+      ? `?exclude_a=${excludePair[0]}&exclude_b=${excludePair[1]}`
+      : "";
+    return this.request<MetricPairResponse>(`/api/metrics/${metricId}/pair${qs}`);
   }
 
   async submitMetricComparison(
