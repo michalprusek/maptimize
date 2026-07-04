@@ -12,6 +12,7 @@ import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import numpy as np
+import pytest
 from PIL import Image
 
 # Suppress logging during test
@@ -19,6 +20,7 @@ import logging
 logging.basicConfig(level=logging.INFO)
 
 
+@pytest.mark.slow  # loads the MobileSAM model on the GPU
 def test_sam_coordinate_transformation():
     """Test that SAM segmentation happens at the correct coordinates."""
     from ml.segmentation.sam_encoder import get_sam_encoder

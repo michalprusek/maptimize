@@ -9,6 +9,7 @@ This service provides:
 
 import base64
 import hashlib
+import json
 import logging
 from io import BytesIO
 from pathlib import Path
@@ -59,6 +60,19 @@ async def search_documents(
 
     if limit is None:
         limit = settings.rag_max_document_results
+
+    # Skip the (expensive) embedding-model load when the user has nothing indexed.
+    has_indexed = await db.execute(
+        text(
+            "SELECT 1 FROM rag_document_pages rdp "
+            "JOIN rag_documents rd ON rd.id = rdp.document_id "
+            "WHERE rd.user_id = :user_id AND rd.status = 'completed' "
+            "AND rdp.embedding IS NOT NULL LIMIT 1"
+        ),
+        {"user_id": user_id},
+    )
+    if has_indexed.first() is None:
+        return []
 
     try:
         # Generate query embedding using Qwen VL encoder
@@ -151,6 +165,17 @@ async def search_fov_images(
 
     if limit is None:
         limit = settings.rag_max_fov_results
+
+    # Skip the (expensive) embedding-model load when no FOV images are indexed.
+    has_indexed = await db.execute(
+        text(
+            "SELECT 1 FROM images i JOIN experiments e ON e.id = i.experiment_id "
+            "WHERE e.user_id = :user_id AND i.rag_embedding IS NOT NULL LIMIT 1"
+        ),
+        {"user_id": user_id},
+    )
+    if has_indexed.first() is None:
+        return []
 
     try:
         # Generate query embedding using Qwen VL encoder
@@ -899,7 +924,6 @@ Return ONLY the JSON array. Return [] if nothing found. Maximum {max_passages} e
             lines = response_text.split("\n")
             response_text = "\n".join(lines[1:-1] if lines[-1] == "```" else lines[1:])
 
-        import json
         passages_data = json.loads(response_text)
 
         if not isinstance(passages_data, list):

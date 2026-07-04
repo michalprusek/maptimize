@@ -1373,25 +1373,23 @@ async def execute_tool(tool_name: str, args: Dict[str, Any], user_id: int, db: A
                 if query_upper.strip().startswith("WITH"):
                     return {"error": "WITH (CTE) queries not allowed"}
 
-                # Validate table names against whitelist
-                found_tables = set()
-                for token in parsed[0].flatten():
-                    if token.ttype is None:
-                        val_lower = token.value.lower()
-                        # Skip SQL keywords
-                        if val_lower in ("select", "from", "where", "and", "or", "as", "on", "join", "left", "right", "inner", "outer", "group", "by", "order", "limit", "count", "sum", "avg", "min", "max", "distinct", "asc", "desc", "true", "false", "null", "is", "not", "in", "like", "between", "case", "when", "then", "else", "end", "having", "offset"):
-                            continue
-                        # Skip if it contains a dot (column reference like table.column)
-                        if "." in token.value:
-                            table_part = val_lower.split(".")[0]
-                            if table_part in ALLOWED_SQL_TABLES:
-                                found_tables.add(table_part)
-                            continue
-                        # Check if it's a table name
-                        if val_lower in ALLOWED_SQL_TABLES:
-                            found_tables.add(val_lower)
-                        elif val_lower in ("users", "passwords", "secrets", "tokens", "sessions"):
-                            return {"error": f"Access denied to table: {token.value}"}
+                # Validate table names against the whitelist. Subqueries / UNION /
+                # CTEs are already blocked above, so the referenced tables are
+                # exactly the identifiers following FROM / JOIN. (The previous
+                # token.ttype-based scan never matched flattened leaf tokens, so
+                # the whitelist and the protected-table denial were dead code —
+                # any table, including `users`, was reachable. CVE-class bug.)
+                found_tables = {
+                    t.lower() for t in re.findall(
+                        r"\b(?:FROM|JOIN)\s+([A-Za-z_][A-Za-z0-9_]*)",
+                        query_str, re.IGNORECASE,
+                    )
+                }
+                if not found_tables:
+                    return {"error": "Could not determine target table(s)"}
+                denied = found_tables - ALLOWED_SQL_TABLES
+                if denied:
+                    return {"error": f"Access denied to table(s): {', '.join(sorted(denied))}"}
 
             except Exception as e:
                 return {"error": f"Parse error: {e}"}
@@ -1401,22 +1399,28 @@ async def execute_tool(tool_name: str, args: Dict[str, Any], user_id: int, db: A
                 # Rebuild query to add user_id filter safely
                 limit_val = min(args.get('limit', 100), 1000)
 
-                # Determine which table needs user_id filter
-                needs_exp_filter = "experiments" in query_upper and "USER_ID" not in query_upper
-                needs_doc_filter = "rag_documents" in query_upper and "USER_ID" not in query_upper
+                # ---- Per-user access control ----
+                # DIRECT tables carry a user_id column. INDIRECT tables are scoped
+                # only through a parent, so the query must include that parent
+                # (whose user_id filter transitively scopes the join). map_proteins
+                # is shared reference data and needs no filter.
+                # We ALWAYS inject (wrapping any existing WHERE in parens) so a query
+                # cannot opt out by supplying its own user_id predicate.
+                DIRECT_SCOPED = {"experiments", "rag_documents", "user_ratings",
+                                 "agent_memories", "ranking_comparisons"}
+                INDIRECT_SCOPED = {"images": "experiments", "cell_crops": "experiments",
+                                   "rag_document_pages": "rag_documents"}
 
-                # Safely inject user_id filter with proper parentheses to prevent operator precedence bypass
-                # SECURITY: Wrapping user conditions in () prevents: WHERE user_id=X AND (1=1 OR user_id=999)
-                filter_table = (
-                    "experiments" if needs_exp_filter
-                    else "rag_documents" if needs_doc_filter
-                    else None
-                )
+                tables_to_filter = set(found_tables & DIRECT_SCOPED)
+                for tbl, anchor in INDIRECT_SCOPED.items():
+                    if tbl in found_tables:
+                        if anchor not in found_tables:
+                            return {"error": f"Queries on {tbl} must JOIN {anchor} (per-user access control)"}
+                        tables_to_filter.add(anchor)
 
-                if filter_table:
-                    base_q = _inject_user_id_filter(query_str, filter_table)
-                else:
-                    base_q = query_str
+                base_q = query_str
+                for tbl in sorted(tables_to_filter):
+                    base_q = _inject_user_id_filter(base_q, tbl)
 
                 # Add LIMIT if missing
                 final_q = base_q if "LIMIT" in query_upper else f"{base_q} LIMIT :limit_val"
@@ -1456,7 +1460,6 @@ async def execute_tool(tool_name: str, args: Dict[str, Any], user_id: int, db: A
                 return {"error": "experiment_ids required (list of IDs)"}
 
             import pandas as pd
-            from datetime import datetime
             from pathlib import Path
             from config import get_settings
 
@@ -1873,7 +1876,6 @@ async def execute_tool(tool_name: str, args: Dict[str, Any], user_id: int, db: A
 
         elif tool_name == "render_segmentation_overlay":
             import uuid
-            from datetime import datetime
             from pathlib import Path
             from PIL import Image as PILImage, ImageDraw
             import numpy as np

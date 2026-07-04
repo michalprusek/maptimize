@@ -17,10 +17,13 @@ WORKDIR /wheels
 
 COPY pyproject.toml ./
 
-# Build PyTorch with CUDA 12.6 support (required for SAM 3)
+# Build PyTorch with CUDA 12.6 support (required for SAM 3). torch is pinned
+# explicitly (not via the constraints file): the +cu126 build's CUDA deps differ
+# from the PyPI default, so constraining the whole wheel resolution conflicts.
+# Versions are pinned for reproducibility; the production stage pins the rest.
 RUN --mount=type=cache,target=/root/.cache/pip \
     pip wheel --no-cache-dir --wheel-dir /wheels \
-    torch torchvision --extra-index-url https://download.pytorch.org/whl/cu126
+    torch==2.11.0 torchvision==0.26.0 --extra-index-url https://download.pytorch.org/whl/cu126
 
 # Build other ML dependencies
 # Note: Using transformers>=4.56 for DINOv3 support, ESM-C installed with --no-deps
@@ -58,17 +61,23 @@ WORKDIR /app
 # Create non-root user
 RUN useradd --create-home --shell /bin/bash app
 
-# Copy pyproject.toml for dependency reference
-COPY pyproject.toml ./
+# Copy pyproject.toml + pinned constraints for dependency reference
+COPY pyproject.toml constraints.txt ./
+# Pin all installs (pip + uv) to the exact prod versions for reproducible builds.
+ENV PIP_CONSTRAINT=/app/constraints.txt
+ENV UV_CONSTRAINT=/app/constraints.txt
 
 # Install uv and base dependencies
 RUN pip install uv
 
 # Install wheels from builder
 COPY --from=wheel-builder /wheels /wheels
+# torch + its CUDA deps install offline from /wheels at the versions torch pins, so
+# the constraints file is disabled here (it would force transitive-dep versions not
+# present in /wheels). The next (online) install re-pins everything to prod versions.
 RUN --mount=type=cache,target=/root/.cache/pip \
-    pip install --no-cache-dir --no-index --find-links /wheels \
-    torch torchvision && \
+    PIP_CONSTRAINT= pip install --no-cache-dir --no-index --find-links /wheels \
+    torch==2.11.0 torchvision==0.26.0 && \
     pip install --no-cache-dir --find-links /wheels \
     ultralytics transformers timm pgvector umap-learn numba scikit-learn && \
     rm -rf /wheels
@@ -76,8 +85,8 @@ RUN --mount=type=cache,target=/root/.cache/pip \
 # Install SAM 3 dependencies first (required: numpy<2, einops, decord, pycocotools)
 RUN pip install --no-cache-dir "numpy>=1.26,<2" einops decord pycocotools supervision
 
-# Install SAM 3 from Facebook Research
-RUN pip install --no-cache-dir git+https://github.com/facebookresearch/sam3.git
+# Install SAM 3 from Facebook Research (pinned commit — git URLs ignore constraints)
+RUN pip install --no-cache-dir "git+https://github.com/facebookresearch/sam3.git@bfbed072a07a6a52c8d5fdc75a7a186251a835b1"
 
 # Install ESM-C for protein embeddings (with --no-deps to avoid transformers downgrade)
 # ESM-C requires transformers<4.48.2 but we need >=4.56 for DINOv3

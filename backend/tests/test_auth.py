@@ -136,12 +136,12 @@ class TestRegistration:
         assert me_response.status_code == 200
         assert me_response.json()["name"] == "JWT Test"
 
-    def test_register_provisions_template_data(self, client):
-        """Newly registered user receives provisioned template experiments."""
+    def test_register_starts_with_no_own_experiments(self, client):
+        """Newly registered users start empty; data is shared via groups, not provisioned."""
         response = client.post(
             "/api/auth/register",
             json={
-                "name": "Provisioned User",
+                "name": "Fresh User",
                 "email": _random_email(),
                 "password": "securepass123",
             },
@@ -150,11 +150,11 @@ class TestRegistration:
         token = response.json()["access_token"]
         headers = {"Authorization": f"Bearer {token}"}
 
-        # The provisioning should copy template data (experiments from user 1)
+        # New users no longer get template data copied; they see only what their
+        # group shares. The endpoint must still respond with a well-formed list.
         experiments = client.get("/api/experiments", headers=headers)
         assert experiments.status_code == 200
         assert isinstance(experiments.json(), list)
-        assert len(experiments.json()) > 0, "Provisioned user should have template experiments"
 
 
 class TestLogin:
