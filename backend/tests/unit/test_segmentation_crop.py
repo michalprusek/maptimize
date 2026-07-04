@@ -142,7 +142,7 @@ async def test_compute_sam_embedding_success_with_existing(mock_db):
     encoder.compress_embedding.return_value = b"x" * 2048
     encoder.model_name = "mobile_sam"
 
-    with patch.object(seg, "get_sam_encoder", return_value=encoder):
+    with patch("ml.segmentation.sam_encoder.get_sam_encoder", return_value=encoder):
         out = await seg.compute_sam_embedding(7, mock_db)
 
     assert out["success"] is True
@@ -164,7 +164,7 @@ async def test_compute_sam_embedding_success_no_existing(mock_db):
     encoder.compress_embedding.return_value = b"y" * 1024
     encoder.model_name = "mobile_sam"
 
-    with patch.object(seg, "get_sam_encoder", return_value=encoder):
+    with patch("ml.segmentation.sam_encoder.get_sam_encoder", return_value=encoder):
         out = await seg.compute_sam_embedding(8, mock_db)
 
     assert out["success"] is True
@@ -177,7 +177,7 @@ async def test_compute_sam_embedding_encoder_raises(mock_db):
     encoder = MagicMock()
     encoder.encode_image.side_effect = RuntimeError("CUDA out of memory")
 
-    with patch.object(seg, "get_sam_encoder", return_value=encoder):
+    with patch("ml.segmentation.sam_encoder.get_sam_encoder", return_value=encoder):
         out = await seg.compute_sam_embedding(9, mock_db)
 
     assert out["success"] is False
@@ -241,8 +241,8 @@ async def test_segment_from_prompts_success(mock_db):
     poly = {"outer": [[5, 5], [34, 5], [34, 34], [5, 34]], "holes": []}
 
     async with _sync_executor():
-        with patch.object(seg, "get_sam_encoder", return_value=encoder), \
-             patch.object(seg, "get_sam_decoder", return_value=decoder), \
+        with patch("ml.segmentation.sam_encoder.get_sam_encoder", return_value=encoder), \
+             patch("ml.segmentation.sam_decoder.get_sam_decoder", return_value=decoder), \
              patch.object(seg, "mask_to_polygon_with_holes", return_value=poly):
             out = await seg.segment_from_prompts(5, [(10, 10)], [1], mock_db, multimask_output=True)
 
@@ -264,8 +264,8 @@ async def test_segment_from_prompts_ring_has_holes(mock_db):
     decoder.predict_mask.return_value = (_make_mask(square=False), 0.8, None)
     poly = {"outer": [[5, 5], [34, 5], [34, 34]], "holes": [[[15, 15], [24, 15], [24, 24]]]}
 
-    with patch.object(seg, "get_sam_encoder", return_value=encoder), \
-         patch.object(seg, "get_sam_decoder", return_value=decoder), \
+    with patch("ml.segmentation.sam_encoder.get_sam_encoder", return_value=encoder), \
+         patch("ml.segmentation.sam_decoder.get_sam_decoder", return_value=decoder), \
          patch.object(seg, "mask_to_polygon_with_holes", return_value=poly):
         out = await seg.segment_from_prompts(5, [(10, 10)], [1], mock_db)
 
