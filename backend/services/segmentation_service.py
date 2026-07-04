@@ -19,8 +19,9 @@ from models.image import Image
 from models.sam_embedding import SAMEmbedding
 from models.segmentation import SegmentationMask, UserSegmentationPrompt, FOVSegmentationMask
 from models.cell_crop import CellCrop
-from ml.segmentation.sam_encoder import get_sam_encoder
-from ml.segmentation.sam_decoder import get_sam_decoder
+# NOTE: the SAM encoder/decoder (torch) are imported lazily inside the functions
+# that use them, so importing this module does not require the heavy `ml` extra.
+# The polygon utils below are lightweight (numpy + opencv, both base deps).
 from ml.segmentation.utils import (
     mask_to_polygon,
     mask_to_polygon_with_holes,
@@ -110,6 +111,8 @@ async def compute_sam_embedding(
     Returns:
         Dict with success status and details
     """
+    from ml.segmentation.sam_encoder import get_sam_encoder
+
     # Get image
     result = await db.execute(select(Image).where(Image.id == image_id))
     image = result.scalar_one_or_none()
@@ -242,6 +245,9 @@ async def segment_from_prompts(
     Returns:
         Dict with polygon, IoU score, and area
     """
+    from ml.segmentation.sam_encoder import get_sam_encoder
+    from ml.segmentation.sam_decoder import get_sam_decoder
+
     # Get image and embedding
     result = await db.execute(
         select(Image, SAMEmbedding)

@@ -113,18 +113,17 @@ jobs:
         env:
           DATABASE_URL: postgresql+asyncpg://maptimize:maptimize@localhost:5433/maptimize
         run: |
-          # Run migrations or create tables using async engine
+          # Use the application's real initializer (SSOT). It enables the
+          # pgvector extension, creates all tables, applies schema updates and
+          # seeds default data. The previous inline create_all skipped
+          # `CREATE EXTENSION vector`, so it failed on every embedding column
+          # with: type "vector" does not exist.
           python << 'PYTHON_SCRIPT'
           import asyncio
-          from database import engine, Base
-          from models import *
-
-          async def init_db():
-              async with engine.begin() as conn:
-                  await conn.run_sync(Base.metadata.create_all)
-              print("Database tables created")
+          from database import init_db
 
           asyncio.run(init_db())
+          print("Database initialized")
           PYTHON_SCRIPT
 
       - name: Create test user
@@ -138,7 +137,7 @@ jobs:
           import asyncio
           import os
           from database import async_session_maker
-          from models.user import User
+          from models.user import User, UserRole
           from utils.security import hash_password
           from sqlalchemy import select
 
@@ -151,11 +150,14 @@ jobs:
                   result = await db.execute(select(User).where(User.email == test_email))
                   user = result.scalar_one_or_none()
                   if not user:
+                      # Match the real User model: `password_hash` column and the
+                      # UserRole enum (the old `hashed_password=`/`role="researcher"`
+                      # kwargs raised TypeError and never created the user).
                       user = User(
                           email=test_email,
                           name="Test User",
-                          hashed_password=hash_password(test_password),
-                          role="researcher"
+                          password_hash=hash_password(test_password),
+                          role=UserRole.RESEARCHER,
                       )
                       db.add(user)
                       await db.commit()
@@ -229,44 +231,9 @@ jobs:
           pkill -f "uvicorn" || true
           pkill -f "next" || true
 
-  # Quick smoke tests on PR (subset of tests)
-  pr-smoke-tests:
-    name: PR Smoke Tests
-    if: github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-          cache: 'npm'
-          cache-dependency-path: frontend/package-lock.json
-
-      - name: Install dependencies
-        working-directory: frontend
-        run: npm ci
-
-      - name: Install Playwright
-        working-directory: frontend
-        run: npx playwright install chromium --with-deps
-
-      - name: Run critical tests only
-        working-directory: frontend
-        env:
-          CI: true
-        run: |
-          # Run tests with mocked backend (no real backend needed for smoke tests)
-          npm run test:e2e -- --grep @critical --project=chromium
-
-      - name: Upload smoke test report
-        uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: smoke-test-report
-          path: frontend/e2e/playwright-report/
-          retention-days: 3
+  # NOTE: A separate "PR Smoke Tests" job used to live here. It ran
+  # `test:e2e --grep @critical` with NO backend, but the Playwright globalSetup
+  # performs a real login (navigates to /auth, submits credentials, waits for
+  # /dashboard) — so it timed out and failed on every PR. It was also redundant:
+  # the e2e-tests job above already runs the @critical suite against a real
+  # backend on pull_request. Removed rather than maintain a second, broken path.

@@ -60,8 +60,8 @@ async def test_compute_embedding_success(mock_db):
     mock_db.execute.return_value = make_result(scalar=protein)
     encoder = _fake_encoder(vector=np.array([0.1, 0.2, 0.3, 0.4]))
 
-    with patch.object(pes, "get_esmc_encoder", return_value=encoder), \
-         patch.object(pes, "parse_fasta_sequence", return_value="MKT"):
+    with patch("ml.features.esmc_encoder.get_esmc_encoder", return_value=encoder), \
+         patch("ml.features.esmc_encoder.parse_fasta_sequence", return_value="MKT"):
         out = await pes.compute_protein_embedding(1, mock_db)
 
     assert out["success"] is True
@@ -84,7 +84,7 @@ async def test_compute_embedding_success(mock_db):
 
 async def test_compute_embedding_protein_not_found_raises_lookuperror(mock_db):
     mock_db.execute.return_value = make_result(scalar=None)
-    with patch.object(pes, "get_esmc_encoder") as get_enc:
+    with patch("ml.features.esmc_encoder.get_esmc_encoder") as get_enc:
         with pytest.raises(LookupError, match="Protein with ID 99 not found"):
             await pes.compute_protein_embedding(99, mock_db)
     get_enc.assert_not_called()
@@ -94,7 +94,7 @@ async def test_compute_embedding_protein_not_found_raises_lookuperror(mock_db):
 async def test_compute_embedding_no_sequence_raises_valueerror(mock_db):
     protein = _protein(fasta_sequence=None, name="EmptyProt")
     mock_db.execute.return_value = make_result(scalar=protein)
-    with patch.object(pes, "get_esmc_encoder") as get_enc:
+    with patch("ml.features.esmc_encoder.get_esmc_encoder") as get_enc:
         with pytest.raises(ValueError, match="has no FASTA sequence"):
             await pes.compute_protein_embedding(1, mock_db)
     get_enc.assert_not_called()
@@ -106,8 +106,8 @@ async def test_compute_embedding_encoder_error_propagates(mock_db):
     mock_db.execute.return_value = make_result(scalar=protein)
     encoder = _fake_encoder(encode_side_effect=RuntimeError("CUDA out of memory"))
 
-    with patch.object(pes, "get_esmc_encoder", return_value=encoder), \
-         patch.object(pes, "parse_fasta_sequence", return_value="MKT"):
+    with patch("ml.features.esmc_encoder.get_esmc_encoder", return_value=encoder), \
+         patch("ml.features.esmc_encoder.parse_fasta_sequence", return_value="MKT"):
         with pytest.raises(RuntimeError, match="CUDA out of memory"):
             await pes.compute_protein_embedding(1, mock_db)
     mock_db.commit.assert_not_awaited()
@@ -117,7 +117,7 @@ async def test_compute_embedding_encoder_error_propagates(mock_db):
 
 async def test_batch_no_proteins_returns_early(mock_db):
     mock_db.execute.return_value = make_result(scalars_all=[])
-    with patch.object(pes, "get_esmc_encoder") as get_enc:
+    with patch("ml.features.esmc_encoder.get_esmc_encoder") as get_enc:
         out = await pes.batch_compute_protein_embeddings(mock_db)
     assert out == {"computed": 0, "failed": 0,
                    "message": "No proteins need embedding computation"}
@@ -131,8 +131,8 @@ async def test_batch_force_recompute_query_branch(mock_db):
     p1 = _protein(id=1, name="A")
     mock_db.execute.return_value = make_result(scalars_all=[p1])
     encoder = _fake_encoder(vector=np.array([1.0, 2.0]))
-    with patch.object(pes, "get_esmc_encoder", return_value=encoder), \
-         patch.object(pes, "parse_fasta_sequence", return_value="MKT"):
+    with patch("ml.features.esmc_encoder.get_esmc_encoder", return_value=encoder), \
+         patch("ml.features.esmc_encoder.parse_fasta_sequence", return_value="MKT"):
         out = await pes.batch_compute_protein_embeddings(mock_db, force_recompute=True)
     assert out["computed"] == 1
     assert out["failed"] == 0
@@ -153,8 +153,8 @@ async def test_batch_mixed_success_and_failures(mock_db):
         ValueError("bad sequence"),    # bad_val -> validation_error
         TypeError("weird"),            # bad_unknown -> unknown
     ])
-    with patch.object(pes, "get_esmc_encoder", return_value=encoder), \
-         patch.object(pes, "parse_fasta_sequence", return_value="MKT"):
+    with patch("ml.features.esmc_encoder.get_esmc_encoder", return_value=encoder), \
+         patch("ml.features.esmc_encoder.parse_fasta_sequence", return_value="MKT"):
         out = await pes.batch_compute_protein_embeddings(mock_db)
 
     assert out["computed"] == 1
@@ -172,8 +172,8 @@ async def test_batch_runtime_error_non_oom_is_retryable(mock_db):
     p = _protein(id=1, name="RT")
     mock_db.execute.return_value = make_result(scalars_all=[p])
     encoder = _fake_encoder(encode_side_effect=RuntimeError("some transient failure"))
-    with patch.object(pes, "get_esmc_encoder", return_value=encoder), \
-         patch.object(pes, "parse_fasta_sequence", return_value="MKT"):
+    with patch("ml.features.esmc_encoder.get_esmc_encoder", return_value=encoder), \
+         patch("ml.features.esmc_encoder.parse_fasta_sequence", return_value="MKT"):
         out = await pes.batch_compute_protein_embeddings(mock_db)
     assert out["computed"] == 0
     assert out["failed"] == 1
@@ -190,8 +190,8 @@ async def test_batch_gpu_oom_aborts_remaining(mock_db):
         RuntimeError("CUDA out of memory"),  # aborts immediately
         np.array([9.9]),                     # should never run
     ])
-    with patch.object(pes, "get_esmc_encoder", return_value=encoder), \
-         patch.object(pes, "parse_fasta_sequence", return_value="MKT"):
+    with patch("ml.features.esmc_encoder.get_esmc_encoder", return_value=encoder), \
+         patch("ml.features.esmc_encoder.parse_fasta_sequence", return_value="MKT"):
         out = await pes.batch_compute_protein_embeddings(mock_db)
     assert out["computed"] == 0
     assert out["failed"] == 0  # OOM does not increment failed
@@ -207,8 +207,8 @@ async def test_batch_keyboard_interrupt_reraised(mock_db):
     p = _protein(id=1, name="KI")
     mock_db.execute.return_value = make_result(scalars_all=[p])
     encoder = _fake_encoder(encode_side_effect=KeyboardInterrupt())
-    with patch.object(pes, "get_esmc_encoder", return_value=encoder), \
-         patch.object(pes, "parse_fasta_sequence", return_value="MKT"):
+    with patch("ml.features.esmc_encoder.get_esmc_encoder", return_value=encoder), \
+         patch("ml.features.esmc_encoder.parse_fasta_sequence", return_value="MKT"):
         with pytest.raises(KeyboardInterrupt):
             await pes.batch_compute_protein_embeddings(mock_db)
 

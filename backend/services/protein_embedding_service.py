@@ -12,7 +12,8 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from models.image import MapProtein
-from ml.features.esmc_encoder import get_esmc_encoder, parse_fasta_sequence
+# NOTE: ml.features.esmc_encoder (torch/ESM-C) is imported lazily inside the
+# functions below, so importing this module does not require the heavy `ml` extra.
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +52,8 @@ async def compute_protein_embedding(
     Raises:
         ValueError: If protein not found or has no FASTA sequence.
     """
+    from ml.features.esmc_encoder import get_esmc_encoder, parse_fasta_sequence
+
     # Get protein
     result = await db.execute(
         select(MapProtein).where(MapProtein.id == protein_id)
@@ -114,6 +117,8 @@ async def batch_compute_protein_embeddings(
     Returns:
         Dict with counts of computed, skipped, and failed proteins.
     """
+    from ml.features.esmc_encoder import get_esmc_encoder, parse_fasta_sequence
+
     # Get proteins with FASTA sequences
     query = select(MapProtein).where(MapProtein.fasta_sequence.isnot(None))
 

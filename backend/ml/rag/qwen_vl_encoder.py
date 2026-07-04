@@ -23,7 +23,7 @@ from ml.features.base_encoder import get_device
 
 logger = logging.getLogger(__name__)
 
-QWEN_VL_EMBEDDING_DIM = 2048  # Qwen3-VL-Embedding-2B output dimension
+from .constants import QWEN_VL_EMBEDDING_DIM  # noqa: E402  (re-exported for callers)
 QWEN_VL_MODEL_ID = "Qwen/Qwen3-VL-Embedding-2B"  # Correct model ID from HuggingFace
 
 
