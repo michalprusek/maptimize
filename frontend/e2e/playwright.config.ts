@@ -111,11 +111,12 @@ export default defineConfig({
     },
   ],
 
-  // Web server configuration - auto-start dev server if not running
+  // Web server configuration - reuse an already-running server (the CI workflow
+  // pre-starts the production frontend on this port), otherwise auto-start dev.
   webServer: {
     command: "npm run dev",
     url: baseURL,
-    reuseExistingServer: !isCI,
+    reuseExistingServer: true,
     timeout: 120_000,
   },
 });
