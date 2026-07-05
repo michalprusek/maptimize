@@ -72,3 +72,22 @@ sudo_password.txt
 # SAM model weights (downloaded at runtime)
 backend/mobile_sam.pt
 backend/*.pt
+
+# Test coverage artifacts
+.coverage
+.coverage.*
+.coverage_unit
+coverage.json
+htmlcov/
+
+# HuggingFace / model download cache
+.cache/
+backend/.cache/
+
+# TypeScript incremental build cache
+*.tsbuildinfo
+
+# Local backups / config snapshots
+backups/
+*.bak
+*.bak.*
