@@ -41,7 +41,7 @@ services:
       - "7001:8000"
     environment:
       - DATABASE_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@maptimize-db:5432/${POSTGRES_DB}
-      - REDIS_URL=redis://maptimize-redis:6379
+      - REDIS_URL=redis://:${REDIS_PASSWORD}@maptimize-redis:6379/0
       - JWT_SECRET=${JWT_SECRET}
       - JWT_ALGORITHM=${JWT_ALGORITHM:-HS256}
       - JWT_EXPIRE_MINUTES=${JWT_EXPIRE_MINUTES:-1440}
@@ -67,7 +67,7 @@ services:
       - GEMINI_API_KEY=${GEMINI_API_KEY:-}
       # Admin
       - DEFAULT_ADMIN_EMAIL=${DEFAULT_ADMIN_EMAIL:-admin@utia.cas.cz}
-      - DEFAULT_ADMIN_PASSWORD=${DEFAULT_ADMIN_PASSWORD:-changeme}
+      - DEFAULT_ADMIN_PASSWORD=${DEFAULT_ADMIN_PASSWORD}
     volumes:
       - ./data/uploads:/app/data/uploads
       - ./weights:/app/weights:ro
@@ -88,7 +88,7 @@ services:
     image: pgvector/pgvector:pg16
     container_name: maptimize-db
     ports:
-      - "7432:5432"
+      - "127.0.0.1:7432:5432"
     environment:
       - POSTGRES_USER=${POSTGRES_USER}
       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
@@ -109,14 +109,14 @@ services:
     image: redis:7-alpine
     container_name: maptimize-redis
     ports:
-      - "7379:6379"
+      - "127.0.0.1:7379:6379"
     volumes:
       - maptimize_redis:/data
-    command: redis-server --maxmemory 512mb --maxmemory-policy allkeys-lru
+    command: redis-server --maxmemory 512mb --maxmemory-policy allkeys-lru --requirepass ${REDIS_PASSWORD}
     networks:
       - maptimize-network
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "ping"]
       interval: 10s
       timeout: 5s
       retries: 5

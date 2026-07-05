@@ -22,12 +22,23 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
+ALLOWED_EMAIL_DOMAINS = {"utia.cas.cz"}
+
+
 @router.post("/register", response_model=Token, status_code=status.HTTP_201_CREATED)
 async def register(
     user_data: UserCreate,
     db: AsyncSession = Depends(get_db)
 ):
-    """Register a new user."""
+    """Register a new user. Only @utia.cas.cz emails are allowed."""
+    # Whitelist email domain
+    email_domain = user_data.email.split("@")[-1].lower()
+    if email_domain not in ALLOWED_EMAIL_DOMAINS:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Registration is restricted to @utia.cas.cz email addresses"
+        )
+
     # Check if email exists
     result = await db.execute(select(User).where(User.email == user_data.email))
     if result.scalar_one_or_none():
