@@ -38,6 +38,21 @@ class TestRegistration:
         assert "id" in data["user"]
         assert "role" in data["user"]
 
+    def test_register_any_email_domain(self, client):
+        """Registration is open to any email domain (no domain whitelist)."""
+        email = _random_email(domain="gmail.com")
+        response = client.post(
+            "/api/auth/register",
+            json={
+                "name": "Outside User",
+                "email": email,
+                "password": "securepass123",
+            },
+        )
+
+        assert response.status_code == 201
+        assert response.json()["user"]["email"] == email
+
     def test_register_duplicate_email(self, client):
         """Registering with an already-used email returns 400."""
         email = _random_email()

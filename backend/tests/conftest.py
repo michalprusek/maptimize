@@ -20,13 +20,13 @@ def unique_name(prefix: str = "Test") -> str:
     return f"{prefix}_{uuid4().hex[:8]}"
 
 
-def random_email() -> str:
+def random_email(domain: str = "utia.cas.cz") -> str:
     """Generate a unique email for test registration.
 
-    Uses the @utia.cas.cz domain because email-validator rejects
+    The default domain is a real one because email-validator rejects
     reserved/special-use TLDs like .local.
     """
-    return f"test_{uuid4().hex[:8]}@utia.cas.cz"
+    return f"test_{uuid4().hex[:8]}@{domain}"
 
 # Test against running backend
 BASE_URL = os.environ.get("TEST_API_URL", "http://localhost:8000")
