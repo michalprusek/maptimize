@@ -23,8 +23,8 @@ def unique_name(prefix: str = "Test") -> str:
 def random_email() -> str:
     """Generate a unique email for test registration.
 
-    Uses the @utia.cas.cz domain because (1) registration is whitelisted to it and
-    (2) email-validator rejects reserved/special-use TLDs like .local.
+    Uses the @utia.cas.cz domain because email-validator rejects
+    reserved/special-use TLDs like .local.
     """
     return f"test_{uuid4().hex[:8]}@utia.cas.cz"
 
