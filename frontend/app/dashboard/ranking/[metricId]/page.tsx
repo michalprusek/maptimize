@@ -386,10 +386,18 @@ export default function MetricDetailPage(): JSX.Element {
 
   const undoMutation = useMutation({
     mutationFn: () => api.undoMetricComparison(metricId),
-    onSuccess: () => {
+    onSuccess: (undone) => {
       setMutationError(null);
+      setSelectedWinner(null);
       queryClient.invalidateQueries({ queryKey: ["metric-progress", metricId] });
-      refetchPair();
+      queryClient.invalidateQueries({ queryKey: ["metric-leaderboard", metricId] });
+      // Re-display the undone pair so the user can vote on it again; only
+      // fall back to a fresh pair if one of its images was deleted meanwhile.
+      if (undone.pair) {
+        queryClient.setQueryData(["metric-pair", metricId], undone.pair);
+      } else {
+        refetchPair();
+      }
     },
     onError: (err: Error) => {
       console.error("Failed to undo comparison:", err);

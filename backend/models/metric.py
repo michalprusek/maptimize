@@ -186,6 +186,14 @@ class MetricComparison(Base):
     image_b_id: Mapped[int] = mapped_column(ForeignKey("metric_images.id"))
     winner_id: Mapped[int] = mapped_column(ForeignKey("metric_images.id"))
 
+    # Rating values before this comparison was applied, for exact undo.
+    # NULL on rows created before the columns existed (undo then only
+    # decrements comparison_count, matching the legacy behavior).
+    prev_winner_mu: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    prev_winner_sigma: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    prev_loser_mu: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    prev_loser_sigma: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+
     # Metadata
     response_time_ms: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     undone: Mapped[bool] = mapped_column(Boolean, default=False)

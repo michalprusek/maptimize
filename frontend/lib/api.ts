@@ -462,7 +462,7 @@ class ApiClient {
   }
 
   async undoMetricComparison(metricId: number) {
-    return this.request<MetricComparison>(`/api/metrics/${metricId}/undo`, {
+    return this.request<MetricUndoResponse>(`/api/metrics/${metricId}/undo`, {
       method: "POST",
     });
   }
@@ -1512,6 +1512,11 @@ export interface MetricComparison {
   image_b_id: number;
   winner_id: number;
   created_at: string;
+}
+
+export interface MetricUndoResponse extends MetricComparison {
+  /** The undone pair, so the UI can display it again (null if an image was deleted) */
+  pair: MetricPairResponse | null;
 }
 
 export interface MetricRankingItem {

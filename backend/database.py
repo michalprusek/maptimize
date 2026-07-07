@@ -145,6 +145,11 @@ async def ensure_schema_updates():
             ("metric_comparisons", "user_id", "INTEGER REFERENCES users(id) ON DELETE CASCADE"),
             # Per-user image exclusion (soft-delete from user's view)
             ("metric_ratings", "excluded", "BOOLEAN DEFAULT FALSE"),
+            # Previous rating values for exact undo (mirrors comparisons.prev_*)
+            ("metric_comparisons", "prev_winner_mu", "FLOAT"),
+            ("metric_comparisons", "prev_winner_sigma", "FLOAT"),
+            ("metric_comparisons", "prev_loser_mu", "FLOAT"),
+            ("metric_comparisons", "prev_loser_sigma", "FLOAT"),
         ]
 
         for table, column, col_type in updates:

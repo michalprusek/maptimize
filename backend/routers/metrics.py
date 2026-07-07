@@ -28,6 +28,7 @@ from schemas.metric import (
     MetricPairResponse,
     MetricComparisonCreate,
     MetricComparisonResponse,
+    MetricUndoResponse,
     MetricRankingItem,
     MetricRankingResponse,
     MetricProgressResponse,
@@ -71,6 +72,23 @@ async def get_metric_for_user(
     return metric
 
 
+def _ranking_image_url(metric_id: int, img: MetricImage) -> Optional[str]:
+    """API path serving a metric image (crop-backed or direct file)."""
+    if img.cell_crop:
+        return f"/api/images/crops/{img.cell_crop_id}/image"
+    return f"/api/metrics/{metric_id}/images/{img.id}/file"
+
+
+def _ranking_image(metric_id: int, img: MetricImage) -> MetricImageForRanking:
+    """Build the ranking-UI representation of a metric image."""
+    return MetricImageForRanking(
+        id=img.id,
+        image_url=_ranking_image_url(metric_id, img),
+        cell_crop_id=img.cell_crop_id,
+        original_filename=img.original_filename,
+    )
+
+
 def _excluded_image_ids(metric_id: int, user_id: int):
     """Subquery returning MetricImage IDs excluded by a specific user."""
     return (
@@ -81,6 +99,21 @@ def _excluded_image_ids(metric_id: int, user_id: int):
             MetricRating.excluded == True,
         )
     )
+
+
+async def _active_comparison_count(
+    db: AsyncSession, metric_id: int, user_id: int
+) -> int:
+    """Count this user's non-undone comparisons in a metric."""
+    result = await db.execute(
+        select(func.count(MetricComparison.id))
+        .where(
+            MetricComparison.metric_id == metric_id,
+            MetricComparison.user_id == user_id,
+            MetricComparison.undone == False
+        )
+    )
+    return result.scalar() or 0
 
 
 async def get_metric_counts(
@@ -573,15 +606,9 @@ async def get_metric_pair(
         )
 
     # Get comparison count for current user
-    count_result = await db.execute(
-        select(func.count(MetricComparison.id))
-        .where(
-            MetricComparison.metric_id == metric_id,
-            MetricComparison.user_id == current_user.id,
-            MetricComparison.undone == False
-        )
+    total_comparisons = await _active_comparison_count(
+        db, metric_id, current_user.id
     )
-    total_comparisons = count_result.scalar() or 0
 
     # Get recent comparisons by this user to avoid repetition
     recent_result = await db.execute(
@@ -689,24 +716,9 @@ async def get_metric_pair(
 
     await db.commit()
 
-    def get_image_url(img: MetricImage) -> Optional[str]:
-        if img.cell_crop:
-            return f"/api/images/crops/{img.cell_crop_id}/image"
-        return f"/api/metrics/{metric_id}/images/{img.id}/file"
-
     return MetricPairResponse(
-        image_a=MetricImageForRanking(
-            id=img_a.id,
-            image_url=get_image_url(img_a),
-            cell_crop_id=img_a.cell_crop_id,
-            original_filename=img_a.original_filename,
-        ),
-        image_b=MetricImageForRanking(
-            id=img_b.id,
-            image_url=get_image_url(img_b),
-            cell_crop_id=img_b.cell_crop_id,
-            original_filename=img_b.original_filename,
-        ),
+        image_a=_ranking_image(metric_id, img_a),
+        image_b=_ranking_image(metric_id, img_b),
         comparison_number=total_comparisons + 1,
         total_comparisons=total_comparisons,
     )
@@ -754,6 +766,12 @@ async def submit_metric_comparison(
         db, metric_id, loser_id, user_id=current_user.id
     )
 
+    # Save previous values so undo can restore them exactly
+    prev_winner_mu = winner_rating.mu
+    prev_winner_sigma = winner_rating.sigma
+    prev_loser_mu = loser_rating.mu
+    prev_loser_sigma = loser_rating.sigma
+
     # Update ratings
     (new_winner_mu, new_winner_sigma), (new_loser_mu, new_loser_sigma) = update_ratings(
         winner_rating.mu, winner_rating.sigma,
@@ -768,13 +786,17 @@ async def submit_metric_comparison(
     loser_rating.sigma = new_loser_sigma
     loser_rating.comparison_count += 1
 
-    # Create comparison record
+    # Create comparison record with previous values for undo
     comparison = MetricComparison(
         metric_id=metric_id,
         user_id=current_user.id,
         image_a_id=data.image_a_id,
         image_b_id=data.image_b_id,
         winner_id=data.winner_id,
+        prev_winner_mu=prev_winner_mu,
+        prev_winner_sigma=prev_winner_sigma,
+        prev_loser_mu=prev_loser_mu,
+        prev_loser_sigma=prev_loser_sigma,
         response_time_ms=data.response_time_ms,
     )
     db.add(comparison)
@@ -784,13 +806,18 @@ async def submit_metric_comparison(
     return MetricComparisonResponse.model_validate(comparison)
 
 
-@router.post("/{metric_id}/undo", response_model=MetricComparisonResponse)
+@router.post("/{metric_id}/undo", response_model=MetricUndoResponse)
 async def undo_metric_comparison(
     metric_id: int,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
-    """Undo the last comparison in this metric by current user."""
+    """Undo the last comparison in this metric by current user.
+
+    Restores the pre-comparison mu/sigma values (comparisons created before
+    the prev_* columns existed only get comparison_count decremented) and
+    returns the undone pair so the UI can display it again.
+    """
     metric = await get_metric_for_user(db, metric_id, current_user.id)
 
     result = await db.execute(
@@ -814,7 +841,17 @@ async def undo_metric_comparison(
     # Mark as undone
     comparison.undone = True
 
-    # Reduce comparison counts for current user's ratings
+    loser_id = (
+        comparison.image_a_id
+        if comparison.winner_id == comparison.image_b_id
+        else comparison.image_b_id
+    )
+    prev_values = {
+        comparison.winner_id: (comparison.prev_winner_mu, comparison.prev_winner_sigma),
+        loser_id: (comparison.prev_loser_mu, comparison.prev_loser_sigma),
+    }
+
+    # Restore current user's ratings to their pre-comparison state
     for img_id in [comparison.image_a_id, comparison.image_b_id]:
         result = await db.execute(
             select(MetricRating).where(
@@ -824,12 +861,45 @@ async def undo_metric_comparison(
             )
         )
         rating = result.scalar_one_or_none()
-        if rating and rating.comparison_count > 0:
+        if not rating:
+            continue
+        prev_mu, prev_sigma = prev_values[img_id]
+        if prev_mu is not None and prev_sigma is not None:
+            rating.mu = prev_mu
+            rating.sigma = prev_sigma
+        if rating.comparison_count > 0:
             rating.comparison_count -= 1
+
+    # Fetch the pair's images so the UI can re-display the undone comparison
+    images_result = await db.execute(
+        select(MetricImage)
+        .options(selectinload(MetricImage.cell_crop))
+        .where(MetricImage.id.in_([comparison.image_a_id, comparison.image_b_id]))
+    )
+    images = {img.id: img for img in images_result.scalars().all()}
+    img_a = images.get(comparison.image_a_id)
+    img_b = images.get(comparison.image_b_id)
+
+    # Remaining comparison count after the undo (autoflush makes the pending
+    # undone=True visible to this query)
+    total_comparisons = await _active_comparison_count(
+        db, metric_id, current_user.id
+    )
 
     await db.commit()
 
-    return MetricComparisonResponse.model_validate(comparison)
+    pair = None
+    if img_a and img_b:
+        pair = MetricPairResponse(
+            image_a=_ranking_image(metric_id, img_a),
+            image_b=_ranking_image(metric_id, img_b),
+            comparison_number=total_comparisons + 1,
+            total_comparisons=total_comparisons,
+        )
+
+    response = MetricUndoResponse.model_validate(comparison)
+    response.pair = pair
+    return response
 
 
 @router.get("/{metric_id}/leaderboard", response_model=MetricRankingResponse)
@@ -876,15 +946,10 @@ async def get_metric_leaderboard(
     for i, rating in enumerate(ratings):
         img = rating.metric_image
 
-        def get_url() -> Optional[str]:
-            if img.cell_crop:
-                return f"/api/images/crops/{img.cell_crop_id}/image"
-            return f"/api/metrics/{metric_id}/images/{img.id}/file"
-
         items.append(MetricRankingItem(
             rank=(page - 1) * per_page + i + 1,
             metric_image_id=img.id,
-            image_url=get_url(),
+            image_url=_ranking_image_url(metric_id, img),
             cell_crop_id=img.cell_crop_id,
             original_filename=img.original_filename,
             mu=rating.mu,
@@ -911,15 +976,9 @@ async def get_metric_progress(
     metric = await get_metric_for_user(db, metric_id, current_user.id)
 
     # Count comparisons for current user
-    count_result = await db.execute(
-        select(func.count(MetricComparison.id))
-        .where(
-            MetricComparison.metric_id == metric_id,
-            MetricComparison.user_id == current_user.id,
-            MetricComparison.undone == False
-        )
+    total_comparisons = await _active_comparison_count(
+        db, metric_id, current_user.id
     )
-    total_comparisons = count_result.scalar() or 0
 
     # Count images (excluding user's soft-deleted)
     img_count_result = await db.execute(

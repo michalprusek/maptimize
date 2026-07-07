@@ -89,10 +89,14 @@ def rating_obj(mu=25.0, sigma=8.0, comparison_count=0, user_id=1, excluded=False
 
 
 def comparison_obj(cid=100, metric_id=1, image_a_id=10, image_b_id=11,
-                   winner_id=10, undone=False):
+                   winner_id=10, undone=False,
+                   prev_winner_mu=None, prev_winner_sigma=None,
+                   prev_loser_mu=None, prev_loser_sigma=None):
     return SimpleNamespace(
         id=cid, metric_id=metric_id, image_a_id=image_a_id, image_b_id=image_b_id,
         winner_id=winner_id, undone=undone, created_at=NOW, response_time_ms=100,
+        prev_winner_mu=prev_winner_mu, prev_winner_sigma=prev_winner_sigma,
+        prev_loser_mu=prev_loser_mu, prev_loser_sigma=prev_loser_sigma,
     )
 
 
@@ -624,6 +628,12 @@ async def test_submit_comparison_success(mock_db, no_group):
     assert winner_rating.comparison_count == 1
     assert loser_rating.mu == 19.0
     assert out.id == 100
+    # previous values are stored on the comparison for exact undo
+    added = mock_db.add.call_args[0][0]
+    assert added.prev_winner_mu == 25.0
+    assert added.prev_winner_sigma == 8.0
+    assert added.prev_loser_mu == 20.0
+    assert added.prev_loser_sigma == 8.0
 
 
 async def test_submit_comparison_winner_is_b(mock_db, no_group):
@@ -668,17 +678,55 @@ async def test_undo_success(mock_db, no_group):
     comparison = comparison_obj(image_a_id=10, image_b_id=11)
     rating_a = rating_obj(comparison_count=2)
     rating_b = rating_obj(comparison_count=0)  # count==0 -> not decremented
+    img_a = metric_image(img_id=10)
+    img_b = metric_image(img_id=11)
     mock_db.execute.side_effect = [
-        make_result(scalar=metric),       # get_metric_for_user
-        make_result(scalar=comparison),    # last comparison
-        make_result(scalar=rating_a),      # rating for image_a
-        make_result(scalar=rating_b),      # rating for image_b
+        make_result(scalar=metric),        # get_metric_for_user
+        make_result(scalar=comparison),     # last comparison
+        make_result(scalar=rating_a),       # rating for image_a
+        make_result(scalar=rating_b),       # rating for image_b
+        make_result(scalars_all=[img_a, img_b]),  # images for pair re-display
+        make_result(scalar=3),              # remaining comparison count
     ]
     out = await m.undo_metric_comparison(1, current_user=user(), db=mock_db)
     assert comparison.undone is True
     assert rating_a.comparison_count == 1   # decremented
     assert rating_b.comparison_count == 0   # unchanged (was 0)
     assert out.id == comparison.id
+    # legacy comparison (prev_* is None) -> mu/sigma untouched
+    assert rating_a.mu == 25.0
+    # the undone pair is returned for re-display
+    assert out.pair is not None
+    assert out.pair.image_a.id == 10
+    assert out.pair.image_b.id == 11
+    assert out.pair.total_comparisons == 3
+    assert out.pair.comparison_number == 4
+
+
+async def test_undo_restores_prev_ratings(mock_db, no_group):
+    # winner is image_b -> exercises the loser=image_a branch
+    metric = metric_obj()
+    comparison = comparison_obj(
+        image_a_id=10, image_b_id=11, winner_id=11,
+        prev_winner_mu=24.0, prev_winner_sigma=8.1,
+        prev_loser_mu=26.0, prev_loser_sigma=8.2,
+    )
+    rating_a = rating_obj(mu=27.0, sigma=7.0, comparison_count=1)  # loser
+    rating_b = rating_obj(mu=23.0, sigma=7.0, comparison_count=1)  # winner
+    mock_db.execute.side_effect = [
+        make_result(scalar=metric),
+        make_result(scalar=comparison),
+        make_result(scalar=rating_a),
+        make_result(scalar=rating_b),
+        make_result(scalars_all=[metric_image(img_id=10), metric_image(img_id=11)]),
+        make_result(scalar=0),
+    ]
+    out = await m.undo_metric_comparison(1, current_user=user(), db=mock_db)
+    assert rating_b.mu == 24.0 and rating_b.sigma == 8.1   # winner restored
+    assert rating_a.mu == 26.0 and rating_a.sigma == 8.2   # loser restored
+    assert rating_a.comparison_count == 0
+    assert rating_b.comparison_count == 0
+    assert out.pair.comparison_number == 1
 
 
 async def test_undo_rating_none(mock_db, no_group):
@@ -690,11 +738,29 @@ async def test_undo_rating_none(mock_db, no_group):
         make_result(scalar=comparison),
         make_result(scalar=None),  # rating for image_a -> None
         make_result(scalar=None),  # rating for image_b -> None
+        make_result(scalars_all=[metric_image(img_id=10), metric_image(img_id=11)]),
+        make_result(scalar=0),
     ]
     out = await m.undo_metric_comparison(1, current_user=user(), db=mock_db)
-    # comparison itself was marked undone (response model lacks the field)
     assert comparison.undone is True
     assert out.id == comparison.id
+
+
+async def test_undo_pair_none_when_image_deleted(mock_db, no_group):
+    # one of the pair's images no longer exists -> pair is None
+    metric = metric_obj()
+    comparison = comparison_obj(image_a_id=10, image_b_id=11)
+    mock_db.execute.side_effect = [
+        make_result(scalar=metric),
+        make_result(scalar=comparison),
+        make_result(scalar=rating_obj(comparison_count=1)),
+        make_result(scalar=rating_obj(comparison_count=1)),
+        make_result(scalars_all=[metric_image(img_id=10)]),  # image_b missing
+        make_result(scalar=0),
+    ]
+    out = await m.undo_metric_comparison(1, current_user=user(), db=mock_db)
+    assert comparison.undone is True
+    assert out.pair is None
 
 
 # =============================================================================

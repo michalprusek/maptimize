@@ -129,6 +129,14 @@ class MetricComparisonResponse(BaseModel):
         from_attributes = True
 
 
+class MetricUndoResponse(MetricComparisonResponse):
+    """Undo response: the undone comparison plus its pair for re-display.
+
+    `pair` is None when one of the images no longer exists in the metric.
+    """
+    pair: Optional[MetricPairResponse] = None
+
+
 class MetricRankingItem(BaseModel):
     """Single item in the metric ranking."""
     rank: int

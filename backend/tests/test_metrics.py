@@ -689,6 +689,66 @@ class TestMetricComparison:
         data = response.json()
         assert data["id"] == comparison_id
 
+        # Undo returns the undone pair so the UI can re-display it
+        assert data["pair"] is not None
+        assert {data["pair"]["image_a"]["id"], data["pair"]["image_b"]["id"]} == {
+            image_a_id, image_b_id
+        }
+        assert data["pair"]["image_a"]["image_url"]
+        assert data["pair"]["image_b"]["image_url"]
+
+    def test_undo_restores_ratings(self, client, auth_headers, metric_with_images):
+        """Undo restores the mu/sigma values from before the comparison."""
+        metric_id, image_count = metric_with_images
+        if image_count < 2:
+            pytest.skip("Not enough images for comparison")
+
+        def leaderboard_ratings():
+            response = client.get(
+                f"/api/metrics/{metric_id}/leaderboard",
+                headers=auth_headers
+            )
+            assert response.status_code == 200
+            return {
+                item["metric_image_id"]: (item["mu"], item["sigma"])
+                for item in response.json()["items"]
+            }
+
+        response = client.get(
+            f"/api/metrics/{metric_id}/pair",
+            headers=auth_headers
+        )
+        assert response.status_code == 200
+        pair = response.json()
+        image_a_id = pair["image_a"]["id"]
+        image_b_id = pair["image_b"]["id"]
+
+        before = leaderboard_ratings()
+
+        response = client.post(
+            f"/api/metrics/{metric_id}/compare",
+            headers=auth_headers,
+            json={
+                "image_a_id": image_a_id,
+                "image_b_id": image_b_id,
+                "winner_id": image_a_id,
+            }
+        )
+        assert response.status_code == 200
+
+        after_compare = leaderboard_ratings()
+        assert after_compare[image_a_id] != before[image_a_id]
+
+        response = client.post(
+            f"/api/metrics/{metric_id}/undo",
+            headers=auth_headers
+        )
+        assert response.status_code == 200
+
+        after_undo = leaderboard_ratings()
+        assert after_undo[image_a_id] == pytest.approx(before[image_a_id])
+        assert after_undo[image_b_id] == pytest.approx(before[image_b_id])
+
     def test_undo_with_no_comparisons_returns_404(self, client, auth_headers):
         """POST /api/metrics/{id}/undo with no comparisons returns 404."""
         name = unique_name()
