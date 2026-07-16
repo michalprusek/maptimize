@@ -12,9 +12,10 @@ services.visualization_service.
 DB access is always the AsyncMock ``mock_db`` fixture configured via
 ``make_result`` (see conftest).
 """
+import asyncio
 import sys
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import numpy as np
 import pytest
@@ -246,7 +247,7 @@ async def test_compute_crop_umap_too_few(mock_db):
     mock_db.commit.assert_not_awaited()
 
 
-async def test_compute_crop_umap_success_with_group_and_experiment(mock_db):
+async def test_compute_crop_umap_success_with_group(mock_db):
     # Labeled crops → also exercise the silhouette success branch (stubbed sklearn).
     crops = [_item([float(i), float(i) + 1], protein_id=(i % 2)) for i in range(12)]
     mock_db.execute.side_effect = [
@@ -257,9 +258,7 @@ async def test_compute_crop_umap_success_with_group_and_experiment(mock_db):
         umap_service, "_compute_umap_projection",
         return_value=np.arange(24, dtype=float).reshape(12, 2),
     ), _patch_silhouette(0.55):
-        result = await umap_service.compute_crop_umap(
-            user_id=1, db=mock_db, experiment_id=7
-        )
+        result = await umap_service.compute_crop_umap(user_id=1, db=mock_db)
     assert result["success"] == 12
     assert result["silhouette_score"] == pytest.approx(0.55)
     assert "computed_at" in result
@@ -292,7 +291,7 @@ async def test_compute_fov_umap_too_few(mock_db):
         make_result(scalar=None),
         make_result(scalars_all=images),
     ]
-    result = await umap_service.compute_fov_umap(user_id=2, db=mock_db, experiment_id=3)
+    result = await umap_service.compute_fov_umap(user_id=2, db=mock_db)
     assert "error" in result
     assert result["count"] == 2
 
@@ -300,6 +299,110 @@ async def test_compute_fov_umap_too_few(mock_db):
 # =============================================================================
 # Invalidation functions
 # =============================================================================
+# =============================================================================
+# refresh_umap_scope (self-healing background refresh)
+# =============================================================================
+def _db_context(db):
+    """A get_db_context() stand-in yielding `db`."""
+    ctx = MagicMock()
+    ctx.__aenter__ = AsyncMock(return_value=db)
+    ctx.__aexit__ = AsyncMock(return_value=False)
+    return ctx
+
+
+def test_refresh_scope_key_groups_share_one_key():
+    # Two members of the same group must collapse onto one key, so one
+    # member's dashboard does not schedule a refresh the other duplicates.
+    assert (
+        umap_service.refresh_scope_key("crops", user_id=1, group_id=2)
+        == umap_service.refresh_scope_key("crops", user_id=99, group_id=2)
+    )
+    # Ungrouped users each get their own key, and types never collide.
+    assert (
+        umap_service.refresh_scope_key("crops", 1, None)
+        != umap_service.refresh_scope_key("crops", 2, None)
+    )
+    assert (
+        umap_service.refresh_scope_key("crops", 1, 2)
+        != umap_service.refresh_scope_key("images", 1, 2)
+    )
+
+
+async def test_refresh_umap_scope_crops(mock_db):
+    with patch("database.get_db_context", return_value=_db_context(mock_db)), \
+         patch.object(umap_service, "compute_crop_umap",
+                      new=AsyncMock(return_value={"success": 5})) as ccu, \
+         patch.object(umap_service, "compute_fov_umap", new=AsyncMock()) as cfu:
+        await umap_service.refresh_umap_scope("crops", user_id=1, group_id=2)
+    # Always full-scope: passing an experiment would fit a subset into the
+    # shared coordinate space.
+    ccu.assert_awaited_once_with(1, mock_db)
+    cfu.assert_not_awaited()
+    assert not umap_service._inflight_refreshes  # key released
+
+
+async def test_refresh_umap_scope_images(mock_db):
+    with patch("database.get_db_context", return_value=_db_context(mock_db)), \
+         patch.object(umap_service, "compute_fov_umap",
+                      new=AsyncMock(return_value={"success": 3})) as cfu, \
+         patch.object(umap_service, "compute_crop_umap", new=AsyncMock()) as ccu:
+        await umap_service.refresh_umap_scope("images", user_id=1)
+    cfu.assert_awaited_once_with(1, mock_db)
+    ccu.assert_not_awaited()
+
+
+async def test_refresh_umap_scope_error_result_logged(mock_db):
+    # "Too few points" is a normal outcome, not a crash.
+    with patch("database.get_db_context", return_value=_db_context(mock_db)), \
+         patch.object(umap_service, "compute_crop_umap",
+                      new=AsyncMock(return_value={"error": "too few"})):
+        await umap_service.refresh_umap_scope("crops", user_id=1)
+    assert not umap_service._inflight_refreshes
+
+
+async def test_refresh_umap_scope_swallows_exception_and_releases_key():
+    # Fire-and-forget background task: a failure must never escape, and must
+    # not wedge the guard shut against later refreshes.
+    with patch("database.get_db_context", side_effect=RuntimeError("db down")):
+        await umap_service.refresh_umap_scope("crops", user_id=1, group_id=2)
+    assert not umap_service._inflight_refreshes
+
+
+async def test_refresh_umap_scope_skips_concurrent_duplicate(mock_db):
+    # A second refresh for the same scope while one is in flight is dropped,
+    # rather than duplicating seconds of CPU and racing on the same rows.
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def _slow_compute(user_id, db):
+        started.set()
+        await release.wait()
+        return {"success": 1}
+
+    with patch("database.get_db_context", return_value=_db_context(mock_db)), \
+         patch.object(umap_service, "compute_crop_umap",
+                      new=AsyncMock(side_effect=_slow_compute)) as ccu:
+        first = asyncio.create_task(
+            umap_service.refresh_umap_scope("crops", 1, 2)
+        )
+        await started.wait()
+        # Same scope via a different group member -> must be skipped.
+        await umap_service.refresh_umap_scope("crops", 99, 2)
+        assert ccu.await_count == 1
+        release.set()
+        await first
+
+    assert ccu.await_count == 1
+    assert not umap_service._inflight_refreshes
+
+    # Guard released -> a later refresh runs again.
+    with patch("database.get_db_context", return_value=_db_context(mock_db)), \
+         patch.object(umap_service, "compute_crop_umap",
+                      new=AsyncMock(return_value={"success": 1})) as ccu2:
+        await umap_service.refresh_umap_scope("crops", 1, 2)
+    ccu2.assert_awaited_once()
+
+
 async def test_invalidate_crop_umap_by_image(mock_db):
     mock_db.execute.return_value = make_result(rowcount=5)
     assert await umap_service.invalidate_crop_umap(mock_db, image_id=10) == 5

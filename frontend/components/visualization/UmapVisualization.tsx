@@ -32,6 +32,7 @@ import {
   UMAP_AXIS_DOMAIN,
   UMAP_TOOLTIP_CURSOR,
   UMAP_SCATTER_ANIMATION,
+  UMAP_STALE_POLL_MS,
   formatAxisTick,
   getSilhouetteScoreStyle,
 } from "./chartConfig";
@@ -162,7 +163,13 @@ export function UmapVisualization({
     queryFn: () => api.getUmapData(experimentId, viewMode),
     staleTime: 1000 * 60 * 5, // Cache for 5 minutes
     retry: false,
+    // New uploads/edits arrive without coordinates; the request that observes
+    // that schedules a background re-fit. Poll until those coordinates land.
+    refetchInterval: (query) =>
+      query.state.data?.is_stale ? UMAP_STALE_POLL_MS : false,
   });
+
+  const isRecomputing = data?.is_stale ?? false;
 
   // Handle click on UMAP point - navigate to editor
   const handleChartClick = useCallback((state: { activePayload?: Array<{ payload: UmapPoint | UmapFovPoint }> } | null) => {
@@ -273,6 +280,23 @@ export function UmapVisualization({
     }
 
     if (!data || data.points.length === 0) {
+      // Nothing to plot yet, but a re-fit is running — the data is on its way,
+      // so don't claim there are no embeddings.
+      if (isRecomputing) {
+        return (
+          <div
+            className="flex flex-col items-center justify-center text-center"
+            style={{ height: height - 100 }}
+          >
+            <Spinner size="lg" />
+            <h3 className="mt-3 text-lg font-semibold text-text-primary">
+              {t("computing")}
+            </h3>
+            <p className="text-text-secondary max-w-md">{t("computingHint")}</p>
+          </div>
+        );
+      }
+
       return (
         <div
           className="flex flex-col items-center justify-center text-center"
@@ -294,6 +318,15 @@ export function UmapVisualization({
     // Success - render chart
     return (
       <>
+        {/* Some points are plotted, but newer ones have no coordinates yet. */}
+        {isRecomputing && (
+          <div className="flex items-center gap-2 mb-3 px-3 py-2 rounded-md bg-accent-amber/10 border border-accent-amber/30">
+            <Spinner size="sm" />
+            <span className="text-xs text-text-secondary">
+              {t("computingPartial")}
+            </span>
+          </div>
+        )}
         <div style={{ height: height - 100 }}>
           <ResponsiveContainer width="100%" height="100%">
             <ScatterChart

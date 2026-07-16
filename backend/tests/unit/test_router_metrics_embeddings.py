@@ -881,12 +881,12 @@ async def test_image_file_success(mock_db, no_group):
 
 def test_experiment_owner_filter_no_group():
     # group_id None -> single condition; just ensure it builds without error
-    clause = e._experiment_owner_filter(1, None)
+    clause = e.experiment_owner_filter(1, None)
     assert clause is not None
 
 
 def test_experiment_owner_filter_with_group():
-    clause = e._experiment_owner_filter(1, 7)
+    clause = e.experiment_owner_filter(1, 7)
     assert clause is not None
 
 
@@ -928,22 +928,53 @@ async def test_cropped_umap_too_few_crops(mock_db, no_group):
         with pytest.raises(HTTPException) as ei:
             await e.get_umap_visualization(
                 umap_type=e.UmapType.CROPPED, experiment_id=None,
-                n_neighbors=15, min_dist=0.1, current_user=user(), db=mock_db,
+                background_tasks=MagicMock(),
+                current_user=user(), db=mock_db,
             )
     assert ei.value.status_code == 400
 
 
-async def test_cropped_umap_no_precomputed_returns_empty(mock_db, no_group):
+async def test_cropped_umap_no_precomputed_schedules_refresh(mock_db, no_group):
+    # Crops have embeddings but no coordinates (fresh upload): the response is
+    # empty *and* flagged stale, with a background refresh scheduled.
     crops = [crop_obj(cid=i, umap_x=None, umap_y=None) for i in range(5)]
     mock_db.execute.return_value = make_result(scalars_all=crops)
+    bg = MagicMock()
     with patch.object(e, "MIN_POINTS_FOR_UMAP", 3):
         out = await e.get_umap_visualization(
             umap_type=e.UmapType.CROPPED, experiment_id=None,
-            n_neighbors=15, min_dist=0.1, current_user=user(), db=mock_db,
+            background_tasks=bg,
+            current_user=user(), db=mock_db,
         )
     assert out.points == []
     assert out.total_crops == 5
     assert out.silhouette_score is None
+    assert out.is_stale is True
+    bg.add_task.assert_called_once_with(e.refresh_umap_scope, "crops", 1, None)
+
+
+async def test_cropped_umap_partially_stale_serves_existing_points(mock_db, no_group):
+    # Old crops keep plotting while newly uploaded ones are still unprojected.
+    crops = [
+        crop_obj(cid=1, umap_x=0.1, umap_y=0.2),
+        crop_obj(cid=2, umap_x=0.3, umap_y=0.4),
+        crop_obj(cid=3, umap_x=0.5, umap_y=0.6),
+        crop_obj(cid=4, umap_x=None, umap_y=None),  # new upload
+    ]
+    mock_db.execute.return_value = make_result(scalars_all=crops)
+    bg = MagicMock()
+    with patch.object(e, "MIN_POINTS_FOR_UMAP", 3), \
+         patch.object(e, "compute_silhouette", return_value=0.4):
+        out = await e.get_umap_visualization(
+            umap_type=e.UmapType.CROPPED, experiment_id=None,
+            background_tasks=bg,
+            current_user=user(), db=mock_db,
+        )
+    assert len(out.points) == 3
+    assert out.is_stale is True
+    # total_crops is every crop with an embedding, not just the plotted ones.
+    assert out.total_crops == 4
+    bg.add_task.assert_called_once_with(e.refresh_umap_scope, "crops", 1, None)
 
 
 async def test_cropped_umap_precomputed_with_experiment_filter(mock_db, no_group):
@@ -957,22 +988,26 @@ async def test_cropped_umap_precomputed_with_experiment_filter(mock_db, no_group
         make_result(scalar=SimpleNamespace(id=9)),  # _verify_experiment_ownership
         make_result(scalars_all=crops),              # crops query
     ]
+    bg = MagicMock()
     with patch.object(e, "MIN_POINTS_FOR_UMAP", 3), \
          patch.object(e, "compute_silhouette", return_value=0.42) as sil:
         out = await e.get_umap_visualization(
             umap_type=e.UmapType.CROPPED, experiment_id=9,
-            n_neighbors=15, min_dist=0.1, current_user=user(), db=mock_db,
+            background_tasks=bg,
+            current_user=user(), db=mock_db,
         )
     sil.assert_called_once()
     assert out.silhouette_score == 0.42
     assert len(out.points) == 3
     assert out.points[0].protein_name == "PRC1"
     assert out.points[1].protein_color == "#888888"
+    # Everything already projected -> nothing stale, no refresh scheduled.
+    assert out.is_stale is False
+    bg.add_task.assert_not_called()
 
 
 # =============================================================================
-# embeddings.py — _get_fov_umap (only reachable branches; success path hits a
-# NameError bug at router line 250 — see report)
+# embeddings.py — _get_fov_umap
 # =============================================================================
 
 def image_obj(iid=1, embedding=None, umap_x=None, umap_y=None, protein=None,
@@ -996,26 +1031,33 @@ async def test_fov_umap_too_few(mock_db, no_group):
         with pytest.raises(HTTPException) as ei:
             await e.get_umap_visualization(
                 umap_type=e.UmapType.FOV, experiment_id=None,
-                n_neighbors=15, min_dist=0.1, current_user=user(), db=mock_db,
+                background_tasks=MagicMock(),
+                current_user=user(), db=mock_db,
             )
     assert ei.value.status_code == 400
 
 
-async def test_fov_umap_no_precomputed_returns_empty(mock_db, no_group):
+async def test_fov_umap_no_precomputed_schedules_refresh(mock_db, no_group):
     imgs = [image_obj(iid=i, umap_x=None, umap_y=None) for i in range(5)]
     mock_db.execute.return_value = make_result(scalars_all=imgs)
+    bg = MagicMock()
     with patch.object(e, "MIN_POINTS_FOR_UMAP", 3):
         out = await e.get_umap_visualization(
             umap_type=e.UmapType.FOV, experiment_id=None,
-            n_neighbors=15, min_dist=0.1, current_user=user(), db=mock_db,
+            background_tasks=bg,
+            current_user=user(), db=mock_db,
         )
     assert out.points == []
     assert out.total_images == 5
+    assert out.is_stale is True
+    # An empty response must not claim its (absent) coordinates are pre-computed.
+    assert out.is_precomputed is False
+    bg.add_task.assert_called_once_with(e.refresh_umap_scope, "images", 1, None)
 
 
 async def test_fov_umap_experiment_filter_empty(mock_db, no_group):
-    # FOV with experiment_id -> _verify_experiment_ownership + where filter
-    # (covers router lines 193-194); no pre-computed UMAP -> empty response.
+    # FOV with experiment_id -> _verify_experiment_ownership + where filter;
+    # no pre-computed UMAP -> empty response.
     imgs = [image_obj(iid=i, umap_x=None, umap_y=None) for i in range(4)]
     mock_db.execute.side_effect = [
         make_result(scalar=SimpleNamespace(id=9)),  # _verify_experiment_ownership
@@ -1024,127 +1066,89 @@ async def test_fov_umap_experiment_filter_empty(mock_db, no_group):
     with patch.object(e, "MIN_POINTS_FOR_UMAP", 3):
         out = await e.get_umap_visualization(
             umap_type=e.UmapType.FOV, experiment_id=9,
-            n_neighbors=15, min_dist=0.1, current_user=user(), db=mock_db,
+            background_tasks=MagicMock(),
+            current_user=user(), db=mock_db,
         )
     assert out.points == []
     assert out.total_images == 4
+
+
+async def test_fov_umap_partially_stale_reports_true_total(mock_db, no_group):
+    # Older images keep plotting while a newly uploaded one is unprojected.
+    imgs = [
+        image_obj(iid=1, umap_x=0.1, umap_y=0.2),
+        image_obj(iid=2, umap_x=0.3, umap_y=0.4),
+        image_obj(iid=3, umap_x=0.5, umap_y=0.6),
+        image_obj(iid=4, umap_x=None, umap_y=None),  # new upload
+    ]
+    mock_db.execute.return_value = make_result(scalars_all=imgs)
+    bg = MagicMock()
+    with patch.object(e, "MIN_POINTS_FOR_UMAP", 3), \
+         patch.object(e, "compute_silhouette", return_value=0.2):
+        out = await e.get_umap_visualization(
+            umap_type=e.UmapType.FOV, experiment_id=None,
+            background_tasks=bg,
+            current_user=user(), db=mock_db,
+        )
+    assert len(out.points) == 3
+    # total_images is every image with an embedding, not just the plotted ones.
+    assert out.total_images == 4
+    assert out.is_stale is True
+    bg.add_task.assert_called_once_with(e.refresh_umap_scope, "images", 1, None)
 
 
 async def test_fov_umap_precomputed_success(mock_db, no_group):
     # FOV success path: all images have pre-computed UMAP coords -> is_precomputed=True.
     imgs = [image_obj(iid=i, umap_x=0.1, umap_y=0.2) for i in range(3)]
     mock_db.execute.return_value = make_result(scalars_all=imgs)
+    bg = MagicMock()
     with patch.object(e, "MIN_POINTS_FOR_UMAP", 3), \
          patch.object(e, "compute_silhouette", return_value=0.1):
         out = await e.get_umap_visualization(
             umap_type=e.UmapType.FOV, experiment_id=None,
-            n_neighbors=15, min_dist=0.1, current_user=user(), db=mock_db,
+            background_tasks=bg,
+            current_user=user(), db=mock_db,
         )
     assert out.is_precomputed is True
     assert len(out.points) == 3
     assert out.silhouette_score == 0.1
-
-
-# =============================================================================
-# embeddings.py — _compute_umap_with_error_handling
-# =============================================================================
-
-def test_compute_umap_success():
-    with patch.object(e, "compute_umap_online", return_value=("proj", "extra")):
-        out = e._compute_umap_with_error_handling(
-            __import__("numpy").zeros((3, 2)), [1, 2, 3], 15, 0.1
-        )
-    assert out == ("proj", "extra")
-
-
-def test_compute_umap_value_error():
-    with patch.object(e, "compute_umap_online", side_effect=ValueError("bad")):
-        with pytest.raises(HTTPException) as ei:
-            e._compute_umap_with_error_handling(None, [1], 15, 0.1)
-    assert ei.value.status_code == 400
-
-
-def test_compute_umap_memory_error():
-    with patch.object(e, "compute_umap_online", side_effect=MemoryError()):
-        with pytest.raises(HTTPException) as ei:
-            e._compute_umap_with_error_handling(None, [1], 15, 0.1)
-    assert ei.value.status_code == 413
-
-
-def test_compute_umap_unexpected_error():
-    with patch.object(e, "compute_umap_online", side_effect=RuntimeError("boom")):
-        with pytest.raises(HTTPException) as ei:
-            e._compute_umap_with_error_handling(None, [1], 15, 0.1)
-    assert ei.value.status_code == 500
-
-
-# =============================================================================
-# embeddings.py — trigger_umap_recomputation + background task
-# =============================================================================
-
-async def test_trigger_umap_recompute_no_experiment(mock_db, no_group):
-    bg = MagicMock()
-    out = await e.trigger_umap_recomputation(
-        umap_type=e.UmapType.CROPPED, experiment_id=None,
-        background_tasks=bg, current_user=user(), db=mock_db,
-    )
-    bg.add_task.assert_called_once()
-    assert e.UmapType.CROPPED.value in out["message"]
-
-
-async def test_trigger_umap_recompute_with_experiment(mock_db, no_group):
-    bg = MagicMock()
-    mock_db.execute.return_value = make_result(scalar=SimpleNamespace(id=5))  # ownership ok
-    out = await e.trigger_umap_recomputation(
-        umap_type=e.UmapType.FOV, experiment_id=5,
-        background_tasks=bg, current_user=user(), db=mock_db,
-    )
-    bg.add_task.assert_called_once()
-    assert "fov" in out["message"]
-
-
-async def test_trigger_umap_recompute_experiment_not_owned(mock_db, no_group):
-    bg = MagicMock()
-    mock_db.execute.return_value = make_result(scalar=None)
-    with pytest.raises(HTTPException) as ei:
-        await e.trigger_umap_recomputation(
-            umap_type=e.UmapType.FOV, experiment_id=99,
-            background_tasks=bg, current_user=user(), db=mock_db,
-        )
-    assert ei.value.status_code == 404
+    assert out.is_stale is False
     bg.add_task.assert_not_called()
 
 
-async def test_recompute_background_fov_success():
-    db = AsyncMock()
-    ctx = MagicMock()
-    ctx.__aenter__ = AsyncMock(return_value=db)
-    ctx.__aexit__ = AsyncMock(return_value=False)
-    with patch("database.get_db_context", return_value=ctx), \
-         patch("services.umap_service.compute_fov_umap",
-               new=AsyncMock(return_value={"updated": 5})) as cfu, \
-         patch("services.umap_service.compute_crop_umap", new=AsyncMock()):
-        await e._recompute_umap_background(e.UmapType.FOV, 1, None)
-    cfu.assert_awaited_once()
+# =============================================================================
+# embeddings.py — trigger_umap_recomputation
+# =============================================================================
+
+async def test_trigger_umap_recompute_cropped(mock_db, no_group):
+    bg = MagicMock()
+    out = await e.trigger_umap_recomputation(
+        umap_type=e.UmapType.CROPPED, background_tasks=bg,
+        current_user=user(), db=mock_db,
+    )
+    bg.add_task.assert_called_once_with(e.refresh_umap_scope, "crops", 1, None)
+    assert e.UmapType.CROPPED.value in out["message"]
 
 
-async def test_recompute_background_crop_error_result():
-    db = AsyncMock()
-    ctx = MagicMock()
-    ctx.__aenter__ = AsyncMock(return_value=db)
-    ctx.__aexit__ = AsyncMock(return_value=False)
-    with patch("database.get_db_context", return_value=ctx), \
-         patch("services.umap_service.compute_crop_umap",
-               new=AsyncMock(return_value={"error": "nope"})) as ccu, \
-         patch("services.umap_service.compute_fov_umap", new=AsyncMock()):
-        await e._recompute_umap_background(e.UmapType.CROPPED, 1, 5)
-    ccu.assert_awaited_once()
+async def test_trigger_umap_recompute_fov(mock_db, no_group):
+    bg = MagicMock()
+    out = await e.trigger_umap_recomputation(
+        umap_type=e.UmapType.FOV, background_tasks=bg,
+        current_user=user(), db=mock_db,
+    )
+    bg.add_task.assert_called_once_with(e.refresh_umap_scope, "images", 1, None)
+    assert "fov" in out["message"]
 
 
-async def test_recompute_background_exception_swallowed():
-    with patch("database.get_db_context", side_effect=RuntimeError("db down")):
-        # Should not raise — exception is logged
-        await e._recompute_umap_background(e.UmapType.FOV, 1, None)
+async def test_trigger_umap_recompute_passes_group_scope(mock_db):
+    # Group members share one projection, so the refresh is keyed to the group.
+    bg = MagicMock()
+    with patch.object(e, "get_user_group_id", new=AsyncMock(return_value=7)):
+        await e.trigger_umap_recomputation(
+            umap_type=e.UmapType.CROPPED, background_tasks=bg,
+            current_user=user(), db=mock_db,
+        )
+    bg.add_task.assert_called_once_with(e.refresh_umap_scope, "crops", 1, 7)
 
 
 # =============================================================================

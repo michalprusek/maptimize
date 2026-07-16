@@ -31,11 +31,16 @@ class UmapDataResponse(BaseModel):
 
     points: List[UmapPointResponse] = Field(..., description="UMAP points")
     total_crops: int = Field(..., description="Total number of crops")
-    n_neighbors: int = Field(..., description="UMAP n_neighbors parameter")
-    min_dist: float = Field(..., description="UMAP min_dist parameter")
     silhouette_score: Optional[float] = Field(
         None,
         description="Silhouette score measuring cluster separation (-1 to 1)"
+    )
+    is_stale: bool = Field(
+        False,
+        description=(
+            "Crops have embeddings but no coordinates yet (new upload or edit). "
+            "A refresh is running in the background; poll until this clears."
+        ),
     )
 
 
@@ -63,6 +68,13 @@ class UmapFovDataResponse(BaseModel):
     )
     is_precomputed: bool = Field(True, description="Whether coordinates are pre-computed")
     computed_at: Optional[datetime] = Field(None, description="When UMAP was computed")
+    is_stale: bool = Field(
+        False,
+        description=(
+            "Images have embeddings but no coordinates yet (new upload or edit). "
+            "A refresh is running in the background; poll until this clears."
+        ),
+    )
 
 
 class FeatureExtractionTriggerResponse(BaseModel):

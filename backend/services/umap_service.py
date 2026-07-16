@@ -6,6 +6,7 @@ coordinates for cell crops, FOV images, and proteins.
 SSOT for UMAP-related constants and computation functions.
 """
 
+import asyncio
 import logging
 from datetime import datetime, timezone
 from typing import Optional, Tuple
@@ -18,6 +19,7 @@ from sqlalchemy.orm import selectinload
 from models.cell_crop import CellCrop
 from models.experiment import Experiment
 from models.image import Image, MapProtein
+from utils.groups import experiment_owner_filter, get_user_group_id
 
 logger = logging.getLogger(__name__)
 
@@ -129,10 +131,10 @@ def compute_umap_online(
     min_dist: float = DEFAULT_MIN_DIST,
 ) -> Tuple[np.ndarray, Optional[float]]:
     """
-    Compute UMAP projection on-the-fly.
+    Fit a UMAP projection over the given embeddings.
 
-    Used by API endpoints when pre-computed coordinates are not available
-    or when custom parameters are requested.
+    CPU-bound and takes seconds — callers must not run this on the read path.
+    _compute_and_store_umap offloads it to a thread and persists the result.
 
     Args:
         embeddings: Array of embedding vectors (N x D)
@@ -144,7 +146,7 @@ def compute_umap_online(
         Tuple of (projection array N x 2, silhouette score or None)
 
     Raises:
-        ValueError: If UMAP parameters are invalid
+        ValueError: If fewer than 3 samples are given
         MemoryError: If too many data points
     """
     n_samples = len(embeddings)
@@ -168,7 +170,6 @@ async def _compute_and_store_umap(
     item_type: str,
     db: AsyncSession,
     user_id: int,
-    experiment_id: Optional[int] = None,
 ) -> dict:
     """
     Common helper for computing UMAP and storing coordinates.
@@ -180,7 +181,6 @@ async def _compute_and_store_umap(
         item_type: "crops" or "images" for error messages and logging
         db: AsyncSession database connection
         user_id: User ID for logging
-        experiment_id: Optional experiment ID for logging
 
     Returns:
         dict with success count, silhouette score, and computed_at
@@ -192,7 +192,13 @@ async def _compute_and_store_umap(
         }
 
     embeddings = np.array([item.embedding for item in items])
-    projection, silhouette = compute_umap_online(embeddings, items)
+
+    # Fitting is CPU-bound and takes seconds; the API runs as a single uvicorn
+    # process, so doing it inline would stall every other request. Only already
+    # loaded attributes are read in the thread, so no lazy IO escapes the loop.
+    projection, silhouette = await asyncio.to_thread(
+        compute_umap_online, embeddings, items
+    )
 
     now = datetime.now(timezone.utc)
     for i, item in enumerate(items):
@@ -202,10 +208,9 @@ async def _compute_and_store_umap(
 
     await db.commit()
 
-    exp_suffix = f" experiment {experiment_id}" if experiment_id else ""
     silhouette_str = f"{silhouette:.3f}" if silhouette else "N/A"
     logger.info(
-        f"Computed {item_type} UMAP for user {user_id}{exp_suffix}: "
+        f"Computed {item_type} UMAP for user {user_id}: "
         f"{len(items)} {item_type}, silhouette={silhouette_str}"
     )
 
@@ -216,29 +221,21 @@ async def _compute_and_store_umap(
     }
 
 
-async def compute_crop_umap(
-    user_id: int,
-    db: AsyncSession,
-    experiment_id: Optional[int] = None,
-) -> dict:
+async def compute_crop_umap(user_id: int, db: AsyncSession) -> dict:
     """
     Compute UMAP for cell crops and store coordinates in database.
+
+    Always covers the user's whole scope — see refresh_umap_scope for why a
+    per-experiment fit would corrupt the shared coordinate space.
 
     Args:
         user_id: User ID for ownership filtering
         db: AsyncSession database connection
-        experiment_id: Optional experiment ID to filter by
 
     Returns:
         dict with success count, silhouette score, and computed_at
     """
-    from sqlalchemy import or_
-    from utils.groups import get_user_group_id
-
     group_id = await get_user_group_id(user_id, db)
-    owner_conditions = [Experiment.user_id == user_id]
-    if group_id is not None:
-        owner_conditions.append(Experiment.group_id == group_id)
 
     query = (
         select(CellCrop)
@@ -246,63 +243,107 @@ async def compute_crop_umap(
         .join(Experiment, Image.experiment_id == Experiment.id)
         .options(selectinload(CellCrop.map_protein))
         .where(
-            or_(*owner_conditions),
+            experiment_owner_filter(user_id, group_id),
             CellCrop.embedding.isnot(None),
         )
         .order_by(CellCrop.id)
     )
 
-    if experiment_id:
-        query = query.where(Image.experiment_id == experiment_id)
-
     result = await db.execute(query)
     crops = result.scalars().all()
 
-    return await _compute_and_store_umap(crops, "crops", db, user_id, experiment_id)
+    return await _compute_and_store_umap(crops, "crops", db, user_id)
 
 
-async def compute_fov_umap(
-    user_id: int,
-    db: AsyncSession,
-    experiment_id: Optional[int] = None,
-) -> dict:
+async def compute_fov_umap(user_id: int, db: AsyncSession) -> dict:
     """
     Compute UMAP for FOV images and store coordinates in database.
+
+    Always covers the user's whole scope — see refresh_umap_scope for why a
+    per-experiment fit would corrupt the shared coordinate space.
 
     Args:
         user_id: User ID for ownership filtering
         db: AsyncSession database connection
-        experiment_id: Optional experiment ID to filter by
 
     Returns:
         dict with success count, silhouette score, and computed_at
     """
-    from sqlalchemy import or_
-    from utils.groups import get_user_group_id
-
     group_id = await get_user_group_id(user_id, db)
-    owner_conditions = [Experiment.user_id == user_id]
-    if group_id is not None:
-        owner_conditions.append(Experiment.group_id == group_id)
 
     query = (
         select(Image)
         .join(Experiment, Image.experiment_id == Experiment.id)
         .options(selectinload(Image.map_protein))
         .where(
-            or_(*owner_conditions),
+            experiment_owner_filter(user_id, group_id),
             Image.embedding.isnot(None),
         )
         .order_by(Image.id)
     )
 
-    if experiment_id:
-        query = query.where(Image.experiment_id == experiment_id)
-
     result = await db.execute(query)
     images = result.scalars().all()
 
-    return await _compute_and_store_umap(images, "images", db, user_id, experiment_id)
+    return await _compute_and_store_umap(images, "images", db, user_id)
+
+
+# =============================================================================
+# Automatic UMAP Refresh (self-healing)
+# =============================================================================
+
+# Scopes with a refresh already running. A scope shares one global projection, so
+# concurrent refreshes would duplicate seconds of CPU work and race writing the
+# same rows. Safe as process-local state: the API runs a single uvicorn process.
+_inflight_refreshes: set = set()
+
+
+def refresh_scope_key(item_type: str, user_id: int, group_id: Optional[int]) -> tuple:
+    """Dedupe key for a refresh.
+
+    Group members share one corpus (and therefore one projection), so they must
+    share a key — otherwise each member's dashboard would kick off its own
+    redundant refresh of the same rows.
+    """
+    scope = f"g{group_id}" if group_id is not None else f"u{user_id}"
+    return (item_type, scope)
+
+
+async def refresh_umap_scope(
+    item_type: str,
+    user_id: int,
+    group_id: Optional[int] = None,
+) -> None:
+    """
+    Recompute and store UMAP coordinates for a whole scope, at most once at a time.
+
+    Always covers the full scope rather than a single experiment: coordinates are
+    one shared projection, so fitting a subset would write coordinates from a
+    different space into the same columns and corrupt the combined plot.
+
+    Never raises — callers schedule this as a fire-and-forget background task.
+    """
+    key = refresh_scope_key(item_type, user_id, group_id)
+    if key in _inflight_refreshes:
+        logger.info(f"UMAP refresh {key} already running - skipping duplicate")
+        return
+
+    _inflight_refreshes.add(key)
+    try:
+        from database import get_db_context
+
+        async with get_db_context() as db:
+            compute = compute_fov_umap if item_type == "images" else compute_crop_umap
+            result = await compute(user_id, db)
+
+        if "error" in result:
+            logger.warning(f"UMAP refresh {key} skipped: {result['error']}")
+        else:
+            logger.info(f"UMAP refresh {key} complete: {result}")
+    except Exception:
+        logger.exception(f"UMAP refresh {key} failed")
+    finally:
+        _inflight_refreshes.discard(key)
 
 
 # =============================================================================
@@ -319,8 +360,8 @@ async def invalidate_crop_umap(
     Invalidate pre-computed UMAP coordinates for crops.
 
     Call this after new embeddings are extracted or existing ones change.
-    Clears umap_x, umap_y, and umap_computed_at so that UMAP will be
-    recomputed on next request.
+    Clears umap_x, umap_y, and umap_computed_at; the next read of the UMAP
+    endpoint sees the missing coordinates and schedules refresh_umap_scope.
 
     Args:
         db: AsyncSession database connection
@@ -357,8 +398,8 @@ async def invalidate_fov_umap(
     """
     Invalidate pre-computed UMAP coordinates for FOV images.
 
-    Clears umap_x, umap_y, and umap_computed_at so that UMAP will be
-    recomputed on next request.
+    Clears umap_x, umap_y, and umap_computed_at; the next read of the UMAP
+    endpoint sees the missing coordinates and schedules refresh_umap_scope.
 
     Args:
         db: AsyncSession database connection
