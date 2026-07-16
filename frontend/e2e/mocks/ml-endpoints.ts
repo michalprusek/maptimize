@@ -103,6 +103,7 @@ export const mockUmapData = {
   total_crops: 100,
   silhouette_score: 0.65,
   is_stale: false,
+  refresh_error: null,
 };
 
 // ============================================================================

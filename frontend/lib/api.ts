@@ -1572,6 +1572,8 @@ export interface UmapDataResponse {
   silhouette_score: number | null;
   /** Coordinates are being refreshed in the background; poll until false. */
   is_stale: boolean;
+  /** The refresh failed — coordinates won't arrive on their own. Stop polling. */
+  refresh_error: string | null;
 }
 
 export interface UmapFovPoint {
@@ -1589,10 +1591,11 @@ export interface UmapFovDataResponse {
   points: UmapFovPoint[];
   total_images: number;
   silhouette_score: number | null;
-  is_precomputed: boolean;
   computed_at: string | null;
   /** Coordinates are being refreshed in the background; poll until false. */
   is_stale: boolean;
+  /** The refresh failed — coordinates won't arrive on their own. Stop polling. */
+  refresh_error: string | null;
 }
 
 export interface EmbeddingStatus {

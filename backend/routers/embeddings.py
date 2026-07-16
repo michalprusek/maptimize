@@ -1,7 +1,7 @@
 """Embeddings and UMAP visualization endpoints."""
 
 import logging
-from typing import Optional, Union
+from typing import Optional, TypeVar, Union
 
 import numpy as np
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, status
@@ -25,7 +25,9 @@ from schemas.embeddings import (
 )
 from services.umap_service import (
     MIN_POINTS_FOR_UMAP,
+    clear_refresh_error,
     compute_silhouette,
+    get_refresh_error,
     refresh_umap_scope,
 )
 from utils.security import get_current_user
@@ -33,6 +35,9 @@ from utils.groups import experiment_owner_filter, get_user_group_id
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
+
+# A CellCrop or an Image — both carry umap_x/umap_y and an embedding.
+T = TypeVar("T")
 
 
 @router.get("/umap")
@@ -51,13 +56,14 @@ async def get_umap_visualization(
 
     Serves pre-computed coordinates only. Points whose embeddings arrived after
     the last projection are reported via ``is_stale`` and a refresh is scheduled
-    in the background; fitting never blocks the response.
+    in the background; fitting never blocks the response. If that refresh keeps
+    failing, ``refresh_error`` says why instead of leaving the client to poll.
 
     Fit parameters are not tunable per request: every point in a scope must come
-    from one shared fit, so the projection uses DEFAULT_N_NEIGHBORS/DEFAULT_MIN_DIST.
+    from one shared fit, so refreshes always fit with the umap_service defaults.
     """
     group_id = await get_user_group_id(current_user.id, db)
-    if umap_type == UmapType.FOV:
+    if umap_type is UmapType.FOV:
         return await _get_fov_umap(
             experiment_id, current_user, group_id, background_tasks, db
         )
@@ -67,12 +73,12 @@ async def get_umap_visualization(
 
 
 def _take_precomputed(
-    items: list,
-    item_type: str,
+    items: list[T],
+    umap_type: UmapType,
     user_id: int,
     group_id: Optional[int],
     background_tasks: BackgroundTasks,
-) -> tuple[list, bool]:
+) -> tuple[list[T], bool, Optional[str]]:
     """
     Select the items that already have coordinates, refreshing the rest in the background.
 
@@ -81,20 +87,33 @@ def _take_precomputed(
     the fit runs after the response is sent, and the client polls until is_stale
     clears. Never fit on the read path — that stalls page load for seconds.
 
-    Returns (items with coordinates, is_stale).
+    A scope whose last refresh failed is NOT rescheduled; its error is returned so
+    the client can stop polling and show it. Otherwise each poll would kick off
+    another doomed multi-second fit, forever, in silence.
+
+    Returns (items with coordinates, is_stale, refresh_error).
     """
     with_umap = [i for i in items if i.umap_x is not None and i.umap_y is not None]
 
     stale_count = len(items) - len(with_umap)
     if stale_count == 0:
-        return with_umap, False
+        return with_umap, False, None
+
+    refresh_error = get_refresh_error(umap_type, user_id, group_id)
+    if refresh_error is not None:
+        logger.warning(
+            f"{stale_count}/{len(items)} {umap_type.item_word} missing UMAP "
+            f"coordinates, but the last refresh failed ({refresh_error}) - "
+            f"not rescheduling"
+        )
+        return with_umap, False, refresh_error
 
     logger.info(
-        f"{stale_count}/{len(items)} {item_type} missing UMAP coordinates - "
-        f"scheduling background refresh"
+        f"{stale_count}/{len(items)} {umap_type.item_word} missing UMAP "
+        f"coordinates - scheduling background refresh"
     )
-    background_tasks.add_task(refresh_umap_scope, item_type, user_id, group_id)
-    return with_umap, True
+    background_tasks.add_task(refresh_umap_scope, umap_type, user_id, group_id)
+    return with_umap, True, None
 
 
 async def _verify_experiment_ownership(
@@ -143,7 +162,7 @@ async def _get_cropped_umap(
         await _verify_experiment_ownership(experiment_id, current_user.id, db)
         query = query.where(Image.experiment_id == experiment_id)
 
-    # Order by ID for deterministic UMAP results
+    # Stable order so the payload does not reshuffle between polls
     query = query.order_by(CellCrop.id)
     result = await db.execute(query)
     crops = result.scalars().all()
@@ -154,8 +173,8 @@ async def _get_cropped_umap(
             detail=f"Need at least {MIN_POINTS_FOR_UMAP} crops with embeddings. Found: {len(crops)}",
         )
 
-    crops_with_umap, is_stale = _take_precomputed(
-        crops, "crops", current_user.id, group_id, background_tasks
+    crops_with_umap, is_stale, refresh_error = _take_precomputed(
+        crops, UmapType.CROPPED, current_user.id, group_id, background_tasks
     )
 
     # Counts every crop with an embedding, including the ones still awaiting
@@ -168,6 +187,7 @@ async def _get_cropped_umap(
             total_crops=total_crops,
             silhouette_score=None,
             is_stale=is_stale,
+            refresh_error=refresh_error,
         )
 
     logger.info(f"Using pre-computed UMAP for {len(crops_with_umap)}/{total_crops} crops")
@@ -195,6 +215,7 @@ async def _get_cropped_umap(
         total_crops=total_crops,
         silhouette_score=silhouette,
         is_stale=is_stale,
+        refresh_error=refresh_error,
     )
 
 
@@ -220,7 +241,7 @@ async def _get_fov_umap(
         await _verify_experiment_ownership(experiment_id, current_user.id, db)
         query = query.where(Image.experiment_id == experiment_id)
 
-    # Order by ID for deterministic UMAP results
+    # Stable order so the payload does not reshuffle between polls
     query = query.order_by(Image.id)
     result = await db.execute(query)
     images = result.scalars().all()
@@ -231,8 +252,8 @@ async def _get_fov_umap(
             detail=f"Need at least {MIN_POINTS_FOR_UMAP} FOV images with embeddings. Found: {len(images)}",
         )
 
-    images_with_umap, is_stale = _take_precomputed(
-        images, "images", current_user.id, group_id, background_tasks
+    images_with_umap, is_stale, refresh_error = _take_precomputed(
+        images, UmapType.FOV, current_user.id, group_id, background_tasks
     )
 
     # Counts every image with an embedding, including the ones still awaiting
@@ -244,9 +265,9 @@ async def _get_fov_umap(
             points=[],
             total_images=total_images,
             silhouette_score=None,
-            is_precomputed=False,
             computed_at=None,
             is_stale=is_stale,
+            refresh_error=refresh_error,
         )
 
     logger.info(f"Using pre-computed UMAP for {len(images_with_umap)}/{total_images} FOV images")
@@ -274,9 +295,9 @@ async def _get_fov_umap(
         points=points,
         total_images=total_images,
         silhouette_score=silhouette,
-        is_precomputed=True,  # this branch only runs when pre-computed coords exist
         computed_at=computed_at,
         is_stale=is_stale,
+        refresh_error=refresh_error,
     )
 
 
@@ -290,12 +311,14 @@ async def trigger_umap_recomputation(
     """
     Force a UMAP recomputation for the caller's scope.
 
-    Reads schedule this automatically when coordinates are missing, so this is
-    only an escape hatch for re-fitting coordinates that are already complete.
+    Reads schedule refreshes automatically, so this is the retry path for a scope
+    whose refresh failed (reads stop rescheduling those) and an escape hatch for
+    re-fitting coordinates that are already complete.
     """
     group_id = await get_user_group_id(current_user.id, db)
-    item_type = "images" if umap_type == UmapType.FOV else "crops"
-    background_tasks.add_task(refresh_umap_scope, item_type, current_user.id, group_id)
+    # Clear the recorded failure so reads resume auto-scheduling this scope.
+    clear_refresh_error(umap_type, current_user.id, group_id)
+    background_tasks.add_task(refresh_umap_scope, umap_type, current_user.id, group_id)
 
     return {"message": f"UMAP recomputation started for {umap_type.value}"}
 

@@ -1,7 +1,7 @@
 """Group utility functions shared across routers and services."""
 from typing import Optional
 
-from sqlalchemy import or_, select
+from sqlalchemy import or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql.elements import ColumnElement
 
@@ -21,10 +21,38 @@ def experiment_owner_filter(user_id: int, group_id: Optional[int] = None) -> Col
     """Build a SQL filter matching experiments the user can read.
 
     Read access = direct ownership OR membership in the experiment's group.
-    SSOT for the access rule — queries that scope experiments to a user must go
+    SSOT for the access rule: every query that scopes experiments to a user goes
     through this, so widening access never has to be found in N places.
     """
     conditions = [Experiment.user_id == user_id]
     if group_id is not None:
         conditions.append(Experiment.group_id == group_id)
     return or_(*conditions)
+
+
+async def adopt_orphan_experiments(
+    db: AsyncSession,
+    user_id: int,
+    group_id: int,
+) -> int:
+    """
+    Move the user's group-less experiments into the group they just joined.
+
+    Experiments are stamped with group_id at creation, so anything created before
+    the owner had a group keeps group_id NULL forever. Such a row sits in its
+    owner's read scope but not their peers' — and because umap_x/umap_y are ONE
+    shared projection per scope, two members fitting different corpora would
+    overwrite each other's coordinates with values from incompatible fits.
+
+    Adopting the orphans keeps every member's corpus identical, which is the
+    precondition that makes umap_service.refresh_scope_key's group-wide dedupe
+    correct. Callers must commit.
+
+    Returns the number of experiments adopted.
+    """
+    result = await db.execute(
+        update(Experiment)
+        .where(Experiment.user_id == user_id, Experiment.group_id.is_(None))
+        .values(group_id=group_id)
+    )
+    return result.rowcount

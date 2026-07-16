@@ -19,6 +19,7 @@ from sqlalchemy.orm import selectinload
 from models.cell_crop import CellCrop
 from models.experiment import Experiment
 from models.image import Image, MapProtein
+from schemas.embeddings import UmapType
 from utils.groups import experiment_owner_filter, get_user_group_id
 
 logger = logging.getLogger(__name__)
@@ -95,6 +96,10 @@ def compute_silhouette(
     Uses cosine metric on full-dimensional embeddings (not UMAP projections)
     to measure cluster quality in the original feature space.
 
+    Runs inside asyncio.to_thread (see _compute_and_store_umap), so it must touch
+    only eagerly-loaded attributes. Reading a lazy relationship here fires a DB
+    load off the event loop and raises MissingGreenlet.
+
     Args:
         embeddings: Raw embedding vectors (N x D)
         items: List of CellCrop or Image objects with map_protein attribute
@@ -147,7 +152,6 @@ def compute_umap_online(
 
     Raises:
         ValueError: If fewer than 3 samples are given
-        MemoryError: If too many data points
     """
     n_samples = len(embeddings)
     if n_samples < 3:
@@ -167,7 +171,7 @@ def compute_umap_online(
 
 async def _compute_and_store_umap(
     items: list,
-    item_type: str,
+    umap_type: UmapType,
     db: AsyncSession,
     user_id: int,
 ) -> dict:
@@ -178,24 +182,28 @@ async def _compute_and_store_umap(
 
     Args:
         items: List of CellCrop or Image objects with embeddings
-        item_type: "crops" or "images" for error messages and logging
+        umap_type: Which corpus these items are
         db: AsyncSession database connection
         user_id: User ID for logging
 
     Returns:
         dict with success count, silhouette score, and computed_at
     """
+    word = umap_type.item_word
+
     if len(items) < MIN_POINTS_FOR_UMAP:
         return {
-            "error": f"Need at least {MIN_POINTS_FOR_UMAP} {item_type} with embeddings",
+            "error": f"Need at least {MIN_POINTS_FOR_UMAP} {word} with embeddings",
             "count": len(items),
         }
 
     embeddings = np.array([item.embedding for item in items])
 
-    # Fitting is CPU-bound and takes seconds; the API runs as a single uvicorn
-    # process, so doing it inline would stall every other request. Only already
-    # loaded attributes are read in the thread, so no lazy IO escapes the loop.
+    # Fitting is CPU-bound and takes seconds, and blocking the event loop stalls
+    # every other request this worker is serving (the API runs a single uvicorn
+    # process, so that is all of them). The thread only reads attributes the
+    # callers eagerly loaded, so no lazy IO escapes the loop — see
+    # compute_silhouette.
     projection, silhouette = await asyncio.to_thread(
         compute_umap_online, embeddings, items
     )
@@ -210,8 +218,8 @@ async def _compute_and_store_umap(
 
     silhouette_str = f"{silhouette:.3f}" if silhouette else "N/A"
     logger.info(
-        f"Computed {item_type} UMAP for user {user_id}: "
-        f"{len(items)} {item_type}, silhouette={silhouette_str}"
+        f"Computed {word} UMAP for user {user_id}: "
+        f"{len(items)} {word}, silhouette={silhouette_str}"
     )
 
     return {
@@ -225,8 +233,9 @@ async def compute_crop_umap(user_id: int, db: AsyncSession) -> dict:
     """
     Compute UMAP for cell crops and store coordinates in database.
 
-    Always covers the user's whole scope — see refresh_umap_scope for why a
-    per-experiment fit would corrupt the shared coordinate space.
+    Always covers everything the user can read (own + group) — see
+    refresh_umap_scope for why a narrower fit would corrupt the shared
+    coordinate space.
 
     Args:
         user_id: User ID for ownership filtering
@@ -252,15 +261,16 @@ async def compute_crop_umap(user_id: int, db: AsyncSession) -> dict:
     result = await db.execute(query)
     crops = result.scalars().all()
 
-    return await _compute_and_store_umap(crops, "crops", db, user_id)
+    return await _compute_and_store_umap(crops, UmapType.CROPPED, db, user_id)
 
 
 async def compute_fov_umap(user_id: int, db: AsyncSession) -> dict:
     """
     Compute UMAP for FOV images and store coordinates in database.
 
-    Always covers the user's whole scope — see refresh_umap_scope for why a
-    per-experiment fit would corrupt the shared coordinate space.
+    Always covers everything the user can read (own + group) — see
+    refresh_umap_scope for why a narrower fit would corrupt the shared
+    coordinate space.
 
     Args:
         user_id: User ID for ownership filtering
@@ -285,7 +295,7 @@ async def compute_fov_umap(user_id: int, db: AsyncSession) -> dict:
     result = await db.execute(query)
     images = result.scalars().all()
 
-    return await _compute_and_store_umap(images, "images", db, user_id)
+    return await _compute_and_store_umap(images, UmapType.FOV, db, user_id)
 
 
 # =============================================================================
@@ -294,23 +304,62 @@ async def compute_fov_umap(user_id: int, db: AsyncSession) -> dict:
 
 # Scopes with a refresh already running. A scope shares one global projection, so
 # concurrent refreshes would duplicate seconds of CPU work and race writing the
-# same rows. Safe as process-local state: the API runs a single uvicorn process.
-_inflight_refreshes: set = set()
+# same rows.
+#
+# Process-local state is sufficient ONLY because the API runs a single uvicorn
+# process — see the CMD in backend/Dockerfile{,.gpu,.dev}. Adding `--workers N`
+# would silently reduce this to per-worker dedupe, letting N workers fit the same
+# rows concurrently and race their writes.
+_inflight_refreshes: set[tuple[str, str]] = set()
+
+# Scopes whose last refresh raised, with the reason. A read that sees a scope in
+# here stops rescheduling it: without this the client's poll loop would trigger a
+# fresh multi-second fit every few seconds forever, and the failure would stay
+# invisible — the exact silence that hid this bug for months. Cleared on the next
+# success or by an explicit /umap/recompute.
+_failed_refreshes: dict[tuple[str, str], str] = {}
 
 
-def refresh_scope_key(item_type: str, user_id: int, group_id: Optional[int]) -> tuple:
+def refresh_scope_key(
+    umap_type: UmapType,
+    user_id: int,
+    group_id: Optional[int],
+) -> tuple[str, str]:
     """Dedupe key for a refresh.
 
-    Group members share one corpus (and therefore one projection), so they must
-    share a key — otherwise each member's dashboard would kick off its own
-    redundant refresh of the same rows.
+    Group members share a corpus, so they share a key — otherwise each member's
+    dashboard would kick off its own redundant fit of the same rows. That holds
+    because joining a group adopts the member's group-less experiments
+    (utils.groups.adopt_orphan_experiments), so no member can read an experiment
+    their peers cannot.
+
+    The scope token is prefixed because user ids and group ids share this key
+    space: group 2 and user 2 must not collide.
     """
     scope = f"g{group_id}" if group_id is not None else f"u{user_id}"
-    return (item_type, scope)
+    return (umap_type.value, scope)
+
+
+def get_refresh_error(
+    umap_type: UmapType,
+    user_id: int,
+    group_id: Optional[int],
+) -> Optional[str]:
+    """Return why this scope's last refresh failed, or None if it didn't."""
+    return _failed_refreshes.get(refresh_scope_key(umap_type, user_id, group_id))
+
+
+def clear_refresh_error(
+    umap_type: UmapType,
+    user_id: int,
+    group_id: Optional[int],
+) -> None:
+    """Forget a scope's recorded failure so it will be retried."""
+    _failed_refreshes.pop(refresh_scope_key(umap_type, user_id, group_id), None)
 
 
 async def refresh_umap_scope(
-    item_type: str,
+    umap_type: UmapType,
     user_id: int,
     group_id: Optional[int] = None,
 ) -> None:
@@ -321,9 +370,13 @@ async def refresh_umap_scope(
     one shared projection, so fitting a subset would write coordinates from a
     different space into the same columns and corrupt the combined plot.
 
-    Never raises — callers schedule this as a fire-and-forget background task.
+    Records failures in _failed_refreshes so a permanently broken scope is
+    reported to the client instead of being retried forever.
+
+    Never raises: Starlette awaits this after the response is sent, where an
+    escaping exception has nobody to catch it.
     """
-    key = refresh_scope_key(item_type, user_id, group_id)
+    key = refresh_scope_key(umap_type, user_id, group_id)
     if key in _inflight_refreshes:
         logger.info(f"UMAP refresh {key} already running - skipping duplicate")
         return
@@ -333,15 +386,19 @@ async def refresh_umap_scope(
         from database import get_db_context
 
         async with get_db_context() as db:
-            compute = compute_fov_umap if item_type == "images" else compute_crop_umap
+            compute = (
+                compute_fov_umap if umap_type is UmapType.FOV else compute_crop_umap
+            )
             result = await compute(user_id, db)
 
         if "error" in result:
             logger.warning(f"UMAP refresh {key} skipped: {result['error']}")
         else:
             logger.info(f"UMAP refresh {key} complete: {result}")
-    except Exception:
+        _failed_refreshes.pop(key, None)
+    except Exception as exc:
         logger.exception(f"UMAP refresh {key} failed")
+        _failed_refreshes[key] = f"{type(exc).__name__}: {exc}"
     finally:
         _inflight_refreshes.discard(key)
 

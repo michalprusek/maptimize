@@ -3,7 +3,7 @@ import logging
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status, Query
-from sqlalchemy import select, func, distinct, update, or_
+from sqlalchemy import select, func, distinct, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -19,7 +19,7 @@ from schemas.experiment import (
     ExperimentDetailResponse,
 )
 from utils.security import get_current_user
-from utils.groups import get_user_group_id
+from utils.groups import experiment_owner_filter, get_user_group_id
 
 logger = logging.getLogger(__name__)
 
@@ -34,14 +34,10 @@ async def get_experiment_for_user(
     """Get experiment and verify ownership or group membership. Raises 404 if not found."""
     group_id = await get_user_group_id(user_id, db)
 
-    conditions = [Experiment.user_id == user_id]
-    if group_id is not None:
-        conditions.append(Experiment.group_id == group_id)
-
     result = await db.execute(
         select(Experiment).where(
             Experiment.id == experiment_id,
-            or_(*conditions)
+            experiment_owner_filter(user_id, group_id),
         )
     )
     experiment = result.scalar_one_or_none()
@@ -62,11 +58,7 @@ async def list_experiments(
 ):
     """List user's experiments (and group experiments) with image and cell counts."""
     group_id = await get_user_group_id(current_user.id, db)
-
-    # Build ownership/group filter
-    conditions = [Experiment.user_id == current_user.id]
-    if group_id is not None:
-        conditions.append(Experiment.group_id == group_id)
+    access_filter = experiment_owner_filter(current_user.id, group_id)
 
     # Get experiments with counts using a single query with aggregates
     # Also count images with sum projections (sum_path IS NOT NULL)
@@ -82,7 +74,7 @@ async def list_experiments(
         .outerjoin(Image, Experiment.id == Image.experiment_id)
         .outerjoin(CellCrop, Image.id == CellCrop.image_id)
         .join(User, Experiment.user_id == User.id)
-        .where(or_(*conditions))
+        .where(access_filter)
         .group_by(Experiment.id, User.name)
         .order_by(Experiment.updated_at.desc())
         .offset(skip)
@@ -148,10 +140,6 @@ async def get_experiment(
     """Get experiment details with images."""
     group_id = await get_user_group_id(current_user.id, db)
 
-    conditions = [Experiment.user_id == current_user.id]
-    if group_id is not None:
-        conditions.append(Experiment.group_id == group_id)
-
     result = await db.execute(
         select(Experiment)
         .options(
@@ -161,7 +149,7 @@ async def get_experiment(
         )
         .where(
             Experiment.id == experiment_id,
-            or_(*conditions)
+            experiment_owner_filter(current_user.id, group_id),
         )
     )
     experiment = result.scalar_one_or_none()
