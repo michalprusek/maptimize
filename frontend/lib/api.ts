@@ -569,15 +569,9 @@ class ApiClient {
   // Embeddings / UMAP
   async getUmapData(
     experimentId?: number,
-    umapType: UmapType = "cropped",
-    nNeighbors = 15,
-    minDist = 0.1
+    umapType: UmapType = "cropped"
   ): Promise<UmapDataResponse | UmapFovDataResponse> {
-    const params = new URLSearchParams({
-      umap_type: umapType,
-      n_neighbors: nNeighbors.toString(),
-      min_dist: minDist.toString(),
-    });
+    const params = new URLSearchParams({ umap_type: umapType });
     if (experimentId) {
       params.append("experiment_id", experimentId.toString());
     }
@@ -587,11 +581,12 @@ class ApiClient {
     return this.request<UmapDataResponse>(`/api/embeddings/umap?${params}`);
   }
 
-  async triggerUmapRecomputation(umapType: UmapType, experimentId?: number) {
+  /**
+   * Force a UMAP re-fit. Reads schedule this automatically when coordinates are
+   * missing, so this is only needed to re-fit already-complete coordinates.
+   */
+  async triggerUmapRecomputation(umapType: UmapType) {
     const params = new URLSearchParams({ umap_type: umapType });
-    if (experimentId) {
-      params.append("experiment_id", experimentId.toString());
-    }
     return this.request<{ message: string }>(
       `/api/embeddings/umap/recompute?${params}`,
       { method: "POST" }
@@ -1574,9 +1569,11 @@ export interface UmapPoint {
 export interface UmapDataResponse {
   points: UmapPoint[];
   total_crops: number;
-  n_neighbors: number;
-  min_dist: number;
   silhouette_score: number | null;
+  /** Coordinates are being refreshed in the background; poll until false. */
+  is_stale: boolean;
+  /** The refresh failed — coordinates won't arrive on their own. Stop polling. */
+  refresh_error: string | null;
 }
 
 export interface UmapFovPoint {
@@ -1594,8 +1591,11 @@ export interface UmapFovDataResponse {
   points: UmapFovPoint[];
   total_images: number;
   silhouette_score: number | null;
-  is_precomputed: boolean;
   computed_at: string | null;
+  /** Coordinates are being refreshed in the background; poll until false. */
+  is_stale: boolean;
+  /** The refresh failed — coordinates won't arrive on their own. Stop polling. */
+  refresh_error: string | null;
 }
 
 export interface EmbeddingStatus {

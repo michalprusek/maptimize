@@ -44,7 +44,7 @@ from schemas.image import (
     CropBatchUpdateResponse,
 )
 from utils.security import get_current_user, decode_token, TokenPayload
-from utils.groups import get_user_group_id
+from utils.groups import experiment_owner_filter, get_user_group_id
 from services.image_processor import (
     process_image_background,
     process_upload_only_background,
@@ -98,16 +98,9 @@ async def verify_experiment_ownership(
 
 
 async def _experiment_access_filter(user_id: int, db: AsyncSession):
-    """Build a SQL filter that matches experiments the user can read.
-
-    Read access = direct ownership OR membership in the experiment's group.
-    Mirrors the pattern used in routers/experiments.py and routers/metrics.py.
-    """
+    """Resolve the user's group, then build the shared experiment access filter."""
     group_id = await get_user_group_id(user_id, db)
-    conditions = [Experiment.user_id == user_id]
-    if group_id is not None:
-        conditions.append(Experiment.group_id == group_id)
-    return or_(*conditions)
+    return experiment_owner_filter(user_id, group_id)
 
 
 async def verify_experiment_read_access(

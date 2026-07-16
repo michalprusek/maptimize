@@ -20,6 +20,7 @@ from schemas.group import (
     GroupListResponse,
     MyGroupResponse,
 )
+from utils.groups import adopt_orphan_experiments
 from utils.security import get_current_user
 
 logger = logging.getLogger(__name__)
@@ -116,7 +117,14 @@ async def create_group(
         role="admin",
     )
     db.add(membership)
+    adopted = await adopt_orphan_experiments(db, current_user.id, group.id)
     await db.commit()
+
+    if adopted:
+        logger.info(
+            f"Group {group.id} created: adopted {adopted} pre-group "
+            f"experiments from user {current_user.id}"
+        )
 
     # Reload with relationships
     result = await db.execute(
@@ -323,6 +331,7 @@ async def join_group(
         role="member",
     )
     db.add(membership)
+    adopted = await adopt_orphan_experiments(db, current_user.id, group_id)
     try:
         await db.commit()
     except IntegrityError:
@@ -330,6 +339,12 @@ async def join_group(
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="You are already in a group."
+        )
+
+    if adopted:
+        logger.info(
+            f"User {current_user.id} joined group {group_id}: adopted "
+            f"{adopted} pre-group experiments"
         )
 
     # Reload with relationships

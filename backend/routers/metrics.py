@@ -35,7 +35,7 @@ from schemas.metric import (
     ExperimentForImport,
 )
 from utils.security import get_current_user
-from utils.groups import get_user_group_id
+from utils.groups import experiment_owner_filter, get_user_group_id
 
 router = APIRouter()
 settings = get_settings()
@@ -411,15 +411,12 @@ async def import_crops_to_metric(
 
     # Verify experiments belong to user or their group
     group_id = await get_user_group_id(current_user.id, db)
-    exp_conditions = [Experiment.user_id == current_user.id]
-    if group_id is not None:
-        exp_conditions.append(Experiment.group_id == group_id)
 
     result = await db.execute(
         select(Experiment.id)
         .where(
             Experiment.id.in_(data.experiment_ids),
-            or_(*exp_conditions)
+            experiment_owner_filter(current_user.id, group_id),
         )
     )
     valid_ids = set(result.scalars().all())
@@ -485,10 +482,7 @@ async def list_experiments_for_import(
     metric = await get_metric_for_user(db, metric_id, current_user.id)
 
     group_id = await get_user_group_id(current_user.id, db)
-
-    conditions = [Experiment.user_id == current_user.id]
-    if group_id is not None:
-        conditions.append(Experiment.group_id == group_id)
+    access_filter = experiment_owner_filter(current_user.id, group_id)
 
     # Get user's (and group's) experiments with image and crop counts
     experiments_query = (
@@ -500,7 +494,7 @@ async def list_experiments_for_import(
         )
         .outerjoin(Image, Experiment.id == Image.experiment_id)
         .outerjoin(CellCrop, Image.id == CellCrop.image_id)
-        .where(or_(*conditions))
+        .where(access_filter)
         .group_by(Experiment.id, Experiment.name)
         .order_by(Experiment.name)
     )

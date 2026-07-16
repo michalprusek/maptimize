@@ -101,9 +101,9 @@ export const mockUmapData = {
     },
   ],
   total_crops: 100,
-  n_neighbors: 15,
-  min_dist: 0.1,
   silhouette_score: 0.65,
+  is_stale: false,
+  refresh_error: null,
 };
 
 // ============================================================================

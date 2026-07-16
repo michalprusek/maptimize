@@ -8,7 +8,11 @@
 set -uo pipefail
 
 CF="docker-compose.test.yml"
-DC="docker compose -f $CF"
+# Own compose project. Without this, compose derives the project from the repo
+# directory ("maptimize") — the same one the prod stack uses — so each stack sees
+# the other's containers as orphans and can remove them. Never share with prod.
+PROJECT="${COMPOSE_TEST_PROJECT:-maptimize_test}"
+DC="docker compose -p $PROJECT -f $CF"
 PIP="pip install --quiet --no-input 'coverage[toml]' pytest pytest-asyncio >/dev/null 2>&1"
 # Admin = the user init_db seeds automatically; regular = a RESEARCHER we register.
 # Password is overridable via env so it need not live in the repo.
@@ -27,7 +31,9 @@ $DC up -d --force-recreate test-backend >/dev/null 2>&1
 for i in $(seq 1 60); do
   code=$($DC exec -T test-backend sh -c 'curl -s -m 3 -o /dev/null -w "%{http_code}" http://127.0.0.1:8000/health' 2>/dev/null)
   [ "$code" = "200" ] && { echo "   healthy after ~$((i*3))s"; break; }
-  st=$(docker inspect maptimize-test-backend-1 --format '{{.State.Running}}' 2>/dev/null)
+  # Resolve the container via compose — its name is derived from $PROJECT.
+  cid=$($DC ps -q test-backend 2>/dev/null)
+  st=$([ -n "$cid" ] && docker inspect "$cid" --format '{{.State.Running}}' 2>/dev/null)
   [ "$st" = "false" ] && { echo "   SERVER DOWN"; $DC logs --tail=20 test-backend; exit 1; }
   sleep 3
 done

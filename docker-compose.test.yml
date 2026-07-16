@@ -3,11 +3,16 @@
 # Reuses the already-built backend image for its Python dependencies, but mounts
 # the CURRENT working-tree code at /app so coverage reflects the live branch.
 #
+# ALWAYS pass `-p maptimize_test`. Without it compose derives the project name
+# from the repo directory ("maptimize") — the same one the prod stack uses — so
+# the two stacks see each other's containers as orphans and can remove them.
+# run-coverage.sh does this for you.
+#
 # Usage:
-#   docker compose -f docker-compose.test.yml up -d
-#   docker compose -f docker-compose.test.yml exec -T test-backend \
+#   docker compose -p maptimize_test -f docker-compose.test.yml up -d
+#   docker compose -p maptimize_test -f docker-compose.test.yml exec -T test-backend \
 #       sh -c 'TEST_USER_EMAIL=... pytest -m "not slow" ...'
-#   docker compose -f docker-compose.test.yml down -v
+#   docker compose -p maptimize_test -f docker-compose.test.yml down -v
 
 services:
   test-db:

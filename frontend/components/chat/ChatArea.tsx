@@ -86,7 +86,7 @@ function TypingIndicator({ elapsedSeconds: externalElapsedSeconds, onCancel, can
     if (isCancelling) return t("cancelling");
     if (elapsedSeconds < 5) return t("thinking");
     if (elapsedSeconds < 15) return t("analyzing");
-    if (elapsedSeconds < 30) return t("processing");
+    if (elapsedSeconds < 30) return t("processingQuery");
     return t("processingComplex");
   };
 

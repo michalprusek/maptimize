@@ -10,6 +10,10 @@ import type { ReactNode } from "react";
 // Default color for points without protein assignment
 export const DEFAULT_POINT_COLOR = "#888888";
 
+// How often to re-poll while the backend re-fits UMAP coordinates in the
+// background (after a new upload or a crop edit). A full re-fit takes seconds.
+export const UMAP_STALE_POLL_MS = 5000;
+
 // Shared axis styling for UMAP charts
 export const UMAP_AXIS_STYLE = {
   tick: { fill: "#5a7285", fontSize: 10 },

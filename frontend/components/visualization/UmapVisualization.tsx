@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useMemo, useCallback } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslations } from "next-intl";
 import { useRouter } from "next/navigation";
 import {
@@ -32,6 +32,7 @@ import {
   UMAP_AXIS_DOMAIN,
   UMAP_TOOLTIP_CURSOR,
   UMAP_SCATTER_ANIMATION,
+  UMAP_STALE_POLL_MS,
   formatAxisTick,
   getSilhouetteScoreStyle,
 } from "./chartConfig";
@@ -157,12 +158,36 @@ export function UmapVisualization({
   const router = useRouter();
   const [viewMode, setViewMode] = useState<UmapType>(preferFovMode ? "fov" : "cropped");
 
+  const queryClient = useQueryClient();
+
   const { data, isLoading, error, refetch, isFetching } = useQuery({
     queryKey: ["umap", experimentId, viewMode],
     queryFn: () => api.getUmapData(experimentId, viewMode),
     staleTime: 1000 * 60 * 5, // Cache for 5 minutes
     retry: false,
+    // New uploads/edits arrive without coordinates; the request that observes
+    // that schedules a background re-fit. Poll until those coordinates land.
+    refetchInterval: (query) =>
+      query.state.data?.is_stale ? UMAP_STALE_POLL_MS : false,
   });
+
+  const isRecomputing = data?.is_stale ?? false;
+  const refreshError = data?.refresh_error ?? null;
+
+  // The re-fit failed, so coordinates will never arrive on their own. Ask the
+  // backend to retry (which clears the recorded failure) and resume polling.
+  const [isRetrying, setIsRetrying] = useState(false);
+  const handleRetryRefresh = useCallback(async () => {
+    setIsRetrying(true);
+    try {
+      await api.triggerUmapRecomputation(viewMode);
+      await queryClient.invalidateQueries({ queryKey: ["umap"] });
+    } catch (e) {
+      console.error("[UmapVisualization] Failed to trigger UMAP recomputation:", e);
+    } finally {
+      setIsRetrying(false);
+    }
+  }, [viewMode, queryClient]);
 
   // Handle click on UMAP point - navigate to editor
   const handleChartClick = useCallback((state: { activePayload?: Array<{ payload: UmapPoint | UmapFovPoint }> } | null) => {
@@ -242,7 +267,9 @@ export function UmapVisualization({
       );
     }
 
-    if (error) {
+    // Only take over the panel when there is nothing to show. A transient error
+    // mid-poll must not blank a chart the user is already looking at.
+    if (error && !data) {
       return (
         <div
           className="flex flex-col items-center justify-center text-center"
@@ -272,7 +299,50 @@ export function UmapVisualization({
       );
     }
 
+    // The background re-fit failed: nothing is coming, so say so instead of
+    // spinning forever. Retry goes through the backend, which clears the
+    // recorded failure and lets reads schedule refreshes again.
+    if (refreshError && !data?.points.length) {
+      return (
+        <div
+          className="flex flex-col items-center justify-center text-center"
+          style={{ height: height - 100 }}
+        >
+          <AlertCircle className="w-12 h-12 text-accent-red mb-4" />
+          <h3 className="text-lg font-semibold text-text-primary mb-2">
+            {t("refreshFailed")}
+          </h3>
+          <p className="text-text-secondary mb-4 max-w-md">{t("refreshFailedHint")}</p>
+          <button
+            onClick={handleRetryRefresh}
+            disabled={isRetrying}
+            className="btn-secondary inline-flex items-center gap-2 disabled:opacity-50"
+          >
+            <RefreshCw className={`w-4 h-4 ${isRetrying ? "animate-spin" : ""}`} />
+            {t("retry")}
+          </button>
+        </div>
+      );
+    }
+
     if (!data || data.points.length === 0) {
+      // Nothing to plot yet, but a re-fit is running — the data is on its way,
+      // so don't claim there are no embeddings.
+      if (isRecomputing) {
+        return (
+          <div
+            className="flex flex-col items-center justify-center text-center"
+            style={{ height: height - 100 }}
+          >
+            <Spinner size="lg" />
+            <h3 className="mt-3 text-lg font-semibold text-text-primary">
+              {t("computing")}
+            </h3>
+            <p className="text-text-secondary max-w-md">{t("computingHint")}</p>
+          </div>
+        );
+      }
+
       return (
         <div
           className="flex flex-col items-center justify-center text-center"
@@ -294,6 +364,31 @@ export function UmapVisualization({
     // Success - render chart
     return (
       <>
+        {/* Some points are plotted, but newer ones have no coordinates yet. */}
+        {isRecomputing && (
+          <div className="flex items-center gap-2 mb-3 px-3 py-2 rounded-md bg-accent-amber/10 border border-accent-amber/30">
+            <Spinner size="sm" />
+            <span className="text-xs text-text-secondary">
+              {t("computingPartial")}
+            </span>
+          </div>
+        )}
+        {/* Points are plotted, but the re-fit for the newer ones failed. */}
+        {refreshError && (
+          <div className="flex items-center gap-2 mb-3 px-3 py-2 rounded-md bg-accent-red/10 border border-accent-red/30">
+            <AlertCircle className="w-4 h-4 text-accent-red flex-shrink-0" />
+            <span className="text-xs text-text-secondary flex-1">
+              {t("refreshFailedPartial")}
+            </span>
+            <button
+              onClick={handleRetryRefresh}
+              disabled={isRetrying}
+              className="text-xs underline text-text-secondary hover:text-text-primary disabled:opacity-50"
+            >
+              {t("retry")}
+            </button>
+          </div>
+        )}
         <div style={{ height: height - 100 }}>
           <ResponsiveContainer width="100%" height="100%">
             <ScatterChart
