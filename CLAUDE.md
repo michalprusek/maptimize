@@ -27,6 +27,29 @@ místech ve dvou souborech a dvě z nich zůstala na `gemini-2.0-flash`, který 
 
 **Soubor:** `backend/services/gemini_agent_service.py`
 
+### Konvergence smyčky (OPRAVENO 2026-07-19)
+
+**Symptom:** místo odpovědi agent vrátil `Completed actions: <30 toolů>. Please
+try your query again.`
+
+**Příčina:** soft-cap "po 25 toolech vypni tools ať model odpoví" **nefungoval** —
+kód sice nastavil `current_tools = None`, ale `function_call` party z modelu
+sbíral a **vykonával dál bez ohledu na to** (žádná kontrola stavu). Model
+napodoboval dlouhou historii volání a volal tool každý tah až do
+`max_iterations=30`, pak spadl do fallbacku, který vypsal seznam toolů.
+
+**Řešení:** (1) když jsou tools vypnuté a model přesto vrátí `function_call`,
+**nevykonávat je** — vyskočit na finální syntézu; (2) fallback dělá **jeden
+finální `generate_content` bez toolů** s pokynem "odpověz teď v jazyce uživatele",
+místo výpisu toolů.
+
+### query_database MUSÍ nést schéma
+
+Pokud tool description neobsahuje **názvy sloupců**, model je neuhodne, dotaz
+selže a model to zkouší znovu → jeden dotaz vyvolá tucet volání DB. Schéma je v
+`_SQL_SCHEMA_HINT` (SSOT) a vkládá se do description. Při změně modelů ho
+aktualizuj. Dovolené JOINy, zakázané subqueries/CTE/UNION.
+
 ### Filosofie návrhu - AUTONOMNÍ AGENT
 
 **CRITICAL: Agent musí být maximálně autonomní!**
@@ -71,7 +94,15 @@ Pro výpočty, grafy a analýzy → **vždy preferovat `execute_python_code`**
 
 **Když uživatel řekne "otestuj chat" nebo "otestuj agenta"**, proveď následující:
 
-**Testovací otázky:** `backend/tests/test_agent_questions.json`
+**Nejrychlejší cesta — živý konverzační smoke-test** (volá reálné Gemini + DB + GPU,
+takže stojí peníze; exit code je nenulový, když nějaký tah selže):
+```bash
+docker exec maptimize-backend python /app/tests/run_agent_conversations.py
+```
+Označí `FAIL` (prázdná/fallback odpověď), `NEAR-CAP` (tah použil ≥25 toolů, málem
+se zacyklil) a `OK`. Vlastní otázky: `-q "..." -q "..."`.
+
+**Testovací otázky (statická sada):** `backend/tests/test_agent_questions.json`
 
 **Postup testování:**
 

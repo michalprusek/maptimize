@@ -331,6 +331,17 @@ def test_inject_filter_group_ignored_for_non_experiment_tables():
     assert "group_id" not in out
 
 
+def test_query_database_tool_advertises_schema():
+    # The model probes with many small queries when it doesn't know the columns.
+    # The tool description must carry the schema and the key constraints.
+    tool = next(t for t in svc.AGENT_TOOLS if t["name"] == "query_database")
+    desc = tool["description"]
+    for table in svc.ALLOWED_SQL_TABLES:
+        assert table in desc, f"{table} missing from query_database schema hint"
+    assert "bundleness_score" in desc  # a real, non-obvious column
+    assert "NO subqueries" in desc
+
+
 # --- _extract_referenced_tables (the comma-join CVE fix) -------------------- #
 def test_extract_tables_single():
     assert svc._extract_referenced_tables("SELECT * FROM experiments") == {"experiments"}
@@ -1739,6 +1750,54 @@ async def test_generate_response_function_call_then_text(mock_db, monkeypatch):
     assert res["tool_calls"][0]["tool"] == "get_overview_stats"
 
 
+class _RunawayClient:
+    """Models a runaway agent: it keeps emitting a tool call on every turn --
+    even after tools are removed from the request, exactly as the real model did
+    in prod (the tool count climbed 25->30 while tools were 'disabled'). It only
+    produces text when an explicit 'answer now, do not call tools' nudge is the
+    last message. Reproduces the failure where the soft cap did not stop tool
+    execution and the loop dumped a tool list."""
+
+    def __init__(self, answer="Máte 3 experimenty."):
+        self.answer = answer
+        self.tool_turns = 0
+        self.synth_turns = 0
+        self.models = self
+
+    def generate_content(self, *, model, contents, config):
+        last = contents[-1] if contents else None
+        last_text = " ".join(
+            (getattr(p, "text", "") or "") for p in getattr(last, "parts", []) or []
+        ).lower()
+        if "do not call" in last_text:  # the forced-synthesis nudge
+            self.synth_turns += 1
+            return _fake_response(_model_content_with_text(self.answer), text=self.answer)
+        self.tool_turns += 1
+        return _fake_response(
+            _model_content_with_function_call("get_overview_stats", {}))
+
+
+async def test_runaway_tools_are_capped_and_synthesis_forced(mock_db, monkeypatch):
+    # Regression: the model that will not stop calling tools must be cut off at
+    # the cap and forced to synthesize a real answer -- NOT run to max_iterations
+    # and dump "Completed actions: ... Please try your query again."
+    monkeypatch.setattr(svc.settings, "gemini_api_key", "fake-key")
+    monkeypatch.setattr(svc, "_build_conversation_history", AsyncMock(return_value=[]))
+    monkeypatch.setattr(svc, "get_user_group_id", AsyncMock(return_value=None))
+    StatsCache._cache.clear()
+    mock_db.execute.return_value = make_result(
+        scalar=3, first=SimpleNamespace(img=1, cell=2))
+    client = _RunawayClient()
+    with patch("google.genai.Client", return_value=client):
+        res = await generate_response("kolik mám experimentů?", 5, 100, mock_db)
+    # A real answer, in the user's language, from the synthesis call.
+    assert res["content"] == "Máte 3 experimenty."
+    assert "Please try your query again" not in res["content"]
+    # The cap actually stopped tool execution rather than grinding to 30.
+    assert len(res["tool_calls"]) <= 25
+    assert client.synth_turns >= 1
+
+
 async def test_generate_response_tool_error_then_text(mock_db, monkeypatch):
     monkeypatch.setattr(svc.settings, "gemini_api_key", "fake-key")
     r1 = _fake_response(_model_content_with_function_call("get_experiment_stats", {}))
@@ -2052,10 +2111,13 @@ async def test_generate_response_text_fallback_passage_fix(mock_db, monkeypatch)
     assert "![Fig](passage:1:2:abcdef012345)" in res["content"]
 
 
-async def test_generate_response_fallback_completed_actions(mock_db, monkeypatch):
+async def test_generate_response_last_resort_when_synthesis_also_empty(mock_db, monkeypatch):
     monkeypatch.setattr(svc.settings, "gemini_api_key", "fake-key")
-    # list_documents yields no stats/images keys -> fallback uses the
-    # "Completed actions: ..." summary branch.
+    monkeypatch.setattr(svc, "_build_conversation_history", AsyncMock(return_value=[]))
+    monkeypatch.setattr(svc, "get_user_group_id", AsyncMock(return_value=None))
+    # list_documents yields no stats/images, and every model turn (including the
+    # forced-synthesis call) comes back empty -> the generic last-resort message.
+    # It must NOT dump the raw tool list.
     r1 = _fake_response(_model_content_with_function_call("list_documents", {}))
     empty = SimpleNamespace(
         candidates=[SimpleNamespace(content=SimpleNamespace(parts=[]),
@@ -2066,8 +2128,8 @@ async def test_generate_response_fallback_completed_actions(mock_db, monkeypatch
     fake_client.models.generate_content.side_effect = [r1] + [empty] * 40
     with patch("google.genai.Client", return_value=fake_client):
         res = await generate_response("docs", 1, 100, mock_db)
-    assert "Completed actions" in res["content"]
-    assert "list_documents" in res["content"]
+    assert "couldn't compose a final answer" in res["content"]
+    assert "list_documents" not in res["content"]  # no raw tool-list dump
 
 
 async def test_generate_response_fallback_render_overlay_markdown(mock_db, tmp_path, monkeypatch):
