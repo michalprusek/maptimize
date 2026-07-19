@@ -11,8 +11,8 @@ the agent thrash), plotting, and web -- through ``generate_response`` exactly as
 the router does (a fresh DB session per turn) and flags:
 
   FAIL      the reply is empty or is one of the fallback/error messages
-  NEAR-CAP  the turn used >= FORCE_ANSWER_AFTER tool calls (it nearly ran away;
-            the loop still forced a synthesis, but the question over-explored)
+  NEAR-CAP  the turn used >= FORCE_ANSWER_AFTER tool calls (imported from the
+            agent loop; it nearly ran away but still forced a synthesis)
   OK        a normal answer within budget
 
 Exit code is non-zero if any turn FAILed, so it can gate a deploy.
@@ -25,13 +25,16 @@ import time
 sys.path.insert(0, "/app")
 
 from database import get_db_context  # noqa: E402
-from services.gemini_agent_service import generate_response  # noqa: E402
+from services.gemini_agent_service import (  # noqa: E402
+    FORCE_ANSWER_AFTER,
+    generate_response,
+)
 from sqlalchemy import text  # noqa: E402
 
-# Tool count at/above which the loop starts forcing an answer. Kept in sync with
-# the loop by importing would be ideal, but the loop hardcodes it; treat >= this
-# as "nearly ran away".
-NEAR_CAP = 25
+# Tool count at/above which the loop forces an answer -- imported from the loop
+# (single source of truth) so this never drifts. Treat >= this as "nearly ran
+# away": the loop still forces a synthesis, but the question over-explored.
+NEAR_CAP = FORCE_ANSWER_AFTER
 
 QUESTIONS = [
     ("Kolik mám experimentů a kolik buněk celkem?"),

@@ -132,9 +132,16 @@ _SQL_SCHEMA_HINT = (
     "comparisons(id, crop_a_id, crop_b_id, winner_id, response_time_ms, undone, timestamp)\n"
     "user_ratings(id, cell_crop_id, mu, sigma, comparison_count, created_at)\n"
     "rag_documents(id, name, file_type, status, page_count, created_at)\n"
-    "rag_document_pages(id, document_id, page_number, extracted_text)  -- must JOIN rag_documents\n"
+    "rag_document_pages(id, document_id, page_number)  -- must JOIN rag_documents; page text is NOT in SQL, use search_documents/get_document_content\n"
     "agent_memories(id, key, value, memory_type, tags, created_at)"
 )
+
+# Agent-loop budget. FORCE_ANSWER_AFTER is the tool-call count at which tools are
+# removed to force a text answer; MAX_ITERATIONS is the hard stop. Exported so
+# the live smoke-test runner (tests/run_agent_conversations.py) shares one source
+# of truth rather than hardcoding the number.
+FORCE_ANSWER_AFTER = 25
+MAX_ITERATIONS = 30
 
 
 def _fix_passage_links_in_response(
@@ -782,9 +789,11 @@ AGENT_TOOLS = [
             "well-formed query using the schema below rather than probing with "
             "many small queries. Auto-scoped to the current user; max 1000 rows.\n\n"
             "SCHEMA (columns per table):\n" + _SQL_SCHEMA_HINT + "\n\n"
-            "RULES: SELECT only. JOINs allowed. NO subqueries, CTEs (WITH), UNION, "
-            "or multiple statements. images and cell_crops must JOIN experiments; "
-            "rag_document_pages must JOIN rag_documents (so the user filter applies). "
+            "RULES: SELECT only. Use explicit JOIN ... ON (not comma joins). "
+            "NO subqueries, CTEs (WITH), UNION/INTERSECT/EXCEPT, SQL comments, or "
+            "multiple statements. images must JOIN experiments; cell_crops must "
+            "JOIN images which JOINs experiments; rag_document_pages must JOIN "
+            "rag_documents (so the per-user filter applies). "
             "Aggregate with COUNT/AVG/GROUP BY in the query instead of fetching rows "
             "and counting yourself. For plots/analysis pass the rows to execute_python_code."
         ),
@@ -1095,14 +1104,14 @@ async def generate_response(
     # Generate a unique interaction ID for this response (thread_id + UUID for traceability)
     current_interaction_id = f"int_{thread_id}_{uuid.uuid4().hex[:12]}"
 
-    max_iterations = 30
+    max_iterations = MAX_ITERATIONS
     for iteration in range(max_iterations):
         try:
             # After many tool calls, hint to generate a response
             current_tools = gemini_tools
             tool_mode = "AUTO"
-            if len(tool_calls_log) >= 25:
-                # Disable tools after 25 calls to force text generation
+            if len(tool_calls_log) >= FORCE_ANSWER_AFTER:
+                # Disable tools to force text generation
                 current_tools = None
                 tool_mode = "NONE"
                 logger.info(f"Iteration {iteration}: Disabling tools after {len(tool_calls_log)} calls to force response")
@@ -1178,12 +1187,21 @@ async def generate_response(
             # Once tools are disabled to force an answer, the model may still emit
             # function_call parts by mimicking the long tool-calling history.
             # Executing them here is exactly the runaway the cap exists to stop
-            # (in prod the count climbed 25->30 while "disabled"), so drop out to
-            # the forced-synthesis step instead of running another tool.
+            # (in prod the count climbed 25->30 while "disabled").
             if function_calls and current_tools is None:
+                # If the same response ALSO carried a text answer, return it --
+                # don't discard a good answer just because a stray tool call rode
+                # along. Only fall through to synthesis when there is no text.
+                forced_text = "\n".join(p.text for p in parts if getattr(p, "text", None))
+                if forced_text.strip():
+                    if valid_passages_markdown:
+                        forced_text = _fix_passage_links_in_response(forced_text, valid_passages_markdown, user_id)
+                    logger.info(f"Iteration {iteration}: tools disabled; returning text alongside {len(function_calls)} ignored call(s)")
+                    return {"content": forced_text, "citations": citations, "image_refs": image_refs, "tool_calls": tool_calls_log, "interaction_id": current_interaction_id}
                 logger.warning(
                     f"Iteration {iteration}: model emitted {len(function_calls)} "
-                    f"function_call(s) with tools disabled; forcing synthesis"
+                    f"function_call(s), no text, after {len(tool_calls_log)} tool "
+                    f"calls; forcing synthesis"
                 )
                 break
 
@@ -1324,6 +1342,13 @@ async def generate_response(
             logger.info(f"Returning response.text fallback ({len(content)} chars)")
             return {"content": content, "citations": citations, "image_refs": image_refs, "tool_calls": tool_calls_log, "interaction_id": current_interaction_id}
 
+        # Tools already disabled and the model returned nothing usable: retrying
+        # the same request just burns 120s timeouts up to iteration 30. Go
+        # straight to the forced synthesis instead.
+        if current_tools is None and tool_calls_log:
+            logger.warning(f"Iteration {iteration}: empty response with tools disabled; forcing synthesis")
+            break
+
         # If we get here without text or function_call after having tool calls,
         # Gemini 3 sometimes returns empty response - retry once more
         if tool_calls_log and iteration < max_iterations - 1:
@@ -1344,7 +1369,7 @@ async def generate_response(
     # have tool results, make ONE final call with tools removed and an explicit
     # instruction to answer now. This is what actually produces a real reply in
     # the user's language from the data already gathered -- as opposed to the
-    # tool-list dump below, which is only a last resort.
+    # data-extraction fallback below, which is only a last resort.
     if tool_calls_log:
         logger.warning(f"Agent loop ended with {len(tool_calls_log)} tool calls but no text - forcing final synthesis")
         try:
@@ -1379,6 +1404,7 @@ async def generate_response(
                     synth_text = _fix_passage_links_in_response(synth_text, valid_passages_markdown, user_id)
                 logger.info("Final synthesis produced an answer")
                 return {"content": synth_text, "citations": citations, "image_refs": image_refs, "tool_calls": tool_calls_log, "interaction_id": current_interaction_id}
+            logger.warning("Final synthesis returned no text; using data-extraction fallback")
         except Exception:
             logger.exception("Final synthesis call failed; using data-extraction fallback")
 
@@ -1414,7 +1440,9 @@ async def generate_response(
 
         if not stats_found and not images_found:
             # Reached only if synthesis failed AND no displayable data was found.
-            # Do not dump the raw tool list -- it means nothing to a biologist.
+            # This is the agent's worst outcome -- log it, and do not dump the raw
+            # tool list (it means nothing to a biologist).
+            logger.error(f"Agent produced no answer after {len(tool_calls_log)} tool calls; returning generic give-up message")
             fallback_parts = [
                 "I gathered the data but couldn't compose a final answer for this "
                 "request. Please try rephrasing it, or ask for a smaller piece at a time."
