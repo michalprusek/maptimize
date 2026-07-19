@@ -146,7 +146,11 @@ def make_fov_mask(polygon=None, area=1000):
 
 @pytest.fixture
 def patch_export_dir(tmp_path, monkeypatch):
-    """Redirect the data_export_service EXPORT_DIR to a temp directory."""
+    """Redirect the data_export_service EXPORT_DIR to a temp directory.
+
+    Exports land in EXPORT_DIR/<user_id>/ so they can be served by an
+    ownership-checked endpoint instead of a public static mount.
+    """
     monkeypatch.setattr(des, "EXPORT_DIR", tmp_path)
     return tmp_path
 
@@ -196,7 +200,8 @@ async def test_export_experiment_csv(mock_db, patch_export_dir):
     assert out["metadata"]["total_images"] == 2
     assert out["metadata"]["total_cells"] == 3
     assert out["metadata"]["protein"] == "PRC1"
-    assert (patch_export_dir / out["filename"]).exists()
+    assert (patch_export_dir / "7" / out["filename"]).exists()
+    assert out["download_url"] == f"/api/exports/7/{out['filename']}"
 
 
 async def test_export_experiment_xlsx_empty(mock_db, patch_export_dir):
@@ -212,7 +217,8 @@ async def test_export_experiment_xlsx_empty(mock_db, patch_export_dir):
     assert out["metadata"]["protein"] is None
     assert out["metadata"]["total_cells"] == 0
     assert out["metadata"]["total_images"] == 0
-    assert (patch_export_dir / out["filename"]).exists()
+    assert (patch_export_dir / "7" / out["filename"]).exists()
+    assert out["download_url"] == f"/api/exports/7/{out['filename']}"
 
 
 # ============================================================================
@@ -238,7 +244,8 @@ async def test_export_cell_crops_with_rows(mock_db, patch_export_dir):
     assert out["success"] is True
     assert out["row_count"] == 2
     assert "_exp1_" in out["filename"]
-    assert (patch_export_dir / out["filename"]).exists()
+    assert (patch_export_dir / "7" / out["filename"]).exists()
+    assert out["download_url"] == f"/api/exports/7/{out['filename']}"
 
 
 async def test_export_cell_crops_empty_no_experiment(mock_db, patch_export_dir):
@@ -283,17 +290,18 @@ async def test_export_ranking_comparisons_empty(mock_db, patch_export_dir):
 
 
 async def test_export_analysis_results_empty():
-    out = await des.export_analysis_results([], "myreport")
+    out = await des.export_analysis_results([], "myreport", user_id=7)
     assert out == {"error": "No data to export"}
 
 
 async def test_export_analysis_results_with_data(patch_export_dir):
     data = [{"a": 1, "b": 2}, {"a": 3, "b": 4}]
-    out = await des.export_analysis_results(data, "My Report!", format="csv")
+    out = await des.export_analysis_results(data, "My Report!", format="csv", user_id=7)
     assert out["success"] is True
     assert out["row_count"] == 2
     assert out["columns"] == ["a", "b"]
-    assert (patch_export_dir / out["filename"]).exists()
+    assert (patch_export_dir / "7" / out["filename"]).exists()
+    assert out["download_url"] == f"/api/exports/7/{out['filename']}"
 
 
 # ============================================================================

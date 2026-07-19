@@ -77,7 +77,9 @@ services:
       - CUDA_LAUNCH_BLOCKING=0
     volumes:
       - ./backend:/app
-      - ./data/uploads:/app/data/uploads
+      # See docker-compose.prod.yml: mounting only uploads/ left rag_documents/
+      # and rag_passages/ on the container's ephemeral layer.
+      - ./data:/app/data
       - ./weights:/app/weights
       - huggingface_cache:/app/.cache/huggingface
     networks:

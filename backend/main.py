@@ -1,5 +1,6 @@
 """MAPtimize Backend - FastAPI Application."""
 import logging
+import mimetypes
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
 from contextlib import asynccontextmanager
 
@@ -114,6 +115,11 @@ app.add_middleware(
     allow_headers=["*"],
     expose_headers=["*"],
 )
+
+# python:3.12-slim ships no /etc/mime.types and the stdlib map has no entry for
+# .webp, so StaticFiles would serve generated plots as text/plain and browsers
+# would refuse to render them. Register before mounting.
+mimetypes.add_type("image/webp", ".webp")
 
 # Mount static files for uploads
 app.mount("/uploads", StaticFiles(directory=str(settings.upload_dir)), name="uploads")

@@ -7,7 +7,8 @@ with strict security controls:
 - Memory and time limits
 - Captured stdout and return values
 
-Plots are saved to a temp folder and URLs are returned instead of base64.
+Plots are saved to a persistent chat-image folder and URLs are returned
+instead of base64, so they survive in conversation history.
 """
 
 import ast
@@ -49,9 +50,16 @@ FORBIDDEN_DUNDER_ATTRS = frozenset({
 logger = logging.getLogger(__name__)
 settings = get_settings()
 
-# Temp directory for generated plots (cleaned on server startup via cleanup_old_temp_files)
+# Scratch directory, reaped at 24h on startup by cleanup_old_temp_files().
+# Nothing referenced by a persisted chat message may live here.
 TEMP_DIR = Path(settings.upload_dir) / "temp"
 TEMP_DIR.mkdir(parents=True, exist_ok=True)
+
+# Agent-generated plots are referenced by URL from chat messages that are
+# stored forever, so they must outlive the reaper above. Writing them to
+# TEMP_DIR is what made images disappear from older conversations.
+CHAT_IMAGE_DIR = Path(settings.chat_image_dir)
+CHAT_IMAGE_DIR.mkdir(parents=True, exist_ok=True)
 
 # Whitelisted modules that can be imported
 ALLOWED_IMPORTS = {
@@ -141,8 +149,16 @@ def _timeout_handler(signum, frame):
     raise ExecutionTimeout("Code execution exceeded time limit")
 
 
-def _safe_import(name: str, *args, **kwargs):
-    """Restricted import function that only allows whitelisted modules."""
+def _safe_import(name: str, globals=None, locals=None, fromlist=(), level=0):
+    """Restricted import that only allows whitelisted modules.
+
+    Mirrors ``__import__`` semantics: with an empty *fromlist*
+    (``import a.b`` / ``import a.b as c``) the interpreter expects the
+    **top-level package** back and walks the attribute chain itself.
+    Returning the submodule instead made the canonical
+    ``import matplotlib.pyplot as plt`` fail with
+    "cannot import name 'pyplot' from 'matplotlib.pyplot'".
+    """
     # Handle submodule imports like "scipy.stats"
     base_module = name.split(".")[0]
 
@@ -154,7 +170,12 @@ def _safe_import(name: str, *args, **kwargs):
 
     # Use importlib for safer imports instead of accessing __builtins__ directly
     import importlib
-    return importlib.import_module(name)
+    module = importlib.import_module(name)
+    if not fromlist:
+        # Import the submodule (above) so the attribute exists, then hand back
+        # the top-level package for the caller to traverse.
+        return importlib.import_module(base_module)
+    return module
 
 
 def _validate_code_ast(code: str) -> None:
@@ -325,6 +346,7 @@ async def execute_python_code(
     code: str,
     timeout_seconds: int = MAX_EXECUTION_TIME,
     context: Optional[dict] = None,
+    user_id: Optional[int] = None,
 ) -> dict[str, Any]:
     """
     Execute Python code in a secure sandbox.
@@ -333,6 +355,8 @@ async def execute_python_code(
         code: Python code to execute
         timeout_seconds: Maximum execution time (default 60, max 60)
         context: Optional dict of variables to inject into execution context
+        user_id: Owner of any generated plots; determines the output
+            subdirectory and the authenticated URL they are served from
 
     Returns:
         dict with:
@@ -340,11 +364,18 @@ async def execute_python_code(
         - stdout: str (captured print output)
         - stderr: str (error messages)
         - result: Any (last expression value)
-        - plots: list[str] (URL paths to saved plot images, e.g., '/uploads/temp/plot_xxx.png')
+        - plots: list[str] (URLs, e.g. '/api/chat-images/7/plot_xxx.webp')
         - error: str (if execution failed)
     """
     # Validate timeout
     timeout_seconds = min(max(1, timeout_seconds), 60)
+
+    # Plots are written per owner and served from an authenticated endpoint.
+    # A missing user_id falls back to bucket 0, which no real user matches --
+    # such plots are simply unreachable rather than public.
+    owner_id = user_id if user_id is not None else 0
+    out_dir = CHAT_IMAGE_DIR / str(owner_id)
+    out_dir.mkdir(parents=True, exist_ok=True)
 
     result = {
         "success": False,
@@ -499,7 +530,7 @@ async def execute_python_code(
                     if "_" in exec_globals:
                         exec_result["result"] = str(exec_globals["_"])
 
-                # Save matplotlib plots to temp folder (must be done in subprocess)
+                # Save matplotlib plots to the persistent chat dir (must be done in subprocess)
                 try:
                     import matplotlib.pyplot as plt
                     temp_dir = Path(temp_dir_str)
@@ -507,11 +538,19 @@ async def execute_python_code(
                     for fig in figures:
                         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
                         unique_id = uuid.uuid4().hex[:8]
-                        filename = f"plot_{timestamp}_{unique_id}.png"
+                        filename = f"plot_{timestamp}_{unique_id}.webp"
                         filepath = temp_dir / filename
-                        fig.savefig(filepath, format="png", dpi=150, bbox_inches="tight", facecolor="white")
+                        # Lossless WebP: ~78% smaller than the equivalent PNG on
+                        # chart-like content, with no quality loss. (Lossy q85 is
+                        # actually *larger* here -- these are flat-colour plots,
+                        # not photographs.)
+                        fig.savefig(
+                            filepath, format="webp", dpi=150,
+                            bbox_inches="tight", facecolor="white",
+                            pil_kwargs={"lossless": True, "method": 4},
+                        )
                         plt.close(fig)
-                        exec_result["plots"].append(f"/uploads/temp/{filename}")
+                        exec_result["plots"].append(filename)
                 except ImportError:
                     pass  # matplotlib not used
                 except Exception as plot_error:
@@ -540,7 +579,7 @@ async def execute_python_code(
         # Start execution in separate process
         process = multiprocessing.Process(
             target=execute_in_process,
-            args=(result_queue, imports, code, serializable_context, str(TEMP_DIR))
+            args=(result_queue, imports, code, serializable_context, str(out_dir))
         )
         process.start()
         process.join(timeout=timeout_seconds)
@@ -563,6 +602,11 @@ async def execute_python_code(
         try:
             exec_result = result_queue.get_nowait()
             result.update(exec_result)
+            # Served through an authenticated, per-user endpoint -- these are
+            # the user's own research figures, not public assets.
+            result["plots"] = [
+                f"/api/chat-images/{owner_id}/{name}" for name in result.get("plots", [])
+            ]
         except Exception:
             result["error"] = "Failed to retrieve execution result"
             return result

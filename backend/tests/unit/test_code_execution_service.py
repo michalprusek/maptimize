@@ -212,7 +212,17 @@ def test_safe_import_allowed():
 
 
 def test_safe_import_submodule_allowed():
+    # Empty fromlist mirrors `import a.b` / `import a.b as c`: __import__
+    # returns the TOP-LEVEL package and the interpreter walks the chain.
     mod = _safe_import("matplotlib.pyplot")
+    assert mod.__name__ == "matplotlib"
+    assert hasattr(mod.pyplot, "figure")
+
+
+def test_safe_import_submodule_with_fromlist_returns_submodule():
+    # `from a.b import c` passes a fromlist and must get the submodule.
+    mod = _safe_import("matplotlib.pyplot", fromlist=("figure",))
+    assert mod.__name__ == "matplotlib.pyplot"
     assert hasattr(mod, "figure")
 
 
@@ -355,13 +365,15 @@ async def test_execute_matplotlib_saves_plot(tmp_path):
         "plt.figure()\n"
         "plt.plot([1, 2, 3], [4, 5, 6])\n"
     )
-    with patch.object(ces, "TEMP_DIR", tmp_path):
-        res = await _run(code)
+    with patch.object(ces, "CHAT_IMAGE_DIR", tmp_path):
+        res = await _run(code, user_id=7)
     assert res["success"] is True
     assert len(res["plots"]) == 1
-    assert res["plots"][0].startswith("/uploads/temp/plot_")
-    # File actually written to the patched temp dir.
-    saved = list(Path(tmp_path).glob("plot_*.png"))
+    # Persistent (not the 24h-reaped temp dir) and served per user through an
+    # authenticated endpoint rather than the public /uploads mount.
+    assert res["plots"][0].startswith("/api/chat-images/7/plot_")
+    assert res["plots"][0].endswith(".webp")
+    saved = list((Path(tmp_path) / "7").glob("plot_*.webp"))
     assert len(saved) == 1
 
 
@@ -372,10 +384,32 @@ async def test_execute_matplotlib_pyplot_submodule(tmp_path):
         "plt.figure()\n"
         "plt.plot([0, 1])\n"
     )
-    with patch.object(ces, "TEMP_DIR", tmp_path):
+    with patch.object(ces, "CHAT_IMAGE_DIR", tmp_path):
         res = await _run(code)
     assert res["success"] is True
     assert len(res["plots"]) >= 1
+
+
+async def test_execute_aliased_submodule_import(tmp_path):
+    # `import a.b as c` -- __import__ must return the top-level package for the
+    # interpreter to walk. Returning the submodule broke the single most common
+    # line the agent writes: `import matplotlib.pyplot as plt`.
+    code = (
+        "import matplotlib.pyplot as plt\n"
+        "plt.figure()\n"
+        "plt.plot([1, 2, 3], [2, 4, 8])\n"
+    )
+    with patch.object(ces, "CHAT_IMAGE_DIR", tmp_path):
+        res = await _run(code, user_id=7)
+    assert res["success"] is True, res.get("error")
+    assert len(res["plots"]) == 1
+
+
+async def test_execute_aliased_submodule_import_nonplot():
+    # Same aliasing path for a non-matplotlib module (no pre-injected global).
+    res = await _run("import scipy.stats as st\nprint(round(st.norm.cdf(1), 3))")
+    assert res["success"] is True, res.get("error")
+    assert "0.841" in res["stdout"]
 
 
 async def test_execute_seaborn_alias():

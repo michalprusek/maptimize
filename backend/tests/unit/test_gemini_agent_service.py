@@ -1339,7 +1339,8 @@ async def test_render_overlay_crop_image_missing(mock_db, tmp_path):
 
 
 async def test_render_overlay_crop_success(mock_db, tmp_path):
-    settings_obj = SimpleNamespace(upload_dir=str(tmp_path))
+    settings_obj = SimpleNamespace(upload_dir=str(tmp_path),
+                                   chat_image_dir=tmp_path / "chat")
     # Real PNG file for PIL to open
     from PIL import Image as PILImage
     crop_path = tmp_path / "crop.png"
@@ -1353,11 +1354,14 @@ async def test_render_overlay_crop_success(mock_db, tmp_path):
         make_result(scalar=crop),
         make_result(scalar=mask),
     ]
-    with patch.object(svc, "get_settings", return_value=settings_obj):
+    with patch.object(svc, "settings", settings_obj):
         res = await execute_tool("render_segmentation_overlay",
                                  {"crop_id": 1, "color": "red"}, 1, mock_db)
     assert res["success"] is True
-    assert res["image_markdown"].startswith("![Segmentation](/uploads/temp/")
+    # Persistent chat dir, not the 24h-reaped temp dir.
+    # Per-user authenticated endpoint, not the public /uploads mount.
+    assert res["image_markdown"].startswith("![Segmentation](/api/chat-images/1/")
+    assert res["image_markdown"].endswith(".webp)")
     assert res["mask_iou_score"] == 0.77
 
 
@@ -1828,6 +1832,11 @@ async def test_generate_response_fallback_with_stats_and_images(mock_db, monkeyp
 
 async def test_generate_response_fallback_segmentation_and_cells(mock_db, monkeypatch):
     monkeypatch.setattr(svc.settings, "gemini_api_key", "fake-key")
+    # Stub history replay: it issues its own db.execute, which would
+    # otherwise consume an entry from the mocked side_effect sequence.
+    monkeypatch.setattr(svc, "_build_conversation_history", AsyncMock(return_value=[]))
+    # Same reason: the per-turn group lookup issues its own db.execute.
+    monkeypatch.setattr(svc, "get_user_group_id", AsyncMock(return_value=None))
     # Call get_segmentation_masks (masks_found) + get_cell_detection_results
     # (crops with thumbnails), then exhaust the loop -> fallback extracts both
     # the stats line and the cell-image markdown.
@@ -1950,6 +1959,11 @@ async def test_generate_response_fallback_completed_actions(mock_db, monkeypatch
 
 async def test_generate_response_fallback_render_overlay_markdown(mock_db, tmp_path, monkeypatch):
     monkeypatch.setattr(svc.settings, "gemini_api_key", "fake-key")
+    # Stub history replay: it issues its own db.execute, which would
+    # otherwise consume an entry from the mocked side_effect sequence.
+    monkeypatch.setattr(svc, "_build_conversation_history", AsyncMock(return_value=[]))
+    # Same reason: the per-turn group lookup issues its own db.execute.
+    monkeypatch.setattr(svc, "get_user_group_id", AsyncMock(return_value=None))
     # render_segmentation_overlay returns image_markdown; loop exhausts ->
     # fallback collects the overlay image markdown.
     from PIL import Image as PILImage
@@ -2056,3 +2070,48 @@ async def test_run_redetection_task_error_swallowed():
          patch("services.image_processor.process_image_background", new=AsyncMock()):
         # Should not raise -- the error is logged and swallowed.
         await _run_redetection_task(42)
+
+
+# --- _build_conversation_history ------------------------------------------- #
+def _msg(role, content, mid=1):
+    return SimpleNamespace(role=role, content=content, id=mid)
+
+
+async def test_build_history_empty_thread(mock_db):
+    mock_db.execute.return_value = make_result(scalars_all=[])
+    out = await svc._build_conversation_history(mock_db, 1, "hello")
+    assert out == []
+
+
+async def test_build_history_maps_roles_and_orders_oldest_first(mock_db):
+    # Query returns newest-first; the result must be replayed oldest-first
+    # with DB roles mapped onto Gemini's user/model vocabulary.
+    mock_db.execute.return_value = make_result(scalars_all=[
+        _msg("assistant", "second", 4),
+        _msg("user", "first", 3),
+    ])
+    out = await svc._build_conversation_history(mock_db, 1, "new question")
+    assert [c.role for c in out] == ["user", "model"]
+    assert [c.parts[0].text for c in out] == ["first", "second"]
+
+
+async def test_build_history_drops_duplicate_current_turn(mock_db):
+    # chat.py persists the user message before generation starts, so the
+    # newest row is the query itself and must not be replayed twice.
+    mock_db.execute.return_value = make_result(scalars_all=[
+        _msg("user", "  what is PRC1?  ", 9),
+        _msg("assistant", "earlier answer", 8),
+    ])
+    out = await svc._build_conversation_history(mock_db, 1, "what is PRC1?")
+    assert [c.parts[0].text for c in out] == ["earlier answer"]
+
+
+async def test_build_history_skips_blank_and_respects_char_budget(mock_db):
+    mock_db.execute.return_value = make_result(scalars_all=[
+        _msg("assistant", "y" * 50, 3),
+        _msg("user", "", 2),
+        _msg("assistant", "x" * 500, 1),
+    ])
+    out = await svc._build_conversation_history(mock_db, 1, "q", max_chars=100)
+    # Blank dropped; the oversized older message falls outside the budget.
+    assert [c.parts[0].text for c in out] == ["y" * 50]

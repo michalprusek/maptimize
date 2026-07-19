@@ -94,6 +94,7 @@ class StatsCache:
 from models.experiment import Experiment
 from models.image import Image, MapProtein, UploadStatus
 from models.cell_crop import CellCrop
+from utils.groups import experiment_owner_filter, get_user_group_id
 from models.rag_document import RAGDocument
 from models.agent_memory import AgentMemory, MemoryType
 from services.rag_service import (
@@ -198,14 +199,21 @@ def _fix_passage_links_in_response(
     return content
 
 
-def _inject_user_id_filter(query_str: str, table: str) -> str:
-    """Inject a user_id filter into a SQL query for the given table.
+def _inject_user_id_filter(query_str: str, table: str, group_id: Optional[int] = None) -> str:
+    """Inject an ownership filter into a SQL query for the given table.
 
-    Safely adds ``{table}.user_id = :user_id`` either into an existing WHERE
-    clause (wrapping the original conditions in parentheses to prevent
-    operator-precedence bypasses) or by inserting a new WHERE clause after
-    the FROM/JOIN block.
+    Safely adds the predicate either into an existing WHERE clause (wrapping
+    the original conditions in parentheses to prevent operator-precedence
+    bypasses) or by inserting a new WHERE clause after the FROM/JOIN block.
+
+    For ``experiments`` the predicate widens to group-shared rows so that SQL
+    answers match what the same user sees in the UI; other tables have no
+    group column and stay owner-scoped.
     """
+    if table == "experiments" and group_id is not None:
+        predicate = f"({table}.user_id = :user_id OR {table}.group_id = :group_id)"
+    else:
+        predicate = f"{table}.user_id = :user_id"
     where_match = re.search(r'\bWHERE\b', query_str, re.IGNORECASE)
     if where_match:
         pos = where_match.end()
@@ -217,7 +225,7 @@ def _inject_user_id_filter(query_str: str, table: str) -> str:
         else:
             where_conditions = rest_of_query.strip()
             after_where = ""
-        return query_str[:pos] + f" {table}.user_id = :user_id AND ({where_conditions}) {after_where}"
+        return query_str[:pos] + f" {predicate} AND ({where_conditions}) {after_where}"
 
     from_match = re.search(
         r'\bFROM\b\s+\w+(?:\s+\w+)?(?:\s+(?:LEFT|RIGHT|INNER|OUTER)?\s*JOIN\s+\w+(?:\s+\w+)?(?:\s+ON\s+[^,]+)?)*',
@@ -225,9 +233,40 @@ def _inject_user_id_filter(query_str: str, table: str) -> str:
     )
     if from_match:
         pos = from_match.end()
-        return query_str[:pos] + f" WHERE {table}.user_id = :user_id" + query_str[pos:]
+        return query_str[:pos] + f" WHERE {predicate}" + query_str[pos:]
 
-    return query_str.rstrip() + f" WHERE {table}.user_id = :user_id"
+    return query_str.rstrip() + f" WHERE {predicate}"
+
+
+# Keywords that terminate a FROM clause.
+_FROM_CLAUSE_END = r'\b(?:WHERE|GROUP\s+BY|ORDER\s+BY|HAVING|LIMIT|OFFSET|WINDOW|FETCH)\b'
+_JOIN_SPLIT = r'\b(?:LEFT|RIGHT|FULL|INNER|CROSS|OUTER)?\s*JOIN\b'
+
+
+def _extract_referenced_tables(query_str: str) -> set[str]:
+    """Return every table named in a FROM/JOIN clause, lowercased.
+
+    A ``FROM\\s+(\\w+)`` scan sees only the first table, so a comma-join
+    (``FROM experiments, users``) hid the second table from both the
+    whitelist check and the user_id injector -- making any table in the
+    database readable, unscoped. Splitting the whole FROM clause on JOIN
+    boundaries and commas is what closes that.
+
+    ON/USING predicates are stripped before the comma split so that commas
+    inside a join condition cannot be mistaken for table separators.
+    """
+    tables: set[str] = set()
+    for from_match in re.finditer(r'\bFROM\b', query_str, re.IGNORECASE):
+        rest = query_str[from_match.end():]
+        end = re.search(_FROM_CLAUSE_END, rest, re.IGNORECASE)
+        clause = rest[:end.start()] if end else rest
+        for segment in re.split(_JOIN_SPLIT, clause, flags=re.IGNORECASE):
+            segment = re.split(r'\b(?:ON|USING)\b', segment, flags=re.IGNORECASE)[0]
+            for part in segment.split(','):
+                ident = re.match(r'\s*([A-Za-z_][A-Za-z0-9_]*)', part)
+                if ident:
+                    tables.add(ident.group(1).lower())
+    return tables
 
 
 # Approved external APIs
@@ -493,7 +532,7 @@ plt.show()
 
 **IMPORTANT:** When the code returns plots (in `plots` array), INCLUDE THEM in your response using the `plots_markdown` array:
 ```
-![Plot 1](/uploads/temp/plot_xxx.png)
+![Plot 1](/api/chat-images/7/plot_xxx.webp)
 ```
 The plots are saved as files and the URLs are ready to use - just copy from `plots_markdown`.
 
@@ -546,15 +585,16 @@ Just use the URL directly without "thumbnail_url:" prefix.
 **FILE DOWNLOADS (exports):**
 When user asks to export/download data:
 1. Use the `export_data` tool with appropriate parameters
-2. The tool returns `{"download_url": "/uploads/exports/filename.xlsx", ...}`
+2. The tool returns `{"download_url": "/api/exports/7/filename.xlsx", ...}`
 3. Present the download link using EXACTLY the URL from `download_url`:
 ```markdown
-[Download filename.xlsx](/uploads/exports/filename.xlsx)
+[Download filename.xlsx](/api/exports/7/filename.xlsx)
 ```
 
 **CRITICAL:** NEVER invent or guess export URLs! Always use the `download_url` returned by the tool.
 WRONG: `/api/experiments/9/export?...` - This URL format does NOT exist!
-CORRECT: `/uploads/exports/cell_crops_exp9_20260119_123456.xlsx` - Use the actual URL from tool result!
+CORRECT: `/api/exports/7/cell_crops_exp9_20260119_123456_a1b2c3d4e5f6a7b8.xlsx` - Use the actual URL from tool result!
+(The numeric segment and random suffix are assigned by the server -- they cannot be guessed, so copy the URL verbatim.)
 
 ## Response Style
 - Provide detailed, comprehensive responses
@@ -900,6 +940,53 @@ async def _run_redetection_task(image_id: int) -> None:
         logger.error(f"Re-detection failed for image {image_id}: {e}")
 
 
+async def _build_conversation_history(
+    db: AsyncSession,
+    thread_id: int,
+    query: str,
+    max_turns: int = 12,
+    max_chars: int = 60_000,
+) -> list:
+    """Replay recent thread messages as Gemini Content, oldest first.
+
+    Bounded by turn count *and* total characters: assistant replies that
+    embedded large tool output would otherwise be re-sent on every iteration
+    of the agent loop.
+
+    The caller persists the user's message before generation starts, so a
+    trailing user row matching ``query`` is dropped to avoid duplicating the
+    current turn.
+    """
+    from google.genai import types
+    from models.chat import ChatMessage
+
+    rows = (await db.execute(
+        select(ChatMessage)
+        .where(ChatMessage.thread_id == thread_id)
+        .order_by(ChatMessage.created_at.desc(), ChatMessage.id.desc())
+        .limit(max_turns * 2)
+    )).scalars().all()
+
+    history = list(rows)
+    if history and history[0].role == "user" and (history[0].content or "").strip() == query.strip():
+        history = history[1:]
+
+    contents, budget = [], max_chars
+    for msg in history:  # newest -> oldest, so the budget drops the oldest first
+        text = (msg.content or "").strip()
+        if not text:
+            continue
+        if len(text) > budget:
+            break
+        budget -= len(text)
+        contents.append(types.Content(
+            role="model" if msg.role == "assistant" else "user",
+            parts=[types.Part(text=text)],
+        ))
+    contents.reverse()
+    return contents
+
+
 async def generate_response(
     query: str,
     user_id: int,
@@ -907,19 +994,19 @@ async def generate_response(
     db: AsyncSession,
     previous_interaction_id: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Generate an AI response using Gemini Interactions API with RAG and extended tools.
+    """Generate an AI response using Gemini with RAG and extended tools.
 
-    The Interactions API provides server-side conversation state management:
-    - Instead of sending full history with each request, we pass previous_interaction_id
-    - Gemini remembers the conversation context server-side (55-day retention with store=True)
-    - This reduces token usage and enables better caching
+    Prior turns of the thread are replayed from the database on each call
+    (see :func:`_build_conversation_history`). ``previous_interaction_id`` is
+    accepted for API compatibility but is not used: this path calls
+    ``generate_content``, which has no server-side conversation state.
 
     Args:
         query: The user's message
         user_id: Current user ID for tool access
         thread_id: Chat thread ID
         db: Database session
-        previous_interaction_id: Interaction ID from the last assistant message (for context)
+        previous_interaction_id: Unused; retained for call-site compatibility
 
     Returns:
         Dict with content, citations, image_refs, tool_calls, and interaction_id
@@ -946,10 +1033,23 @@ async def generate_response(
         ])
     ]
 
-    # Build messages for the API call (currently only the user query)
-    # Note: previous_interaction_id is accepted for future server-side state management
-    # but is not yet used - we generate a new interaction_id for each response
-    messages = [types.Content(role="user", parts=[types.Part(text=query)])]
+    # Replay prior turns so follow-up questions ("now plot that as a bar chart")
+    # resolve against what was already said. Without this the agent is a
+    # stateless one-shot and every message starts from nothing.
+    try:
+        messages = await _build_conversation_history(db, thread_id, query)
+    except Exception:
+        logger.exception("Failed to load history for thread %s; continuing without it", thread_id)
+        messages = []
+    messages.append(types.Content(role="user", parts=[types.Part(text=query)]))
+    logger.info(f"Thread {thread_id}: replaying {len(messages) - 1} prior message(s)")
+
+    # Resolved once per turn, not per tool call, and passed down to every tool.
+    try:
+        group_id = await get_user_group_id(user_id, db)
+    except Exception:
+        logger.exception("Failed to resolve group for user %s; using owner-only scope", user_id)
+        group_id = None
 
     tool_calls_log = []
     citations = []
@@ -973,20 +1073,28 @@ async def generate_response(
 
             logger.info(f"Gemini iteration {iteration} starting with {len(messages)} messages, {len(tool_calls_log)} tool calls...")
 
+            # Gemini 3.x replaces temperature/top_p/top_k with thinking_level.
             config_kwargs = {
                 "system_instruction": SYSTEM_PROMPT,
-                "temperature": 0.7,
+                "thinking_config": types.ThinkingConfig(
+                    thinking_level=settings.gemini_thinking_level
+                ),
             }
             if current_tools:
                 config_kwargs["tools"] = current_tools
-                config_kwargs["tool_config"] = types.ToolConfig(function_calling_config=types.FunctionCallingConfig(mode=tool_mode))
+                config_kwargs["tool_config"] = types.ToolConfig(
+                    function_calling_config=types.FunctionCallingConfig(mode=tool_mode),
+                    # Required for built-in tools (Google Search, code execution)
+                    # to coexist with custom function declarations.
+                    include_server_side_tool_invocations=True,
+                )
 
             # Wrap in asyncio timeout to prevent hanging (120s max per API call)
             try:
                 response = await asyncio.wait_for(
                     asyncio.to_thread(
                         client.models.generate_content,
-                        model="gemini-3-flash-preview",
+                        model=settings.gemini_model,
                         contents=messages,
                         config=types.GenerateContentConfig(**config_kwargs)
                     ),
@@ -1059,7 +1167,7 @@ async def generate_response(
                     logger.info(f"Executing tool: {tool_name} with args: {tool_args}")
 
                     try:
-                        tool_result = await execute_tool(tool_name, tool_args, user_id, db)
+                        tool_result = await execute_tool(tool_name, tool_args, user_id, db, group_id)
                         logger.info(f"Tool {tool_name} completed successfully")
                     except Exception as tool_error:
                         logger.exception(f"Tool execution error for {tool_name}: {tool_error}")
@@ -1227,20 +1335,37 @@ async def generate_response(
     return {"content": "I wasn't able to generate a response.", "citations": citations, "image_refs": image_refs, "tool_calls": tool_calls_log, "interaction_id": current_interaction_id}
 
 
-async def execute_tool(tool_name: str, args: Dict[str, Any], user_id: int, db: AsyncSession) -> Dict[str, Any]:
-    """Execute a tool call and return the result."""
+async def execute_tool(
+    tool_name: str,
+    args: Dict[str, Any],
+    user_id: int,
+    db: AsyncSession,
+    group_id: Optional[int] = None,
+) -> Dict[str, Any]:
+    """Execute a tool call and return the result.
+
+    ``group_id`` widens *read* scope to experiments shared through the user's
+    group, matching what the same user sees in the UI; the agent previously
+    used a bare ``Experiment.user_id == user_id`` everywhere, so lab-shared
+    experiments were invisible in chat. It is resolved once per turn by
+    :func:`generate_response` rather than per tool call. Omitting it falls back
+    to owner-only, so callers that do not pass it are never widened by accident.
+    Writes stay owner-only regardless.
+    """
     try:
+        exp_read = experiment_owner_filter(user_id, group_id)
+
         if tool_name == "get_overview_stats":
             # Check cache first (1 min TTL)
             cached = StatsCache.get(user_id)
             if cached:
                 return cached
 
-            exp_count = (await db.execute(select(func.count(Experiment.id)).where(Experiment.user_id == user_id))).scalar() or 0
+            exp_count = (await db.execute(select(func.count(Experiment.id)).where(exp_read))).scalar() or 0
             img_result = await db.execute(
                 select(func.count(func.distinct(Image.id)).label("img"), func.count(CellCrop.id).label("cell"))
                 .select_from(Experiment).outerjoin(Image, Experiment.id == Image.experiment_id)
-                .outerjoin(CellCrop, Image.id == CellCrop.image_id).where(Experiment.user_id == user_id)
+                .outerjoin(CellCrop, Image.id == CellCrop.image_id).where(exp_read)
             )
             row = img_result.first()
             doc_count = (await db.execute(select(func.count(RAGDocument.id)).where(RAGDocument.user_id == user_id))).scalar() or 0
@@ -1252,11 +1377,11 @@ async def execute_tool(tool_name: str, args: Dict[str, Any], user_id: int, db: A
             return result
 
         elif tool_name == "list_experiments":
-            result = await db.execute(select(Experiment).options(selectinload(Experiment.map_protein)).where(Experiment.user_id == user_id).order_by(Experiment.updated_at.desc()).limit(args.get("limit", 10)))
+            result = await db.execute(select(Experiment).options(selectinload(Experiment.map_protein)).where(exp_read).order_by(Experiment.updated_at.desc()).limit(args.get("limit", 10)))
             return {"experiments": [{"id": e.id, "name": e.name, "description": e.description, "status": e.status.value if hasattr(e.status, 'value') else str(e.status), "protein": e.map_protein.name if e.map_protein else None} for e in result.scalars().all()]}
 
         elif tool_name == "list_images":
-            q = select(Image).join(Experiment).options(selectinload(Image.experiment)).where(Experiment.user_id == user_id)
+            q = select(Image).join(Experiment).options(selectinload(Image.experiment)).where(exp_read)
             if args.get("experiment_id"): q = q.where(Experiment.id == args["experiment_id"])
             q = q.order_by(func.random() if args.get("random") else Image.created_at.desc()).limit(args.get("limit", 10))
             return {"images": [{"id": i.id, "filename": i.original_filename, "experiment_id": i.experiment_id, "experiment_name": i.experiment.name if i.experiment else None, "width": i.width, "height": i.height, "thumbnail_url": f"/api/images/{i.id}/file?type=thumbnail"} for i in (await db.execute(q)).scalars().all()]}
@@ -1301,7 +1426,7 @@ async def execute_tool(tool_name: str, args: Dict[str, Any], user_id: int, db: A
 
         elif tool_name == "get_experiment_stats":
             if not args.get("experiment_id"): return {"error": "experiment_id required"}
-            result = await db.execute(select(Experiment, func.count(func.distinct(Image.id)).label("img"), func.count(CellCrop.id).label("cell")).options(selectinload(Experiment.map_protein)).outerjoin(Image, Experiment.id == Image.experiment_id).outerjoin(CellCrop, Image.id == CellCrop.image_id).where(Experiment.id == args["experiment_id"], Experiment.user_id == user_id).group_by(Experiment.id))
+            result = await db.execute(select(Experiment, func.count(func.distinct(Image.id)).label("img"), func.count(CellCrop.id).label("cell")).options(selectinload(Experiment.map_protein)).outerjoin(Image, Experiment.id == Image.experiment_id).outerjoin(CellCrop, Image.id == CellCrop.image_id).where(Experiment.id == args["experiment_id"], exp_read).group_by(Experiment.id))
             row = result.first()
             if not row: return {"error": "Experiment not found"}
             exp, img, cell = row
@@ -1319,7 +1444,7 @@ async def execute_tool(tool_name: str, args: Dict[str, Any], user_id: int, db: A
 
         elif tool_name == "get_cell_detection_results":
             if not args.get("image_id"): return {"error": "image_id required"}
-            img = (await db.execute(select(Image).join(Experiment).where(Image.id == args["image_id"], Experiment.user_id == user_id))).scalar_one_or_none()
+            img = (await db.execute(select(Image).join(Experiment).where(Image.id == args["image_id"], exp_read))).scalar_one_or_none()
             if not img: return {"error": "Image not found"}
             # Use correct column names: detection_confidence, bbox_w, bbox_h
             crops = (await db.execute(select(CellCrop).where(CellCrop.image_id == args["image_id"]).order_by(CellCrop.detection_confidence.desc()))).scalars().all()
@@ -1331,7 +1456,7 @@ async def execute_tool(tool_name: str, args: Dict[str, Any], user_id: int, db: A
         elif tool_name == "execute_python_code":
             if not args.get("code"): return {"error": "code required"}
             from services.code_execution_service import execute_python_code
-            result = await execute_python_code(code=args["code"], timeout_seconds=args.get("timeout_seconds", 60))
+            result = await execute_python_code(code=args["code"], timeout_seconds=args.get("timeout_seconds", 60), user_id=user_id)
             # Add markdown-ready plot strings for easy inclusion in response
             if result.get("plots"):
                 result["plots_markdown"] = [f"![Plot {i+1}]({plot})" for i, plot in enumerate(result["plots"])]
@@ -1346,10 +1471,21 @@ async def execute_tool(tool_name: str, args: Dict[str, Any], user_id: int, db: A
                 parsed = sqlparse.parse(query_str)
                 if not parsed or parsed[0].get_type() != "SELECT": return {"error": "Only SELECT allowed"}
 
-                # Check for forbidden keywords (SQL injection prevention)
-                forbidden = ["INSERT", "UPDATE", "DELETE", "DROP", "CREATE", "ALTER", "TRUNCATE", "GRANT", "REVOKE", "--", "/*", "*/"]
+                # Forbidden statement keywords, matched on word boundaries.
+                # A plain substring test also rejects the *columns* created_at
+                # and updated_at, which appear on nearly every table -- that is
+                # why so much of the schema was unreachable via this tool.
+                forbidden = ["INSERT", "UPDATE", "DELETE", "DROP", "CREATE", "ALTER", "TRUNCATE", "GRANT", "REVOKE"]
                 for kw in forbidden:
-                    if kw in query_upper: return {"error": f"Forbidden keyword: {kw}"}
+                    if re.search(rf'\b{kw}\b', query_upper):
+                        return {"error": f"Forbidden keyword: {kw}"}
+                for marker in ["--", "/*", "*/"]:
+                    if marker in query_str:
+                        return {"error": f"Forbidden token: {marker}"}
+                # Functions that let a read-only query burn server resources.
+                for fn in ["PG_SLEEP", "PG_READ_FILE", "PG_LS_DIR", "DBLINK", "LO_IMPORT", "LO_EXPORT"]:
+                    if re.search(rf'\b{fn}\b', query_upper):
+                        return {"error": f"Forbidden function: {fn.lower()}"}
 
                 # Block multiple statements (semicolon injection)
                 if query_str.count(";") > 0:
@@ -1361,7 +1497,6 @@ async def execute_tool(tool_name: str, args: Dict[str, Any], user_id: int, db: A
                 if select_count > 1:
                     return {"error": "Subqueries not allowed"}
                 # Also check for any SELECT inside parentheses (handles nested parens)
-                import re
                 if re.search(r'\([^)]*\bSELECT\b', query_upper):
                     return {"error": "Subqueries not allowed"}
 
@@ -1374,17 +1509,9 @@ async def execute_tool(tool_name: str, args: Dict[str, Any], user_id: int, db: A
                     return {"error": "WITH (CTE) queries not allowed"}
 
                 # Validate table names against the whitelist. Subqueries / UNION /
-                # CTEs are already blocked above, so the referenced tables are
-                # exactly the identifiers following FROM / JOIN. (The previous
-                # token.ttype-based scan never matched flattened leaf tokens, so
-                # the whitelist and the protected-table denial were dead code —
-                # any table, including `users`, was reachable. CVE-class bug.)
-                found_tables = {
-                    t.lower() for t in re.findall(
-                        r"\b(?:FROM|JOIN)\s+([A-Za-z_][A-Za-z0-9_]*)",
-                        query_str, re.IGNORECASE,
-                    )
-                }
+                # CTEs are already blocked above, so every referenced table is
+                # named somewhere in a FROM / JOIN clause.
+                found_tables = _extract_referenced_tables(query_str)
                 if not found_tables:
                     return {"error": "Could not determine target table(s)"}
                 denied = found_tables - ALLOWED_SQL_TABLES
@@ -1420,16 +1547,16 @@ async def execute_tool(tool_name: str, args: Dict[str, Any], user_id: int, db: A
 
                 base_q = query_str
                 for tbl in sorted(tables_to_filter):
-                    base_q = _inject_user_id_filter(base_q, tbl)
+                    base_q = _inject_user_id_filter(base_q, tbl, group_id)
 
                 # Add LIMIT if missing
                 final_q = base_q if "LIMIT" in query_upper else f"{base_q} LIMIT :limit_val"
 
                 # Execute with parameters (prevents SQL injection)
-                result = await db.execute(
-                    text(final_q),
-                    {"user_id": user_id, "limit_val": limit_val}
-                )
+                params = {"user_id": user_id, "limit_val": limit_val}
+                if group_id is not None:
+                    params["group_id"] = group_id
+                result = await db.execute(text(final_q), params)
                 rows = result.fetchall()
                 cols = list(result.keys())
                 return {"success": True, "columns": cols, "rows": [dict(zip(cols, r)) for r in rows], "row_count": len(rows)}
@@ -1460,12 +1587,7 @@ async def execute_tool(tool_name: str, args: Dict[str, Any], user_id: int, db: A
                 return {"error": "experiment_ids required (list of IDs)"}
 
             import pandas as pd
-            from pathlib import Path
-            from config import get_settings
-
-            settings = get_settings()
-            EXPORT_DIR = Path(settings.upload_dir) / "exports"
-            EXPORT_DIR.mkdir(parents=True, exist_ok=True)
+            from services.data_export_service import prepare_export_target
 
             exp_ids = args["experiment_ids"]
             include_cells = args.get("include_cells", True)
@@ -1474,7 +1596,7 @@ async def execute_tool(tool_name: str, args: Dict[str, Any], user_id: int, db: A
 
             # Verify all experiments belong to user
             exp_result = await db.execute(
-                select(Experiment).where(Experiment.id.in_(exp_ids), Experiment.user_id == user_id)
+                select(Experiment).where(Experiment.id.in_(exp_ids), exp_read)
             )
             experiments = exp_result.scalars().all()
             if len(experiments) != len(exp_ids):
@@ -1523,10 +1645,9 @@ async def execute_tool(tool_name: str, args: Dict[str, Any], user_id: int, db: A
                         "max_confidence": max(confs),
                     })
 
-            # Generate file
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            filename = f"batch_export_{timestamp}.{fmt}"
-            filepath = EXPORT_DIR / filename
+            # Generate file (shared helper: per-user dir + unguessable suffix)
+            filepath, filename, download_url = prepare_export_target(
+                user_id, "batch_export", fmt)
 
             if fmt == "xlsx":
                 with pd.ExcelWriter(filepath, engine="openpyxl") as writer:
@@ -1542,7 +1663,7 @@ async def execute_tool(tool_name: str, args: Dict[str, Any], user_id: int, db: A
             return {
                 "success": True,
                 "filename": filename,
-                "download_url": f"/uploads/exports/{filename}",
+                "download_url": download_url,
                 "experiments_exported": len(experiments),
                 "total_cells": len(all_cells),
             }
@@ -1706,17 +1827,14 @@ async def execute_tool(tool_name: str, args: Dict[str, Any], user_id: int, db: A
                 # Create a NEW Gemini client for this search (execute_tool has no access to main client)
                 from google import genai
                 from google.genai import types as genai_types
-                from config import get_settings
 
-                # Get settings directly (avoid scoping issues with module-level variable)
-                _settings = get_settings()
-                search_client = genai.Client(api_key=_settings.gemini_api_key)
+                search_client = genai.Client(api_key=settings.gemini_api_key)
 
                 # Make separate API call with ONLY google_search tool
                 search_response = await asyncio.wait_for(
                     asyncio.to_thread(
                         search_client.models.generate_content,
-                        model="gemini-2.0-flash",  # Use stable model for search
+                        model=settings.gemini_model,
                         contents=f"Search and summarize information about: {query}",
                         config=genai_types.GenerateContentConfig(
                             tools=[genai_types.Tool(google_search=genai_types.GoogleSearch())],
@@ -1726,8 +1844,11 @@ async def execute_tool(tool_name: str, args: Dict[str, Any], user_id: int, db: A
                     timeout=30.0
                 )
 
-                # Extract response text and grounding metadata
-                result = {"query": query, "results": []}
+                # Extract response text and grounding metadata.
+                # No empty "results" key here: the model reads an empty list as
+                # "the search found nothing" and reports that to the user even
+                # when the summary below is populated.
+                result = {"query": query}
 
                 if search_response.candidates and search_response.candidates[0].content.parts:
                     # Get the text response
@@ -1822,9 +1943,18 @@ async def execute_tool(tool_name: str, args: Dict[str, Any], user_id: int, db: A
             # Get masks for specific cell crops
             if args.get("crop_ids"):
                 crop_ids = args["crop_ids"]
+                # SegmentationMask carries no user_id, so ownership has to be
+                # walked crop -> image -> experiment. Without this join any
+                # user could read any other user's masks by guessing crop IDs.
                 masks_result = await db.execute(
                     select(SegmentationMask)
-                    .where(SegmentationMask.cell_crop_id.in_(crop_ids))
+                    .join(CellCrop, SegmentationMask.cell_crop_id == CellCrop.id)
+                    .join(Image, CellCrop.image_id == Image.id)
+                    .join(Experiment, Image.experiment_id == Experiment.id)
+                    .where(
+                        SegmentationMask.cell_crop_id.in_(crop_ids),
+                        exp_read,
+                    )
                 )
                 masks = masks_result.scalars().all()
                 result["cell_masks"] = [
@@ -1847,7 +1977,7 @@ async def execute_tool(tool_name: str, args: Dict[str, Any], user_id: int, db: A
                 img_check = await db.execute(
                     select(Image).join(Experiment).where(
                         Image.id == args["image_id"],
-                        Experiment.user_id == user_id
+                        exp_read
                     )
                 )
                 if img_check.scalar_one_or_none():
@@ -1880,11 +2010,12 @@ async def execute_tool(tool_name: str, args: Dict[str, Any], user_id: int, db: A
             from PIL import Image as PILImage, ImageDraw
             import numpy as np
             from models.segmentation import SegmentationMask, FOVSegmentationMask
-            from config import get_settings
 
-            settings = get_settings()
-            TEMP_DIR = Path(settings.upload_dir) / "temp"
-            TEMP_DIR.mkdir(parents=True, exist_ok=True)
+            # Persistent (linked from a stored chat message) and per-user:
+            # this is a rendering of the user's own microscopy data, served
+            # through the authenticated /api/chat-images endpoint.
+            overlay_dir = Path(settings.chat_image_dir) / str(user_id)
+            overlay_dir.mkdir(parents=True, exist_ok=True)
 
             # Color mapping
             colors = {
@@ -1926,7 +2057,7 @@ async def execute_tool(tool_name: str, args: Dict[str, Any], user_id: int, db: A
                 # Render FOV with mask
                 img_result = await db.execute(
                     select(Image).join(Experiment).where(
-                        Image.id == args["image_id"], Experiment.user_id == user_id
+                        Image.id == args["image_id"], exp_read
                     )
                 )
                 image = img_result.scalar_one_or_none()
@@ -1979,11 +2110,13 @@ async def execute_tool(tool_name: str, args: Dict[str, Any], user_id: int, db: A
             # Save to temp
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             unique_id = uuid.uuid4().hex[:8]
-            filename = f"segmentation_{timestamp}_{unique_id}.png"
-            filepath = TEMP_DIR / filename
-            result_img.save(filepath, "PNG")
+            filename = f"segmentation_{timestamp}_{unique_id}.webp"
+            filepath = overlay_dir / filename
+            # Microscopy composite -- photographic content, so lossy WebP wins
+            # here (~70% smaller than PNG), unlike the flat-colour plots.
+            result_img.save(filepath, "WEBP", quality=85, method=4)
 
-            url = f"/uploads/temp/{filename}"
+            url = f"/api/chat-images/{user_id}/{filename}"
             return {
                 "success": True,
                 "image_url": url,

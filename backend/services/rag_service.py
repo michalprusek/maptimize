@@ -30,6 +30,24 @@ settings = get_settings()
 # Directory for cached passage images (stored in rag_document_dir parent)
 PASSAGES_CACHE_DIR = "rag_passages"
 
+_IMAGE_MIME_BY_SUFFIX = {
+    ".png": "image/png",
+    ".webp": "image/webp",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+}
+
+
+def image_mime_type(path) -> str:
+    """MIME type for a stored page/passage image, derived from its extension.
+
+    Page images are written in whichever format ``settings.rag_page_format``
+    selects, and older documents may still be PNG, so the type cannot be
+    assumed -- serving WebP bytes labelled image/png makes some clients
+    refuse to render them.
+    """
+    return _IMAGE_MIME_BY_SUFFIX.get(Path(path).suffix.lower(), "image/png")
+
 
 class RAGServiceError(Exception):
     """Exception raised when RAG service encounters an error."""
@@ -476,7 +494,7 @@ async def get_document_content(
                     with open(image_path, "rb") as f:
                         image_bytes = f.read()
                     page_info["image_base64"] = base64.b64encode(image_bytes).decode("utf-8")
-                    page_info["image_mime_type"] = "image/png"
+                    page_info["image_mime_type"] = image_mime_type(image_path)
             except Exception as e:
                 logger.warning(f"Failed to load image for page {page.page_number}: {e}")
 
@@ -897,13 +915,13 @@ Return ONLY the JSON array. Return [] if nothing found. Maximum {max_passages} e
         client = genai.Client(api_key=settings.gemini_api_key)
 
         response = await client.aio.models.generate_content(
-            model="gemini-2.0-flash",
+            model=settings.gemini_vision_model,
             contents=[
                 types.Content(
                     role="user",
                     parts=[
                         types.Part(inline_data=types.Blob(
-                            mime_type="image/png",
+                            mime_type=image_mime_type(image_path),
                             data=image_base64
                         )),
                         types.Part(text=extraction_prompt)

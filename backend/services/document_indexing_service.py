@@ -310,9 +310,18 @@ async def process_pdf_pages(
 
     for idx, (page_num, image) in enumerate(page_images):
         try:
-            # Save page image
-            image_path = pages_dir / f"page_{page_num:04d}.png"
-            image.save(str(image_path), "PNG")
+            # Save page image. Scanned/rendered journal pages are photographic
+            # content, the worst case for PNG -- WebP q85 is ~5-10x smaller and
+            # Gemini reads it identically. The encoder downscales to 1024px
+            # anyway, so lossless full-res buys nothing downstream.
+            ext = settings.rag_page_format.lower()
+            image_path = pages_dir / f"page_{page_num:04d}.{ext}"
+            image.save(
+                str(image_path),
+                settings.rag_page_format,
+                quality=settings.rag_page_quality,
+                method=4,
+            )
 
             # Extract text using OCR (pytesseract)
             extracted_text = None

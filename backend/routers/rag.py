@@ -40,6 +40,7 @@ from services.rag_service import (
     combined_search,
     batch_index_fov_images,
     get_cached_passage,
+    image_mime_type,
 )
 
 logger = logging.getLogger(__name__)
@@ -373,7 +374,7 @@ async def serve_page_image(
 
     return FileResponse(
         path=image_path,
-        media_type="image/png",
+        media_type=image_mime_type(image_path),
     )
 
 
@@ -411,7 +412,7 @@ async def serve_passage_image(
 
     return FileResponse(
         path=passage_path,
-        media_type="image/png",
+        media_type=image_mime_type(passage_path),
     )
 
 

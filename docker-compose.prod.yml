@@ -69,7 +69,11 @@ services:
       - DEFAULT_ADMIN_EMAIL=${DEFAULT_ADMIN_EMAIL:-admin@utia.cas.cz}
       - DEFAULT_ADMIN_PASSWORD=${DEFAULT_ADMIN_PASSWORD}
     volumes:
-      - ./data/uploads:/app/data/uploads
+      # Mount all of ./data, not just uploads. rag_documents/ and rag_passages/
+      # are siblings of uploads/, so mounting only uploads left the indexed PDF
+      # page images on the container's writable layer -- every rebuild destroyed
+      # the RAG corpus while leaving the DB rows and embeddings pointing at it.
+      - ./data:/app/data
       - ./weights:/app/weights:ro
       - ./logs:/app/logs
       - huggingface_cache:/app/.cache/huggingface
