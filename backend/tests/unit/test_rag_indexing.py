@@ -616,7 +616,7 @@ async def test_extract_passages_no_api_key(mock_db):
 
 
 async def test_extract_passages_doc_not_found(mock_db):
-    fake_settings = SimpleNamespace(gemini_api_key="key")
+    fake_settings = SimpleNamespace(gemini_api_key="key", gemini_vision_model="gemini-3.5-flash")
     mock_db.execute.return_value = make_result(scalar=None)
     with patch.object(rag, "settings", fake_settings), \
          _patch_genai(_gemini_response("[]")):
@@ -628,6 +628,7 @@ async def test_extract_passages_success_with_markdown(mock_db, tmp_path):
     doc = document(name="D", pages=[page(page_number=1, image_path=str(img))])
     mock_db.execute.return_value = make_result(scalar=doc)
     fake_settings = SimpleNamespace(gemini_api_key="key",
+                                    gemini_vision_model="gemini-3.5-flash",
                                     rag_document_dir=tmp_path / "rag_documents")
     # Response wrapped in markdown fence; one figure, one too-short bbox skipped
     payload = json.dumps([
@@ -650,6 +651,7 @@ async def test_extract_passages_non_list_response(mock_db, tmp_path):
     doc = document(pages=[page(page_number=1, image_path=str(img))])
     mock_db.execute.return_value = make_result(scalar=doc)
     fake_settings = SimpleNamespace(gemini_api_key="key",
+                                    gemini_vision_model="gemini-3.5-flash",
                                     rag_document_dir=tmp_path / "rag_documents")
     client = _gemini_response('{"not": "a list"}')
     with patch.object(rag, "settings", fake_settings), _patch_genai(client):
@@ -662,6 +664,7 @@ async def test_extract_passages_json_decode_error(mock_db, tmp_path):
     doc = document(pages=[page(page_number=1, image_path=str(img))])
     mock_db.execute.return_value = make_result(scalar=doc)
     fake_settings = SimpleNamespace(gemini_api_key="key",
+                                    gemini_vision_model="gemini-3.5-flash",
                                     rag_document_dir=tmp_path / "rag_documents")
     client = _gemini_response("not valid json {")
     with patch.object(rag, "settings", fake_settings), _patch_genai(client):
@@ -676,6 +679,7 @@ async def test_extract_passages_value_error(mock_db, tmp_path):
     doc = document(pages=[page(page_number=1, image_path=str(img))])
     mock_db.execute.return_value = make_result(scalar=doc)
     fake_settings = SimpleNamespace(gemini_api_key="key",
+                                    gemini_vision_model="gemini-3.5-flash",
                                     rag_document_dir=tmp_path / "rag_documents")
     payload = json.dumps([{"text": "t", "box_2d": [10, 10, 400, 400],
                            "type": "text"}])
@@ -695,6 +699,7 @@ async def test_extract_passages_generic_exception(mock_db, tmp_path):
     doc = document(pages=[page(page_number=1, image_path=str(img))])
     mock_db.execute.return_value = make_result(scalar=doc)
     fake_settings = SimpleNamespace(gemini_api_key="key",
+                                    gemini_vision_model="gemini-3.5-flash",
                                     rag_document_dir=tmp_path / "rag_documents")
     payload = json.dumps([{"text": "t", "box_2d": [10, 10, 400, 400],
                            "type": "text"}])
@@ -907,7 +912,9 @@ async def test_process_pdf_pages_all_failed(mock_db, tmp_path):
     with patch_encoder(enc), patch.dict("sys.modules", {"pytesseract": fake_tess}):
         await dind.process_pdf_pages(doc, images, mock_db)
     assert doc.status == DocumentStatus.FAILED.value
-    assert "All pages failed" in doc.error_message
+    # Error message reports the actual last failure, not a hardcoded guess.
+    assert "All 1 pages failed" in doc.error_message
+    assert "RuntimeError: boom" in doc.error_message
 
 
 # ============================================================================ #

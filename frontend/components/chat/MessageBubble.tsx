@@ -25,7 +25,7 @@ import {
   ChevronDown,
 } from "lucide-react";
 import { clsx } from "clsx";
-import ReactMarkdown from "react-markdown";
+import ReactMarkdown, { defaultUrlTransform } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
 import rehypeKatex from "rehype-katex";
@@ -403,8 +403,12 @@ export function MessageBubble({ message, isNew = false }: MessageBubbleProps) {
                   if (url.startsWith("passage:") || url.startsWith("citation:")) {
                     return url;
                   }
-                  // For other URLs, use default behavior (allow http/https, block javascript: etc.)
-                  return url;
+                  // Everything else must go through react-markdown's sanitizer.
+                  // Supplying urlTransform *replaces* it, so returning `url` here
+                  // would let `javascript:` through -- reachable from agent output,
+                  // which relays untrusted content (user messages, web-search
+                  // results, model transcriptions of user-supplied documents).
+                  return defaultUrlTransform(url);
                 }}
                 components={{
                   // Customize link rendering - special handling for citations and file downloads
@@ -435,8 +439,7 @@ export function MessageBubble({ message, isNew = false }: MessageBubbleProps) {
                     }
 
                     const isDownloadLink = href && (
-                      href.includes("/uploads/exports/") ||
-                      href.includes("/uploads/temp/") && /\.(xlsx|csv|pdf|zip)$/i.test(href) ||
+                      href.includes("/api/exports/") ||
                       /\.(xlsx|csv|pdf|zip)$/i.test(href)
                     );
 
@@ -446,7 +449,16 @@ export function MessageBubble({ message, isNew = false }: MessageBubbleProps) {
                       const ext = filename.split(".").pop()?.toLowerCase();
                       const FileIcon = ext === "xlsx" || ext === "csv" ? FileSpreadsheet : File;
                       const apiUrl = process.env.NEXT_PUBLIC_API_URL || "";
-                      const downloadUrl = href.startsWith("/") ? `${apiUrl}${href}` : href;
+                      let downloadUrl = href.startsWith("/") ? `${apiUrl}${href}` : href;
+                      // Exports are served from an authenticated endpoint, and a
+                      // plain anchor cannot send an Authorization header -- the
+                      // token has to ride in the query string, as it does for images.
+                      if (href.startsWith("/api/") && typeof window !== "undefined") {
+                        const token = localStorage.getItem("token");
+                        if (token) {
+                          downloadUrl += `${downloadUrl.includes("?") ? "&" : "?"}token=${token}`;
+                        }
+                      }
 
                       return (
                         <a

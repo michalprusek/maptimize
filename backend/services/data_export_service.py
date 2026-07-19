@@ -8,6 +8,7 @@ This service provides functions to export various data types:
 """
 
 import logging
+import secrets
 from datetime import datetime
 from typing import Optional, Literal
 from pathlib import Path
@@ -28,8 +29,23 @@ logger = logging.getLogger(__name__)
 settings = get_settings()
 
 # Export directory for temporary files
-EXPORT_DIR = Path(settings.upload_dir) / "exports"
+EXPORT_DIR = Path(settings.export_dir)
 EXPORT_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def prepare_export_target(user_id: int, stem: str, fmt: str) -> tuple[Path, str, str]:
+    """Allocate a per-user export path and return (path, filename, download_url).
+
+    The random suffix matters twice over: a second-resolution timestamp alone
+    made export URLs guessable, and two exports of the same experiment within
+    one second would silently overwrite each other.
+    """
+    user_dir = EXPORT_DIR / str(user_id)
+    user_dir.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    filename = f"{stem}_{timestamp}_{secrets.token_hex(8)}.{fmt}"
+    return user_dir / filename, filename, f"/api/exports/{user_id}/{filename}"
+
 
 # Maximum rows for export (safety limit)
 MAX_EXPORT_ROWS = 50_000
@@ -107,9 +123,8 @@ async def export_experiment_data(
 
     # Generate filename
     safe_name = sanitize_filename(experiment.name)
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    filename = f"experiment_{safe_name}_{timestamp}.{format}"
-    file_path = EXPORT_DIR / filename
+    file_path, filename, download_url = prepare_export_target(
+        user_id, f"experiment_{safe_name}", format)
 
     # Export to file
     if format == "xlsx":
@@ -126,7 +141,7 @@ async def export_experiment_data(
         "success": True,
         "filename": filename,
         "file_path": str(file_path),
-        "download_url": f"/uploads/exports/{filename}",
+        "download_url": download_url,
         "metadata": metadata,
     }
 
@@ -204,10 +219,9 @@ async def export_cell_crops(
     df = pd.DataFrame(data)
 
     # Generate filename
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     exp_suffix = f"_exp{experiment_id}" if experiment_id else ""
-    filename = f"cell_crops{exp_suffix}_{timestamp}.{format}"
-    file_path = EXPORT_DIR / filename
+    file_path, filename, download_url = prepare_export_target(
+        user_id, f"cell_crops{exp_suffix}", format)
 
     # Export using shared helper
     export_dataframe(df, file_path, format)
@@ -216,7 +230,7 @@ async def export_cell_crops(
         "success": True,
         "filename": filename,
         "file_path": str(file_path),
-        "download_url": f"/uploads/exports/{filename}",
+        "download_url": download_url,
         "row_count": len(data),
     }
 
@@ -269,9 +283,8 @@ async def export_ranking_comparisons(
     df = pd.DataFrame(data)
 
     # Generate filename
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    filename = f"ranking_comparisons_{timestamp}.{format}"
-    file_path = EXPORT_DIR / filename
+    file_path, filename, download_url = prepare_export_target(
+        user_id, "ranking_comparisons", format)
 
     export_dataframe(df, file_path, format)
 
@@ -279,7 +292,7 @@ async def export_ranking_comparisons(
         "success": True,
         "filename": filename,
         "file_path": str(file_path),
-        "download_url": f"/uploads/exports/{filename}",
+        "download_url": download_url,
         "row_count": len(data),
     }
 
@@ -287,6 +300,7 @@ async def export_ranking_comparisons(
 async def export_analysis_results(
     data: list[dict],
     name: str,
+    user_id: int,
     format: Literal["csv", "xlsx"] = "csv",
 ) -> dict:
     """
@@ -295,6 +309,7 @@ async def export_analysis_results(
     Args:
         data: List of dicts to export
         name: Base name for the file
+        user_id: Owner; exports are stored and served per user
         format: Export format
 
     Returns:
@@ -307,9 +322,8 @@ async def export_analysis_results(
 
     # Generate filename
     safe_name = sanitize_filename(name)
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    filename = f"analysis_{safe_name}_{timestamp}.{format}"
-    file_path = EXPORT_DIR / filename
+    file_path, filename, download_url = prepare_export_target(
+        user_id, f"analysis_{safe_name}", format)
 
     export_dataframe(df, file_path, format)
 
@@ -317,7 +331,7 @@ async def export_analysis_results(
         "success": True,
         "filename": filename,
         "file_path": str(file_path),
-        "download_url": f"/uploads/exports/{filename}",
+        "download_url": download_url,
         "row_count": len(data),
         "columns": list(df.columns),
     }

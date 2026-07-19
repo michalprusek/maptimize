@@ -116,7 +116,9 @@ def cleanup_old_files(directory: Path, max_age_hours: int = 24, log_prefix: str 
     cutoff = datetime.now().timestamp() - (max_age_hours * 3600)
     removed = 0
 
-    for file_path in directory.glob("*"):
+    # Recursive: exports are stored in per-user subdirectories, so a flat
+    # glob("*") would match only the directories and reap nothing.
+    for file_path in directory.rglob("*"):
         if file_path.is_file() and file_path.stat().st_mtime < cutoff:
             try:
                 file_path.unlink()

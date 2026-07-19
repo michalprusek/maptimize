@@ -16,6 +16,7 @@ from .chat import router as chat_router
 from .rag import router as rag_router
 from .admin import router as admin_router
 from .groups import router as groups_router
+from .user_files import router as user_files_router
 
 api_router = APIRouter()
 
@@ -34,3 +35,5 @@ api_router.include_router(chat_router, prefix="/chat", tags=["Chat"])
 api_router.include_router(rag_router, prefix="/rag", tags=["RAG"])
 api_router.include_router(admin_router, prefix="/admin", tags=["Admin"])
 api_router.include_router(groups_router, prefix="/groups", tags=["Groups"])
+# No prefix: serves /api/exports/... and /api/chat-images/...
+api_router.include_router(user_files_router, tags=["User Files"])

@@ -1,6 +1,9 @@
 """Application configuration."""
 from functools import lru_cache
 from pathlib import Path
+from typing import Literal
+
+from pydantic import Field
 from pydantic_settings import BaseSettings
 
 
@@ -42,9 +45,40 @@ class Settings(BaseSettings):
 
     # RAG / Chat Configuration
     gemini_api_key: str = ""  # Set via GEMINI_API_KEY env var
+
+    # Single source of truth for Gemini model IDs. These were previously
+    # hardcoded in three places across two files; two of them still named
+    # gemini-2.0-flash, which Google shut down on 2026-06-01, silently
+    # breaking web search and document region extraction.
+    gemini_model: str = "gemini-3.5-flash"
+    gemini_vision_model: str = "gemini-3.5-flash"
+    # Closed set: a typo (e.g. "med") otherwise passes settings load and only
+    # fails at request time as a Gemini API error.
+    gemini_thinking_level: Literal["minimal", "low", "medium", "high"] = "medium"
+
     rag_document_dir: Path = Path("data/rag_documents")
     rag_max_document_results: int = 20
     rag_max_fov_results: int = 20
+    # Pages are re-encoded to WebP: a scanned journal page is photographic
+    # content, the worst case for PNG's lossless compression.
+    rag_page_format: Literal["WEBP", "PNG", "JPEG"] = "WEBP"
+    rag_page_quality: int = Field(default=85, ge=1, le=100)
+
+    # Agent-generated images (plots, overlays) live here. Deliberately NOT
+    # under uploads/temp, which a startup job reaps at 24h -- that reaper is
+    # why images vanished from older conversations.
+    #
+    # Also deliberately OUTSIDE upload_dir: /uploads is an unauthenticated
+    # StaticFiles mount, so anything under it is world-readable. These are
+    # served through /api/chat-images/{user_id}/... instead, which checks the
+    # caller's token. Per-user subdirectories make ownership path-derivable.
+    chat_image_dir: Path = Path("data/chat_images")
+
+    # Same reasoning. Exports previously sat at /uploads/exports/ with
+    # second-resolution timestamps and no random component, so a URL like
+    # experiment_PRC1_20260719_143000.xlsx was trivially enumerable by any
+    # unauthenticated visitor.
+    export_dir: Path = Path("data/exports")
 
     model_config = {
         "env_file": ".env",
