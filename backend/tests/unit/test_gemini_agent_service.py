@@ -296,6 +296,64 @@ def test_inject_filter_no_from_appends_where():
     assert out.endswith("WHERE experiments.user_id = :user_id")
 
 
+def test_inject_filter_where_terminated_by_offset():
+    # Regression: the WHERE terminator must include OFFSET (shared with the FROM
+    # parser). Otherwise `WHERE x=1 OFFSET 5` folds OFFSET into the predicate.
+    q = "SELECT * FROM experiments WHERE name = 'x' OFFSET 5"
+    out = _inject_user_id_filter(q, "experiments")
+    assert "experiments.user_id = :user_id AND (name = 'x')" in out
+    assert "OFFSET 5" in out and "'x' OFFSET" not in out.split("AND (")[1]
+
+
+def test_inject_filter_no_where_with_limit_places_where_before_limit():
+    # Regression: a user-supplied LIMIT with no WHERE must not be split by the
+    # injected clause (old bug produced `FROM t LIMIT WHERE ... 3`).
+    out = _inject_user_id_filter("SELECT id FROM comparisons LIMIT 3", "comparisons")
+    assert out == "SELECT id FROM comparisons WHERE comparisons.user_id = :user_id LIMIT 3"
+
+
+def test_inject_filter_no_where_with_order_by():
+    out = _inject_user_id_filter("SELECT id FROM experiments ORDER BY id", "experiments")
+    assert out == "SELECT id FROM experiments WHERE experiments.user_id = :user_id ORDER BY id"
+
+
+def test_inject_filter_group_widens_experiments():
+    # With a group_id, experiments reads widen to group-shared rows.
+    out = _inject_user_id_filter("SELECT * FROM experiments", "experiments", group_id=5)
+    assert "(experiments.user_id = :user_id OR experiments.group_id = :group_id)" in out
+
+
+def test_inject_filter_group_ignored_for_non_experiment_tables():
+    # Only experiments has a group_id column; others stay owner-only even if a
+    # group is supplied.
+    out = _inject_user_id_filter("SELECT * FROM agent_memories", "agent_memories", group_id=5)
+    assert "agent_memories.user_id = :user_id" in out
+    assert "group_id" not in out
+
+
+# --- _extract_referenced_tables (the comma-join CVE fix) -------------------- #
+def test_extract_tables_single():
+    assert svc._extract_referenced_tables("SELECT * FROM experiments") == {"experiments"}
+
+
+def test_extract_tables_comma_join_surfaces_second_table():
+    # The whole reason for the rewrite: `FROM a, b` must expose BOTH tables.
+    assert svc._extract_referenced_tables(
+        "SELECT * FROM experiments, users WHERE 1=1") == {"experiments", "users"}
+
+
+def test_extract_tables_explicit_join():
+    assert svc._extract_referenced_tables(
+        "SELECT * FROM images i JOIN experiments e ON i.experiment_id = e.id") == {"images", "experiments"}
+
+
+def test_extract_tables_comma_inside_on_not_a_table():
+    # A comma inside an ON/USING predicate must not be read as a table separator.
+    tables = svc._extract_referenced_tables(
+        "SELECT * FROM experiments e JOIN images i ON func(e.id, i.id) = 1")
+    assert tables == {"experiments", "images"}
+
+
 # =========================================================================== #
 # _fix_passage_links_in_response
 # =========================================================================== #
@@ -681,6 +739,61 @@ async def test_query_database_blocks_non_whitelisted_table(mock_db):
                              {"query": "SELECT * FROM users"}, 1, mock_db)
     assert "Access denied" in res["error"] and "users" in res["error"]
     mock_db.execute.assert_not_awaited()
+
+
+async def test_query_database_comma_join_bypass_blocked(mock_db):
+    # THE CVE: the old regex saw only the first table, so `FROM experiments, users`
+    # slipped `users` (password_hash) past the whitelist and the user_id filter.
+    res = await execute_tool(
+        "query_database",
+        {"query": "SELECT users.email, users.password_hash FROM experiments, users WHERE 1=1"},
+        1, mock_db)
+    assert "Access denied" in res["error"] and "users" in res["error"]
+    mock_db.execute.assert_not_awaited()
+
+
+async def test_query_database_allows_timestamp_columns(mock_db):
+    # Word-boundary keyword matching: created_at/updated_at must NOT be rejected
+    # as containing CREATE/UPDATE (the old substring test made them unqueryable).
+    result = make_result(fetchall=[]); result.keys.return_value = ["created_at"]
+    mock_db.execute.return_value = result
+    res = await execute_tool(
+        "query_database",
+        {"query": "SELECT created_at, updated_at FROM experiments"}, 7, mock_db)
+    assert res["success"] is True
+
+
+async def test_query_database_blocks_pg_sleep(mock_db):
+    # Read-only DoS vector -- must be rejected before execution.
+    res = await execute_tool("query_database",
+                             {"query": "SELECT pg_sleep(10) FROM experiments"}, 1, mock_db)
+    assert "Forbidden function" in res["error"] and "pg_sleep" in res["error"]
+    mock_db.execute.assert_not_awaited()
+
+
+async def test_query_database_blocks_sql_comment(mock_db):
+    # Comment markers are rejected by the marker branch (no DDL keyword present).
+    res = await execute_tool("query_database",
+                             {"query": "SELECT id FROM experiments -- x"}, 1, mock_db)
+    assert "Forbidden token" in res["error"] and "--" in res["error"]
+    mock_db.execute.assert_not_awaited()
+
+
+async def test_query_database_group_widening_binds_group_id(mock_db):
+    # With a group, the experiments read widens and :group_id is bound. Without
+    # the bind, the injected predicate would raise at execution.
+    async def fake_group(uid, db):
+        return 5
+    result = make_result(fetchall=[]); result.keys.return_value = ["id"]
+    mock_db.execute.return_value = result
+    with patch.object(svc, "get_user_group_id", new=fake_group):
+        res = await execute_tool(
+            "query_database", {"query": "SELECT id FROM experiments"}, 7, mock_db,
+            group_id=5)
+    assert res["success"] is True
+    stmt = str(mock_db.execute.await_args.args[0])
+    assert "experiments.group_id = :group_id" in stmt
+    assert mock_db.execute.await_args.args[1]["group_id"] == 5
 
 
 async def test_query_database_indirect_table_requires_anchor(mock_db):
@@ -2115,3 +2228,17 @@ async def test_build_history_skips_blank_and_respects_char_budget(mock_db):
     out = await svc._build_conversation_history(mock_db, 1, "q", max_chars=100)
     # Blank dropped; the oversized older message falls outside the budget.
     assert [c.parts[0].text for c in out] == ["y" * 50]
+
+
+async def test_build_history_all_blank_returns_empty(mock_db):
+    mock_db.execute.return_value = make_result(scalars_all=[
+        _msg("assistant", "", 2), _msg("user", "   ", 1),
+    ])
+    assert await svc._build_conversation_history(mock_db, 1, "q") == []
+
+
+async def test_build_history_message_exactly_at_budget_is_kept(mock_db):
+    # len(text) == budget: the guard is `> budget`, so an exact fit is kept.
+    mock_db.execute.return_value = make_result(scalars_all=[_msg("user", "z" * 30, 1)])
+    out = await svc._build_conversation_history(mock_db, 1, "q", max_chars=30)
+    assert [c.parts[0].text for c in out] == ["z" * 30]

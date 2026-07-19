@@ -406,7 +406,8 @@ export function MessageBubble({ message, isNew = false }: MessageBubbleProps) {
                   // Everything else must go through react-markdown's sanitizer.
                   // Supplying urlTransform *replaces* it, so returning `url` here
                   // would let `javascript:` through -- reachable from agent output,
-                  // which includes text extracted from user-supplied PDFs.
+                  // which relays untrusted content (user messages, web-search
+                  // results, model transcriptions of user-supplied documents).
                   return defaultUrlTransform(url);
                 }}
                 components={{

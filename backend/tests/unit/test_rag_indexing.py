@@ -912,7 +912,9 @@ async def test_process_pdf_pages_all_failed(mock_db, tmp_path):
     with patch_encoder(enc), patch.dict("sys.modules", {"pytesseract": fake_tess}):
         await dind.process_pdf_pages(doc, images, mock_db)
     assert doc.status == DocumentStatus.FAILED.value
-    assert "All pages failed" in doc.error_message
+    # Error message reports the actual last failure, not a hardcoded guess.
+    assert "All 1 pages failed" in doc.error_message
+    assert "RuntimeError: boom" in doc.error_message
 
 
 # ============================================================================ #

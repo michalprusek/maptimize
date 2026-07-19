@@ -332,7 +332,8 @@ ze starších konverzací - v historii zůstal jen rozbitý `<img>`.
 **Řešení (aplikováno):**
 - Compose mountuje **celé `./data:/app/data`** - ne jednotlivé podadresáře.
 - Obrázky generované agentem jdou do `settings.chat_image_dir`
-  (`data/uploads/chat/`), který reaper nemaže.
+  (`data/chat_images/{user_id}/`), který reaper nemaže a který je **mimo**
+  `uploads/` (tedy mimo veřejný StaticFiles mount).
 
 **Pravidlo:** Cokoliv, na co odkazuje uložená zpráva, **nesmí** ležet
 v `uploads/temp/` ani mimo mountovaný `./data`.
@@ -356,8 +357,10 @@ Jména mají `secrets.token_hex(8)` navíc (`prepare_export_target`), takže nej
 uhodnutelná ani při znalosti vzoru.
 
 **Pravidlo:** cokoliv, co patří konkrétnímu uživateli, **nikdy nedávej pod
-`data/uploads/`**. Cesty `/api/...` navíc dostanou token automaticky —
-`processImageUrl` (`lib/utils.ts`) ho doplňuje všem `/api/` cestám.
+`data/uploads/`**. Token: `processImageUrl` (`lib/utils.ts`) ho doplňuje
+`/api/` cestám, které renderuje jako **obrázky**; download odkazy (exporty)
+`<a>` ho přidávají ručně v `MessageBubble.tsx` (anchor `processImageUrl`
+neprochází).
 
 ⚠️ **Práva na `./data`:** backend běží jako `app` (uid 1000). Když přidáš nový
 podadresář v `data/`, který si aplikace vytváří sama, musí být `./data`

@@ -1,6 +1,9 @@
 """Application configuration."""
 from functools import lru_cache
 from pathlib import Path
+from typing import Literal
+
+from pydantic import Field
 from pydantic_settings import BaseSettings
 
 
@@ -49,15 +52,17 @@ class Settings(BaseSettings):
     # breaking web search and document region extraction.
     gemini_model: str = "gemini-3.5-flash"
     gemini_vision_model: str = "gemini-3.5-flash"
-    gemini_thinking_level: str = "medium"
+    # Closed set: a typo (e.g. "med") otherwise passes settings load and only
+    # fails at request time as a Gemini API error.
+    gemini_thinking_level: Literal["minimal", "low", "medium", "high"] = "medium"
 
     rag_document_dir: Path = Path("data/rag_documents")
     rag_max_document_results: int = 20
     rag_max_fov_results: int = 20
     # Pages are re-encoded to WebP: a scanned journal page is photographic
     # content, the worst case for PNG's lossless compression.
-    rag_page_format: str = "WEBP"
-    rag_page_quality: int = 85
+    rag_page_format: Literal["WEBP", "PNG", "JPEG"] = "WEBP"
+    rag_page_quality: int = Field(default=85, ge=1, le=100)
 
     # Agent-generated images (plots, overlays) live here. Deliberately NOT
     # under uploads/temp, which a startup job reaps at 24h -- that reaper is

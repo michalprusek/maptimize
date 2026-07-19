@@ -368,6 +368,21 @@ def test_cleanup_old_files_skips_subdirectories(tmp_path):
     assert sub.exists()
 
 
+def test_cleanup_old_files_recurses_into_per_user_subdirs(tmp_path):
+    # Exports/chat images live in per-user subdirs; a flat glob("*") matched only
+    # the directories and reaped nothing. rglob must reach the nested file.
+    import os
+    user_dir = tmp_path / "7"
+    user_dir.mkdir()
+    old_file = user_dir / "export_old.csv"
+    old_file.write_text("a,b\n")
+    old_time = datetime.now().timestamp() - (48 * 3600)
+    os.utime(old_file, (old_time, old_time))
+    removed = export_helpers.cleanup_old_files(tmp_path, max_age_hours=24)
+    assert removed == 1
+    assert not old_file.exists()
+
+
 # =============================================================================
 # utils.security  -  hashing
 # =============================================================================

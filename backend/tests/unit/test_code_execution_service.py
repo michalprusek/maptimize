@@ -405,11 +405,11 @@ async def test_execute_aliased_submodule_import(tmp_path):
     assert len(res["plots"]) == 1
 
 
-async def test_execute_aliased_submodule_import_nonplot():
-    # Same aliasing path for a non-matplotlib module (no pre-injected global).
-    res = await _run("import scipy.stats as st\nprint(round(st.norm.cdf(1), 3))")
-    assert res["success"] is True, res.get("error")
-    assert "0.841" in res["stdout"]
+# The non-matplotlib aliasing path (`import scipy.stats as st`) is covered by
+# the unit test test_safe_import_submodule_with_fromlist_returns_submodule and
+# by the matplotlib end-to-end tests above. A `scipy.stats` execution test is
+# intentionally omitted: scipy touches the mocked-torch shim in conftest and is
+# order-dependent (see test_execute_seaborn_alias for the same constraint).
 
 
 async def test_execute_seaborn_alias():

@@ -116,9 +116,11 @@ app.add_middleware(
     expose_headers=["*"],
 )
 
-# python:3.12-slim ships no /etc/mime.types and the stdlib map has no entry for
-# .webp, so StaticFiles would serve generated plots as text/plain and browsers
-# would refuse to render them. Register before mounting.
+# python:3.12-slim ships no /etc/mime.types and the stdlib map has no .webp
+# entry, so any path that falls back to mimetypes.guess_type would label WebP
+# as text/plain and browsers would refuse to render it. The authenticated file
+# routes set media_type explicitly (image_mime_type), so this is a backstop for
+# the /uploads StaticFiles mount and any future guess_type caller.
 mimetypes.add_type("image/webp", ".webp")
 
 # Mount static files for uploads

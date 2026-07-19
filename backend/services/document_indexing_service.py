@@ -307,6 +307,7 @@ async def process_pdf_pages(
     total_pages = len(page_images)
     successful_pages = 0
     failed_pages = []
+    last_error = None
 
     for idx, (page_num, image) in enumerate(page_images):
         try:
@@ -356,6 +357,7 @@ async def process_pdf_pages(
         except Exception as e:
             logger.error(f"Failed to process page {page_num} of doc {document.id}: {e}")
             failed_pages.append(page_num)
+            last_error = f"{type(e).__name__}: {e}"
             # Continue with other pages
 
     # Only mark as completed if at least some pages succeeded
@@ -369,7 +371,12 @@ async def process_pdf_pages(
         logger.info(f"Document {document.id} processing completed ({successful_pages}/{total_pages} pages)")
     else:
         document.status = DocumentStatus.FAILED.value
-        document.error_message = "All pages failed to process. Check Qwen VL encoder."
+        # Report the actual last failure rather than guessing a single cause --
+        # image (WebP) encoding, the encoder, and DB writes all route here.
+        document.error_message = (
+            f"All {total_pages} pages failed to process. Last error: {last_error}"[:500]
+            if last_error else "All pages failed to process."
+        )
         await db.commit()
         logger.error(f"Document {document.id} processing failed - no pages indexed")
 

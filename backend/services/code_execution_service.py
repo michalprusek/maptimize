@@ -602,6 +602,14 @@ async def execute_python_code(
         try:
             exec_result = result_queue.get_nowait()
             result.update(exec_result)
+            # A plot that failed to encode (e.g. lossless WebP on a Pillow build
+            # without libwebp) is otherwise invisible: the run reports success
+            # with an empty plots list and the chart silently vanishes.
+            if result.get("plot_capture_warning"):
+                logger.error(
+                    "Plot capture failed for user %s: %s",
+                    owner_id, result["plot_capture_warning"],
+                )
             # Served through an authenticated, per-user endpoint -- these are
             # the user's own research figures, not public assets.
             result["plots"] = [

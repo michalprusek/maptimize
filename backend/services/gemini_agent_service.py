@@ -114,7 +114,7 @@ settings = get_settings()
 # Tables allowed for direct SQL queries (security whitelist)
 ALLOWED_SQL_TABLES = {
     "experiments", "images", "cell_crops", "map_proteins",
-    "rag_documents", "rag_document_pages", "ranking_comparisons",
+    "rag_documents", "rag_document_pages", "comparisons",
     "user_ratings", "agent_memories",
 }
 
@@ -199,6 +199,13 @@ def _fix_passage_links_in_response(
     return content
 
 
+# Keywords that terminate a FROM or WHERE clause. Shared by the FROM-clause
+# table parser and the WHERE-clause predicate injector so the two never disagree
+# on where a clause ends.
+_FROM_CLAUSE_END = r'\b(?:WHERE|GROUP\s+BY|ORDER\s+BY|HAVING|LIMIT|OFFSET|WINDOW|FETCH)\b'
+_JOIN_SPLIT = r'\b(?:LEFT|RIGHT|FULL|INNER|CROSS|OUTER)?\s*JOIN\b'
+
+
 def _inject_user_id_filter(query_str: str, table: str, group_id: Optional[int] = None) -> str:
     """Inject an ownership filter into a SQL query for the given table.
 
@@ -218,7 +225,10 @@ def _inject_user_id_filter(query_str: str, table: str, group_id: Optional[int] =
     if where_match:
         pos = where_match.end()
         rest_of_query = query_str[pos:]
-        end_match = re.search(r'\b(GROUP\s+BY|ORDER\s+BY|LIMIT|HAVING|$)', rest_of_query, re.IGNORECASE)
+        # Reuse the shared clause terminators (plus end-of-string) so the WHERE
+        # branch and the FROM parser agree; otherwise `WHERE x=1 OFFSET 5` folds
+        # OFFSET into the injected predicate and produces invalid SQL.
+        end_match = re.search(rf'{_FROM_CLAUSE_END}|$', rest_of_query, re.IGNORECASE)
         if end_match:
             where_conditions = rest_of_query[:end_match.start()].strip()
             after_where = rest_of_query[end_match.start():]
@@ -227,20 +237,18 @@ def _inject_user_id_filter(query_str: str, table: str, group_id: Optional[int] =
             after_where = ""
         return query_str[:pos] + f" {predicate} AND ({where_conditions}) {after_where}"
 
-    from_match = re.search(
-        r'\bFROM\b\s+\w+(?:\s+\w+)?(?:\s+(?:LEFT|RIGHT|INNER|OUTER)?\s*JOIN\s+\w+(?:\s+\w+)?(?:\s+ON\s+[^,]+)?)*',
-        query_str, re.IGNORECASE,
-    )
-    if from_match:
-        pos = from_match.end()
-        return query_str[:pos] + f" WHERE {predicate}" + query_str[pos:]
+    # No WHERE: insert the predicate just before the first trailing clause
+    # (GROUP BY / ORDER BY / LIMIT / OFFSET / ...), or at the end if there is
+    # none. Locating the boundary via the shared terminator avoids the old
+    # FROM-matching regex, whose optional-alias group greedily consumed a
+    # trailing LIMIT/ORDER keyword and produced `FROM t LIMIT WHERE ... 3`.
+    # WHERE cannot appear here (handled above), so it never self-matches.
+    term = re.search(_FROM_CLAUSE_END, query_str, re.IGNORECASE)
+    if term:
+        pos = term.start()
+        return f"{query_str[:pos]}WHERE {predicate} {query_str[pos:]}"
 
-    return query_str.rstrip() + f" WHERE {predicate}"
-
-
-# Keywords that terminate a FROM clause.
-_FROM_CLAUSE_END = r'\b(?:WHERE|GROUP\s+BY|ORDER\s+BY|HAVING|LIMIT|OFFSET|WINDOW|FETCH)\b'
-_JOIN_SPLIT = r'\b(?:LEFT|RIGHT|FULL|INNER|CROSS|OUTER)?\s*JOIN\b'
+    return f"{query_str.rstrip()} WHERE {predicate}"
 
 
 def _extract_referenced_tables(query_str: str) -> set[str]:
@@ -1084,8 +1092,10 @@ async def generate_response(
                 config_kwargs["tools"] = current_tools
                 config_kwargs["tool_config"] = types.ToolConfig(
                     function_calling_config=types.FunctionCallingConfig(mode=tool_mode),
-                    # Required for built-in tools (Google Search, code execution)
-                    # to coexist with custom function declarations.
+                    # Anticipates migrating Google Search from the separate
+                    # two-phase call (see execute_tool) into this request.
+                    # Currently a no-op: `current_tools` holds only function
+                    # declarations, no built-in tool for this flag to enable.
                     include_server_side_tool_invocations=True,
                 )
 
@@ -1519,6 +1529,11 @@ async def execute_tool(
                     return {"error": f"Access denied to table(s): {', '.join(sorted(denied))}"}
 
             except Exception as e:
+                # Log so a bug in the validator itself (e.g. a regex failure in
+                # _extract_referenced_tables on an unusual but legal query) is
+                # distinguishable from a genuinely malformed user query, which
+                # otherwise both surface only as a generic "Parse error".
+                logger.warning(f"SQL validation raised for user {user_id}: {e}")
                 return {"error": f"Parse error: {e}"}
 
             try:
@@ -1534,7 +1549,7 @@ async def execute_tool(
                 # We ALWAYS inject (wrapping any existing WHERE in parens) so a query
                 # cannot opt out by supplying its own user_id predicate.
                 DIRECT_SCOPED = {"experiments", "rag_documents", "user_ratings",
-                                 "agent_memories", "ranking_comparisons"}
+                                 "agent_memories", "comparisons"}
                 INDIRECT_SCOPED = {"images": "experiments", "cell_crops": "experiments",
                                    "rag_document_pages": "rag_documents"}
 
