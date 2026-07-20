@@ -487,10 +487,15 @@ async def test_list_images_no_experiment(mock_db):
 # --- list_documents -------------------------------------------------------- #
 async def test_list_documents(mock_db):
     doc = SimpleNamespace(id=1, name="paper.pdf", file_type="pdf",
-                          page_count=10, status="indexed")
+                          page_count=10, status="indexed", file_size=1234,
+                          mime_type="application/pdf", created_at=None, indexed_at=None)
     mock_db.execute.return_value = make_result(scalars_all=[doc])
     res = await execute_tool("list_documents", {}, 1, mock_db)
-    assert res["documents"][0]["name"] == "paper.pdf"
+    assert res["count"] == 1
+    d = res["documents"][0]
+    assert d["name"] == "paper.pdf"
+    # Richer metadata is surfaced.
+    assert d["file_size"] == 1234 and d["mime_type"] == "application/pdf"
 
 
 # --- get_documents_summary ------------------------------------------------- #
@@ -525,6 +530,50 @@ async def test_search_documents(mock_db):
                       new=AsyncMock(return_value=[{"document_id": 1}])):
         res = await execute_tool("search_documents", {"query": "x"}, 1, mock_db)
     assert res["results"] == [{"document_id": 1}]
+
+
+async def test_search_documents_passes_limit_and_filter(mock_db):
+    fake = AsyncMock(return_value=[])
+    with patch.object(svc, "search_documents", new=fake):
+        await execute_tool("search_documents",
+                           {"query": "x", "limit": 3, "document_ids": [7, 8]}, 5, mock_db)
+    kw = fake.await_args.kwargs
+    assert kw["limit"] == 3 and kw["document_ids"] == [7, 8] and kw["user_id"] == 5
+
+
+async def test_search_documents_defaults_limit_10(mock_db):
+    fake = AsyncMock(return_value=[])
+    with patch.object(svc, "search_documents", new=fake):
+        await execute_tool("search_documents", {"query": "x"}, 5, mock_db)
+    assert fake.await_args.kwargs["limit"] == 10
+    assert fake.await_args.kwargs["document_ids"] is None
+
+
+# --- show_document_pages --------------------------------------------------- #
+async def test_show_document_pages_missing_id(mock_db):
+    res = await execute_tool("show_document_pages", {}, 1, mock_db)
+    assert res["error"] == "document_id required"
+
+
+async def test_show_document_pages_builds_markdown(mock_db):
+    payload = {"id": 5, "name": "p.pdf", "total_pages": 40, "pages": [
+        {"page_number": 2, "image_url": "/api/rag/documents/5/pages/2/image"},
+        {"page_number": 3, "image_url": "/api/rag/documents/5/pages/3/image"},
+    ]}
+    with patch.object(svc, "get_document_content", new=AsyncMock(return_value=payload)) as gdc:
+        res = await execute_tool("show_document_pages",
+                                 {"document_id": 5, "page_numbers": [2, 3]}, 1, mock_db)
+    # Displays via the tokenized URL endpoint, not base64 vision.
+    assert gdc.await_args.kwargs["include_images"] is False
+    assert res["pages_shown"] == [2, 3]
+    assert "![p.pdf — p.2](/api/rag/documents/5/pages/2/image)" in res["markdown"]
+    assert "![p.pdf — p.3](/api/rag/documents/5/pages/3/image)" in res["markdown"]
+
+
+async def test_show_document_pages_not_found(mock_db):
+    with patch.object(svc, "get_document_content", new=AsyncMock(return_value=None)):
+        res = await execute_tool("show_document_pages", {"document_id": 9}, 1, mock_db)
+    assert res["error"] == "Document not found"
 
 
 async def test_search_fov_images(mock_db):

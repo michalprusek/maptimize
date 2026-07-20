@@ -60,6 +60,7 @@ async def search_documents(
     db: AsyncSession,
     limit: int = None,
     include_text: bool = True,
+    document_ids: Optional[List[int]] = None,
 ) -> List[dict]:
     """
     Search uploaded documents using vector similarity with Qwen VL embeddings.
@@ -68,8 +69,9 @@ async def search_documents(
         query: User's search query text
         user_id: User ID for filtering documents
         db: Database session
-        limit: Maximum number of results
+        limit: Maximum number of result pages to return
         include_text: Whether to include extracted text content
+        document_ids: Optional list of document IDs to restrict the search to
 
     Returns:
         List of search results with document info, extracted text, and similarity scores
@@ -98,9 +100,22 @@ async def search_documents(
         query_embedding = encoder.encode_query(query)
         embedding_list = query_embedding.tolist()
 
+        # Optional filter: restrict the search to specific documents. Bound as a
+        # parameter (never string-interpolated) and still scoped by user_id, so
+        # it cannot widen access beyond the caller's own documents.
+        doc_filter = ""
+        params = {
+            "embedding": str(embedding_list),
+            "user_id": user_id,
+            "limit": limit,
+        }
+        if document_ids:
+            doc_filter = "AND rdp.document_id = ANY(:document_ids)"
+            params["document_ids"] = list(document_ids)
+
         # Vector similarity search using pgvector cosine distance
         # Lower distance = more similar
-        query_sql = text("""
+        query_sql = text(f"""
             SELECT
                 rdp.id,
                 rdp.document_id,
@@ -116,18 +131,12 @@ async def search_documents(
             WHERE rd.user_id = :user_id
               AND rd.status = 'completed'
               AND rdp.embedding IS NOT NULL
+              {doc_filter}
             ORDER BY rdp.embedding <=> :embedding
             LIMIT :limit
         """)
 
-        result = await db.execute(
-            query_sql,
-            {
-                "embedding": str(embedding_list),
-                "user_id": user_id,
-                "limit": limit,
-            }
-        )
+        result = await db.execute(query_sql, params)
         rows = result.fetchall()
 
         results = []
@@ -436,7 +445,7 @@ async def get_document_content(
     user_id: int,
     db: AsyncSession,
     page_numbers: Optional[List[int]] = None,
-    max_pages: int = 5,
+    max_pages: int = 10,
     include_images: bool = True,
 ) -> Optional[dict]:
     """
@@ -472,8 +481,15 @@ async def get_document_content(
     # Get pages - either specific ones or first N
     pages = document.pages
     if page_numbers:
-        # Filter to specific pages
-        pages = [p for p in pages if p.page_number in page_numbers]
+        # Filter to specific pages, but still cap the count -- a caller could
+        # otherwise request every page of a 200-page PDF, inlining ~1.5k vision
+        # tokens each and blowing the context window (and re-billing it every
+        # loop iteration).
+        wanted = set(page_numbers)
+        pages = sorted(
+            (p for p in pages if p.page_number in wanted),
+            key=lambda p: p.page_number,
+        )[:max_pages]
     else:
         # Limit to max_pages
         pages = sorted(pages, key=lambda p: p.page_number)[:max_pages]

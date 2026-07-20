@@ -480,6 +480,36 @@ DELETE /api/images/crops/{id}?confirm_delete_comparisons=true
 | `backend/services/gemini_agent_service.py` | Agent s vision - posílá obrázky do Gemini |
 | `backend/ml/rag/qwen_vl_encoder.py` | Qwen VL model pro visual embeddings |
 
+### Přístup agenta k dokumentům (nástroje)
+
+Agent má plný přístup ke všem nahraným dokumentům uživatele:
+- `list_documents` — všechny dokumenty + metadata (typ, velikost, počet stran, data)
+- `search_documents` — sémantické vyhledávání; `limit` = kolik stran (default **10**),
+  `document_ids` = omezit na konkrétní dokumenty
+- `get_document_content` — agent si **čte** stránky přes vision (default prvních 10, max 10/volání)
+- `show_document_pages` — **zobrazí** celé stránky uživateli (markdown obrázky, default 10, max 10)
+- `extract_document_region` — vyřízne a zobrazí konkrétní oblast (obrázek/tabulku)
+
+⚠️ `get_document_content` capuje počet stran i když je předán `page_numbers` (dřív ne →
+40stránkové PDF zaplavilo kontext).
+
+### ⚠️ HF cache: Qwen VL encoder se nenačte (PermissionError) — OPRAVENO 2026-07-20
+
+**Symptom:** sémantické vyhledávání (`search_documents`, `semantic_search`,
+`search_fov_images`) vrací chybu; v logu
+`PermissionError ... /app/.cache/huggingface/hub/models--Qwen--Qwen3-VL-Embedding-2B/refs/main`.
+
+**Příčina:** named volume `huggingface_cache` měl Qwen model **vlastněný rootem**,
+ale backend běží jako `app` (uid 1000) → nemůže model načíst. Root ownership
+vznikl historickým stažením modelu rootem; build-time chown se volume netýká.
+
+**Řešení:**
+```bash
+docker exec -u 0 maptimize-backend chown -R app:app /app/.cache/huggingface/hub
+```
+Kontejner běží jako `app`, takže nové soubory zůstávají app-owned — oprava je trvalá,
+dokud do volume nezapíše root.
+
 ### DŮLEŽITÉ pro implementaci
 
 - **NIKDY neextrahovat text z PDF** - vše se řeší přes vision

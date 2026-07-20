@@ -325,6 +325,20 @@ async def test_get_document_content_default_max_pages_no_images(mock_db):
     assert all("image_base64" not in p for p in out["pages"])
 
 
+async def test_get_document_content_caps_specific_pages(mock_db):
+    # Regression: requesting many specific pages must still be capped -- a 200-page
+    # PDF would otherwise inline every page into the context window.
+    pages = [page(page_number=i, extracted_text=None, image_path=None)
+             for i in range(1, 21)]
+    doc = document(id=10, page_count=20, pages=pages)
+    mock_db.execute.return_value = make_result(scalar=doc)
+    out = await rag.get_document_content(
+        10, 7, mock_db, page_numbers=list(range(1, 21)),
+        include_images=False, max_pages=10)
+    assert len(out["pages"]) == 10
+    assert [p["page_number"] for p in out["pages"]] == list(range(1, 11))
+
+
 async def test_get_document_content_image_read_error(mock_db, tmp_path):
     # image_path set + file exists, but open() raises -> warning branch.
     # get_document_content imports Path locally (from pathlib), so use a real
