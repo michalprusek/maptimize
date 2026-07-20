@@ -22,6 +22,7 @@ import {
   File,
   Copy,
   Globe,
+  ExternalLink,
   ChevronDown,
 } from "lucide-react";
 import { clsx } from "clsx";
@@ -286,6 +287,31 @@ export function MessageBubble({ message, isNew = false }: MessageBubbleProps) {
       return `**[📄 ${filename}${page ? ` p.${page}` : ""}]**`;
     });
 
+    // Pattern matches: [Web: "source title"] -- the agent cites web/API sources
+    // this way. Resolve the title against the citations the tools actually
+    // returned so the marker becomes a real, clickable link.
+    const webPattern = /\[Web:\s*"([^"]+)"\]/g;
+
+    content = content.replace(webPattern, (match, title) => {
+      const needle = title.toLowerCase();
+      const citation = message.citations?.find(
+        (c) =>
+          c.type === "web" &&
+          (c.title?.toLowerCase().includes(needle) ||
+            needle.includes(c.title?.toLowerCase() || " "))
+      );
+
+      if (citation?.url) {
+        // Custom scheme (like citation:/passage:) so the `a` renderer can draw
+        // it as a source button rather than a bare underlined link.
+        return `[${citation.title || title}](websource:${encodeURIComponent(citation.url)})`;
+      }
+
+      // No matching source: show it as an unlinked marker rather than a dead
+      // link, so a hallucinated citation is visibly not backed by a source.
+      return `**[🔗 ${title}]**`;
+    });
+
     return content;
   }, [message.content, message.citations, isUser]);
 
@@ -399,8 +425,15 @@ export function MessageBubble({ message, isNew = false }: MessageBubbleProps) {
                 remarkPlugins={[remarkGfm, remarkMath]}
                 rehypePlugins={[rehypeKatex]}
                 urlTransform={(url) => {
-                  // Allow our custom URL schemes for passages and citations
-                  if (url.startsWith("passage:") || url.startsWith("citation:")) {
+                  // Allow our custom URL schemes for passages and citations.
+                  // websource: wraps an (already encoded) external URL so a web
+                  // citation renders as a source button; the real URL is
+                  // re-validated before use in the `a` renderer below.
+                  if (
+                    url.startsWith("passage:") ||
+                    url.startsWith("citation:") ||
+                    url.startsWith("websource:")
+                  ) {
                     return url;
                   }
                   // Everything else must go through react-markdown's sanitizer.
@@ -413,6 +446,37 @@ export function MessageBubble({ message, isNew = false }: MessageBubbleProps) {
                 components={{
                   // Customize link rendering - special handling for citations and file downloads
                   a: ({ href, children }) => {
+                    // Web source citation -> clickable source button.
+                    if (href?.startsWith("websource:")) {
+                      let target: string | null = null;
+                      try {
+                        const decoded = decodeURIComponent(href.slice("websource:".length));
+                        // Re-validate: this came from agent output, and the
+                        // custom scheme bypassed react-markdown's sanitizer.
+                        const parsed = new URL(decoded);
+                        if (parsed.protocol === "http:" || parsed.protocol === "https:") {
+                          target = parsed.href;
+                        }
+                      } catch {
+                        target = null;
+                      }
+                      if (!target) {
+                        return <strong>{children}</strong>;
+                      }
+                      return (
+                        <a
+                          href={target}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          title={target}
+                          className={CITATION_BUTTON_CLASS}
+                        >
+                          <ExternalLink className="w-3 h-3" />
+                          <span className="truncate max-w-[220px]">{children}</span>
+                        </a>
+                      );
+                    }
+
                     // Handle citation links (citation:docId:page) and passage links (passage:docId:page:hash)
                     if (href?.startsWith("citation:") || href?.startsWith("passage:")) {
                       const isCitation = href.startsWith("citation:");

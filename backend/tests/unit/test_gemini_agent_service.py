@@ -2462,3 +2462,27 @@ async def test_build_history_message_exactly_at_budget_is_kept(mock_db):
     mock_db.execute.return_value = make_result(scalars_all=[_msg("user", "z" * 30, 1)])
     out = await svc._build_conversation_history(mock_db, 1, "q", max_chars=30)
     assert [c.parts[0].text for c in out] == ["z" * 30]
+
+
+# --- grounding / citations -------------------------------------------------- #
+def test_system_prompt_mandates_grounding_and_citation_syntax():
+    # The agent used to state external facts (protein biology, literature) from
+    # parametric memory with no source. The prompt must require a lookup first
+    # and give the exact inline citation syntax the frontend can linkify.
+    p = " ".join(svc.SYSTEM_PROMPT.split())
+    assert "do not assert an external fact from memory" in p.lower()
+    # Both citation forms the UI turns into clickable source buttons.
+    assert '[Doc: "filename" p.X]' in p
+    assert '[Web: "source title"]' in p
+    # Must forbid fabricating a citation.
+    assert "never invent a citation" in p.lower()
+    # Must offer an honest out instead of an ungrounded assertion.
+    assert "could not find a source" in p.lower()
+
+
+def test_system_prompt_exempts_user_own_data_from_citation():
+    # Counts/averages computed from the user's own DB are already sourced;
+    # demanding citations there would push the agent into pointless searches.
+    # Normalize whitespace: the prompt is hard-wrapped.
+    p = " ".join(svc.SYSTEM_PROMPT.lower().split())
+    assert "own database" in p and "do not need a citation" in p
