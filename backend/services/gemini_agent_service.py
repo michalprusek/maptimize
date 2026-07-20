@@ -480,10 +480,12 @@ Don't just tell the user about data - SHOW them visualizations!
 - **list_documents**: List uploaded documents metadata
 - **get_documents_summary**: Get all documents with text previews
 - **semantic_search**: MAIN SEARCH - searches BOTH documents AND images
-- **search_documents**: Search only documents
+- **list_documents**: List ALL uploaded documents with metadata (type, size, page count, dates)
+- **search_documents**: Search documents (semantic). Pass `limit` for how many pages to return (default 10), `document_ids` to search within specific documents
 - **search_fov_images**: Search only microscopy images
-- **get_document_content**: Read document pages (returns images for vision reading)
-- **extract_document_region**: Extract and display specific region (figure, table, equation) - returns markdown to include INLINE
+- **get_document_content**: READ document pages yourself via vision (default first 10, max 10 per call)
+- **show_document_pages**: DISPLAY whole page(s) to the user (default first 10, max 10) - returns markdown to include INLINE
+- **extract_document_region**: Extract and display a specific CROPPED region (figure, table, equation) - returns markdown to include INLINE
 - **get_experiment_stats**: Get detailed experiment statistics
 - **get_protein_info**: Get protein information
 - **get_cell_detection_results**: Get cell detection results (bounding boxes) for an image
@@ -667,11 +669,11 @@ AGENT_TOOLS = [
     },
     {
         "name": "list_documents",
-        "description": "List uploaded documents metadata (names, page counts, status).",
+        "description": "List ALL uploaded documents with metadata (id, name, file_type, page_count, status, file size, upload/index dates). Returns every document by default; pass limit only to cap.",
         "parameters": {
             "type": "object",
             "properties": {
-                "limit": {"type": "integer", "description": "Max documents (default 10)"}
+                "limit": {"type": "integer", "description": "Optional cap on documents returned (default: all)"}
             }
         }
     },
@@ -697,11 +699,13 @@ AGENT_TOOLS = [
     },
     {
         "name": "search_documents",
-        "description": "Search only documents using semantic similarity.",
+        "description": "Search documents using semantic similarity. Returns matching pages with a page_image_url for each. Optionally restrict to specific documents.",
         "parameters": {
             "type": "object",
             "properties": {
-                "query": {"type": "string", "description": "Search query"}
+                "query": {"type": "string", "description": "Search query"},
+                "limit": {"type": "integer", "description": "How many matching pages to return (default 10)"},
+                "document_ids": {"type": "array", "items": {"type": "integer"}, "description": "Optional: restrict the search to these document IDs"}
             },
             "required": ["query"]
         }
@@ -722,12 +726,12 @@ AGENT_TOOLS = [
     # === READING CONTENT ===
     {
         "name": "get_document_content",
-        "description": "Read document pages via vision (images sent to you for reading). To SHOW specific parts to the user, use extract_document_region tool separately.",
+        "description": "READ document pages yourself via vision (page images are sent to you). One or more pages; up to 10 per call (default: first 10). To DISPLAY whole pages to the user use show_document_pages; to show a cropped figure/table use extract_document_region.",
         "parameters": {
             "type": "object",
             "properties": {
                 "document_id": {"type": "integer", "description": "Document ID"},
-                "page_numbers": {"type": "array", "items": {"type": "integer"}, "description": "Specific pages (1-indexed)"}
+                "page_numbers": {"type": "array", "items": {"type": "integer"}, "description": "Specific pages, 1-indexed (max 10). Omit for the first 10 pages."}
             },
             "required": ["document_id"]
         }
@@ -968,6 +972,18 @@ AGENT_TOOLS = [
                 "bbox": {"type": "array", "items": {"type": "integer"}, "description": "Optional [ymin, xmin, ymax, xmax] normalized 0-1000 if you know exact coordinates"}
             },
             "required": ["document_id", "page_number", "description"]
+        }
+    },
+    {
+        "name": "show_document_pages",
+        "description": "DISPLAY whole document page(s) to the user. Returns markdown image links you MUST include in your response where relevant. Use for showing entire pages (single or multiple); use extract_document_region for a cropped figure/table instead.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "document_id": {"type": "integer", "description": "Document ID"},
+                "page_numbers": {"type": "array", "items": {"type": "integer"}, "description": "Pages to show, 1-indexed (max 10). Omit for the first 10 pages."}
+            },
+            "required": ["document_id"]
         }
     },
 ]
@@ -1507,8 +1523,17 @@ async def execute_tool(
             return {"images": [{"id": i.id, "filename": i.original_filename, "experiment_id": i.experiment_id, "experiment_name": i.experiment.name if i.experiment else None, "width": i.width, "height": i.height, "thumbnail_url": f"/api/images/{i.id}/file?type=thumbnail"} for i in (await db.execute(q)).scalars().all()]}
 
         elif tool_name == "list_documents":
-            result = await db.execute(select(RAGDocument).where(RAGDocument.user_id == user_id).order_by(RAGDocument.created_at.desc()).limit(args.get("limit", 10)))
-            return {"documents": [{"id": d.id, "name": d.name, "file_type": d.file_type, "page_count": d.page_count, "status": d.status} for d in result.scalars().all()]}
+            q = select(RAGDocument).where(RAGDocument.user_id == user_id).order_by(RAGDocument.created_at.desc())
+            if args.get("limit"):
+                q = q.limit(args["limit"])
+            docs = (await db.execute(q)).scalars().all()
+            return {"count": len(docs), "documents": [{
+                "id": d.id, "name": d.name, "file_type": d.file_type,
+                "page_count": d.page_count, "status": d.status,
+                "file_size": d.file_size, "mime_type": d.mime_type,
+                "created_at": d.created_at.isoformat() if d.created_at else None,
+                "indexed_at": d.indexed_at.isoformat() if d.indexed_at else None,
+            } for d in docs]}
 
         elif tool_name == "get_documents_summary":
             return {"documents": await get_all_documents_summary(user_id=user_id, db=db, include_first_page_text=True)}
@@ -1519,7 +1544,9 @@ async def execute_tool(
             return {"query": results["query"], "document_results": {"count": len(results["documents"]), "pages": results["documents"]}, "image_results": {"count": len(results["fov_images"]), "images": results["fov_images"]}}
 
         elif tool_name == "search_documents":
-            return {"results": await search_documents(query=args.get("query", ""), user_id=user_id, db=db, limit=10)}
+            return {"results": await search_documents(
+                query=args.get("query", ""), user_id=user_id, db=db,
+                limit=args.get("limit", 10), document_ids=args.get("document_ids"))}
 
         elif tool_name == "search_fov_images":
             return {"results": await search_fov_images(query=args.get("query", ""), user_id=user_id, db=db, experiment_id=args.get("experiment_id"), limit=10)}
@@ -2357,6 +2384,36 @@ async def execute_tool(
                 result["description"] = description
                 result["confidence"] = passage.get("confidence", 0.5)
             return result
+
+        elif tool_name == "show_document_pages":
+            if not args.get("document_id"):
+                return {"error": "document_id required"}
+            # Reuse get_document_content for ownership + the 10-page cap, but
+            # without base64 (display is via the tokenized page-image endpoint,
+            # not vision). Each returned page carries an image_url.
+            content = await get_document_content(
+                document_id=args["document_id"], user_id=user_id, db=db,
+                page_numbers=args.get("page_numbers"), include_images=False,
+            )
+            if not content:
+                return {"error": "Document not found"}
+            name = content.get("name", "Document")
+            pages = content.get("pages", [])
+            if not pages:
+                return {"error": "No matching pages found for this document"}
+            images = [
+                f"![{name} — p.{p['page_number']}]({p['image_url']})"
+                for p in pages if p.get("image_url")
+            ]
+            return {
+                "success": True,
+                "document_id": args["document_id"],
+                "document_name": name,
+                "pages_shown": [p["page_number"] for p in pages],
+                "total_pages": content.get("total_pages"),
+                "markdown": "\n\n".join(images),
+                "instruction": "INCLUDE the 'markdown' value in your response where you discuss these pages.",
+            }
 
         return {"error": f"Unknown tool: {tool_name}"}
 
