@@ -19,7 +19,15 @@ export default function ChatPage() {
 
   // Auth check
   const { isAuthenticated, isLoading: authLoading, checkAuth } = useAuthStore();
-  const { activeThreadId, loadThreads, loadDocuments, refreshIndexingStatus, selectThread } = useChatStore();
+  const {
+    activeThreadId,
+    generatingThreadId,
+    loadThreads,
+    loadDocuments,
+    refreshIndexingStatus,
+    selectThread,
+    checkGenerationStatus,
+  } = useChatStore();
 
   useEffect(() => {
     checkAuth();
@@ -38,9 +46,18 @@ export default function ChatPage() {
       loadDocuments();
       refreshIndexingStatus();
 
-      // Load messages for persisted active thread (handles page refresh with ongoing generation)
+      // Load messages for the persisted active thread. selectThread also
+      // reconnects to (or clears) that thread's generation.
       if (activeThreadId) {
         selectThread(activeThreadId);
+      }
+
+      // A generation may have been running on a thread other than the
+      // active one when the page was reloaded. selectThread only reconciles
+      // the active thread, so resume that poll explicitly -- it settles the
+      // state (appends the reply, or clears the flag) on its own.
+      if (generatingThreadId && generatingThreadId !== activeThreadId) {
+        checkGenerationStatus(generatingThreadId);
       }
 
       // Refresh indexing status and documents periodically

@@ -652,9 +652,13 @@ async def get_generation_status(
         if latest_message:
             response.message = ChatMessageResponse.model_validate(latest_message)
 
-        # Reset status to idle after returning completed
-        thread.generation_status = "idle"
-        await db.commit()
+        # NOTE: deliberately does NOT reset the status here. This endpoint used to
+        # flip "completed" -> "idle" on read, making delivery one-shot: whichever
+        # poll saw it first consumed the message and every later reader (a client
+        # that refreshed, or reopened the tab) got "idle" with no message and
+        # concluded generation had died. The status now stays "completed" until
+        # the next send_message sets it back to "generating", so reconnecting is
+        # idempotent. Clients dedupe the message by id.
 
     return response
 
