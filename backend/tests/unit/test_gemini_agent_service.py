@@ -27,6 +27,7 @@ import pytest
 
 import services.gemini_agent_service as svc
 from services.gemini_agent_service import (
+    FORCE_ANSWER_AFTER,
     StatsCache,
     _fix_passage_links_in_response,
     _inject_user_id_filter,
@@ -329,6 +330,17 @@ def test_inject_filter_group_ignored_for_non_experiment_tables():
     out = _inject_user_id_filter("SELECT * FROM agent_memories", "agent_memories", group_id=5)
     assert "agent_memories.user_id = :user_id" in out
     assert "group_id" not in out
+
+
+def test_query_database_tool_advertises_schema():
+    # The model probes with many small queries when it doesn't know the columns.
+    # The tool description must carry the schema and the key constraints.
+    tool = next(t for t in svc.AGENT_TOOLS if t["name"] == "query_database")
+    desc = tool["description"]
+    for table in svc.ALLOWED_SQL_TABLES:
+        assert table in desc, f"{table} missing from query_database schema hint"
+    assert "bundleness_score" in desc  # a real, non-obvious column
+    assert "NO subqueries" in desc
 
 
 # --- _extract_referenced_tables (the comma-join CVE fix) -------------------- #
@@ -1739,6 +1751,113 @@ async def test_generate_response_function_call_then_text(mock_db, monkeypatch):
     assert res["tool_calls"][0]["tool"] == "get_overview_stats"
 
 
+class _RunawayClient:
+    """Models a runaway agent: it keeps emitting a tool call on every turn --
+    even after tools are removed from the request, exactly as the real model did
+    in prod (the tool count climbed 25->30 while tools were 'disabled'). Only the
+    forced-synthesis call (which happens after the cap + one disabled turn) gets a
+    text answer. Count-based rather than nudge-wording-based so the test does not
+    couple to the exact prompt string. Reproduces the failure where the soft cap
+    did not stop tool execution and the loop dumped a tool list."""
+
+    def __init__(self, answer="Máte 3 experimenty.", raise_on_synth=False):
+        self.answer = answer
+        self.raise_on_synth = raise_on_synth
+        self.tool_turns = 0
+        self.synth_turns = 0
+        self.models = self
+
+    def generate_content(self, *, model, contents, config):
+        # Calls 1..FORCE_ANSWER_AFTER fill the cap; the next call is the disabled
+        # turn that must still emit a function_call to trigger the break; anything
+        # after that is the forced synthesis.
+        if self.tool_turns + self.synth_turns <= FORCE_ANSWER_AFTER:
+            self.tool_turns += 1
+            return _fake_response(
+                _model_content_with_function_call("get_overview_stats", {}))
+        self.synth_turns += 1
+        if self.raise_on_synth:
+            raise RuntimeError("Gemini 503 during synthesis")
+        return _fake_response(_model_content_with_text(self.answer), text=self.answer)
+
+
+async def test_runaway_tools_are_capped_and_synthesis_forced(mock_db, monkeypatch):
+    # Regression: the model that will not stop calling tools must be cut off at
+    # the cap and forced to synthesize a real answer -- NOT run to max_iterations
+    # and dump "Completed actions: ... Please try your query again."
+    monkeypatch.setattr(svc.settings, "gemini_api_key", "fake-key")
+    monkeypatch.setattr(svc, "_build_conversation_history", AsyncMock(return_value=[]))
+    monkeypatch.setattr(svc, "get_user_group_id", AsyncMock(return_value=None))
+    StatsCache._cache.clear()
+    mock_db.execute.return_value = make_result(
+        scalar=3, first=SimpleNamespace(img=1, cell=2))
+    client = _RunawayClient()
+    with patch("google.genai.Client", return_value=client):
+        res = await generate_response("kolik mám experimentů?", 5, 100, mock_db)
+    # A real answer, in the user's language, from the synthesis call.
+    assert res["content"] == "Máte 3 experimenty."
+    assert "Please try your query again" not in res["content"]
+    # The cap actually stopped tool execution rather than grinding to 30.
+    assert len(res["tool_calls"]) <= FORCE_ANSWER_AFTER
+    assert client.synth_turns >= 1
+
+
+async def test_disabled_tools_response_with_text_and_call_returns_text(mock_db, monkeypatch):
+    # If the model, once tools are disabled, returns a real text answer that also
+    # carries a stray function_call, the text must be returned -- not discarded
+    # in favour of an extra synthesis round-trip.
+    from google.genai import types
+    monkeypatch.setattr(svc.settings, "gemini_api_key", "fake-key")
+    monkeypatch.setattr(svc, "_build_conversation_history", AsyncMock(return_value=[]))
+    monkeypatch.setattr(svc, "get_user_group_id", AsyncMock(return_value=None))
+    StatsCache._cache.clear()
+    mock_db.execute.return_value = make_result(
+        scalar=3, first=SimpleNamespace(img=1, cell=2))
+    mixed = types.Content(role="model", parts=[
+        types.Part(text="Odpověď: máte 3 experimenty."),
+        types.Part(function_call=types.FunctionCall(name="get_overview_stats", args={})),
+    ])
+
+    class _MixedAtCap:
+        def __init__(self):
+            self.calls = 0
+            self.models = self
+
+        def generate_content(self, *, model, contents, config):
+            self.calls += 1
+            if self.calls <= FORCE_ANSWER_AFTER:  # fill the cap with tool calls
+                return _fake_response(
+                    _model_content_with_function_call("get_overview_stats", {}))
+            return _fake_response(mixed)  # disabled turn: text + stray call
+
+    client = _MixedAtCap()
+    with patch("google.genai.Client", return_value=client):
+        res = await generate_response("kolik?", 5, 100, mock_db)
+    assert res["content"] == "Odpověď: máte 3 experimenty."
+    # Returned directly from the disabled turn -- no synthesis round-trip needed.
+    assert client.calls == FORCE_ANSWER_AFTER + 1
+
+
+async def test_runaway_synthesis_call_raising_degrades_gracefully(mock_db, monkeypatch):
+    # The forced-synthesis call is the most likely place a Gemini 5xx/timeout
+    # lands (long/degenerate context). It must degrade to the last-resort message,
+    # not resurface the original crash.
+    monkeypatch.setattr(svc.settings, "gemini_api_key", "fake-key")
+    monkeypatch.setattr(svc, "_build_conversation_history", AsyncMock(return_value=[]))
+    monkeypatch.setattr(svc, "get_user_group_id", AsyncMock(return_value=None))
+    StatsCache._cache.clear()
+    mock_db.execute.return_value = make_result(
+        scalar=3, first=SimpleNamespace(img=1, cell=2))
+    client = _RunawayClient(raise_on_synth=True)
+    with patch("google.genai.Client", return_value=client):
+        res = await generate_response("kolik mám experimentů?", 5, 100, mock_db)
+    # get_overview_stats yields no displayable data -> generic give-up message,
+    # never a raised exception or the raw tool-list dump.
+    assert "couldn't compose a final answer" in res["content"]
+    assert "Please try your query again" not in res["content"]
+    assert client.synth_turns >= 1
+
+
 async def test_generate_response_tool_error_then_text(mock_db, monkeypatch):
     monkeypatch.setattr(svc.settings, "gemini_api_key", "fake-key")
     r1 = _fake_response(_model_content_with_function_call("get_experiment_stats", {}))
@@ -1803,17 +1922,21 @@ async def test_generate_response_timeout(mock_db, monkeypatch):
 
 async def test_generate_response_fallback_after_exhaustion(mock_db, monkeypatch):
     monkeypatch.setattr(svc.settings, "gemini_api_key", "fake-key")
-    # Always return a function_call -> never produces text -> loop exhausts.
-    # Use get_experiment_stats (returns error quickly, no DB needed).
+    monkeypatch.setattr(svc, "_build_conversation_history", AsyncMock(return_value=[]))
+    monkeypatch.setattr(svc, "get_user_group_id", AsyncMock(return_value=None))
+    # Always a function_call, never text: the loop hits the cap, breaks, the
+    # synthesis call also returns only a function_call (no text), so it falls to
+    # the data-extraction fallback. get_experiment_stats always contributes a
+    # stats line, so the "Analysis Results" branch is produced.
     fc_resp = _fake_response(
         _model_content_with_function_call("get_experiment_stats", {}))
     fake_client = MagicMock()
     fake_client.models.generate_content.return_value = fc_resp
     with patch("google.genai.Client", return_value=fake_client):
         res = await generate_response("loop", 1, 100, mock_db)
-    # Exhausted with tool calls -> fallback content built from tool results.
     assert res["tool_calls"]
-    assert "Completed actions" in res["content"] or "Analysis Results" in res["content"]
+    assert "Analysis Results" in res["content"]
+    assert "Completed actions" not in res["content"]  # the old dump is gone
 
 
 async def test_generate_response_get_document_content_vision(mock_db, monkeypatch):
@@ -2052,10 +2175,13 @@ async def test_generate_response_text_fallback_passage_fix(mock_db, monkeypatch)
     assert "![Fig](passage:1:2:abcdef012345)" in res["content"]
 
 
-async def test_generate_response_fallback_completed_actions(mock_db, monkeypatch):
+async def test_generate_response_last_resort_when_synthesis_also_empty(mock_db, monkeypatch):
     monkeypatch.setattr(svc.settings, "gemini_api_key", "fake-key")
-    # list_documents yields no stats/images keys -> fallback uses the
-    # "Completed actions: ..." summary branch.
+    monkeypatch.setattr(svc, "_build_conversation_history", AsyncMock(return_value=[]))
+    monkeypatch.setattr(svc, "get_user_group_id", AsyncMock(return_value=None))
+    # list_documents yields no stats/images, and every model turn (including the
+    # forced-synthesis call) comes back empty -> the generic last-resort message.
+    # It must NOT dump the raw tool list.
     r1 = _fake_response(_model_content_with_function_call("list_documents", {}))
     empty = SimpleNamespace(
         candidates=[SimpleNamespace(content=SimpleNamespace(parts=[]),
@@ -2066,8 +2192,8 @@ async def test_generate_response_fallback_completed_actions(mock_db, monkeypatch
     fake_client.models.generate_content.side_effect = [r1] + [empty] * 40
     with patch("google.genai.Client", return_value=fake_client):
         res = await generate_response("docs", 1, 100, mock_db)
-    assert "Completed actions" in res["content"]
-    assert "list_documents" in res["content"]
+    assert "couldn't compose a final answer" in res["content"]
+    assert "list_documents" not in res["content"]  # no raw tool-list dump
 
 
 async def test_generate_response_fallback_render_overlay_markdown(mock_db, tmp_path, monkeypatch):
