@@ -28,6 +28,8 @@ interface ChatState {
   activeThreadId: number | null;
   messages: Record<number, ChatMessage[]>;
   documents: RAGDocument[];
+  /** Documents attached to a specific chat thread, keyed by thread id. */
+  threadAttachments: Record<number, RAGDocument[]>;
   indexingStatus: RAGIndexingStatus | null;
   indexingStatusError: string | null;
 
@@ -81,7 +83,7 @@ interface ChatState {
 
   // Actions - Documents
   loadDocuments: () => Promise<void>;
-  uploadDocument: (file: File) => Promise<RAGDocument | null>;
+  uploadDocument: (file: File, threadId?: number) => Promise<RAGDocument | null>;
   deleteDocument: (documentId: number) => Promise<void>;
   refreshIndexingStatus: () => Promise<void>;
 
@@ -127,6 +129,7 @@ export const useChatStore = create<ChatState>()(
       activeThreadId: null,
       messages: {},
       documents: [],
+      threadAttachments: {},
       indexingStatus: null,
       indexingStatusError: null,
 
@@ -673,12 +676,17 @@ export const useChatStore = create<ChatState>()(
         }
       },
 
-      uploadDocument: async (file: File) => {
+      uploadDocument: async (file: File, threadId?: number) => {
         set({ isUploadingDocument: true, error: null });
         try {
-          const document = await api.uploadRAGDocument(file);
+          const document = await api.uploadRAGDocument(file, threadId);
           set((state) => ({
             documents: [document, ...state.documents],
+            // Attachments belong to the open conversation; keep them listed
+            // separately so the composer can show them as chips.
+            threadAttachments: threadId
+              ? { ...state.threadAttachments, [threadId]: [...(state.threadAttachments[threadId] || []), document] }
+              : state.threadAttachments,
             isUploadingDocument: false,
           }));
           return document;

@@ -4,14 +4,38 @@ from enum import Enum as PyEnum
 from typing import TYPE_CHECKING, List, Optional
 
 from pgvector.sqlalchemy import Vector
-from sqlalchemy import String, Text, Float, Integer, ForeignKey, DateTime, func, CheckConstraint, UniqueConstraint
+from sqlalchemy import (
+    String, Text, Float, Integer, ForeignKey, DateTime, func,
+    CheckConstraint, UniqueConstraint, and_, or_,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy.sql.elements import ColumnElement
 
 from database import Base
 from ml.rag import QWEN_VL_EMBEDDING_DIM
 
 if TYPE_CHECKING:
     from .user import User
+
+
+def document_scope(user_id: int, thread_id: Optional[int] = None) -> ColumnElement:
+    """SSOT for which documents a caller may see.
+
+    ``thread_id=None`` -> the document library only (attachments belong to their
+    thread and must not pollute the library listing).
+    ``thread_id=N``    -> the library PLUS that thread's own attachments.
+
+    Every query that scopes RAGDocument to a user goes through this, so an
+    attachment can never surface in another conversation. Mirrors the
+    ``experiment_owner_filter`` pattern in utils/groups.py.
+    """
+    owned = RAGDocument.user_id == user_id
+    if thread_id is None:
+        return and_(owned, RAGDocument.thread_id.is_(None))
+    return and_(
+        owned,
+        or_(RAGDocument.thread_id.is_(None), RAGDocument.thread_id == thread_id),
+    )
 
 
 class DocumentStatus(str, PyEnum):
@@ -43,6 +67,14 @@ class RAGDocument(Base):
         ForeignKey("users.id", ondelete="CASCADE"),
         index=True
     )
+    # NULL = document library upload; set = attachment scoped to a chat thread.
+    # Read scope goes through document_scope() above -- never a bare user_id filter.
+    # ON DELETE CASCADE removes the attachment ROWS with the thread; the rendered
+    # page images on disk are reaped separately by delete_document().
+    thread_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("chat_threads.id", ondelete="CASCADE"),
+        nullable=True, index=True,
+    )
     name: Mapped[str] = mapped_column(String(255))
     # Store file_type as string but validate against DocumentType values
     file_type: Mapped[str] = mapped_column(String(50))
@@ -54,6 +86,9 @@ class RAGDocument(Base):
     status: Mapped[str] = mapped_column(String(20), default=DocumentStatus.PENDING.value)
     progress: Mapped[float] = mapped_column(Float, default=0.0)
     page_count: Mapped[int] = mapped_column(Integer, default=0)
+    # Set only when a chat attachment hit the page cap: the true length of the
+    # source PDF, so the agent can say it only saw part of the document.
+    truncated_from_pages: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     error_message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
     __table_args__ = (

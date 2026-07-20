@@ -95,7 +95,7 @@ from models.experiment import Experiment
 from models.image import Image, MapProtein, UploadStatus
 from models.cell_crop import CellCrop
 from utils.groups import experiment_owner_filter, get_user_group_id
-from models.rag_document import RAGDocument
+from models.rag_document import RAGDocument, document_scope
 from models.agent_memory import AgentMemory, MemoryType
 from services.rag_service import (
     search_documents,
@@ -131,7 +131,7 @@ _SQL_SCHEMA_HINT = (
     "map_proteins(id, name, full_name, uniprot_id, gene_name, organism, sequence_length)  -- shared reference data, no user filter\n"
     "comparisons(id, crop_a_id, crop_b_id, winner_id, response_time_ms, undone, timestamp)\n"
     "user_ratings(id, cell_crop_id, mu, sigma, comparison_count, created_at)\n"
-    "rag_documents(id, name, file_type, status, page_count, created_at)\n"
+    "rag_documents(id, name, file_type, status, page_count, thread_id, created_at)  -- thread_id NULL = library, set = attachment of that chat thread\n"
     "rag_document_pages(id, document_id, page_number)  -- must JOIN rag_documents; page text is NOT in SQL, use search_documents/get_document_content\n"
     "agent_memories(id, key, value, memory_type, tags, created_at)"
 )
@@ -142,6 +142,20 @@ _SQL_SCHEMA_HINT = (
 # of truth rather than hardcoding the number.
 FORCE_ANSWER_AFTER = 25
 MAX_ITERATIONS = 30
+
+# Ceiling for model-supplied result limits. Without it a hallucinated
+# limit=5000 floods the context (re-billed every loop iteration) and a
+# negative value reaches Postgres as `LIMIT -1`, which errors and sends the
+# model into a retry loop.
+MAX_TOOL_RESULT_LIMIT = 50
+
+
+def _clamp_limit(value, default: int = 10, lo: int = 1, hi: int = MAX_TOOL_RESULT_LIMIT) -> int:
+    """Coerce a model-supplied limit into [lo, hi], falling back to default."""
+    try:
+        return max(lo, min(hi, int(value)))
+    except (TypeError, ValueError):
+        return default
 
 
 def _fix_passage_links_in_response(
@@ -477,7 +491,6 @@ Don't just tell the user about data - SHOW them visualizations!
 - **get_overview_stats**: Get total counts of experiments, images, cells, documents
 - **list_experiments**: List all experiments with basic info
 - **list_images**: List uploaded images (use random=true for variety)
-- **list_documents**: List uploaded documents metadata
 - **get_documents_summary**: Get all documents with text previews
 - **semantic_search**: MAIN SEARCH - searches BOTH documents AND images
 - **list_documents**: List ALL uploaded documents with metadata (type, size, page count, dates)
@@ -1001,6 +1014,49 @@ async def _run_redetection_task(image_id: int) -> None:
         logger.error(f"Re-detection failed for image {image_id}: {e}")
 
 
+async def _thread_attachments_note(db: AsyncSession, thread_id: int, user_id: int) -> Optional[str]:
+    """Build a context note listing the documents attached to this thread.
+
+    Returns None when the thread has no attachments. Kept as its own coroutine
+    so the agent-loop tests can stub it without mocking an extra db.execute.
+    """
+    from models.rag_document import RAGDocument
+
+    attached = (await db.execute(
+        select(RAGDocument.id, RAGDocument.name, RAGDocument.page_count,
+               RAGDocument.status, RAGDocument.truncated_from_pages,
+               RAGDocument.error_message)
+        .where(RAGDocument.thread_id == thread_id, RAGDocument.user_id == user_id)
+        .order_by(RAGDocument.created_at.desc())
+        .limit(20)
+    )).all()
+    if not attached:
+        return None
+
+    def _line(d) -> str:
+        line = f"- [id {d.id}] {d.name} — status={d.status}"
+        if d.status == "completed":
+            if d.truncated_from_pages:
+                # Never let the agent treat a capped attachment as complete.
+                line += (f", ONLY the first {d.page_count} of {d.truncated_from_pages} "
+                         f"pages were indexed — TRUNCATED. Answer only from these pages "
+                         f"and TELL THE USER the rest was not indexed")
+            else:
+                line += f", {d.page_count} pages"
+        if d.error_message:
+            line += f", ERROR: {d.error_message}"
+        return line
+
+    logger.info(f"Thread {thread_id}: {len(attached)} attachment(s) in context")
+    return (
+        "Files the user attached to THIS conversation (treat as primary context; "
+        "use search_documents/get_document_content/show_document_pages with these "
+        "document_ids when relevant):\n" + "\n".join(_line(d) for d in attached) +
+        "\n\nIf an attachment's status is not `completed`, do NOT answer from it — "
+        "tell the user it is still processing or failed to index, and quote the error."
+    )
+
+
 async def _build_conversation_history(
     db: AsyncSession,
     thread_id: int,
@@ -1111,6 +1167,21 @@ async def generate_response(
     except Exception:
         logger.exception("Failed to resolve group for user %s; using owner-only scope", user_id)
         group_id = None
+
+    # Tell the agent which documents the user attached to THIS conversation, so it
+    # treats them as primary context and uses its document tools on them.
+    try:
+        note = await _thread_attachments_note(db, thread_id, user_id)
+        if note:
+            messages.insert(0, types.Content(role="user", parts=[types.Part(text=note)]))
+    except Exception:
+        logger.exception("Failed to load thread attachments for thread %s", thread_id)
+        # The SELECT ran on the session the whole turn shares; leaving it in a
+        # failed state makes the later commit raise and silently drop the answer.
+        try:
+            await db.rollback()
+        except Exception:
+            logger.error("Rollback failed after attachment-note error")
 
     tool_calls_log = []
     citations = []
@@ -1251,7 +1322,7 @@ async def generate_response(
                     logger.info(f"Executing tool: {tool_name} with args: {tool_args}")
 
                     try:
-                        tool_result = await execute_tool(tool_name, tool_args, user_id, db, group_id)
+                        tool_result = await execute_tool(tool_name, tool_args, user_id, db, group_id, thread_id)
                         logger.info(f"Tool {tool_name} completed successfully")
                     except Exception as tool_error:
                         logger.exception(f"Tool execution error for {tool_name}: {tool_error}")
@@ -1477,6 +1548,7 @@ async def execute_tool(
     user_id: int,
     db: AsyncSession,
     group_id: Optional[int] = None,
+    thread_id: Optional[int] = None,
 ) -> Dict[str, Any]:
     """Execute a tool call and return the result.
 
@@ -1504,7 +1576,7 @@ async def execute_tool(
                 .outerjoin(CellCrop, Image.id == CellCrop.image_id).where(exp_read)
             )
             row = img_result.first()
-            doc_count = (await db.execute(select(func.count(RAGDocument.id)).where(RAGDocument.user_id == user_id))).scalar() or 0
+            doc_count = (await db.execute(select(func.count(RAGDocument.id)).where(document_scope(user_id, thread_id)))).scalar() or 0
             mem_count = (await db.execute(select(func.count(AgentMemory.id)).where(AgentMemory.user_id == user_id))).scalar() or 0
             result = {"total_experiments": exp_count, "total_images": row.img if row else 0, "total_cells": row.cell if row else 0, "total_documents": doc_count, "total_memories": mem_count}
 
@@ -1523,7 +1595,7 @@ async def execute_tool(
             return {"images": [{"id": i.id, "filename": i.original_filename, "experiment_id": i.experiment_id, "experiment_name": i.experiment.name if i.experiment else None, "width": i.width, "height": i.height, "thumbnail_url": f"/api/images/{i.id}/file?type=thumbnail"} for i in (await db.execute(q)).scalars().all()]}
 
         elif tool_name == "list_documents":
-            q = select(RAGDocument).where(RAGDocument.user_id == user_id).order_by(RAGDocument.created_at.desc())
+            q = select(RAGDocument).where(document_scope(user_id, thread_id)).order_by(RAGDocument.created_at.desc())
             if args.get("limit"):
                 q = q.limit(args["limit"])
             docs = (await db.execute(q)).scalars().all()
@@ -1531,6 +1603,7 @@ async def execute_tool(
                 "id": d.id, "name": d.name, "file_type": d.file_type,
                 "page_count": d.page_count, "status": d.status,
                 "file_size": d.file_size, "mime_type": d.mime_type,
+                "thread_id": d.thread_id,  # NULL = library, set = attachment of that thread
                 "created_at": d.created_at.isoformat() if d.created_at else None,
                 "indexed_at": d.indexed_at.isoformat() if d.indexed_at else None,
             } for d in docs]}
@@ -1546,7 +1619,8 @@ async def execute_tool(
         elif tool_name == "search_documents":
             return {"results": await search_documents(
                 query=args.get("query", ""), user_id=user_id, db=db,
-                limit=args.get("limit", 10), document_ids=args.get("document_ids"))}
+                limit=_clamp_limit(args.get("limit")), document_ids=args.get("document_ids"),
+                thread_id=thread_id)}
 
         elif tool_name == "search_fov_images":
             return {"results": await search_fov_images(query=args.get("query", ""), user_id=user_id, db=db, experiment_id=args.get("experiment_id"), limit=10)}

@@ -488,7 +488,8 @@ async def test_list_images_no_experiment(mock_db):
 async def test_list_documents(mock_db):
     doc = SimpleNamespace(id=1, name="paper.pdf", file_type="pdf",
                           page_count=10, status="indexed", file_size=1234,
-                          mime_type="application/pdf", created_at=None, indexed_at=None)
+                          mime_type="application/pdf", created_at=None, indexed_at=None,
+                          thread_id=None)
     mock_db.execute.return_value = make_result(scalars_all=[doc])
     res = await execute_tool("list_documents", {}, 1, mock_db)
     assert res["count"] == 1
@@ -1837,6 +1838,7 @@ async def test_runaway_tools_are_capped_and_synthesis_forced(mock_db, monkeypatc
     monkeypatch.setattr(svc.settings, "gemini_api_key", "fake-key")
     monkeypatch.setattr(svc, "_build_conversation_history", AsyncMock(return_value=[]))
     monkeypatch.setattr(svc, "get_user_group_id", AsyncMock(return_value=None))
+    monkeypatch.setattr(svc, "_thread_attachments_note", AsyncMock(return_value=None))
     StatsCache._cache.clear()
     mock_db.execute.return_value = make_result(
         scalar=3, first=SimpleNamespace(img=1, cell=2))
@@ -1859,6 +1861,7 @@ async def test_disabled_tools_response_with_text_and_call_returns_text(mock_db, 
     monkeypatch.setattr(svc.settings, "gemini_api_key", "fake-key")
     monkeypatch.setattr(svc, "_build_conversation_history", AsyncMock(return_value=[]))
     monkeypatch.setattr(svc, "get_user_group_id", AsyncMock(return_value=None))
+    monkeypatch.setattr(svc, "_thread_attachments_note", AsyncMock(return_value=None))
     StatsCache._cache.clear()
     mock_db.execute.return_value = make_result(
         scalar=3, first=SimpleNamespace(img=1, cell=2))
@@ -1894,6 +1897,7 @@ async def test_runaway_synthesis_call_raising_degrades_gracefully(mock_db, monke
     monkeypatch.setattr(svc.settings, "gemini_api_key", "fake-key")
     monkeypatch.setattr(svc, "_build_conversation_history", AsyncMock(return_value=[]))
     monkeypatch.setattr(svc, "get_user_group_id", AsyncMock(return_value=None))
+    monkeypatch.setattr(svc, "_thread_attachments_note", AsyncMock(return_value=None))
     StatsCache._cache.clear()
     mock_db.execute.return_value = make_result(
         scalar=3, first=SimpleNamespace(img=1, cell=2))
@@ -1973,6 +1977,7 @@ async def test_generate_response_fallback_after_exhaustion(mock_db, monkeypatch)
     monkeypatch.setattr(svc.settings, "gemini_api_key", "fake-key")
     monkeypatch.setattr(svc, "_build_conversation_history", AsyncMock(return_value=[]))
     monkeypatch.setattr(svc, "get_user_group_id", AsyncMock(return_value=None))
+    monkeypatch.setattr(svc, "_thread_attachments_note", AsyncMock(return_value=None))
     # Always a function_call, never text: the loop hits the cap, breaks, the
     # synthesis call also returns only a function_call (no text), so it falls to
     # the data-extraction fallback. get_experiment_stats always contributes a
@@ -2122,6 +2127,7 @@ async def test_generate_response_fallback_segmentation_and_cells(mock_db, monkey
     monkeypatch.setattr(svc, "_build_conversation_history", AsyncMock(return_value=[]))
     # Same reason: the per-turn group lookup issues its own db.execute.
     monkeypatch.setattr(svc, "get_user_group_id", AsyncMock(return_value=None))
+    monkeypatch.setattr(svc, "_thread_attachments_note", AsyncMock(return_value=None))
     # Call get_segmentation_masks (masks_found) + get_cell_detection_results
     # (crops with thumbnails), then exhaust the loop -> fallback extracts both
     # the stats line and the cell-image markdown.
@@ -2228,6 +2234,7 @@ async def test_generate_response_last_resort_when_synthesis_also_empty(mock_db, 
     monkeypatch.setattr(svc.settings, "gemini_api_key", "fake-key")
     monkeypatch.setattr(svc, "_build_conversation_history", AsyncMock(return_value=[]))
     monkeypatch.setattr(svc, "get_user_group_id", AsyncMock(return_value=None))
+    monkeypatch.setattr(svc, "_thread_attachments_note", AsyncMock(return_value=None))
     # list_documents yields no stats/images, and every model turn (including the
     # forced-synthesis call) comes back empty -> the generic last-resort message.
     # It must NOT dump the raw tool list.
@@ -2252,6 +2259,7 @@ async def test_generate_response_fallback_render_overlay_markdown(mock_db, tmp_p
     monkeypatch.setattr(svc, "_build_conversation_history", AsyncMock(return_value=[]))
     # Same reason: the per-turn group lookup issues its own db.execute.
     monkeypatch.setattr(svc, "get_user_group_id", AsyncMock(return_value=None))
+    monkeypatch.setattr(svc, "_thread_attachments_note", AsyncMock(return_value=None))
     # render_segmentation_overlay returns image_markdown; loop exhausts ->
     # fallback collects the overlay image markdown.
     from PIL import Image as PILImage
@@ -2363,6 +2371,43 @@ async def test_run_redetection_task_error_swallowed():
 # --- _build_conversation_history ------------------------------------------- #
 def _msg(role, content, mid=1):
     return SimpleNamespace(role=role, content=content, id=mid)
+
+
+async def test_thread_attachments_note_none_when_empty(mock_db):
+    mock_db.execute.return_value = make_result(fetchall=[])
+    assert await svc._thread_attachments_note(mock_db, 1, 7) is None
+
+
+async def test_thread_attachments_note_lists_attachments(mock_db):
+    rows = [SimpleNamespace(id=5, name="paper.pdf", page_count=12, status="completed",
+                            truncated_from_pages=None, error_message=None)]
+    res = make_result(); res.all = MagicMock(return_value=rows)
+    mock_db.execute.return_value = res
+    note = await svc._thread_attachments_note(mock_db, 1, 7)
+    # Assert the structured facts, not the prompt prose.
+    assert "[id 5] paper.pdf" in note
+    assert "status=completed" in note and "12 pages" in note
+
+
+async def test_thread_attachments_note_flags_truncation(mock_db):
+    # A capped attachment must never read as a complete document, or the agent
+    # will answer "your paper doesn't mention X" from a fraction of it.
+    rows = [SimpleNamespace(id=5, name="thesis.pdf", page_count=100, status="completed",
+                            truncated_from_pages=340, error_message=None)]
+    res = make_result(); res.all = MagicMock(return_value=rows)
+    mock_db.execute.return_value = res
+    note = await svc._thread_attachments_note(mock_db, 1, 7)
+    assert "TRUNCATED" in note and "100 of 340" in note
+
+
+async def test_thread_attachments_note_surfaces_error(mock_db):
+    rows = [SimpleNamespace(id=6, name="broken.pdf", page_count=0, status="failed",
+                            truncated_from_pages=None, error_message="poppler missing")]
+    res = make_result(); res.all = MagicMock(return_value=rows)
+    mock_db.execute.return_value = res
+    note = await svc._thread_attachments_note(mock_db, 1, 7)
+    assert "status=failed" in note and "poppler missing" in note
+    assert "do NOT answer from it" in note
 
 
 async def test_build_history_empty_thread(mock_db):

@@ -5,10 +5,10 @@ Handles document upload, indexing, and search operations.
 import logging
 import time
 from pathlib import Path
-from typing import List, Optional
+from typing import Annotated, List, Optional
 
 import redis.asyncio as redis
-from fastapi import APIRouter, Depends, HTTPException, status, Query, UploadFile, File, BackgroundTasks
+from fastapi import APIRouter, Depends, HTTPException, status, Query, UploadFile, File, Form, BackgroundTasks
 from fastapi.responses import FileResponse
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -17,7 +17,8 @@ from sqlalchemy.orm import selectinload
 from config import get_settings
 from database import get_db
 from models.user import User
-from models.rag_document import RAGDocument, RAGDocumentPage, DocumentStatus
+from models.rag_document import RAGDocument, RAGDocumentPage, DocumentStatus, document_scope
+from models.chat import ChatThread
 from schemas.chat import (
     RAGDocumentUploadResponse,
     RAGDocumentResponse,
@@ -147,8 +148,11 @@ async def list_documents(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
-    """List user's uploaded documents."""
-    query = select(RAGDocument).where(RAGDocument.user_id == current_user.id)
+    """List the user's document library.
+
+    Chat attachments are excluded: they belong to their thread, not the library.
+    """
+    query = select(RAGDocument).where(document_scope(current_user.id))
 
     if status_filter:
         query = query.where(RAGDocument.status == status_filter)
@@ -165,6 +169,7 @@ async def list_documents(
 async def upload_document(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
+    thread_id: Annotated[Optional[int], Form()] = None,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
@@ -174,10 +179,24 @@ async def upload_document(
     Supported formats: PDF, DOCX, PPTX, XLSX, images.
     Documents are processed asynchronously in the background.
 
+    If ``thread_id`` is provided the document is a chat attachment scoped to
+    that thread (the agent treats it as context for the conversation); otherwise
+    it is a document-library upload.
+
     Rate limited: max 10 uploads per hour per user.
     """
     # Check rate limit before processing upload
     await _check_upload_rate_limit(current_user.id)
+
+    # If this is a chat attachment, verify the thread belongs to the caller so a
+    # document cannot be attached to someone else's conversation.
+    if thread_id is not None:
+        owns = await db.execute(
+            select(ChatThread.id).where(
+                ChatThread.id == thread_id, ChatThread.user_id == current_user.id)
+        )
+        if owns.scalar_one_or_none() is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Thread not found")
 
     if not file.filename:
         raise HTTPException(
@@ -206,6 +225,7 @@ async def upload_document(
             filename=file.filename,
             content=content,
             db=db,
+            thread_id=thread_id,
         )
         await db.commit()
 

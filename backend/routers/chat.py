@@ -470,12 +470,28 @@ async def delete_thread(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
-    """Delete a chat thread and all its messages."""
+    """Delete a chat thread, its messages, and any files attached to it."""
     thread = await get_thread_for_user(db, thread_id, current_user.id)
+
+    # The FK cascade removes attachment ROWS but never touches disk, so the
+    # rendered page images and originals would be orphaned under
+    # data/rag_documents/ with no row left to find them by. Delete them first.
+    from models.rag_document import RAGDocument
+    from services.document_indexing_service import delete_document
+
+    attachment_ids = (await db.execute(
+        select(RAGDocument.id).where(RAGDocument.thread_id == thread_id)
+    )).scalars().all()
+    for doc_id in attachment_ids:
+        try:
+            await delete_document(doc_id, current_user.id, db)
+        except Exception:
+            logger.exception(f"Failed to delete attachment {doc_id} of thread {thread_id}")
+
     await db.delete(thread)
     await db.commit()
 
-    logger.info(f"Deleted chat thread {thread_id}")
+    logger.info(f"Deleted chat thread {thread_id} ({len(attachment_ids)} attachment(s))")
 
 
 @router.post("/threads/{thread_id}/messages", response_model=SendMessageResponse)
