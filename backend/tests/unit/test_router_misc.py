@@ -464,7 +464,7 @@ async def test_rag_upload_no_filename(mock_db):
     fobj = SimpleNamespace(filename="")
     with patch.object(rag_r, "_check_upload_rate_limit", new=AsyncMock()):
         with pytest.raises(HTTPException) as e:
-            await rag_r.upload_document(MagicMock(), file=fobj,
+            await rag_r.upload_document(MagicMock(), file=fobj, thread_id=None,
                                         current_user=user(id=7), db=mock_db)
     assert e.value.status_code == 400
 
@@ -474,7 +474,7 @@ async def test_rag_upload_unsupported(mock_db):
     with patch.object(rag_r, "_check_upload_rate_limit", new=AsyncMock()), \
          patch.object(rag_r, "is_supported_file", return_value=False):
         with pytest.raises(HTTPException) as e:
-            await rag_r.upload_document(MagicMock(), file=fobj,
+            await rag_r.upload_document(MagicMock(), file=fobj, thread_id=None,
                                         current_user=user(id=7), db=mock_db)
     assert e.value.status_code == 400
 
@@ -486,7 +486,7 @@ async def test_rag_upload_too_large(mock_db):
     with patch.object(rag_r, "_check_upload_rate_limit", new=AsyncMock()), \
          patch.object(rag_r, "is_supported_file", return_value=True):
         with pytest.raises(HTTPException) as e:
-            await rag_r.upload_document(MagicMock(), file=fobj,
+            await rag_r.upload_document(MagicMock(), file=fobj, thread_id=None,
                                         current_user=user(id=7), db=mock_db)
     assert e.value.status_code == 413
 
@@ -502,7 +502,7 @@ async def test_rag_upload_success(mock_db):
          patch.object(rag_r, "save_uploaded_document", new=AsyncMock(return_value=doc)), \
          patch.object(rag_r.RAGDocumentUploadResponse, "model_validate",
                       side_effect=lambda d: {"id": d.id}):
-        out = await rag_r.upload_document(bg, file=fobj, current_user=user(id=7), db=mock_db)
+        out = await rag_r.upload_document(bg, file=fobj, thread_id=None, current_user=user(id=7), db=mock_db)
     assert out == {"id": 11}
     bg.add_task.assert_called_once()
     mock_db.commit.assert_awaited()
@@ -517,7 +517,7 @@ async def test_rag_upload_value_error(mock_db):
          patch.object(rag_r, "save_uploaded_document",
                       new=AsyncMock(side_effect=ValueError("bad type"))):
         with pytest.raises(HTTPException) as e:
-            await rag_r.upload_document(MagicMock(), file=fobj,
+            await rag_r.upload_document(MagicMock(), file=fobj, thread_id=None,
                                         current_user=user(id=7), db=mock_db)
     assert e.value.status_code == 400
 

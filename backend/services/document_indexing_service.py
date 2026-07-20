@@ -60,6 +60,7 @@ async def save_uploaded_document(
     filename: str,
     content: bytes,
     db: AsyncSession,
+    thread_id: Optional[int] = None,
 ) -> RAGDocument:
     """
     Save an uploaded document and create DB record.
@@ -69,6 +70,8 @@ async def save_uploaded_document(
         filename: Original filename
         content: File content bytes
         db: Database session
+        thread_id: If set, this is a chat attachment scoped to that thread
+            (NULL = a document-library upload)
 
     Returns:
         Created RAGDocument record
@@ -108,6 +111,7 @@ async def save_uploaded_document(
     # Create DB record
     document = RAGDocument(
         user_id=user_id,
+        thread_id=thread_id,
         name=filename,
         file_type=file_type,
         original_path=str(original_path),
@@ -168,8 +172,10 @@ async def process_document_async(document_id: int) -> None:
                 await db.commit()
                 return
 
-            # Render PDF pages to images
-            page_images = await render_pdf_to_images(pdf_path)
+            # Render PDF pages to images. Chat attachments are capped so a huge
+            # PDF cannot flood the thread's context; library uploads are not.
+            attachment_cap = settings.chat_attachment_max_pages if getattr(document, "thread_id", None) else None
+            page_images = await render_pdf_to_images(pdf_path, max_pages=attachment_cap)
             if page_images is None:
                 document.status = DocumentStatus.FAILED.value
                 document.error_message = "Failed to render PDF pages - check if pdf2image and poppler are installed"
@@ -252,6 +258,7 @@ async def convert_office_to_pdf(input_path: Path) -> Optional[Path]:
 async def render_pdf_to_images(
     pdf_path: Path,
     dpi: int = 150,
+    max_pages: Optional[int] = None,
 ) -> Optional[List[Tuple[int, Image.Image]]]:
     """
     Render PDF pages to images using pdf2image.
@@ -259,6 +266,7 @@ async def render_pdf_to_images(
     Args:
         pdf_path: Path to the PDF file
         dpi: Resolution for rendering
+        max_pages: If set, render only the first N pages (chat attachments cap)
 
     Returns:
         List of (page_number, PIL Image) tuples, or None if rendering failed.
@@ -267,11 +275,18 @@ async def render_pdf_to_images(
     try:
         from pdf2image import convert_from_path
 
+        # first_page/last_page also bounds memory: only the first N pages are
+        # rasterized instead of the whole PDF at once.
+        kwargs = {"dpi": dpi, "fmt": "png"}
+        if max_pages:
+            kwargs["first_page"] = 1
+            kwargs["last_page"] = max_pages
+
         # Run in executor to avoid blocking
         loop = asyncio.get_event_loop()
         images = await loop.run_in_executor(
             None,
-            lambda: convert_from_path(str(pdf_path), dpi=dpi, fmt="png")
+            lambda: convert_from_path(str(pdf_path), **kwargs)
         )
 
         return [(i + 1, img) for i, img in enumerate(images)]

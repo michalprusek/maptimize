@@ -58,6 +58,9 @@ class Settings(BaseSettings):
 
     rag_document_dir: Path = Path("data/rag_documents")
     rag_max_document_results: int = 20
+    # Chat attachments (documents uploaded into a thread) are capped so a very
+    # large PDF cannot flood the conversation's context.
+    chat_attachment_max_pages: int = 100
     rag_max_fov_results: int = 20
     # Pages are re-encoded to WebP: a scanned journal page is photographic
     # content, the worst case for PNG's lossless compression.

@@ -1001,6 +1001,30 @@ async def _run_redetection_task(image_id: int) -> None:
         logger.error(f"Re-detection failed for image {image_id}: {e}")
 
 
+async def _thread_attachments_note(db: AsyncSession, thread_id: int, user_id: int) -> Optional[str]:
+    """Build a context note listing the documents attached to this thread.
+
+    Returns None when the thread has no attachments. Kept as its own coroutine
+    so the agent-loop tests can stub it without mocking an extra db.execute.
+    """
+    from models.rag_document import RAGDocument
+
+    attached = (await db.execute(
+        select(RAGDocument.id, RAGDocument.name, RAGDocument.page_count, RAGDocument.status)
+        .where(RAGDocument.thread_id == thread_id, RAGDocument.user_id == user_id)
+        .order_by(RAGDocument.created_at.desc())
+    )).all()
+    if not attached:
+        return None
+    lines = [f"- [id {d.id}] {d.name} ({d.page_count} pages, {d.status})" for d in attached]
+    logger.info(f"Thread {thread_id}: {len(attached)} attachment(s) in context")
+    return (
+        "Files the user attached to THIS conversation (treat as primary context; "
+        "use search_documents/get_document_content/show_document_pages with these "
+        "document_ids when relevant):\n" + "\n".join(lines)
+    )
+
+
 async def _build_conversation_history(
     db: AsyncSession,
     thread_id: int,
@@ -1111,6 +1135,15 @@ async def generate_response(
     except Exception:
         logger.exception("Failed to resolve group for user %s; using owner-only scope", user_id)
         group_id = None
+
+    # Tell the agent which documents the user attached to THIS conversation, so it
+    # treats them as primary context and uses its document tools on them.
+    try:
+        note = await _thread_attachments_note(db, thread_id, user_id)
+        if note:
+            messages.insert(0, types.Content(role="user", parts=[types.Part(text=note)]))
+    except Exception:
+        logger.exception("Failed to load thread attachments for thread %s", thread_id)
 
     tool_calls_log = []
     citations = []

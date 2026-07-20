@@ -66,6 +66,7 @@ def document(**kw):
     defaults = dict(
         id=1, name="doc.pdf", file_type="pdf", page_count=2,
         status="completed", pages=[], user_id=7, original_path="/x/doc.pdf",
+        thread_id=None,
     )
     defaults.update(kw)
     return SimpleNamespace(**defaults)
@@ -761,10 +762,12 @@ async def test_save_uploaded_success(mock_db, tmp_path):
 
     mock_db.add = MagicMock(side_effect=add)
     with patch.object(dind, "settings", fake_settings):
-        doc = await dind.save_uploaded_document(7, "My Report!.pdf", b"hello", mock_db)
+        doc = await dind.save_uploaded_document(7, "My Report!.pdf", b"hello", mock_db, thread_id=42)
     assert doc.file_type == "pdf"
     assert doc.file_size == 5
     assert doc.status == DocumentStatus.PENDING.value
+    # chat attachment -> scoped to the thread
+    assert doc.thread_id == 42
     # file was actually written
     assert Path(doc.original_path).read_bytes() == b"hello"
     # special chars sanitized, .pdf extension preserved
@@ -851,6 +854,17 @@ async def test_render_pdf_success():
         out = await dind.render_pdf_to_images(Path("/x.pdf"))
     assert len(out) == 2
     assert out[0][0] == 1 and out[1][0] == 2
+    # No page cap -> no first_page/last_page passed.
+    assert "last_page" not in fake_pdf2image.convert_from_path.call_args.kwargs
+
+
+async def test_render_pdf_caps_pages_for_attachments():
+    fake_pdf2image = pytypes.ModuleType("pdf2image")
+    fake_pdf2image.convert_from_path = MagicMock(return_value=[PILImage.new("RGB", (10, 10))])
+    with patch.dict("sys.modules", {"pdf2image": fake_pdf2image}):
+        await dind.render_pdf_to_images(Path("/x.pdf"), max_pages=100)
+    kw = fake_pdf2image.convert_from_path.call_args.kwargs
+    assert kw["first_page"] == 1 and kw["last_page"] == 100
 
 
 async def test_render_pdf_import_error():

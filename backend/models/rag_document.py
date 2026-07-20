@@ -43,6 +43,12 @@ class RAGDocument(Base):
         ForeignKey("users.id", ondelete="CASCADE"),
         index=True
     )
+    # NULL = document library upload; set = attachment scoped to a chat thread.
+    # ON DELETE CASCADE so deleting a thread removes its attachments.
+    thread_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("chat_threads.id", ondelete="CASCADE"),
+        nullable=True, index=True,
+    )
     name: Mapped[str] = mapped_column(String(255))
     # Store file_type as string but validate against DocumentType values
     file_type: Mapped[str] = mapped_column(String(50))

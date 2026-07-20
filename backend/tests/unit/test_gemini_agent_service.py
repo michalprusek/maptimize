@@ -1837,6 +1837,7 @@ async def test_runaway_tools_are_capped_and_synthesis_forced(mock_db, monkeypatc
     monkeypatch.setattr(svc.settings, "gemini_api_key", "fake-key")
     monkeypatch.setattr(svc, "_build_conversation_history", AsyncMock(return_value=[]))
     monkeypatch.setattr(svc, "get_user_group_id", AsyncMock(return_value=None))
+    monkeypatch.setattr(svc, "_thread_attachments_note", AsyncMock(return_value=None))
     StatsCache._cache.clear()
     mock_db.execute.return_value = make_result(
         scalar=3, first=SimpleNamespace(img=1, cell=2))
@@ -1859,6 +1860,7 @@ async def test_disabled_tools_response_with_text_and_call_returns_text(mock_db, 
     monkeypatch.setattr(svc.settings, "gemini_api_key", "fake-key")
     monkeypatch.setattr(svc, "_build_conversation_history", AsyncMock(return_value=[]))
     monkeypatch.setattr(svc, "get_user_group_id", AsyncMock(return_value=None))
+    monkeypatch.setattr(svc, "_thread_attachments_note", AsyncMock(return_value=None))
     StatsCache._cache.clear()
     mock_db.execute.return_value = make_result(
         scalar=3, first=SimpleNamespace(img=1, cell=2))
@@ -1894,6 +1896,7 @@ async def test_runaway_synthesis_call_raising_degrades_gracefully(mock_db, monke
     monkeypatch.setattr(svc.settings, "gemini_api_key", "fake-key")
     monkeypatch.setattr(svc, "_build_conversation_history", AsyncMock(return_value=[]))
     monkeypatch.setattr(svc, "get_user_group_id", AsyncMock(return_value=None))
+    monkeypatch.setattr(svc, "_thread_attachments_note", AsyncMock(return_value=None))
     StatsCache._cache.clear()
     mock_db.execute.return_value = make_result(
         scalar=3, first=SimpleNamespace(img=1, cell=2))
@@ -1973,6 +1976,7 @@ async def test_generate_response_fallback_after_exhaustion(mock_db, monkeypatch)
     monkeypatch.setattr(svc.settings, "gemini_api_key", "fake-key")
     monkeypatch.setattr(svc, "_build_conversation_history", AsyncMock(return_value=[]))
     monkeypatch.setattr(svc, "get_user_group_id", AsyncMock(return_value=None))
+    monkeypatch.setattr(svc, "_thread_attachments_note", AsyncMock(return_value=None))
     # Always a function_call, never text: the loop hits the cap, breaks, the
     # synthesis call also returns only a function_call (no text), so it falls to
     # the data-extraction fallback. get_experiment_stats always contributes a
@@ -2122,6 +2126,7 @@ async def test_generate_response_fallback_segmentation_and_cells(mock_db, monkey
     monkeypatch.setattr(svc, "_build_conversation_history", AsyncMock(return_value=[]))
     # Same reason: the per-turn group lookup issues its own db.execute.
     monkeypatch.setattr(svc, "get_user_group_id", AsyncMock(return_value=None))
+    monkeypatch.setattr(svc, "_thread_attachments_note", AsyncMock(return_value=None))
     # Call get_segmentation_masks (masks_found) + get_cell_detection_results
     # (crops with thumbnails), then exhaust the loop -> fallback extracts both
     # the stats line and the cell-image markdown.
@@ -2228,6 +2233,7 @@ async def test_generate_response_last_resort_when_synthesis_also_empty(mock_db, 
     monkeypatch.setattr(svc.settings, "gemini_api_key", "fake-key")
     monkeypatch.setattr(svc, "_build_conversation_history", AsyncMock(return_value=[]))
     monkeypatch.setattr(svc, "get_user_group_id", AsyncMock(return_value=None))
+    monkeypatch.setattr(svc, "_thread_attachments_note", AsyncMock(return_value=None))
     # list_documents yields no stats/images, and every model turn (including the
     # forced-synthesis call) comes back empty -> the generic last-resort message.
     # It must NOT dump the raw tool list.
@@ -2252,6 +2258,7 @@ async def test_generate_response_fallback_render_overlay_markdown(mock_db, tmp_p
     monkeypatch.setattr(svc, "_build_conversation_history", AsyncMock(return_value=[]))
     # Same reason: the per-turn group lookup issues its own db.execute.
     monkeypatch.setattr(svc, "get_user_group_id", AsyncMock(return_value=None))
+    monkeypatch.setattr(svc, "_thread_attachments_note", AsyncMock(return_value=None))
     # render_segmentation_overlay returns image_markdown; loop exhausts ->
     # fallback collects the overlay image markdown.
     from PIL import Image as PILImage
@@ -2363,6 +2370,20 @@ async def test_run_redetection_task_error_swallowed():
 # --- _build_conversation_history ------------------------------------------- #
 def _msg(role, content, mid=1):
     return SimpleNamespace(role=role, content=content, id=mid)
+
+
+async def test_thread_attachments_note_none_when_empty(mock_db):
+    mock_db.execute.return_value = make_result(fetchall=[])
+    assert await svc._thread_attachments_note(mock_db, 1, 7) is None
+
+
+async def test_thread_attachments_note_lists_attachments(mock_db):
+    rows = [SimpleNamespace(id=5, name="paper.pdf", page_count=12, status="completed")]
+    res = make_result(); res.all = MagicMock(return_value=rows)
+    mock_db.execute.return_value = res
+    note = await svc._thread_attachments_note(mock_db, 1, 7)
+    assert "[id 5] paper.pdf (12 pages" in note
+    assert "attached to THIS conversation" in note
 
 
 async def test_build_history_empty_thread(mock_db):

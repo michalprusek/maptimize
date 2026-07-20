@@ -150,6 +150,8 @@ async def ensure_schema_updates():
             ("metric_comparisons", "prev_winner_sigma", "FLOAT"),
             ("metric_comparisons", "prev_loser_mu", "FLOAT"),
             ("metric_comparisons", "prev_loser_sigma", "FLOAT"),
+            # Chat attachments: a document uploaded into a thread (NULL = library)
+            ("rag_documents", "thread_id", "INTEGER REFERENCES chat_threads(id) ON DELETE CASCADE"),
         ]
 
         for table, column, col_type in updates:
