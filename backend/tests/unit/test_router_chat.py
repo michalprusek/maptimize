@@ -719,9 +719,10 @@ async def test_generation_status_completed_with_message(mock_db):
     assert out.status == "completed"
     assert out.message is not None
     assert out.message.content == "done"
-    # status reset to idle and committed
-    assert thread.generation_status == "idle"
-    mock_db.commit.assert_awaited()
+    # Idempotent: the status is NOT consumed. It used to flip to "idle" on
+    # read, so a client that refreshed got "idle" with no message and the
+    # reply was lost. It must stay "completed" until the next send.
+    assert thread.generation_status == "completed"
 
 
 async def test_generation_status_completed_no_message(mock_db):
@@ -733,7 +734,21 @@ async def test_generation_status_completed_no_message(mock_db):
     out = await r.get_generation_status(
         thread_id=1, current_user=fake_user(), db=mock_db)
     assert out.message is None
-    assert thread.generation_status == "idle"
+    assert thread.generation_status == "completed"
+
+
+async def test_generation_status_completed_is_repeatable(mock_db):
+    # A refreshed client polls again; it must still get the reply, not "idle".
+    thread = make_thread(generation_status="completed")
+    latest = make_message(9, role="assistant", content="done")
+    mock_db.execute.side_effect = [
+        make_result(scalar=thread), make_result(scalar=latest),
+        make_result(scalar=thread), make_result(scalar=latest),
+    ]
+    first = await r.get_generation_status(thread_id=1, current_user=fake_user(), db=mock_db)
+    second = await r.get_generation_status(thread_id=1, current_user=fake_user(), db=mock_db)
+    assert first.status == second.status == "completed"
+    assert first.message.id == second.message.id == 9
 
 
 async def test_generation_status_none_defaults_idle(mock_db):

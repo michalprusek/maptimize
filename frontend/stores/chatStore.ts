@@ -107,6 +107,19 @@ interface ChatState {
   clearError: () => void;
 }
 
+/**
+ * Append a message unless it is already present.
+ *
+ * Reconnecting to a finished generation is now idempotent (the status endpoint
+ * keeps reporting "completed" instead of consuming it once), so the same
+ * assistant reply can arrive both from a refetch and from a status poll.
+ * Dedupe by id so it is never rendered twice.
+ */
+function mergeMessage(existing: ChatMessage[] | undefined, message: ChatMessage): ChatMessage[] {
+  const list = existing || [];
+  return list.some((m) => m.id === message.id) ? list : [...list, message];
+}
+
 // Helper to create optimistic user message
 function createOptimisticUserMessage(threadId: number, content: string): ChatMessage {
   return {
@@ -201,40 +214,70 @@ export const useChatStore = create<ChatState>()(
 
       selectThread: async (threadId: number) => {
         const { messages, checkGenerationStatus } = get();
+        const hadCache = Boolean(messages[threadId]);
 
-        // Set active thread immediately
-        set({ activeThreadId: threadId, isLoadingMessages: true, error: null });
+        // Set active thread immediately. Only show the skeleton on a cold open;
+        // with a cache we refresh in the background so the view doesn't flicker.
+        set({
+          activeThreadId: threadId,
+          isLoadingMessages: !hadCache,
+          error: null,
+        });
 
-        // Load messages if not cached
-        if (!messages[threadId]) {
-          try {
-            const threadMessages = await api.getChatMessages(threadId);
-            set((state) => ({
-              messages: { ...state.messages, [threadId]: threadMessages },
-              isLoadingMessages: false,
-            }));
-          } catch (error) {
-            set({
-              error: error instanceof Error ? error.message : "Failed to load messages",
-              isLoadingMessages: false,
-            });
-          }
-        } else {
-          set({ isLoadingMessages: false });
+        // ALWAYS refetch. The cache was previously never invalidated, so a reply
+        // that landed while this thread was closed (or after a poll died) stayed
+        // invisible until a full page reload.
+        try {
+          const threadMessages = await api.getChatMessages(threadId);
+          set((state) => ({
+            messages: { ...state.messages, [threadId]: threadMessages },
+            isLoadingMessages: false,
+          }));
+        } catch (error) {
+          set({
+            error: hadCache
+              ? null // keep showing the cached thread; the refresh just failed
+              : error instanceof Error ? error.message : "Failed to load messages",
+            isLoadingMessages: false,
+          });
         }
 
-        // Check if there's ongoing generation for this thread (handles page refresh)
+        // Reconnect to generation. This runs on every thread open, so it covers
+        // a page refresh, leaving/returning to the tab, and switching threads.
         try {
           const status = await api.getGenerationStatus(threadId);
+
           if (status.status === "generating") {
             set({
               generatingThreadId: threadId,
               generationTaskId: status.task_id || null,
               generationElapsedSeconds: status.elapsed_seconds || 0,
             });
-            // Resume polling
-            checkGenerationStatus(threadId);
+            checkGenerationStatus(threadId); // resume polling + typing indicator
+            return;
           }
+
+          // Not generating any more. Previously only "generating" was handled, so
+          // a "completed" seen here was consumed by the (formerly one-shot)
+          // endpoint and the reply was silently dropped.
+          if (status.status === "completed" && status.message) {
+            set((state) => ({
+              messages: {
+                ...state.messages,
+                [threadId]: mergeMessage(state.messages[threadId], status.message!),
+              },
+            }));
+          } else if (status.status === "error" && status.error) {
+            set({ error: status.error });
+          }
+
+          // Clear any stale generating state for this thread (e.g. a persisted
+          // flag from before a refresh, or a generation that finished while away).
+          set((state) =>
+            state.generatingThreadId === threadId
+              ? { generatingThreadId: null, generationTaskId: null, generationElapsedSeconds: 0 }
+              : {}
+          );
         } catch (error) {
           // Log non-404 errors for debugging (404 means no generation in progress, which is normal)
           // Check for both "404" and "Not Found" since API may return either
@@ -484,11 +527,12 @@ export const useChatStore = create<ChatState>()(
             set({ generationElapsedSeconds: status.elapsed_seconds || 0 });
 
             if (status.status === "completed" && status.message) {
-              // Add the new assistant message
+              // Add the new assistant message (deduped: a reconnect may have
+              // already appended it via selectThread).
               set((state) => ({
                 messages: {
                   ...state.messages,
-                  [threadId]: [...(state.messages[threadId] || []), status.message!],
+                  [threadId]: mergeMessage(state.messages[threadId], status.message!),
                 },
                 generatingThreadId: null,
                 generationTaskId: null,
@@ -837,6 +881,12 @@ export const useChatStore = create<ChatState>()(
         // Only persist UI preferences and active selections
         isThreadSidebarOpen: state.isThreadSidebarOpen,
         activeThreadId: state.activeThreadId,
+        // Persist which thread was generating so a refresh shows the typing
+        // indicator immediately instead of a dead-looking thread until the
+        // status request resolves. selectThread reconciles (and clears it) on
+        // mount, so a stale value cannot linger.
+        generatingThreadId: state.generatingThreadId,
+        generationTaskId: state.generationTaskId,
       }),
     }
   )
