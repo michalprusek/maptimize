@@ -5,7 +5,7 @@ Handles document upload, indexing, and search operations.
 import logging
 import time
 from pathlib import Path
-from typing import List, Optional
+from typing import Annotated, List, Optional
 
 import redis.asyncio as redis
 from fastapi import APIRouter, Depends, HTTPException, status, Query, UploadFile, File, Form, BackgroundTasks
@@ -17,7 +17,7 @@ from sqlalchemy.orm import selectinload
 from config import get_settings
 from database import get_db
 from models.user import User
-from models.rag_document import RAGDocument, RAGDocumentPage, DocumentStatus
+from models.rag_document import RAGDocument, RAGDocumentPage, DocumentStatus, document_scope
 from models.chat import ChatThread
 from schemas.chat import (
     RAGDocumentUploadResponse,
@@ -148,8 +148,11 @@ async def list_documents(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
-    """List user's uploaded documents."""
-    query = select(RAGDocument).where(RAGDocument.user_id == current_user.id)
+    """List the user's document library.
+
+    Chat attachments are excluded: they belong to their thread, not the library.
+    """
+    query = select(RAGDocument).where(document_scope(current_user.id))
 
     if status_filter:
         query = query.where(RAGDocument.status == status_filter)
@@ -166,7 +169,7 @@ async def list_documents(
 async def upload_document(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
-    thread_id: Optional[int] = Form(None),
+    thread_id: Annotated[Optional[int], Form()] = None,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):

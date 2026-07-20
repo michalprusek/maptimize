@@ -61,6 +61,7 @@ async def search_documents(
     limit: int = None,
     include_text: bool = True,
     document_ids: Optional[List[int]] = None,
+    thread_id: Optional[int] = None,
 ) -> List[dict]:
     """
     Search uploaded documents using vector similarity with Qwen VL embeddings.
@@ -111,7 +112,18 @@ async def search_documents(
         }
         if document_ids:
             doc_filter = "AND rdp.document_id = ANY(:document_ids)"
-            params["document_ids"] = list(document_ids)
+            # Coerce: the ids come from model output, and a stray "7" would hit
+            # asyncpg as a type error rather than a clean empty result.
+            params["document_ids"] = [int(d) for d in document_ids]
+
+        # Thread scoping (SSOT mirror of models.rag_document.document_scope):
+        # a conversation sees the library plus its OWN attachments, never
+        # another thread's. Without this an attachment leaks across threads.
+        if thread_id is None:
+            scope_filter = "AND rd.thread_id IS NULL"
+        else:
+            scope_filter = "AND (rd.thread_id IS NULL OR rd.thread_id = :thread_id)"
+            params["thread_id"] = thread_id
 
         # Vector similarity search using pgvector cosine distance
         # Lower distance = more similar
@@ -131,6 +143,7 @@ async def search_documents(
             WHERE rd.user_id = :user_id
               AND rd.status = 'completed'
               AND rdp.embedding IS NOT NULL
+              {scope_filter}
               {doc_filter}
             ORDER BY rdp.embedding <=> :embedding
             LIMIT :limit

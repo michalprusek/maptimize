@@ -1010,9 +1010,17 @@ class ApiClient {
     return this.request<RAGDocument[]>(`/api/rag/documents${params}`);
   }
 
-  async uploadRAGDocument(file: File) {
+  /**
+   * Upload a document. Passing threadId attaches it to that chat thread
+   * (the agent treats it as context for that conversation); omitting it
+   * uploads to the shared document library.
+   */
+  async uploadRAGDocument(file: File, threadId?: number) {
     const formData = new FormData();
     formData.append("file", file);
+    if (threadId !== undefined) {
+      formData.append("thread_id", String(threadId));
+    }
 
     return this.request<RAGDocument>("/api/rag/documents/upload", {
       method: "POST",

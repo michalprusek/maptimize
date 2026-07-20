@@ -488,7 +488,8 @@ async def test_list_images_no_experiment(mock_db):
 async def test_list_documents(mock_db):
     doc = SimpleNamespace(id=1, name="paper.pdf", file_type="pdf",
                           page_count=10, status="indexed", file_size=1234,
-                          mime_type="application/pdf", created_at=None, indexed_at=None)
+                          mime_type="application/pdf", created_at=None, indexed_at=None,
+                          thread_id=None)
     mock_db.execute.return_value = make_result(scalars_all=[doc])
     res = await execute_tool("list_documents", {}, 1, mock_db)
     assert res["count"] == 1
@@ -2378,12 +2379,35 @@ async def test_thread_attachments_note_none_when_empty(mock_db):
 
 
 async def test_thread_attachments_note_lists_attachments(mock_db):
-    rows = [SimpleNamespace(id=5, name="paper.pdf", page_count=12, status="completed")]
+    rows = [SimpleNamespace(id=5, name="paper.pdf", page_count=12, status="completed",
+                            truncated_from_pages=None, error_message=None)]
     res = make_result(); res.all = MagicMock(return_value=rows)
     mock_db.execute.return_value = res
     note = await svc._thread_attachments_note(mock_db, 1, 7)
-    assert "[id 5] paper.pdf (12 pages" in note
-    assert "attached to THIS conversation" in note
+    # Assert the structured facts, not the prompt prose.
+    assert "[id 5] paper.pdf" in note
+    assert "status=completed" in note and "12 pages" in note
+
+
+async def test_thread_attachments_note_flags_truncation(mock_db):
+    # A capped attachment must never read as a complete document, or the agent
+    # will answer "your paper doesn't mention X" from a fraction of it.
+    rows = [SimpleNamespace(id=5, name="thesis.pdf", page_count=100, status="completed",
+                            truncated_from_pages=340, error_message=None)]
+    res = make_result(); res.all = MagicMock(return_value=rows)
+    mock_db.execute.return_value = res
+    note = await svc._thread_attachments_note(mock_db, 1, 7)
+    assert "TRUNCATED" in note and "100 of 340" in note
+
+
+async def test_thread_attachments_note_surfaces_error(mock_db):
+    rows = [SimpleNamespace(id=6, name="broken.pdf", page_count=0, status="failed",
+                            truncated_from_pages=None, error_message="poppler missing")]
+    res = make_result(); res.all = MagicMock(return_value=rows)
+    mock_db.execute.return_value = res
+    note = await svc._thread_attachments_note(mock_db, 1, 7)
+    assert "status=failed" in note and "poppler missing" in note
+    assert "do NOT answer from it" in note
 
 
 async def test_build_history_empty_thread(mock_db):

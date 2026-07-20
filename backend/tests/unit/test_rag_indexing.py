@@ -886,7 +886,7 @@ async def test_render_pdf_generic_exception():
 # document_indexing_service.process_pdf_pages
 # ============================================================================ #
 async def test_process_pdf_pages_success_with_ocr(mock_db, tmp_path):
-    doc = SimpleNamespace(id=5, original_path=str(tmp_path / "doc.pdf"),
+    doc = SimpleNamespace(id=5, original_path=str(tmp_path / "doc.pdf"), thread_id=None, truncated_from_pages=None,
                           status=None, progress=0.0, indexed_at=None,
                           error_message=None)
     images = [(1, PILImage.new("RGB", (10, 10))), (2, PILImage.new("RGB", (10, 10)))]
@@ -901,7 +901,7 @@ async def test_process_pdf_pages_success_with_ocr(mock_db, tmp_path):
 
 
 async def test_process_pdf_pages_ocr_failure_still_indexes(mock_db, tmp_path):
-    doc = SimpleNamespace(id=5, original_path=str(tmp_path / "doc.pdf"),
+    doc = SimpleNamespace(id=5, original_path=str(tmp_path / "doc.pdf"), thread_id=None, truncated_from_pages=None,
                           status=None, progress=0.0, indexed_at=None,
                           error_message=None)
     images = [(1, PILImage.new("RGB", (10, 10)))]
@@ -913,7 +913,7 @@ async def test_process_pdf_pages_ocr_failure_still_indexes(mock_db, tmp_path):
 
 
 async def test_process_pdf_pages_partial_failure(mock_db, tmp_path):
-    doc = SimpleNamespace(id=5, original_path=str(tmp_path / "doc.pdf"),
+    doc = SimpleNamespace(id=5, original_path=str(tmp_path / "doc.pdf"), thread_id=None, truncated_from_pages=None,
                           status=None, progress=0.0, indexed_at=None,
                           error_message=None)
     images = [(1, PILImage.new("RGB", (10, 10))), (2, PILImage.new("RGB", (10, 10)))]
@@ -929,7 +929,7 @@ async def test_process_pdf_pages_partial_failure(mock_db, tmp_path):
 
 
 async def test_process_pdf_pages_all_failed(mock_db, tmp_path):
-    doc = SimpleNamespace(id=5, original_path=str(tmp_path / "doc.pdf"),
+    doc = SimpleNamespace(id=5, original_path=str(tmp_path / "doc.pdf"), thread_id=None, truncated_from_pages=None,
                           status=None, progress=0.0, indexed_at=None,
                           error_message=None)
     images = [(1, PILImage.new("RGB", (10, 10)))]
@@ -982,7 +982,7 @@ async def test_delete_document_success(mock_db, tmp_path):
     pages_dir = tmp_path / "doc_3_pages"
     pages_dir.mkdir()
     (pages_dir / "page_0001.png").write_bytes(b"y")
-    doc = SimpleNamespace(id=3, original_path=str(orig))
+    doc = SimpleNamespace(id=3, original_path=str(orig), thread_id=None, truncated_from_pages=None)
     mock_db.execute.return_value = make_result(scalar=doc)
     assert await dind.delete_document(3, 7, mock_db) is True
     assert not orig.exists()
@@ -991,7 +991,7 @@ async def test_delete_document_success(mock_db, tmp_path):
 
 
 async def test_delete_document_file_error_still_deletes_db(mock_db):
-    doc = SimpleNamespace(id=3, original_path="/x/doc.pdf")
+    doc = SimpleNamespace(id=3, original_path="/x/doc.pdf", thread_id=None, truncated_from_pages=None)
     mock_db.execute.return_value = make_result(scalar=doc)
     # Path.exists raises -> warning branch, but DB delete still happens
     with patch("services.document_indexing_service.Path") as MockPath:
@@ -1010,7 +1010,7 @@ async def test_process_document_async_not_found(mock_db):
 
 
 async def test_process_document_async_pdf_success(mock_db, tmp_path):
-    doc = SimpleNamespace(id=1, original_path=str(tmp_path / "d.pdf"),
+    doc = SimpleNamespace(id=1, original_path=str(tmp_path / "d.pdf"), thread_id=None, truncated_from_pages=None,
                           file_type="pdf", status=None, page_count=0,
                           error_message=None)
     mock_db.execute.return_value = make_result(scalar=doc)
@@ -1024,7 +1024,7 @@ async def test_process_document_async_pdf_success(mock_db, tmp_path):
 
 
 async def test_process_document_async_office_convert_fail(mock_db, tmp_path):
-    doc = SimpleNamespace(id=1, original_path=str(tmp_path / "d.docx"),
+    doc = SimpleNamespace(id=1, original_path=str(tmp_path / "d.docx"), thread_id=None, truncated_from_pages=None,
                           file_type="office", status=None, error_message=None)
     mock_db.execute.return_value = make_result(scalar=doc)
     with patch.object(dind, "get_db_context", lambda: _ctx(mock_db)), \
@@ -1036,7 +1036,7 @@ async def test_process_document_async_office_convert_fail(mock_db, tmp_path):
 
 async def test_process_document_async_office_success(mock_db, tmp_path):
     pdf = tmp_path / "d.pdf"
-    doc = SimpleNamespace(id=1, original_path=str(tmp_path / "d.docx"),
+    doc = SimpleNamespace(id=1, original_path=str(tmp_path / "d.docx"), thread_id=None, truncated_from_pages=None,
                           file_type="office", status=None, page_count=0,
                           error_message=None)
     mock_db.execute.return_value = make_result(scalar=doc)
@@ -1050,7 +1050,7 @@ async def test_process_document_async_office_success(mock_db, tmp_path):
 
 
 async def test_process_document_async_image(mock_db, tmp_path):
-    doc = SimpleNamespace(id=1, original_path=str(tmp_path / "d.png"),
+    doc = SimpleNamespace(id=1, original_path=str(tmp_path / "d.png"), thread_id=None, truncated_from_pages=None,
                           file_type="image", status=None, error_message=None)
     mock_db.execute.return_value = make_result(scalar=doc)
     with patch.object(dind, "get_db_context", lambda: _ctx(mock_db)), \
@@ -1060,7 +1060,7 @@ async def test_process_document_async_image(mock_db, tmp_path):
 
 
 async def test_process_document_async_unsupported_type(mock_db, tmp_path):
-    doc = SimpleNamespace(id=1, original_path=str(tmp_path / "d.xyz"),
+    doc = SimpleNamespace(id=1, original_path=str(tmp_path / "d.xyz"), thread_id=None, truncated_from_pages=None,
                           file_type="video", status=None, error_message=None)
     mock_db.execute.return_value = make_result(scalar=doc)
     with patch.object(dind, "get_db_context", lambda: _ctx(mock_db)):
@@ -1070,7 +1070,7 @@ async def test_process_document_async_unsupported_type(mock_db, tmp_path):
 
 
 async def test_process_document_async_render_none(mock_db, tmp_path):
-    doc = SimpleNamespace(id=1, original_path=str(tmp_path / "d.pdf"),
+    doc = SimpleNamespace(id=1, original_path=str(tmp_path / "d.pdf"), thread_id=None, truncated_from_pages=None,
                           file_type="pdf", status=None, error_message=None)
     mock_db.execute.return_value = make_result(scalar=doc)
     with patch.object(dind, "get_db_context", lambda: _ctx(mock_db)), \
@@ -1081,7 +1081,7 @@ async def test_process_document_async_render_none(mock_db, tmp_path):
 
 
 async def test_process_document_async_render_empty(mock_db, tmp_path):
-    doc = SimpleNamespace(id=1, original_path=str(tmp_path / "d.pdf"),
+    doc = SimpleNamespace(id=1, original_path=str(tmp_path / "d.pdf"), thread_id=None, truncated_from_pages=None,
                           file_type="pdf", status=None, error_message=None)
     mock_db.execute.return_value = make_result(scalar=doc)
     with patch.object(dind, "get_db_context", lambda: _ctx(mock_db)), \
@@ -1092,7 +1092,7 @@ async def test_process_document_async_render_empty(mock_db, tmp_path):
 
 
 async def test_process_document_async_top_level_exception(mock_db, tmp_path):
-    doc = SimpleNamespace(id=1, original_path=str(tmp_path / "d.pdf"),
+    doc = SimpleNamespace(id=1, original_path=str(tmp_path / "d.pdf"), thread_id=None, truncated_from_pages=None,
                           file_type="pdf", status=None, error_message=None)
     # First execute (in try) returns doc; raise during render; recovery
     # block re-fetches doc and marks FAILED.
@@ -1118,7 +1118,7 @@ async def test_reindex_not_found(mock_db):
 async def test_reindex_original_missing(mock_db):
     doc = SimpleNamespace(id=1, original_path="/no/such/file.pdf", status=None,
                           progress=0.0, error_message=None, indexed_at=None,
-                          page_count=0)
+                          page_count=0, thread_id=None, truncated_from_pages=None)
     mock_db.execute.return_value = make_result(scalar=doc)
     with patch.object(dind, "get_db_context", lambda: _ctx(mock_db)):
         out = await dind.reindex_document(1, 7)
@@ -1129,7 +1129,7 @@ async def test_reindex_original_missing(mock_db):
 async def test_reindex_render_none(mock_db, tmp_path):
     orig = tmp_path / "d.pdf"
     orig.write_bytes(b"x")
-    doc = SimpleNamespace(id=1, original_path=str(orig), status=None,
+    doc = SimpleNamespace(id=1, original_path=str(orig), thread_id=None, truncated_from_pages=None, status=None,
                           progress=0.0, error_message=None, indexed_at=None,
                           page_count=0)
     mock_db.execute.return_value = make_result(scalar=doc)
@@ -1142,7 +1142,7 @@ async def test_reindex_render_none(mock_db, tmp_path):
 async def test_reindex_render_empty(mock_db, tmp_path):
     orig = tmp_path / "d.pdf"
     orig.write_bytes(b"x")
-    doc = SimpleNamespace(id=1, original_path=str(orig), status=None,
+    doc = SimpleNamespace(id=1, original_path=str(orig), thread_id=None, truncated_from_pages=None, status=None,
                           progress=0.0, error_message=None, indexed_at=None,
                           page_count=0)
     mock_db.execute.return_value = make_result(scalar=doc)
@@ -1155,7 +1155,7 @@ async def test_reindex_render_empty(mock_db, tmp_path):
 async def test_reindex_success(mock_db, tmp_path):
     orig = tmp_path / "d.pdf"
     orig.write_bytes(b"x")
-    doc = SimpleNamespace(id=1, original_path=str(orig), status=None,
+    doc = SimpleNamespace(id=1, original_path=str(orig), thread_id=None, truncated_from_pages=None, status=None,
                           progress=0.0, error_message=None, indexed_at=None,
                           page_count=0)
     mock_db.execute.return_value = make_result(scalar=doc)
@@ -1185,3 +1185,26 @@ async def test_get_indexing_status(mock_db):
     assert out["documents_processing"] == 0
     assert out["fov_images_pending"] == 3
     assert out["fov_images_indexed"] == 7
+
+
+# ============================================================================ #
+# chat attachments: page cap wiring + scope
+# ============================================================================ #
+def test_page_cap_for_attachment_vs_library():
+    # SSOT: attachments capped, library uncapped. Both the initial index and
+    # reindex go through this, so they cannot drift apart.
+    assert dind._page_cap_for(document(thread_id=42)) == dind.settings.chat_attachment_max_pages
+    assert dind._page_cap_for(document(thread_id=None)) is None
+
+
+def test_document_scope_library_excludes_attachments():
+    from models.rag_document import document_scope
+    # No thread -> library only, so attachments never pollute the library list.
+    assert "thread_id IS NULL" in str(document_scope(7))
+
+
+def test_document_scope_thread_includes_own_attachments_only():
+    from models.rag_document import document_scope
+    sql = str(document_scope(7, 42))
+    # library OR this thread's attachments -- never another thread's.
+    assert "thread_id IS NULL" in sql and "thread_id =" in sql

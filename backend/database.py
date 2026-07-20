@@ -152,6 +152,8 @@ async def ensure_schema_updates():
             ("metric_comparisons", "prev_loser_sigma", "FLOAT"),
             # Chat attachments: a document uploaded into a thread (NULL = library)
             ("rag_documents", "thread_id", "INTEGER REFERENCES chat_threads(id) ON DELETE CASCADE"),
+            # True page count when an attachment was capped (NULL = not truncated)
+            ("rag_documents", "truncated_from_pages", "INTEGER"),
         ]
 
         for table, column, col_type in updates:

@@ -172,9 +172,12 @@ async def process_document_async(document_id: int) -> None:
                 await db.commit()
                 return
 
-            # Render PDF pages to images. Chat attachments are capped so a huge
-            # PDF cannot flood the thread's context; library uploads are not.
-            attachment_cap = settings.chat_attachment_max_pages if getattr(document, "thread_id", None) else None
+            # Chat attachments are indexed inline in the user's chat flow, so cap
+            # the page count to bound rasterization + GPU embedding time and disk.
+            # (This is NOT the context-window guard -- that is the 10-page cap in
+            # get_document_content.) Library uploads are a deliberate, offline
+            # import and stay uncapped.
+            attachment_cap = _page_cap_for(document)
             page_images = await render_pdf_to_images(pdf_path, max_pages=attachment_cap)
             if page_images is None:
                 document.status = DocumentStatus.FAILED.value
@@ -188,6 +191,17 @@ async def process_document_async(document_id: int) -> None:
                 return
 
             document.page_count = len(page_images)
+            # A capped attachment must never look like a complete document: the
+            # agent would answer "your paper doesn't mention X" from a fraction
+            # of it, with citations and no trace. Record the real length.
+            if attachment_cap and len(page_images) >= attachment_cap:
+                total = await _pdf_total_pages(pdf_path)
+                if total and total > len(page_images):
+                    document.truncated_from_pages = total
+                    logger.warning(
+                        "Document %s truncated: indexed %d of %d pages",
+                        document.id, len(page_images), total,
+                    )
             await db.commit()
 
             # Generate embeddings for each page
@@ -255,6 +269,25 @@ async def convert_office_to_pdf(input_path: Path) -> Optional[Path]:
         return None
 
 
+def _page_cap_for(document: RAGDocument) -> Optional[int]:
+    """Page cap for this document. SSOT: chat attachments are capped, library
+    uploads are not. Used by both the initial index and reindex, which must not
+    disagree (a reindex previously re-rendered a capped attachment in full)."""
+    return settings.chat_attachment_max_pages if document.thread_id else None
+
+
+async def _pdf_total_pages(pdf_path: Path) -> Optional[int]:
+    """True page count of a PDF, independent of how many we rendered."""
+    try:
+        from pdf2image import pdfinfo_from_path
+        loop = asyncio.get_event_loop()
+        info = await loop.run_in_executor(None, lambda: pdfinfo_from_path(str(pdf_path)))
+        return int(info["Pages"])
+    except Exception as e:
+        logger.warning(f"Could not read page count for {pdf_path}: {e}")
+        return None
+
+
 async def render_pdf_to_images(
     pdf_path: Path,
     dpi: int = 150,
@@ -275,10 +308,10 @@ async def render_pdf_to_images(
     try:
         from pdf2image import convert_from_path
 
-        # first_page/last_page also bounds memory: only the first N pages are
-        # rasterized instead of the whole PDF at once.
+        # -f/-l are passed through to pdftoppm, so unrequested pages are never
+        # rasterized -- this bounds peak memory, not just the result size.
         kwargs = {"dpi": dpi, "fmt": "png"}
-        if max_pages:
+        if max_pages is not None and max_pages > 0:
             kwargs["first_page"] = 1
             kwargs["last_page"] = max_pages
 
@@ -532,7 +565,9 @@ async def reindex_document(document_id: int, user_id: int) -> dict:
             return {"error": "Original file not found"}
 
         # Render PDF pages
-        page_images = await render_pdf_to_images(original_path)
+        # Same cap as the initial index -- otherwise reindexing a capped
+        # attachment would quietly re-render it in full.
+        page_images = await render_pdf_to_images(original_path, max_pages=_page_cap_for(document))
         if page_images is None:
             document.status = DocumentStatus.FAILED.value
             document.error_message = "Failed to render PDF pages - check if pdf2image and poppler are installed"
