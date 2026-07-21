@@ -147,3 +147,72 @@ async def test_get_document_content_uses_read_scope(mock_db):
     )
     assert out is None
     assert "rag_documents.group_id" in captured["sql"]  # group widening applied
+
+
+import json as _json
+import types as _pytypes
+from types import SimpleNamespace
+from unittest.mock import MagicMock
+
+
+def _patch_genai_module(fake_client):
+    """Inject a fake ``google.genai`` module so the lazy
+    ``import google.genai as genai`` inside extract_relevant_passages resolves
+    to our stub instead of hitting the real (network) client."""
+    genai_mod = _pytypes.ModuleType("google.genai")
+    genai_mod.Client = MagicMock(return_value=fake_client)
+    types_mod = _pytypes.ModuleType("google.genai.types")
+    types_mod.Content = MagicMock()
+    types_mod.Part = MagicMock()
+    types_mod.Blob = MagicMock()
+    types_mod.GenerateContentConfig = MagicMock()
+    genai_mod.types = types_mod
+    google_pkg = _pytypes.ModuleType("google")
+    google_pkg.genai = genai_mod
+    return patch.dict("sys.modules", {
+        "google": google_pkg,
+        "google.genai": genai_mod,
+        "google.genai.types": types_mod,
+    })
+
+
+async def test_extract_relevant_passages_forwards_group_id(mock_db, tmp_path):
+    # Regression test: extract_relevant_passages resolves the source document via
+    # _get_document_page_image_path(..., group_id=group_id) -- widened, so a
+    # group-shared (non-owned) doc is found -- but then looped over Gemini's
+    # detected regions calling extract_passage_image(...) per region. If that
+    # per-region call drops group_id, extract_passage_image's OWN ownership
+    # recheck defaults to group_id=None (owner-only) and rejects every crop of a
+    # document the caller doesn't own, silently returning []. Assert the forward
+    # actually happens.
+    page_image = tmp_path / "page.png"
+    page_image.write_bytes(b"not-a-real-png-just-needs-bytes")
+
+    fake_document = SimpleNamespace(id=5, name="shared.pdf")
+
+    gemini_payload = _json.dumps([
+        {"box_2d": [0, 0, 100, 100], "type": "text", "text": "x", "confidence": 0.9},
+    ])
+    resp = SimpleNamespace(text=gemini_payload)
+    aio = SimpleNamespace(models=SimpleNamespace(generate_content=AsyncMock(return_value=resp)))
+    fake_client = SimpleNamespace(aio=aio)
+
+    fake_passage = {"passage_hash": "h", "document_id": 5, "page_number": 1}
+    fake_settings = SimpleNamespace(gemini_api_key="fake-key", gemini_vision_model="gemini-3.5-flash")
+
+    with patch.object(rag_service, "settings", fake_settings), \
+         patch.object(rag_service, "_get_document_page_image_path",
+                       AsyncMock(return_value=(fake_document, page_image))), \
+         patch.object(rag_service, "extract_passage_image",
+                       AsyncMock(return_value=fake_passage)) as mock_extract, \
+         _patch_genai_module(fake_client):
+        out = await rag_service.extract_relevant_passages(
+            document_id=5, page_number=1, query="figure",
+            user_id=1, db=mock_db, group_id=7,
+        )
+
+    assert len(out) == 1
+    mock_extract.assert_awaited_once()
+    # The bug: this call omitted group_id entirely, so extract_passage_image
+    # fell back to its own default (None) -> owner-only ownership recheck.
+    assert mock_extract.await_args.kwargs.get("group_id") == 7

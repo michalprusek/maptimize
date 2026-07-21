@@ -1022,6 +1022,7 @@ Return ONLY the JSON array. Return [] if nothing found. Maximum {max_passages} e
                 user_id=user_id,
                 db=db,
                 padding=padding,
+                group_id=group_id,
             )
 
             if passage:
