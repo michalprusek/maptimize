@@ -266,25 +266,34 @@ export function MessageBubble({ message, isNew = false }: MessageBubbleProps) {
 
     let content = message.content;
 
-    // Convert inline citation references to clickable links
-    // Pattern matches: [Doc: "filename" p.XX] or [Doc: "filename"]
-    const citationPattern = /\[Doc:\s*"([^"]+)"(?:\s+p\.?(\d+))?\]/g;
+    // Convert inline citation references to clickable links.
+    // Matches [Doc: "filename"] and [Doc: "filename" p.X] AND the multi-page form
+    // [Doc: "filename" p.1, p.3] — every listed page becomes its own link.
+    const citationPattern = /\[Doc:\s*"([^"]+)"([^\]]*)\]/g;
 
-    content = content.replace(citationPattern, (match, filename, page) => {
+    content = content.replace(citationPattern, (match: string, filename: string, pagesPart: string) => {
       // Find matching citation in the array
       const citation = message.citations?.find(c =>
         c.title?.toLowerCase().includes(filename.toLowerCase()) ||
         filename.toLowerCase().includes(c.title?.toLowerCase() || "")
       );
 
+      // Every page number in the tail (e.g. "p.1, p.3" -> [1, 3]); may be empty.
+      const pageNums = (pagesPart.match(/\d+/g) || []).map(Number);
+
       if (citation && citation.doc_id) {
-        const pageNum = page || citation.page || 1;
-        // Create a special link that we'll handle in ReactMarkdown
-        return `[📄 ${citation.title || filename} p.${pageNum}](citation:${citation.doc_id}:${pageNum})`;
+        const docId = citation.doc_id;
+        const title = citation.title || filename;
+        const nums = pageNums.length ? pageNums : [citation.page || 1];
+        // One clickable link per cited page — "p.1, p.3" renders as two links.
+        return nums
+          .map((p) => `[📄 ${title} p.${p}](citation:${docId}:${p})`)
+          .join(", ");
       }
 
-      // Return a styled version even without a matching citation
-      return `**[📄 ${filename}${page ? ` p.${page}` : ""}]**`;
+      // No matching citation: keep a visible, unlinked marker per page.
+      if (!pageNums.length) return `**[📄 ${filename}]**`;
+      return pageNums.map((p) => `**[📄 ${filename} p.${p}]**`).join(", ");
     });
 
     // Pattern matches: [Web: "source title"] -- the agent cites web/API sources

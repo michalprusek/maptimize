@@ -82,6 +82,58 @@ export function PDFViewerPanel() {
   // custom virtualization, no scroll feedback loop, no layout shift.
   const [naturalAspect, setNaturalAspect] = useState<number | null>(null);
 
+  // Resizable panel width (desktop only). Persisted so the user's chosen width
+  // survives reloads. Mobile renders full-width inside an overlay, so the inline
+  // width and the drag handle only apply at lg+.
+  const PANEL_MIN_WIDTH = 360;
+  const PANEL_MAX_WIDTH = 1000;
+  const [isDesktop, setIsDesktop] = useState(false);
+  const [panelWidth, setPanelWidth] = useState(500);
+  const panelWidthRef = useRef(panelWidth);
+  panelWidthRef.current = panelWidth;
+
+  useEffect(() => {
+    const mq = window.matchMedia("(min-width: 1024px)");
+    const update = () => setIsDesktop(mq.matches);
+    update();
+    mq.addEventListener("change", update);
+    return () => mq.removeEventListener("change", update);
+  }, []);
+
+  // Load persisted width once on mount.
+  useEffect(() => {
+    const saved = parseInt(localStorage.getItem("pdfPanelWidth") || "", 10);
+    if (Number.isFinite(saved)) {
+      setPanelWidth(Math.min(PANEL_MAX_WIDTH, Math.max(PANEL_MIN_WIDTH, saved)));
+    }
+  }, []);
+
+  useEffect(() => {
+    localStorage.setItem("pdfPanelWidth", String(panelWidth));
+  }, [panelWidth]);
+
+  // Drag the panel's left edge to resize. The panel sits on the right of the
+  // layout, so dragging left widens it.
+  const startResize = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    const startX = e.clientX;
+    const startW = panelWidthRef.current;
+    const onMove = (ev: MouseEvent) => {
+      const delta = startX - ev.clientX;
+      setPanelWidth(Math.min(PANEL_MAX_WIDTH, Math.max(PANEL_MIN_WIDTH, startW + delta)));
+    };
+    const onUp = () => {
+      document.removeEventListener("mousemove", onMove);
+      document.removeEventListener("mouseup", onUp);
+      document.body.style.userSelect = "";
+      document.body.style.cursor = "";
+    };
+    document.body.style.userSelect = "none";
+    document.body.style.cursor = "col-resize";
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
+  }, []);
+
   // Pages with search matches (for highlighting)
   const pagesWithMatches = useMemo(() => {
     if (!searchResult?.matches) return new Set<number>();
@@ -454,10 +506,23 @@ export function PDFViewerPanel() {
   return (
     <div
       className={clsx(
-        "w-full lg:w-[500px] flex-shrink-0 border-l border-white/5 bg-bg-secondary flex flex-col h-full",
-        "animate-slide-in-right"
+        "relative flex-shrink-0 border-l border-white/5 bg-bg-secondary flex flex-col h-full",
+        "animate-slide-in-right",
+        isDesktop ? "" : "w-full"
       )}
+      style={isDesktop ? { width: panelWidth } : undefined}
     >
+      {/* Resize handle (desktop): drag the left edge to widen / narrow */}
+      {isDesktop && (
+        <div
+          onMouseDown={startResize}
+          className="group/resize absolute left-0 top-0 h-full w-2 -translate-x-1/2 z-20 cursor-col-resize"
+          title={t("resizePanel") || "Drag to resize"}
+        >
+          <div className="absolute inset-y-0 left-1/2 w-0.5 -translate-x-1/2 bg-transparent group-hover/resize:bg-primary-500/60 transition-colors" />
+        </div>
+      )}
+
       {/* Header */}
       <div className="flex items-center justify-between px-4 py-3 border-b border-white/5 bg-white/[0.02] backdrop-blur-sm">
         <div className="flex items-center gap-2 min-w-0 flex-1">
@@ -657,12 +722,11 @@ export function PDFViewerPanel() {
         className="flex-1 overflow-auto p-4 bg-bg-primary/50"
       >
         <div
-          className="flex flex-col items-center gap-4"
-          style={{
-            transform: `scale(${zoom})`,
-            transformOrigin: "top center",
-            width: zoom !== 1 ? `${100 / zoom}%` : "100%",
-          }}
+          className="flex flex-col items-center gap-4 mx-auto"
+          // Width-based zoom: >100% overflows and the container scrolls; <100%
+          // stays centered via mx-auto. (The old transform+counter-width canceled
+          // out, so zoom did nothing and overflowed at <1.)
+          style={{ width: `${zoom * 100}%` }}
         >
           {pages.map((pageNum) => {
             const hasMatch = pagesWithMatches.has(pageNum);

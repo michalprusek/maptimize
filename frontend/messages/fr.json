@@ -557,6 +557,7 @@
     "zoomIn": "Zoom avant",
     "zoomOut": "Zoom arrière",
     "fitWidth": "Ajuster à la largeur",
+    "resizePanel": "Glisser pour redimensionner",
     "download": "Télécharger",
     "openInEditor": "Ouvrir dans l'éditeur",
     "noDocuments": "Aucun document téléchargé",

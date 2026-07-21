@@ -536,6 +536,7 @@
     "zoomIn": "Zoom in",
     "zoomOut": "Zoom out",
     "fitWidth": "Fit width",
+    "resizePanel": "Drag to resize",
     "download": "Download",
     "openInEditor": "Open in Editor",
     "hidePreview": "Hide preview",
