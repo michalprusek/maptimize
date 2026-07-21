@@ -448,16 +448,30 @@ async def test_rag_get_redis_lazy_init():
 
 
 async def test_rag_list_documents(mock_db):
-    docs = [SimpleNamespace(id=1, user_id=7, name="d", file_type="pdf",
-                            status="completed", page_count=1, progress=1.0,
-                            error_message=None, created_at=datetime.now(timezone.utc),
-                            indexed_at=None)]
+    # A second doc owned by a different user (id=9), only visible because it is
+    # group-shared -- exercises the per-row is_owner computation.
+    docs = [
+        SimpleNamespace(id=1, user_id=7, name="d", file_type="pdf",
+                        status="completed", page_count=1, progress=1.0,
+                        error_message=None, created_at=datetime.now(timezone.utc),
+                        indexed_at=None),
+        SimpleNamespace(id=2, user_id=9, name="shared", file_type="pdf",
+                        status="completed", page_count=1, progress=1.0,
+                        error_message=None, created_at=datetime.now(timezone.utc),
+                        indexed_at=None),
+    ]
     mock_db.execute.return_value = make_result(scalars_all=docs)
-    with patch.object(rag_r.RAGDocumentResponse, "model_validate",
-                      side_effect=lambda d: {"id": d.id}):
+    # model_validate must return something that supports attribute assignment
+    # (the router sets .is_owner on it) -- a plain dict cannot, a SimpleNamespace
+    # models the real pydantic instance closely enough for this test.
+    with patch.object(rag_r, "get_user_group_id", new=AsyncMock(return_value=7)), \
+         patch.object(rag_r.RAGDocumentResponse, "model_validate",
+                      side_effect=lambda d: SimpleNamespace(id=d.id)):
         out = await rag_r.list_documents(skip=0, limit=10, status_filter="completed",
                                          current_user=user(id=7), db=mock_db)
-    assert out == [{"id": 1}]
+    assert [o.id for o in out] == [1, 2]
+    assert out[0].is_owner is True   # own document
+    assert out[1].is_owner is False  # group-shared, not owned
 
 
 async def test_rag_upload_no_filename(mock_db):

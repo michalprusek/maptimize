@@ -17,7 +17,9 @@ from sqlalchemy.orm import selectinload
 from config import get_settings
 from database import get_db
 from models.user import User
-from models.rag_document import RAGDocument, RAGDocumentPage, DocumentStatus, document_scope
+from models.rag_document import (
+    RAGDocument, RAGDocumentPage, DocumentStatus, document_scope, document_read_scope,
+)
 from models.chat import ChatThread
 from schemas.chat import (
     RAGDocumentUploadResponse,
@@ -26,6 +28,7 @@ from schemas.chat import (
     RAGIndexingStatusResponse,
     RAGSearchResponse,
 )
+from utils.groups import get_user_group_id
 from utils.security import get_current_user, get_current_user_from_query
 from services.document_indexing_service import (
     save_uploaded_document,
@@ -120,14 +123,18 @@ async def _check_upload_rate_limit(user_id: int) -> None:
 async def get_document_for_user(
     db: AsyncSession,
     document_id: int,
-    user_id: int
+    user_id: int,
+    group_id: Optional[int] = None,
 ) -> RAGDocument:
-    """Get RAG document and verify ownership. Raises 404 if not found."""
+    """Get a RAG document the caller may READ. Raises 404 if not visible.
+
+    Read scope = owner's own doc OR a group-shared library doc. Callers that must
+    mutate (delete/reindex) must NOT rely on this -- they keep an owner-only check.
+    """
     result = await db.execute(
         select(RAGDocument).where(
             RAGDocument.id == document_id,
-            RAGDocument.user_id == user_id
-        )
+        ).where(document_read_scope(user_id, group_id))
     )
     document = result.scalar_one_or_none()
     if not document:
@@ -151,8 +158,11 @@ async def list_documents(
     """List the user's document library.
 
     Chat attachments are excluded: they belong to their thread, not the library.
+    Group-shared library documents from other members are included, marked
+    ``is_owner=False``.
     """
-    query = select(RAGDocument).where(document_scope(current_user.id))
+    group_id = await get_user_group_id(current_user.id, db)
+    query = select(RAGDocument).where(document_scope(current_user.id, None, group_id))
 
     if status_filter:
         query = query.where(RAGDocument.status == status_filter)
@@ -162,7 +172,12 @@ async def list_documents(
     result = await db.execute(query)
     documents = result.scalars().all()
 
-    return [RAGDocumentResponse.model_validate(doc) for doc in documents]
+    responses = []
+    for doc in documents:
+        resp = RAGDocumentResponse.model_validate(doc)
+        resp.is_owner = doc.user_id == current_user.id
+        responses.append(resp)
+    return responses
 
 
 @router.post("/documents/upload", response_model=RAGDocumentUploadResponse)
@@ -250,7 +265,8 @@ async def get_document(
     db: AsyncSession = Depends(get_db)
 ):
     """Get document details and processing status."""
-    document = await get_document_for_user(db, document_id, current_user.id)
+    group_id = await get_user_group_id(current_user.id, db)
+    document = await get_document_for_user(db, document_id, current_user.id, group_id)
     return RAGDocumentResponse.model_validate(document)
 
 
@@ -308,7 +324,8 @@ async def serve_pdf(
 
     Uses query parameter token auth for browser-native file access.
     """
-    document = await get_document_for_user(db, document_id, current_user.id)
+    group_id = await get_user_group_id(current_user.id, db)
+    document = await get_document_for_user(db, document_id, current_user.id, group_id)
 
     # Only serve PDF files
     if document.file_type != "pdf":
@@ -338,7 +355,8 @@ async def list_document_pages(
     db: AsyncSession = Depends(get_db)
 ):
     """List all pages of a document."""
-    document = await get_document_for_user(db, document_id, current_user.id)
+    group_id = await get_user_group_id(current_user.id, db)
+    document = await get_document_for_user(db, document_id, current_user.id, group_id)
 
     result = await db.execute(
         select(RAGDocumentPage)
@@ -370,7 +388,8 @@ async def serve_page_image(
 
     Uses query parameter token auth for browser-native image loading.
     """
-    document = await get_document_for_user(db, document_id, current_user.id)
+    group_id = await get_user_group_id(current_user.id, db)
+    document = await get_document_for_user(db, document_id, current_user.id, group_id)
 
     result = await db.execute(
         select(RAGDocumentPage).where(
@@ -483,6 +502,7 @@ async def search(
 
     Returns ranked results from both uploaded documents and microscopy images.
     """
+    group_id = await get_user_group_id(current_user.id, db)
     results = await combined_search(
         query=q,
         user_id=current_user.id,
@@ -490,6 +510,7 @@ async def search(
         experiment_id=experiment_id,
         doc_limit=doc_limit,
         fov_limit=fov_limit,
+        group_id=group_id,
     )
 
     return RAGSearchResponse(
@@ -526,7 +547,8 @@ async def search_documents_only(
     db: AsyncSession = Depends(get_db)
 ):
     """Search only uploaded documents."""
-    results = await search_documents(q, current_user.id, db, limit=limit)
+    group_id = await get_user_group_id(current_user.id, db)
+    results = await search_documents(q, current_user.id, db, limit=limit, group_id=group_id)
     return {"query": q, "results": results}
 
 
@@ -559,8 +581,9 @@ async def search_within_document(
     Returns all pages containing the search query with match positions.
     Case-insensitive search.
     """
-    # Verify document belongs to user
-    document = await get_document_for_user(db, document_id, current_user.id)
+    # Verify caller may read the document (own or group-shared library doc)
+    group_id = await get_user_group_id(current_user.id, db)
+    document = await get_document_for_user(db, document_id, current_user.id, group_id)
 
     # Search in all pages of the document
     query_lower = q.lower()

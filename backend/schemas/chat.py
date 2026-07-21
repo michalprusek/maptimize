@@ -135,6 +135,7 @@ class RAGDocumentResponse(BaseModel):
     file_size: Optional[int] = None
     created_at: datetime
     indexed_at: Optional[datetime] = None
+    is_owner: bool = True
 
     class Config:
         from_attributes = True

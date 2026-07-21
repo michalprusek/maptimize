@@ -216,3 +216,18 @@ async def test_extract_relevant_passages_forwards_group_id(mock_db, tmp_path):
     # The bug: this call omitted group_id entirely, so extract_passage_image
     # fell back to its own default (None) -> owner-only ownership recheck.
     assert mock_extract.await_args.kwargs.get("group_id") == 7
+
+
+import routers.rag as rag_router
+
+
+async def test_get_document_for_user_widens_to_group(mock_db):
+    captured = {}
+
+    async def fake_execute(stmt):
+        captured["sql"] = str(stmt.compile(compile_kwargs={"literal_binds": True}))
+        return make_result(scalar=object())  # found -> returns the doc
+
+    mock_db.execute = fake_execute
+    await rag_router.get_document_for_user(mock_db, document_id=5, user_id=1, group_id=7)
+    assert "rag_documents.group_id" in captured["sql"]
