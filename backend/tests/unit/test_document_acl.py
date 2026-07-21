@@ -107,3 +107,25 @@ async def test_adopt_orphan_documents_only_touches_library(mock_db):
     sql = str(stmt).lower()
     assert "thread_id is null" in sql
     assert "group_id is null" in sql
+
+
+import services.rag_service as rag_service
+
+
+async def test_search_documents_widens_precheck_to_group(mock_db):
+    # No own indexed pages, but group has some -> pre-check must still find them.
+    # We assert the pre-check SQL and its params include the group term.
+    calls = []
+
+    async def fake_execute(stmt, params=None):
+        calls.append((str(stmt), params or {}))
+        return make_result(first=None)  # pre-check returns "nothing" -> early []
+
+    mock_db.execute = fake_execute
+    out = await rag_service.search_documents(
+        query="x", user_id=1, db=mock_db, thread_id=None, group_id=7,
+    )
+    assert out == []
+    precheck_sql, precheck_params = calls[0]
+    assert "group_id" in precheck_sql.lower()
+    assert precheck_params.get("group_id") == 7

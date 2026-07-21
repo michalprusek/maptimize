@@ -62,6 +62,7 @@ async def search_documents(
     include_text: bool = True,
     document_ids: Optional[List[int]] = None,
     thread_id: Optional[int] = None,
+    group_id: Optional[int] = None,
 ) -> List[dict]:
     """
     Search uploaded documents using vector similarity with Qwen VL embeddings.
@@ -73,6 +74,8 @@ async def search_documents(
         limit: Maximum number of result pages to return
         include_text: Whether to include extracted text content
         document_ids: Optional list of document IDs to restrict the search to
+        thread_id: Current chat thread, for attachment scoping
+        group_id: Caller's group, for widening library docs to the group
 
     Returns:
         List of search results with document info, extracted text, and similarity scores
@@ -82,15 +85,26 @@ async def search_documents(
     if limit is None:
         limit = settings.rag_max_document_results
 
-    # Skip the (expensive) embedding-model load when the user has nothing indexed.
+    # Library docs are group-shared; attachments (group_id NULL) match only the
+    # owner. SSOT mirror of models.rag_document.document_read_scope, expressed in
+    # raw SQL for the pgvector query.
+    if group_id is not None:
+        owner_clause = "(rd.user_id = :user_id OR (rd.thread_id IS NULL AND rd.group_id = :group_id))"
+    else:
+        owner_clause = "rd.user_id = :user_id"
+
+    # Skip the (expensive) embedding-model load when the caller has nothing to search.
+    precheck_params = {"user_id": user_id}
+    if group_id is not None:
+        precheck_params["group_id"] = group_id
     has_indexed = await db.execute(
         text(
             "SELECT 1 FROM rag_document_pages rdp "
             "JOIN rag_documents rd ON rd.id = rdp.document_id "
-            "WHERE rd.user_id = :user_id AND rd.status = 'completed' "
+            f"WHERE {owner_clause} AND rd.status = 'completed' "
             "AND rdp.embedding IS NOT NULL LIMIT 1"
         ),
-        {"user_id": user_id},
+        precheck_params,
     )
     if has_indexed.first() is None:
         return []
@@ -110,6 +124,8 @@ async def search_documents(
             "user_id": user_id,
             "limit": limit,
         }
+        if group_id is not None:
+            params["group_id"] = group_id
         if document_ids:
             doc_filter = "AND rdp.document_id = ANY(:document_ids)"
             # Coerce: the ids come from model output, and a stray "7" would hit
@@ -140,7 +156,7 @@ async def search_documents(
                 rdp.embedding <=> :embedding as distance
             FROM rag_document_pages rdp
             JOIN rag_documents rd ON rd.id = rdp.document_id
-            WHERE rd.user_id = :user_id
+            WHERE {owner_clause}
               AND rd.status = 'completed'
               AND rdp.embedding IS NOT NULL
               {scope_filter}
@@ -294,6 +310,7 @@ async def combined_search(
     experiment_id: Optional[int] = None,
     doc_limit: int = None,
     fov_limit: int = None,
+    group_id: Optional[int] = None,
 ) -> dict:
     """
     Combined search across documents and FOV images.
@@ -305,6 +322,7 @@ async def combined_search(
         experiment_id: Optional experiment ID for FOV filtering
         doc_limit: Max document results
         fov_limit: Max FOV results
+        group_id: Caller's group, for widening document library search
 
     Returns:
         Dict with 'documents', 'fov_images' lists, and optional 'errors' if any search failed
@@ -320,7 +338,7 @@ async def combined_search(
 
     # Try document search, capture errors but don't fail entirely
     try:
-        documents = await search_documents(query, user_id, db, limit=doc_limit)
+        documents = await search_documents(query, user_id, db, limit=doc_limit, group_id=group_id)
     except RAGServiceError as e:
         logger.error(f"Document search failed in combined_search: {e}")
         errors.append(f"Document search: {str(e)}")
