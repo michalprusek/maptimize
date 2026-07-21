@@ -593,6 +593,7 @@ async def test_create_group_success(mock_db):
     mock_db.execute.side_effect = [
         make_result(scalar=None),               # membership check -> none
         make_result(rowcount=0),                # adopt_orphan_experiments
+        make_result(rowcount=0),                # adopt_orphan_documents
         result_scalar_one(created_group),       # reload group (scalar_one)
     ]
     payload = g.GroupCreate(name="New Lab", description="d")
@@ -609,18 +610,22 @@ async def test_create_group_adopts_pre_group_experiments(mock_db):
     # member's readable corpus is identical — umap_service's group-wide refresh
     # key depends on that.
     created_group = group_obj(members=[member_obj()])
-    # adopt_orphan_experiments is patched below, so it issues no execute() here.
+    # adopt_orphan_experiments/adopt_orphan_documents are patched below, so they
+    # issue no execute() here.
     mock_db.execute.side_effect = [
         make_result(scalar=None),               # membership check -> none
         result_scalar_one(created_group),       # reload group
     ]
     with patch.object(g, "adopt_orphan_experiments",
-                      new=AsyncMock(return_value=4)) as adopt:
+                      new=AsyncMock(return_value=4)) as adopt, \
+         patch.object(g, "adopt_orphan_documents",
+                      new=AsyncMock(return_value=2)) as adopt_docs:
         await g.create_group(
             g.GroupCreate(name="New Lab", description="d"),
             current_user=fake_user(), db=mock_db,
         )
     adopt.assert_awaited_once()
+    adopt_docs.assert_awaited_once()
     # Adopted before the commit, or the UPDATE would be lost.
     assert mock_db.commit.await_count == 1
 
@@ -814,6 +819,7 @@ async def test_join_group_success(mock_db):
         make_result(scalar=None),   # membership check
         make_result(scalar=grp),    # group lookup
         make_result(rowcount=0),    # adopt_orphan_experiments
+        make_result(rowcount=0),    # adopt_orphan_documents
         result_scalar_one(grp),     # reload group (scalar_one)
     ]
     resp = await g.join_group(group_id=1, current_user=fake_user(uid=2),
@@ -827,16 +833,20 @@ async def test_join_group_adopts_pre_group_experiments(mock_db):
     # A user who created experiments before joining brings them into the group,
     # keeping every member's corpus identical (see refresh_scope_key).
     grp = group_obj(gid=1, members=[member_obj(user_id=2, role="member")])
-    # adopt_orphan_experiments is patched below, so it issues no execute() here.
+    # adopt_orphan_experiments/adopt_orphan_documents are patched below, so they
+    # issue no execute() here.
     mock_db.execute.side_effect = [
         make_result(scalar=None),   # membership check
         make_result(scalar=grp),    # group lookup
         result_scalar_one(grp),     # reload group
     ]
     with patch.object(g, "adopt_orphan_experiments",
-                      new=AsyncMock(return_value=2)) as adopt:
+                      new=AsyncMock(return_value=2)) as adopt, \
+         patch.object(g, "adopt_orphan_documents",
+                      new=AsyncMock(return_value=1)) as adopt_docs:
         await g.join_group(group_id=1, current_user=fake_user(uid=2), db=mock_db)
     adopt.assert_awaited_once_with(mock_db, 2, 1)
+    adopt_docs.assert_awaited_once_with(mock_db, 2, 1)
     assert mock_db.commit.await_count == 1
 
 
@@ -846,6 +856,7 @@ async def test_join_group_integrity_error_409(mock_db):
         make_result(scalar=None),   # membership check
         make_result(scalar=grp),    # group lookup
         make_result(rowcount=0),    # adopt_orphan_experiments
+        make_result(rowcount=0),    # adopt_orphan_documents
     ]
     mock_db.commit.side_effect = g.IntegrityError("x", "y", "z")
     with pytest.raises(HTTPException) as e:

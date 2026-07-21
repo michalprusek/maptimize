@@ -92,3 +92,18 @@ async def test_attachment_upload_is_not_stamped(mock_db, tmp_path):
             db=mock_db, thread_id=99,
         )
     assert doc.group_id is None
+
+
+import utils.groups as groups_util
+from tests.unit.conftest import make_result
+
+
+async def test_adopt_orphan_documents_only_touches_library(mock_db):
+    mock_db.execute = AsyncMock(return_value=make_result(rowcount=3))
+    n = await groups_util.adopt_orphan_documents(mock_db, user_id=1, group_id=7)
+    assert n == 3
+    # the UPDATE must be gated to library docs (thread_id IS NULL) and orphans
+    stmt = mock_db.execute.call_args.args[0]
+    sql = str(stmt).lower()
+    assert "thread_id is null" in sql
+    assert "group_id is null" in sql
