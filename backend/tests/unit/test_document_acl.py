@@ -129,3 +129,21 @@ async def test_search_documents_widens_precheck_to_group(mock_db):
     precheck_sql, precheck_params = calls[0]
     assert "group_id" in precheck_sql.lower()
     assert precheck_params.get("group_id") == 7
+
+
+from sqlalchemy import select as _select
+
+
+async def test_get_document_content_uses_read_scope(mock_db):
+    captured = {}
+
+    async def fake_execute(stmt):
+        captured["sql"] = str(stmt.compile(compile_kwargs={"literal_binds": True}))
+        return make_result(scalar=None)  # not found -> returns None, fine
+
+    mock_db.execute = fake_execute
+    out = await rag_service.get_document_content(
+        document_id=5, user_id=1, db=mock_db, group_id=7,
+    )
+    assert out is None
+    assert "rag_documents.group_id" in captured["sql"]  # group widening applied
