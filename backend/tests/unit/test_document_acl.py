@@ -68,3 +68,27 @@ def test_document_read_scope_group_shares_library_only():
 def test_document_read_scope_owner_only_without_group():
     sql = _sql(document_read_scope(user_id=1, group_id=None))
     assert "group_id" not in sql
+
+
+from unittest.mock import AsyncMock, patch
+import services.document_indexing_service as dis
+
+
+async def test_library_upload_is_stamped_with_group(mock_db, tmp_path):
+    with patch.object(dis, "get_user_group_id", AsyncMock(return_value=7)), \
+         patch.object(dis.settings, "rag_document_dir", tmp_path):
+        doc = await dis.save_uploaded_document(
+            user_id=1, filename="paper.pdf", content=b"%PDF-1.4",
+            db=mock_db, thread_id=None,
+        )
+    assert doc.group_id == 7
+
+
+async def test_attachment_upload_is_not_stamped(mock_db, tmp_path):
+    with patch.object(dis, "get_user_group_id", AsyncMock(return_value=7)), \
+         patch.object(dis.settings, "rag_document_dir", tmp_path):
+        doc = await dis.save_uploaded_document(
+            user_id=1, filename="paper.pdf", content=b"%PDF-1.4",
+            db=mock_db, thread_id=99,
+        )
+    assert doc.group_id is None

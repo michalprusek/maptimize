@@ -21,6 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from config import get_settings
 from database import get_db_context
 from models.rag_document import RAGDocument, RAGDocumentPage, DocumentStatus
+from utils.groups import get_user_group_id
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -108,10 +109,16 @@ async def save_uploaded_document(
     # Save file
     original_path.write_bytes(content)
 
+    # Library uploads (thread_id IS NULL) are shared with the owner's lab group;
+    # chat attachments stay private (group_id stays None). Mirrors experiment
+    # group stamping in routers/experiments.py::create_experiment.
+    group_id = await get_user_group_id(user_id, db) if thread_id is None else None
+
     # Create DB record
     document = RAGDocument(
         user_id=user_id,
         thread_id=thread_id,
+        group_id=group_id,
         name=filename,
         file_type=file_type,
         original_path=str(original_path),
