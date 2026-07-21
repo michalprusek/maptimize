@@ -146,11 +146,16 @@ docker compose -f docker-compose.dev.yml logs backend 2>&1 | grep -c "completed 
 - Při volání se dělá separátní API call s `types.Tool(google_search=types.GoogleSearch())`
 - Historicky obcházelo limitaci "Tool use with function calling is unsupported"
 
-⚠️ **Tato limitace už NEPLATÍ.** Gemini 3.5 umí built-in tools (Google Search, code
-execution, URL context) a custom function declarations **v jednom requestu** - stačí
-`types.ToolConfig(include_server_side_tool_invocations=True)` (ověřeno proti live API).
-Two-phase přístup je tak zbytečný round-trip navíc a summary z něj nemá kontext
-konverzace. Migrace na nativní search je doporučený další krok.
+⚠️ **NEMIGRUJ na nativní search — limitace STÁLE PLATÍ (ověřeno live 2026-07-21).**
+Dřívější tvrzení, že Gemini 3.5 umí built-in Google Search + function declarations
+v jednom requestu, se v živém testu **nepotvrdilo**: přidání
+`types.Tool(google_search=types.GoogleSearch())` vedle function-declaration Tool
+(i s `include_server_side_tool_invocations=True`) grounding **nespustilo** — odpověď
+měla **0 `grounding_chunks`**, SDK logovalo `AFC is disabled ... do not include
+function declaration ... in the tool list`, a model si `[Web: …]` markery **vymyslel**
+z tréninku. Two-phase přístup proto **zůstává** (funguje: reálně vrátí web citace).
+Jeho skutečný bug byl **timeout** — 30s bylo málo (grounded call trvá i >40s → timeout
+→ 0 zdrojů), **opraveno na 60s**. Viz commit „bump two-phase google_search timeout".
 
 ## ⚠️ KRITICKÉ UPOZORNĚNÍ - PRODUKCE
 
