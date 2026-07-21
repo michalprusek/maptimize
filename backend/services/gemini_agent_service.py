@@ -2105,7 +2105,11 @@ async def execute_tool(
                             temperature=0.3,  # Lower temperature for factual search
                         )
                     ),
-                    timeout=30.0
+                    # A grounded generate_content (Google Search + summarize) is a
+                    # slow round-trip; 30s was timing out in prod, dropping every
+                    # web source so citations never populated. 60s lets it finish.
+                    # (Runs in a worker thread, so it never blocks the event loop.)
+                    timeout=60.0
                 )
 
                 # Extract response text and grounding metadata.
