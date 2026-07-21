@@ -1962,6 +1962,7 @@ export interface RAGDocument {
   file_size?: number;
   created_at: string;
   indexed_at?: string;
+  is_owner?: boolean;
 }
 
 export interface RAGDocumentPage {

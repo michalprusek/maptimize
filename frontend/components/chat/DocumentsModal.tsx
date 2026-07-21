@@ -147,13 +147,15 @@ export function DocumentsModal({ isOpen, onClose }: DocumentsModalProps) {
                         {doc.error_message || "Unknown error"}
                       </div>
                     </div>
-                    <button
-                      onClick={(e) => handleDeleteDocument(doc, e)}
-                      className="p-2 hover:bg-red-500/20 rounded-lg text-red-400 transition-colors"
-                      title={tCommon("delete")}
-                    >
-                      <Trash2 className="w-4 h-4" />
-                    </button>
+                    {doc.is_owner !== false && (
+                      <button
+                        onClick={(e) => handleDeleteDocument(doc, e)}
+                        className="p-2 hover:bg-red-500/20 rounded-lg text-red-400 transition-colors"
+                        title={tCommon("delete")}
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    )}
                   </div>
                 ))}
               </div>
@@ -180,7 +182,14 @@ export function DocumentsModal({ isOpen, onClose }: DocumentsModalProps) {
                       <CheckCircle2 className="absolute -bottom-0.5 -right-0.5 w-3 h-3 text-green-400" />
                     </div>
                     <div className="flex-1 min-w-0">
-                      <div className="truncate text-sm font-medium">{doc.name}</div>
+                      <div className="flex items-center gap-2 min-w-0">
+                        <div className="truncate text-sm font-medium">{doc.name}</div>
+                        {doc.is_owner === false && (
+                          <span className="flex-shrink-0 px-1.5 py-0.5 rounded text-[10px] font-medium bg-primary-500/15 text-primary-400 border border-primary-500/20">
+                            {t("sharedBadge")}
+                          </span>
+                        )}
+                      </div>
                       <div className="text-xs text-text-muted mt-0.5">
                         {doc.page_count} {t("pages")} • {formatDistanceToNow(new Date(doc.indexed_at || doc.created_at), { addSuffix: true })}
                       </div>
@@ -196,13 +205,15 @@ export function DocumentsModal({ isOpen, onClose }: DocumentsModalProps) {
                       >
                         <Eye className="w-4 h-4" />
                       </button>
-                      <button
-                        onClick={(e) => handleDeleteDocument(doc, e)}
-                        className="p-2 hover:bg-red-500/20 rounded-lg text-text-muted hover:text-red-400 transition-colors"
-                        title={tCommon("delete")}
-                      >
-                        <Trash2 className="w-4 h-4" />
-                      </button>
+                      {doc.is_owner !== false && (
+                        <button
+                          onClick={(e) => handleDeleteDocument(doc, e)}
+                          className="p-2 hover:bg-red-500/20 rounded-lg text-text-muted hover:text-red-400 transition-colors"
+                          title={tCommon("delete")}
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      )}
                     </div>
                   </div>
                 ))}

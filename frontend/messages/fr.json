@@ -483,6 +483,7 @@
     "processing": "En cours",
     "failed": "Echoue",
     "indexed": "Indexe",
+    "sharedBadge": "Partagé",
     "noThreads": "Aucune conversation",
     "noThreadsDesc": "Commencez une nouvelle conversation pour poser des questions sur vos experiences et documents.",
     "noMessages": "Aucun message",
