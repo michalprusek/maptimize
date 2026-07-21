@@ -75,6 +75,14 @@ class RAGDocument(Base):
         ForeignKey("chat_threads.id", ondelete="CASCADE"),
         nullable=True, index=True,
     )
+    # NULL = not shared; set = readable by every member of this group (library
+    # uploads only). Stamped at creation for thread_id IS NULL docs; attachments
+    # keep it NULL. Mirrors Experiment.group_id. ON DELETE SET NULL so deleting a
+    # group orphans the doc back to owner-only rather than deleting it.
+    group_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("groups.id", ondelete="SET NULL"),
+        nullable=True, index=True,
+    )
     name: Mapped[str] = mapped_column(String(255))
     # Store file_type as string but validate against DocumentType values
     file_type: Mapped[str] = mapped_column(String(50))
