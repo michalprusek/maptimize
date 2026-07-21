@@ -252,11 +252,12 @@ def _inject_user_id_filter(query_str: str, table: str, group_id: Optional[int] =
     the original conditions in parentheses to prevent operator-precedence
     bypasses) or by inserting a new WHERE clause after the FROM/JOIN block.
 
-    For ``experiments`` the predicate widens to group-shared rows so that SQL
-    answers match what the same user sees in the UI; other tables have no
+    For ``experiments`` and ``rag_documents`` the predicate widens to
+    group-shared rows so that SQL answers match what the same user sees in
+    the UI (both tables have a ``group_id`` column); other tables have no
     group column and stay owner-scoped.
     """
-    if table == "experiments" and group_id is not None:
+    if table in ("experiments", "rag_documents") and group_id is not None:
         predicate = f"({table}.user_id = :user_id OR {table}.group_id = :group_id)"
     else:
         predicate = f"{table}.user_id = :user_id"
@@ -1601,7 +1602,7 @@ async def execute_tool(
                 .outerjoin(CellCrop, Image.id == CellCrop.image_id).where(exp_read)
             )
             row = img_result.first()
-            doc_count = (await db.execute(select(func.count(RAGDocument.id)).where(document_scope(user_id, thread_id)))).scalar() or 0
+            doc_count = (await db.execute(select(func.count(RAGDocument.id)).where(document_scope(user_id, thread_id, group_id)))).scalar() or 0
             mem_count = (await db.execute(select(func.count(AgentMemory.id)).where(AgentMemory.user_id == user_id))).scalar() or 0
             result = {"total_experiments": exp_count, "total_images": row.img if row else 0, "total_cells": row.cell if row else 0, "total_documents": doc_count, "total_memories": mem_count}
 
@@ -1620,7 +1621,7 @@ async def execute_tool(
             return {"images": [{"id": i.id, "filename": i.original_filename, "experiment_id": i.experiment_id, "experiment_name": i.experiment.name if i.experiment else None, "width": i.width, "height": i.height, "thumbnail_url": f"/api/images/{i.id}/file?type=thumbnail"} for i in (await db.execute(q)).scalars().all()]}
 
         elif tool_name == "list_documents":
-            q = select(RAGDocument).where(document_scope(user_id, thread_id)).order_by(RAGDocument.created_at.desc())
+            q = select(RAGDocument).where(document_scope(user_id, thread_id, group_id)).order_by(RAGDocument.created_at.desc())
             if args.get("limit"):
                 q = q.limit(args["limit"])
             docs = (await db.execute(q)).scalars().all()
@@ -1634,18 +1635,18 @@ async def execute_tool(
             } for d in docs]}
 
         elif tool_name == "get_documents_summary":
-            return {"documents": await get_all_documents_summary(user_id=user_id, db=db, include_first_page_text=True)}
+            return {"documents": await get_all_documents_summary(user_id=user_id, db=db, include_first_page_text=True, group_id=group_id)}
 
         elif tool_name == "semantic_search":
             if not args.get("query"): return {"error": "query required"}
-            results = await combined_search(query=args["query"], user_id=user_id, db=db, doc_limit=args.get("doc_limit", 10), fov_limit=args.get("image_limit", 10))
+            results = await combined_search(query=args["query"], user_id=user_id, db=db, doc_limit=args.get("doc_limit", 10), fov_limit=args.get("image_limit", 10), group_id=group_id)
             return {"query": results["query"], "document_results": {"count": len(results["documents"]), "pages": results["documents"]}, "image_results": {"count": len(results["fov_images"]), "images": results["fov_images"]}}
 
         elif tool_name == "search_documents":
             return {"results": await search_documents(
                 query=args.get("query", ""), user_id=user_id, db=db,
                 limit=_clamp_limit(args.get("limit")), document_ids=args.get("document_ids"),
-                thread_id=thread_id)}
+                thread_id=thread_id, group_id=group_id)}
 
         elif tool_name == "search_fov_images":
             return {"results": await search_fov_images(query=args.get("query", ""), user_id=user_id, db=db, experiment_id=args.get("experiment_id"), limit=10)}
@@ -1662,6 +1663,7 @@ async def execute_tool(
                 db=db,
                 page_numbers=page_numbers,
                 include_images=True,  # Include base64 images for vision reading
+                group_id=group_id,
             )
             if not content:
                 return {"error": "Document not found"}
@@ -2431,6 +2433,7 @@ async def execute_tool(
                     user_id=user_id,
                     db=db,
                     max_passages=1,
+                    group_id=group_id,
                 )
                 if not passages:
                     return {
@@ -2447,6 +2450,7 @@ async def execute_tool(
                     bbox=bbox,
                     user_id=user_id,
                     db=db,
+                    group_id=group_id,
                 )
                 if not passage:
                     return {
@@ -2493,6 +2497,7 @@ async def execute_tool(
             content = await get_document_content(
                 document_id=args["document_id"], user_id=user_id, db=db,
                 page_numbers=args.get("page_numbers"), include_images=False,
+                group_id=group_id,
             )
             if not content:
                 return {"error": "Document not found"}

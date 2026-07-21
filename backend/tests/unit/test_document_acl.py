@@ -231,3 +231,19 @@ async def test_get_document_for_user_widens_to_group(mock_db):
     mock_db.execute = fake_execute
     await rag_router.get_document_for_user(mock_db, document_id=5, user_id=1, group_id=7)
     assert "rag_documents.group_id" in captured["sql"]
+
+
+from services.gemini_agent_service import _inject_user_id_filter
+
+
+def test_inject_filter_widens_rag_documents_to_group():
+    out = _inject_user_id_filter(
+        "SELECT * FROM rag_documents", "rag_documents", group_id=7
+    )
+    assert "rag_documents.user_id = :user_id" in out
+    assert "rag_documents.group_id = :group_id" in out
+
+
+def test_inject_filter_rag_documents_owner_only_without_group():
+    out = _inject_user_id_filter("SELECT * FROM rag_documents", "rag_documents")
+    assert "group_id" not in out
