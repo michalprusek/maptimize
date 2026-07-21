@@ -18,24 +18,58 @@ if TYPE_CHECKING:
     from .user import User
 
 
-def document_scope(user_id: int, thread_id: Optional[int] = None) -> ColumnElement:
-    """SSOT for which documents a caller may see.
+def _library_visible(user_id: int, group_id: Optional[int]) -> ColumnElement:
+    """Who may see a LIBRARY document (thread_id IS NULL): owner, or -- when the
+    caller is in a group -- any member of that group. group_id=None -> owner only."""
+    if group_id is None:
+        return RAGDocument.user_id == user_id
+    return or_(RAGDocument.user_id == user_id, RAGDocument.group_id == group_id)
 
-    ``thread_id=None`` -> the document library only (attachments belong to their
-    thread and must not pollute the library listing).
-    ``thread_id=N``    -> the library PLUS that thread's own attachments.
 
-    Every query that scopes RAGDocument to a user goes through this, so an
-    attachment can never surface in another conversation. Mirrors the
-    ``experiment_owner_filter`` pattern in utils/groups.py.
+def document_scope(
+    user_id: int,
+    thread_id: Optional[int] = None,
+    group_id: Optional[int] = None,
+) -> ColumnElement:
+    """SSOT for which documents a caller may see in a LISTING or SEARCH.
+
+    Library documents (thread_id IS NULL) are shared group-wide; chat attachments
+    belong to their thread and stay owner-private, so they never widen to a group.
+
+    ``thread_id=None`` -> the shared library only.
+    ``thread_id=N``    -> the shared library PLUS the caller's OWN attachments in N.
+    ``group_id=None``  -> owner-only (fail-closed).
+
+    Every listing/search query that scopes RAGDocument goes through this. Mirrors
+    the ``experiment_owner_filter`` pattern in utils/groups.py.
     """
-    owned = RAGDocument.user_id == user_id
+    library = and_(RAGDocument.thread_id.is_(None), _library_visible(user_id, group_id))
     if thread_id is None:
-        return and_(owned, RAGDocument.thread_id.is_(None))
-    return and_(
-        owned,
-        or_(RAGDocument.thread_id.is_(None), RAGDocument.thread_id == thread_id),
+        return library
+    own_attachment = and_(
+        RAGDocument.user_id == user_id,
+        RAGDocument.thread_id == thread_id,
     )
+    return or_(library, own_attachment)
+
+
+def document_read_scope(user_id: int, group_id: Optional[int] = None) -> ColumnElement:
+    """SSOT for a single-document FETCH BY ID (serve pdf/pages, read content,
+    extract region, cached passage).
+
+    The owner may fetch any of their own documents -- including their own chat
+    attachments, needed to serve attachment pages in the viewer. A group member
+    may additionally fetch a group-shared LIBRARY document. ``group_id=None`` ->
+    owner-only (fail-closed). Writes must NOT use this -- they stay owner-only.
+    """
+    owner = RAGDocument.user_id == user_id
+    if group_id is None:
+        return owner
+    shared_library = and_(
+        RAGDocument.thread_id.is_(None),
+        RAGDocument.group_id == group_id,
+    )
+    return or_(owner, shared_library)
 
 
 class DocumentStatus(str, PyEnum):
