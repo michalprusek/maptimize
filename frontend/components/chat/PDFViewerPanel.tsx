@@ -64,10 +64,9 @@ export function PDFViewerPanel() {
   const pageElementsRef = useRef<Map<number, HTMLDivElement>>(new Map());
   const isScrollingToPageRef = useRef(false);
   const observerRef = useRef<IntersectionObserver | null>(null);
-
-  // Scroll direction tracking for predictive prefetch
-  const scrollDirectionRef = useRef<"up" | "down" | null>(null);
-  const lastScrollTopRef = useRef(0);
+  // Stable ref callback per page number, so React doesn't detach/re-attach (and
+  // the observer doesn't unobserve/re-observe) on every render.
+  const pageRefCallbacks = useRef<Map<number, (el: HTMLDivElement | null) => void>>(new Map());
 
   const activeDocument = documents.find((d) => d.id === activePDFDocumentId);
   const totalPages = activeDocument?.page_count || 1;
@@ -77,20 +76,11 @@ export function PDFViewerPanel() {
     return Array.from({ length: totalPages }, (_, i) => i + 1);
   }, [totalPages]);
 
-  // Virtualization: only render pages near the current page for better performance
-  // Use asymmetric buffer based on scroll direction for predictive prefetch
-  const [scrollDirection, setScrollDirection] = useState<"up" | "down" | null>(null);
-
-  const visiblePageRange = useMemo(() => {
-    // Prefetch more pages in the direction of scroll
-    const forwardBuffer = scrollDirection === "down" ? 5 : 2;
-    const backwardBuffer = scrollDirection === "up" ? 5 : 2;
-
-    return {
-      start: Math.max(1, activePDFPage - backwardBuffer),
-      end: Math.min(totalPages, activePDFPage + forwardBuffer),
-    };
-  }, [activePDFPage, totalPages, scrollDirection]);
+  // Real page aspect ratio (width / height), measured once from the first loaded
+  // image. Every page reserves a box of this ratio BEFORE its image loads, so the
+  // column height is stable and native lazy-loading can size pages correctly — no
+  // custom virtualization, no scroll feedback loop, no layout shift.
+  const [naturalAspect, setNaturalAspect] = useState<number | null>(null);
 
   // Pages with search matches (for highlighting)
   const pagesWithMatches = useMemo(() => {
@@ -105,65 +95,6 @@ export function PDFViewerPanel() {
       isMountedRef.current = false;
     };
   }, []);
-
-  // Track scroll direction for predictive prefetching
-  useEffect(() => {
-    const container = containerRef.current;
-    if (!container || !isPDFPanelOpen) return;
-
-    const handleScroll = () => {
-      const currentScrollTop = container.scrollTop;
-      const direction = currentScrollTop > lastScrollTopRef.current ? "down" : "up";
-
-      // Only update state if direction changed (avoid unnecessary re-renders)
-      if (direction !== scrollDirectionRef.current) {
-        scrollDirectionRef.current = direction;
-        setScrollDirection(direction);
-      }
-
-      lastScrollTopRef.current = currentScrollTop;
-    };
-
-    container.addEventListener("scroll", handleScroll, { passive: true });
-    return () => container.removeEventListener("scroll", handleScroll);
-  }, [isPDFPanelOpen]);
-
-  // Prefetch pages beyond the visible buffer using link rel="prefetch"
-  useEffect(() => {
-    if (!activePDFDocumentId || !isPDFPanelOpen) return;
-
-    // Determine pages to prefetch (just beyond the visible range)
-    const pagesToPrefetch: number[] = [];
-    const prefetchDistance = 2; // Prefetch 2 pages beyond visible range
-
-    for (let i = 1; i <= prefetchDistance; i++) {
-      const nextPage = visiblePageRange.end + i;
-      const prevPage = visiblePageRange.start - i;
-
-      if (nextPage <= totalPages) pagesToPrefetch.push(nextPage);
-      if (prevPage >= 1) pagesToPrefetch.push(prevPage);
-    }
-
-    // Create prefetch links
-    const links: HTMLLinkElement[] = [];
-    pagesToPrefetch.forEach((pageNum) => {
-      const link = document.createElement("link");
-      link.rel = "prefetch";
-      link.href = api.getRAGPageImageUrl(activePDFDocumentId, pageNum);
-      link.as = "image";
-      document.head.appendChild(link);
-      links.push(link);
-    });
-
-    // Cleanup prefetch links on unmount or when range changes
-    return () => {
-      links.forEach((link) => {
-        if (link.parentNode) {
-          link.parentNode.removeChild(link);
-        }
-      });
-    };
-  }, [activePDFDocumentId, isPDFPanelOpen, visiblePageRange.start, visiblePageRange.end, totalPages]);
 
   // Debounced search
   const performSearch = useCallback(async (query: string) => {
@@ -347,11 +278,9 @@ export function PDFViewerPanel() {
     setLoadedPages(new Set());
     setFailedPages(new Set());
     setErrorDetails(new Map());
+    setNaturalAspect(null);
     pageElementsRef.current.clear();
-    // Reset scroll tracking
-    scrollDirectionRef.current = null;
-    lastScrollTopRef.current = 0;
-    setScrollDirection(null);
+    pageRefCallbacks.current.clear();
     // Reset search when document changes
     closeSearch();
   }, [activePDFDocumentId, closeSearch]);
@@ -386,15 +315,24 @@ export function PDFViewerPanel() {
     window.open(url, "_blank");
   }, [activePDFDocumentId]);
 
-  const handlePageLoad = useCallback((pageNum: number) => {
-    if (!isMountedRef.current) return;
-    setLoadedPages((prev) => new Set(prev).add(pageNum));
-    setFailedPages((prev) => {
-      const next = new Set(prev);
-      next.delete(pageNum);
-      return next;
-    });
-  }, []);
+  const handlePageLoad = useCallback(
+    (pageNum: number, event: React.SyntheticEvent<HTMLImageElement>) => {
+      if (!isMountedRef.current) return;
+      setLoadedPages((prev) => new Set(prev).add(pageNum));
+      setFailedPages((prev) => {
+        const next = new Set(prev);
+        next.delete(pageNum);
+        return next;
+      });
+      // Measure the page aspect ratio once; all pages in a document share it, so
+      // this pins every reserved box to the true ratio (no letterbox, no shift).
+      const img = event.currentTarget;
+      if (img.naturalWidth > 0 && img.naturalHeight > 0) {
+        setNaturalAspect((prev) => prev ?? img.naturalWidth / img.naturalHeight);
+      }
+    },
+    []
+  );
 
   const handlePageError = useCallback((pageNum: number, event: React.SyntheticEvent<HTMLImageElement>) => {
     if (!isMountedRef.current) return;
@@ -411,38 +349,40 @@ export function PDFViewerPanel() {
     });
   }, []);
 
-  // Register page element ref and manage observer subscription
-  const setPageRef = useCallback(
-    (pageNum: number) => (element: HTMLDivElement | null) => {
-      if (element) {
-        pageElementsRef.current.set(pageNum, element);
-        if (observerRef.current && element.isConnected) {
-          try {
-            observerRef.current.observe(element);
-          } catch (error) {
-            // Expected during Fast Refresh when observer is disconnected
-            if (process.env.NODE_ENV === "development") {
-              console.debug(`[PDFViewer] Observer.observe failed for page ${pageNum}:`, error);
+  // Return a STABLE ref callback for a given page number. Memoizing per page
+  // (instead of returning a fresh closure each render) stops React from
+  // detaching/re-attaching the ref — and the observer from unobserve/observe
+  // churn — on every re-render.
+  const getPageRef = useCallback((pageNum: number) => {
+    let cb = pageRefCallbacks.current.get(pageNum);
+    if (!cb) {
+      cb = (element: HTMLDivElement | null) => {
+        if (element) {
+          pageElementsRef.current.set(pageNum, element);
+          if (observerRef.current && element.isConnected) {
+            try {
+              observerRef.current.observe(element);
+            } catch {
+              // Observer may be disconnected during Fast Refresh; the observer
+              // effect re-observes all registered elements when it re-runs.
             }
           }
-        }
-      } else {
-        const existing = pageElementsRef.current.get(pageNum);
-        if (existing && observerRef.current) {
-          try {
-            observerRef.current.unobserve(existing);
-          } catch (error) {
-            // Element may already be disconnected during cleanup
-            if (process.env.NODE_ENV === "development") {
-              console.debug(`[PDFViewer] Observer.unobserve failed for page ${pageNum}:`, error);
+        } else {
+          const existing = pageElementsRef.current.get(pageNum);
+          if (existing && observerRef.current) {
+            try {
+              observerRef.current.unobserve(existing);
+            } catch {
+              // Element already disconnected during cleanup — safe to ignore.
             }
           }
+          pageElementsRef.current.delete(pageNum);
         }
-        pageElementsRef.current.delete(pageNum);
-      }
-    },
-    []
-  );
+      };
+      pageRefCallbacks.current.set(pageNum, cb);
+    }
+    return cb;
+  }, []);
 
   // Keyboard navigation including Ctrl+F
   useEffect(() => {
@@ -727,18 +667,22 @@ export function PDFViewerPanel() {
           {pages.map((pageNum) => {
             const hasMatch = pagesWithMatches.has(pageNum);
             const isCurrentMatch = searchResult?.matches[currentMatchIndex]?.page_number === pageNum;
-            // Virtualization: only render images for pages near the current view
-            const isInVirtualRange = pageNum >= visiblePageRange.start && pageNum <= visiblePageRange.end;
-            // Always render pages that are already loaded or have search matches
-            const shouldRenderImage = isInVirtualRange || loadedPages.has(pageNum) || hasMatch;
+            const isLoaded = loadedPages.has(pageNum);
+            const isFailed = failedPages.has(pageNum);
 
             return (
               <div
                 key={`doc-${activePDFDocumentId}-page-${pageNum}`}
-                ref={setPageRef(pageNum)}
+                ref={getPageRef(pageNum)}
                 data-page={pageNum}
+                // Reserve each page's space up front via a fixed aspect ratio, so the
+                // column height is stable before any image loads. Every page renders a
+                // native lazy <img> that the browser fetches only as it nears the
+                // viewport — no custom virtualization, no scroll feedback loop, no
+                // layout shift.
+                style={{ aspectRatio: String(naturalAspect ?? 8.5 / 11) }}
                 className={clsx(
-                  "relative w-full flex justify-center",
+                  "relative w-full",
                   hasMatch && "ring-2 ring-primary-500/50 ring-offset-2 ring-offset-bg-primary rounded-sm",
                   isCurrentMatch && "ring-primary-500"
                 )}
@@ -758,37 +702,9 @@ export function PDFViewerPanel() {
                   )}
                 </div>
 
-                {!shouldRenderImage ? (
-                  /* Placeholder for virtualized pages outside view range */
-                  <div className="w-full min-h-[600px] aspect-[8.5/11] flex items-center justify-center bg-white/[0.02] rounded-sm border border-white/5 text-text-muted text-sm">
-                    <span className="opacity-50">Page {pageNum}</span>
-                  </div>
-                ) : !failedPages.has(pageNum) ? (
-                  <>
-                    {/* Loading skeleton */}
-                    {!loadedPages.has(pageNum) && (
-                      <div className="absolute inset-0 flex items-center justify-center bg-white/5 rounded-sm animate-pulse min-h-[400px]">
-                        <div className="w-8 h-8 border-2 border-primary-500 border-t-transparent rounded-full animate-spin" />
-                      </div>
-                    )}
-
-                    {/* Page image */}
-                    {/* eslint-disable-next-line @next/next/no-img-element */}
-                    <img
-                      src={api.getRAGPageImageUrl(activePDFDocumentId, pageNum)}
-                      alt={`Page ${pageNum}`}
-                      className={clsx(
-                        "max-w-full shadow-lg rounded-sm border border-white/5 transition-opacity duration-300",
-                        loadedPages.has(pageNum) ? "opacity-100" : "opacity-0"
-                      )}
-                      loading="lazy"
-                      onLoad={() => handlePageLoad(pageNum)}
-                      onError={(e) => handlePageError(pageNum, e)}
-                    />
-                  </>
-                ) : (
-                  /* Error state with retry button */
-                  <div className="w-full min-h-[400px] aspect-[8.5/11] flex flex-col items-center justify-center gap-3 bg-white/5 rounded-sm border border-white/5 text-text-muted p-4">
+                {isFailed ? (
+                  /* Error state with retry button (fills the reserved box) */
+                  <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-white/5 rounded-sm border border-white/5 text-text-muted p-4">
                     <span>{t("failedToLoadPage") || "Failed to load page"}</span>
                     <button
                       onClick={() => {
@@ -808,6 +724,29 @@ export function PDFViewerPanel() {
                       </span>
                     )}
                   </div>
+                ) : (
+                  <>
+                    {/* Loading skeleton — fills the reserved box, no size of its own */}
+                    {!isLoaded && (
+                      <div className="absolute inset-0 flex items-center justify-center bg-white/5 rounded-sm animate-pulse">
+                        <div className="w-8 h-8 border-2 border-primary-500 border-t-transparent rounded-full animate-spin" />
+                      </div>
+                    )}
+
+                    {/* Page image — fills the reserved box, native lazy-loaded */}
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img
+                      src={api.getRAGPageImageUrl(activePDFDocumentId, pageNum)}
+                      alt={`Page ${pageNum}`}
+                      className={clsx(
+                        "w-full h-full object-contain shadow-lg rounded-sm border border-white/5 transition-opacity duration-300",
+                        isLoaded ? "opacity-100" : "opacity-0"
+                      )}
+                      loading="lazy"
+                      onLoad={(e) => handlePageLoad(pageNum, e)}
+                      onError={(e) => handlePageError(pageNum, e)}
+                    />
+                  </>
                 )}
               </div>
             );
