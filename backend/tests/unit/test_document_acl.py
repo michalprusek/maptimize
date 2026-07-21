@@ -1,5 +1,5 @@
 """Unit tests for group-shared RAG document access control."""
-from models.rag_document import RAGDocument
+from models.rag_document import RAGDocument, document_scope, document_read_scope
 
 
 def test_rag_document_has_group_id_column():
@@ -10,9 +10,6 @@ def test_rag_document_has_group_id_column():
     fks = list(col.foreign_keys)
     assert len(fks) == 1
     assert fks[0].column.table.name == "groups"
-
-
-from models.rag_document import document_scope, document_read_scope
 
 
 def _sql(clause):
@@ -37,6 +34,23 @@ def test_document_scope_thread_group_shares_library_not_attachments():
     sql = _sql(document_scope(user_id=1, thread_id=5, group_id=7))
     assert "rag_documents.group_id" in sql
     assert "rag_documents.thread_id = 5" in sql      # own attachments still visible
+    # Lock the STRUCTURE, not just substring presence: the group term must be
+    # AND-gated by thread_id IS NULL, adjacent and parenthesized exactly like
+    # this. If `and_` here were ever swapped for `or_`, every group member
+    # would see every thread's attachments -- a severe cross-user leak -- yet
+    # the substring checks above would still pass. This adjacency assertion
+    # would catch it.
+    assert (
+        "rag_documents.thread_id IS NULL AND "
+        "(rag_documents.user_id = 1 OR rag_documents.group_id = 7)"
+    ) in sql
+
+
+def test_document_scope_thread_owner_only_without_group():
+    # Fail-closed check in a thread context: no group_id at all -> no group
+    # widening, even though a thread_id is present.
+    sql = _sql(document_scope(user_id=1, thread_id=5, group_id=None))
+    assert "group_id" not in sql
 
 
 def test_document_read_scope_group_shares_library_only():
@@ -44,6 +58,11 @@ def test_document_read_scope_group_shares_library_only():
     assert "rag_documents.user_id" in sql            # owner sees own (incl. attachments)
     assert "rag_documents.group_id" in sql           # + group-shared library
     assert "rag_documents.thread_id IS NULL" in sql  # group term gated to library
+    # Same structural lock as above: the group clause must be AND-gated by
+    # thread_id IS NULL, not merely present somewhere in the compiled SQL.
+    assert (
+        "rag_documents.thread_id IS NULL AND rag_documents.group_id = 7"
+    ) in sql
 
 
 def test_document_read_scope_owner_only_without_group():
