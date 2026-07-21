@@ -1,5 +1,16 @@
 """Unit tests for group-shared RAG document access control."""
-from models.rag_document import RAGDocument, document_scope, document_read_scope
+import json as _json
+import types as _pytypes
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import routers.rag as rag_router
+import services.document_indexing_service as dis
+import services.rag_service as rag_service
+import utils.groups as groups_util
+from models.rag_document import RAGDocument, document_read_scope, document_scope
+from services.gemini_agent_service import _inject_user_id_filter
+from tests.unit.conftest import make_result
 
 
 def test_rag_document_has_group_id_column():
@@ -70,10 +81,6 @@ def test_document_read_scope_owner_only_without_group():
     assert "group_id" not in sql
 
 
-from unittest.mock import AsyncMock, patch
-import services.document_indexing_service as dis
-
-
 async def test_library_upload_is_stamped_with_group(mock_db, tmp_path):
     with patch.object(dis, "get_user_group_id", AsyncMock(return_value=7)), \
          patch.object(dis.settings, "rag_document_dir", tmp_path):
@@ -94,10 +101,6 @@ async def test_attachment_upload_is_not_stamped(mock_db, tmp_path):
     assert doc.group_id is None
 
 
-import utils.groups as groups_util
-from tests.unit.conftest import make_result
-
-
 async def test_adopt_orphan_documents_only_touches_library(mock_db):
     mock_db.execute = AsyncMock(return_value=make_result(rowcount=3))
     n = await groups_util.adopt_orphan_documents(mock_db, user_id=1, group_id=7)
@@ -107,9 +110,6 @@ async def test_adopt_orphan_documents_only_touches_library(mock_db):
     sql = str(stmt).lower()
     assert "thread_id is null" in sql
     assert "group_id is null" in sql
-
-
-import services.rag_service as rag_service
 
 
 async def test_search_documents_widens_precheck_to_group(mock_db):
@@ -131,9 +131,6 @@ async def test_search_documents_widens_precheck_to_group(mock_db):
     assert precheck_params.get("group_id") == 7
 
 
-from sqlalchemy import select as _select
-
-
 async def test_get_document_content_uses_read_scope(mock_db):
     captured = {}
 
@@ -147,12 +144,6 @@ async def test_get_document_content_uses_read_scope(mock_db):
     )
     assert out is None
     assert "rag_documents.group_id" in captured["sql"]  # group widening applied
-
-
-import json as _json
-import types as _pytypes
-from types import SimpleNamespace
-from unittest.mock import MagicMock
 
 
 def _patch_genai_module(fake_client):
@@ -218,9 +209,6 @@ async def test_extract_relevant_passages_forwards_group_id(mock_db, tmp_path):
     assert mock_extract.await_args.kwargs.get("group_id") == 7
 
 
-import routers.rag as rag_router
-
-
 async def test_get_document_for_user_widens_to_group(mock_db):
     captured = {}
 
@@ -231,9 +219,6 @@ async def test_get_document_for_user_widens_to_group(mock_db):
     mock_db.execute = fake_execute
     await rag_router.get_document_for_user(mock_db, document_id=5, user_id=1, group_id=7)
     assert "rag_documents.group_id" in captured["sql"]
-
-
-from services.gemini_agent_service import _inject_user_id_filter
 
 
 def test_inject_filter_widens_rag_documents_to_group():
