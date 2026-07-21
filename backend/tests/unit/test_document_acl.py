@@ -227,8 +227,44 @@ def test_inject_filter_widens_rag_documents_to_group():
     )
     assert "rag_documents.user_id = :user_id" in out
     assert "rag_documents.group_id = :group_id" in out
+    # SSOT mirror: the group term must be gated by thread_id IS NULL, same as
+    # document_scope/document_read_scope and the pgvector owner_clause, so
+    # attachments never widen to the group.
+    assert "rag_documents.thread_id IS NULL AND rag_documents.group_id = :group_id" in out
 
 
 def test_inject_filter_rag_documents_owner_only_without_group():
     out = _inject_user_id_filter("SELECT * FROM rag_documents", "rag_documents")
     assert "group_id" not in out
+
+
+async def test_serve_passage_image_resolves_and_forwards_group_id(mock_db):
+    # Regression: serve_passage_image used to call get_cached_passage without
+    # resolving group_id at all, leaving the (already-widened) get_cached_passage
+    # param dead and 404-ing a non-owner group member on a shared library doc's
+    # extracted passage image. Assert group_id is resolved and forwarded.
+    fake_path = MagicMock()
+    fake_path.__str__.return_value = "/tmp/fake-passage.png"
+
+    with patch.object(rag_router, "get_cached_passage",
+                       AsyncMock(return_value=fake_path)) as mock_get_cached, \
+         patch.object(rag_router, "get_user_group_id",
+                       AsyncMock(return_value=7)) as mock_get_group, \
+         patch.object(rag_router, "image_mime_type", return_value="image/png"), \
+         patch.object(rag_router, "FileResponse", return_value="fake-response"):
+        result = await rag_router.serve_passage_image(
+            document_id=5,
+            passage_hash="abcdef012345",
+            current_user=SimpleNamespace(id=1),
+            db=mock_db,
+        )
+
+    mock_get_group.assert_awaited_once_with(1, mock_db)
+    mock_get_cached.assert_awaited_once_with(
+        document_id=5,
+        passage_hash="abcdef012345",
+        user_id=1,
+        db=mock_db,
+        group_id=7,
+    )
+    assert result == "fake-response"

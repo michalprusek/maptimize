@@ -591,12 +591,27 @@ async def test_rag_upload_value_error(mock_db):
 
 
 async def test_rag_get_document(mock_db):
-    doc = _doc()
-    with patch.object(rag_r, "get_document_for_user", new=AsyncMock(return_value=doc)), \
+    # doc.user_id == 7 == current_user.id -> is_owner must be computed True.
+    doc = _doc(user_id=7)
+    with patch.object(rag_r, "get_user_group_id", new=AsyncMock(return_value=None)), \
+         patch.object(rag_r, "get_document_for_user", new=AsyncMock(return_value=doc)), \
          patch.object(rag_r.RAGDocumentResponse, "model_validate",
-                      side_effect=lambda d: {"id": d.id}):
+                      side_effect=lambda d: SimpleNamespace(id=d.id)):
         out = await rag_r.get_document(1, current_user=user(id=7), db=mock_db)
-    assert out == {"id": 1}
+    assert out.id == 1
+    assert out.is_owner is True
+
+
+async def test_rag_get_document_not_owner(mock_db):
+    # doc.user_id (9) != current_user.id (7) -> group-shared, is_owner False.
+    doc = _doc(user_id=9)
+    with patch.object(rag_r, "get_user_group_id", new=AsyncMock(return_value=3)), \
+         patch.object(rag_r, "get_document_for_user", new=AsyncMock(return_value=doc)), \
+         patch.object(rag_r.RAGDocumentResponse, "model_validate",
+                      side_effect=lambda d: SimpleNamespace(id=d.id)):
+        out = await rag_r.get_document(1, current_user=user(id=7), db=mock_db)
+    assert out.id == 1
+    assert out.is_owner is False
 
 
 async def test_rag_delete_document_not_found(mock_db):

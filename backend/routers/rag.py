@@ -267,7 +267,9 @@ async def get_document(
     """Get document details and processing status."""
     group_id = await get_user_group_id(current_user.id, db)
     document = await get_document_for_user(db, document_id, current_user.id, group_id)
-    return RAGDocumentResponse.model_validate(document)
+    resp = RAGDocumentResponse.model_validate(document)
+    resp.is_owner = document.user_id == current_user.id
+    return resp
 
 
 @router.delete("/documents/{document_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -436,11 +438,13 @@ async def serve_passage_image(
             detail="Invalid passage hash format"
         )
 
+    group_id = await get_user_group_id(current_user.id, db)
     passage_path = await get_cached_passage(
         document_id=document_id,
         passage_hash=passage_hash,
         user_id=current_user.id,
-        db=db
+        db=db,
+        group_id=group_id,
     )
 
     if not passage_path:

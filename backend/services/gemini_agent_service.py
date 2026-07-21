@@ -256,8 +256,19 @@ def _inject_user_id_filter(query_str: str, table: str, group_id: Optional[int] =
     group-shared rows so that SQL answers match what the same user sees in
     the UI (both tables have a ``group_id`` column); other tables have no
     group column and stay owner-scoped.
+
+    ``rag_documents`` additionally gates the group term on ``thread_id IS
+    NULL`` -- mirroring the SSOT in ``document_scope``/``document_read_scope``
+    and the pgvector ``owner_clause`` in rag_service -- so chat attachments
+    (which are never group-shared) can't leak to other group members even if
+    a future change stamps them with a group_id.
     """
-    if table in ("experiments", "rag_documents") and group_id is not None:
+    if table == "rag_documents" and group_id is not None:
+        predicate = (
+            f"({table}.user_id = :user_id OR "
+            f"({table}.thread_id IS NULL AND {table}.group_id = :group_id))"
+        )
+    elif table == "experiments" and group_id is not None:
         predicate = f"({table}.user_id = :user_id OR {table}.group_id = :group_id)"
     else:
         predicate = f"{table}.user_id = :user_id"
