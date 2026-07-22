@@ -127,3 +127,61 @@ async def search_epmc(query: str, limit: int = 25) -> list[PaperResult]:
     """Run one Europe PMC query and return normalised results."""
     raw_results = await _epmc_search_raw(query, limit)
     return [parse_epmc_result(r) for r in raw_results]
+
+
+# Mirrors the upload endpoint's cap so a discovered paper can never be bigger
+# than something a user could upload by hand.
+MAX_PDF_BYTES = 100 * 1024 * 1024
+MAX_REDIRECTS = 5
+PDF_READ_TIMEOUT = 60.0
+
+
+class PdfFetchError(Exception):
+    """A PDF could not be fetched; the message is safe to show the user."""
+
+
+def _is_safe_url(url: str) -> tuple[bool, str]:
+    """Delegate to the agent service's SSRF guard (imported lazily to avoid a
+    heavy import at module load; monkeypatchable in tests)."""
+    from services.gemini_agent_service import _is_safe_url as guard
+    return guard(url)
+
+
+async def fetch_pdf(url: str) -> bytes:
+    """Download a PDF with SSRF, content-type and size guards.
+
+    Redirects are followed manually so every hop is re-validated — a redirect is
+    exactly how an open-access URL could be turned into an internal one.
+    """
+    current = url
+    for _ in range(MAX_REDIRECTS + 1):
+        ok, reason = _is_safe_url(current)
+        if not ok:
+            raise PdfFetchError(f"Refused to fetch URL: {reason}")
+
+        async with httpx.AsyncClient(timeout=PDF_READ_TIMEOUT, follow_redirects=False) as client:
+            async with client.stream("GET", current) as resp:
+                if resp.status_code in (301, 302, 303, 307, 308):
+                    location = resp.headers.get("location")
+                    if not location:
+                        raise PdfFetchError("Redirect without a target")
+                    current = httpx.URL(current).join(location).human_repr()
+                    continue
+                if resp.status_code != 200:
+                    raise PdfFetchError(f"Publisher returned HTTP {resp.status_code}")
+
+                ctype = (resp.headers.get("content-type") or "").lower()
+                if "pdf" not in ctype:
+                    # A paywall usually answers with an HTML landing page.
+                    raise PdfFetchError(f"Not a PDF (content-type: {ctype or 'unknown'})")
+
+                chunks: list[bytes] = []
+                total = 0
+                async for chunk in resp.aiter_bytes():
+                    total += len(chunk)
+                    if total > MAX_PDF_BYTES:
+                        raise PdfFetchError("PDF is too large (over 100 MB)")
+                    chunks.append(chunk)
+                return b"".join(chunks)
+
+    raise PdfFetchError("Too many redirects")

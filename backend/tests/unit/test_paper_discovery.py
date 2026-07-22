@@ -103,3 +103,77 @@ def test_classify_query_freetext_is_topic():
     kind, items = classify_query("MAP bundling in vitro since 2020")
     assert kind == "topic"
     assert items == ["MAP bundling in vitro since 2020"]
+
+
+import pytest
+import services.paper_discovery_service as pds
+
+
+class _FakeStream:
+    """Minimal stand-in for httpx's streaming response context manager."""
+    def __init__(self, status=200, headers=None, chunks=(b"%PDF-1.4 body",)):
+        self.status_code = status
+        self.headers = headers if headers is not None else {"content-type": "application/pdf"}
+        self._chunks = chunks
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *a):
+        return False
+
+    async def aiter_bytes(self):
+        for c in self._chunks:
+            yield c
+
+
+def _client_returning(stream):
+    class _C:
+        async def __aenter__(self_inner):
+            return self_inner
+
+        async def __aexit__(self_inner, *a):
+            return False
+
+        def stream(self_inner, method, url, **kw):
+            return stream
+    return lambda *a, **kw: _C()
+
+
+async def test_fetch_pdf_rejects_unsafe_url(monkeypatch):
+    monkeypatch.setattr(pds, "_is_safe_url", lambda u: (False, "blocked"))
+    with pytest.raises(pds.PdfFetchError):
+        await pds.fetch_pdf("http://169.254.169.254/latest/meta-data")
+
+
+async def test_fetch_pdf_enforces_size_cap(monkeypatch):
+    monkeypatch.setattr(pds, "_is_safe_url", lambda u: (True, ""))
+    monkeypatch.setattr(pds, "MAX_PDF_BYTES", 10)
+    big = _FakeStream(chunks=(b"x" * 6, b"x" * 6))
+    monkeypatch.setattr(pds.httpx, "AsyncClient", _client_returning(big))
+    with pytest.raises(pds.PdfFetchError) as ei:
+        await pds.fetch_pdf("https://europepmc.org/a.pdf")
+    assert "too large" in str(ei.value).lower()
+
+
+async def test_fetch_pdf_rejects_non_pdf_content_type(monkeypatch):
+    monkeypatch.setattr(pds, "_is_safe_url", lambda u: (True, ""))
+    html = _FakeStream(headers={"content-type": "text/html; charset=utf-8"})
+    monkeypatch.setattr(pds.httpx, "AsyncClient", _client_returning(html))
+    with pytest.raises(pds.PdfFetchError) as ei:
+        await pds.fetch_pdf("https://europepmc.org/a.pdf")
+    assert "content-type" in str(ei.value).lower()
+
+
+async def test_fetch_pdf_rejects_error_status(monkeypatch):
+    monkeypatch.setattr(pds, "_is_safe_url", lambda u: (True, ""))
+    monkeypatch.setattr(pds.httpx, "AsyncClient", _client_returning(_FakeStream(status=404)))
+    with pytest.raises(pds.PdfFetchError):
+        await pds.fetch_pdf("https://europepmc.org/missing.pdf")
+
+
+async def test_fetch_pdf_returns_bytes(monkeypatch):
+    monkeypatch.setattr(pds, "_is_safe_url", lambda u: (True, ""))
+    monkeypatch.setattr(pds.httpx, "AsyncClient",
+                        _client_returning(_FakeStream(chunks=(b"%PDF-", b"ok"))))
+    assert await pds.fetch_pdf("https://europepmc.org/a.pdf") == b"%PDF-ok"
