@@ -45,11 +45,15 @@ both the manual upload endpoint (`routers/rag.py:268`) and the discovery import
 (`routers/rag.py:734`) already call. Both paths therefore deduplicate by
 construction; neither gets its own copy of the rule.
 
-**The lookup reuses `document_scope(user_id, thread_id, group_id)`**, the existing
-ACL SSOT. Visibility and deduplication then cannot disagree: library documents
-dedupe across the lab group, chat attachments dedupe only within the caller's own
-attachments in that thread. `CLAUDE.md` records that this visibility rule already
-exists in four hand-synchronised copies — this adds no fifth.
+**The lookup goes through `document_dedupe_scope(user_id, thread_id, group_id)`**,
+added next to `document_scope` and built from the same `_library_visible`
+primitive. *(Amended after implementation: the spec originally said it would
+reuse `document_scope` directly. That is wrong for attachments —
+`document_scope(user_id, thread_id=N, …)` returns library ∪ own-attachments-in-N,
+so an attachment upload could alias onto a group-shared library document. A
+sibling function was needed. It adds no fifth copy of the visibility rule, which
+was the actual constraint: the group logic still lives only in
+`_library_visible`.)*
 
 `save_uploaded_document()` returns `(document, created: bool)` instead of a bare
 document. An explicit flag beats having callers guess from a timestamp, and it
@@ -62,6 +66,7 @@ Three cases where returning the existing document is worse than importing again:
 | Case | Why it is excluded |
 |---|---|
 | The existing document's status is `FAILED` | Deduplicating to it hands the user a broken document *and* removes their only way to retry — the re-upload that would have fixed it now silently resolves to the failure. |
+| *(added after review)* A document left `PENDING`/`PROCESSING` by a killed process | These are NOT excluded from the dedupe — excluding them would break the main case it exists for (a double-click during indexing). Instead the root cause is fixed: `fail_orphaned_indexing()` ages them to `FAILED` at startup, since indexing runs as a `BackgroundTask` that cannot survive the process. Without it a stuck row would swallow every re-upload forever, and group-wide dedupe would make that unfixable for anyone but the owner. |
 | The upload is a library document but the hash match is a chat attachment (or vice versa) | Different lifetime and visibility: an attachment is deleted with its thread and never widens to the group. Silently aliasing one to the other would make a library document vanish when someone deletes a conversation. |
 | The hash matches a document the caller cannot see | Excluded automatically, because the lookup is `document_scope`. Worth stating: a dedupe hit must never reveal that a document exists. |
 
@@ -73,8 +78,8 @@ library did not grow.
 
 | Path | Response | UI |
 |---|---|---|
-| `POST /api/rag/documents` (manual upload) | 200 with the existing document plus `is_duplicate: true` on `RAGDocumentUploadResponse` | The upload modal says the file is already in the library and highlights the existing entry instead of adding a row. |
-| `POST /api/rag/discover/import` | The paper's per-paper result reports `already in library`, not `imported` | The existing per-paper reporting already renders this; the counts must not claim an import that did not happen. |
+| `POST /api/rag/documents` (manual upload) | 200 with the existing document plus `is_duplicate: true` on `RAGDocumentUploadResponse` | The dropzone names the skipped files instead of adding rows, and does not show the success tick unless something was actually stored. *(No "highlight the existing entry" — specified, not built, and dropped rather than left as a false promise in a comment.)* |
+| `POST /api/rag/discover/import` | A new `ImportResponse.already_in_library: list[str]`, separate from `imported` and `failed` | *(Amended: the spec assumed existing reporting covered this. It did not — the field, an i18n key and new summary code were all needed. Both duplicate detectors — the DOI pre-check and the post-download content hash — report through it, so the summary never calls a duplicate a failure.)* |
 
 Both new strings go in `frontend/messages/en.json` **and** `fr.json`, once each.
 
@@ -136,9 +141,11 @@ Candidate order — cheapest and most trustworthy first:
    unchanged.
 2. **Unpaywall** — `GET https://api.unpaywall.org/v2/{doi}?email=...`, taking each
    `oa_locations[].url_for_pdf`. Free, and indexes only legal OA copies.
-3. **Preprint-host URL patterns** applied to the DOI's landing page: Research
-   Square (`.../article/rs-<id>/v<n>` → `+ ".pdf"`) and bioRxiv/medRxiv
-   (`+ ".full.pdf"`).
+3. **Preprint-host URL patterns** derived from the DOI string itself, with no
+   resolution step: Research Square (`10.21203/rs.N.rs-<id>/v<n>` →
+   `researchsquare.com/article/rs-<id>/v<n>.pdf`) and bioRxiv/medRxiv (both
+   tried, since the shared `10.1101/` prefix does not say which, with the
+   version pinned to `v1`).
 
 Every candidate goes through the existing `fetch_pdf()` unchanged — same SSRF
 guard, same per-hop redirect revalidation, same 100 MB streamed cap, same
@@ -193,8 +200,14 @@ Unit (`backend/tests/unit/`, mocked httpx/DB):
   invariant, asserted the same way as the Gemini rewrite's).
 - `pdf_urls_from_result` returns every qualifying entry, still excludes
   `site: "PubMedCentral"` and non-OA entries, and preserves order.
-- Research Square and bioRxiv pattern derivation, including a landing URL that
-  matches no known pattern.
+- Research Square and bioRxiv pattern derivation, including a DOI that matches
+  no known preprint host.
+- *(added after review)* A transport-level error (connect refused, read timeout)
+  must not abort the candidate chain — it is the commonest shape of a dead link,
+  and letting it escape defeated the whole feature.
+- *(added after review)* The reported error is the FIRST candidate's, not the
+  last: the preprint patterns are speculative and their 404 would otherwise bury
+  the real diagnosis.
 
 # Out of scope
 

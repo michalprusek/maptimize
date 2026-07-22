@@ -278,7 +278,11 @@ class ImportFailure(BaseModel):
 class ImportResponse(BaseModel):
     imported: int
     failed: List[ImportFailure]
-    # DOIs that were already in the caller's library, so nothing was fetched,
-    # stored or indexed for them. Neither a success nor a failure -- reported
-    # separately so the summary can't claim an import that never happened.
+    # DOIs already present, found either by the DOI pre-check (nothing was
+    # fetched) or by the content hash after downloading (the PDF WAS fetched --
+    # byte-identity cannot be known before the bytes exist). Either way nothing
+    # was stored or indexed. "Present" means visible to the caller, which for a
+    # library document includes a lab mate's copy. Neither a success nor a
+    # failure -- reported separately so the summary can't claim an import that
+    # never happened, nor call a duplicate an error.
     already_in_library: List[str] = []

@@ -274,8 +274,12 @@ async def upload_document(
         )
         await db.commit()
 
-        # A duplicate is already stored and already indexed -- re-running the
-        # pipeline would burn GPU time to produce the pages it already has.
+        # A duplicate is already stored, and its indexing has either finished or
+        # is already queued -- re-running the pipeline would burn GPU time to
+        # produce pages that are already coming. (Documents left PENDING or
+        # PROCESSING by a killed process are aged to FAILED at startup, and
+        # FAILED is excluded from the dedupe, so a stuck row can't absorb the
+        # re-upload that would fix it.)
         if created:
             background_tasks.add_task(process_document_async, document.id)
             logger.info(f"Queued document {document.id} for processing")
@@ -561,7 +565,7 @@ async def discover_sources(
                 doi=p.doi, title=p.title, authors=p.authors, journal=p.journal,
                 year=p.year, abstract=(p.abstract or "")[:600] or None,
                 source_url=p.source_url,
-                importable=p.pdf_url is not None,
+                importable=bool(p.pdf_urls),
                 already_imported=bool(p.doi and p.doi.lower() in existing),
             )
             for p in papers
@@ -682,14 +686,17 @@ async def import_discovered(
         .where(func.lower(RAGDocument.doi).in_([d.lower() for d in dois]))
         .where(document_scope(current_user.id, None, group_id))
     )
-    already_in_library = {d.lower() for d in existing_rows.scalars().all() if d}
+    # Distinct name from the `already_in_library` RESULT list built below: these
+    # are lowercased for matching, that one holds the DOIs as the user sent them.
+    # They were briefly the same identifier, which worked only because this set's
+    # last read happened to precede the rebind.
+    existing_dois = {d.lower() for d in existing_rows.scalars().all() if d}
 
-    to_fetch = []
-    for doi in dois:
-        if doi.lower() in already_in_library:
-            failures.append(ImportFailure(doi=doi, reason="Already in your library"))
-        else:
-            to_fetch.append(doi)
+    # Papers already here are neither imported nor failed. Reporting them as
+    # failures made the summary read "0 imported - 3 failed" for the most common
+    # case there is: re-selecting papers you already imported.
+    already_in_library: list[str] = [d for d in dois if d.lower() in existing_dois]
+    to_fetch = [d for d in dois if d.lower() not in existing_dois]
 
     semaphore = asyncio.Semaphore(EPMC_MAX_CONCURRENCY)
 
@@ -721,7 +728,6 @@ async def import_discovered(
     fetched = await asyncio.gather(*(fetch_or_capture(doi) for doi in to_fetch))
 
     imported = 0
-    already_in_library: list[str] = []
     for doi, outcome in zip(to_fetch, fetched):
         if isinstance(outcome, PdfFetchError):
             # The most common failure path (paywalled / not found / SSRF
@@ -747,12 +753,16 @@ async def import_discovered(
                 user_id=current_user.id, filename=filename, content=content,
                 db=db, thread_id=None,
             )
-            if created:
+            if created or (document.user_id == current_user.id and not document.doi):
+                # Stamped on a duplicate ONLY when we own it and it has no DOI
+                # yet -- typically a paper uploaded by hand before discovery
+                # existed. Without this the DOI is never recorded anywhere the
+                # pre-check can see, so every future import of this paper
+                # re-resolves it and re-downloads the whole PDF before the
+                # content hash discards it. A lab mate's document is never
+                # touched: group membership grants read, never modify.
                 document.doi = paper.doi
                 document.source_url = paper.source_url
-            # Deliberately NOT stamping doi/source_url on a duplicate: the
-            # existing document may belong to a lab mate, and writes stay
-            # owner-only (group membership grants read, never modify).
             await db.commit()
         except Exception:
             await db.rollback()

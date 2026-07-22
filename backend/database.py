@@ -82,9 +82,10 @@ async def backfill_document_hashes(conn) -> int:
 
     Best-effort by design: a document row can outlive its file on disk, and a
     missing file must not stop the application from starting. But every failure
-    is logged at error and counted -- a backfill that logged at debug under an
-    INFO root logger is exactly how a real failure once hid behind "Schema
-    updates applied successfully" (see CLAUDE.md).
+    is logged at error and counted. An earlier backfill in this file logged at
+    debug under an INFO root logger AND forgot to append to `failed_updates`, so
+    a genuine failure printed "Schema updates applied successfully" and nobody
+    noticed -- hence both halves here, the error-level log and the count.
     """
     result = await conn.execute(text(
         "SELECT id, original_path FROM rag_documents WHERE content_hash IS NULL"
@@ -317,7 +318,9 @@ async def ensure_schema_updates():
             failed_updates.append("ix_rag_documents_doi")
 
         # Index for content_hash lookups: read on EVERY upload, before the file
-        # is written (create_all skips columns added via ALTER TABLE above).
+        # is written. The model declares index=True, but create_all only builds
+        # indexes when it CREATES the table, so a column added by ALTER TABLE
+        # above needs its index stated explicitly here.
         try:
             await conn.execute(text("SAVEPOINT idx_doc_hash"))
             await conn.execute(text(

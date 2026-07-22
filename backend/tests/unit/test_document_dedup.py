@@ -254,8 +254,9 @@ async def test_import_reports_duplicates_separately_from_imports(mock_db):
         doi="10.1/x", title="T", authors="A", journal="J", year="2026",
         abstract=None, pmid=None, pmcid=None,
         pdf_urls=["https://epmc.example/a.pdf"], source_url="https://example.org/abs")
+    # user_id=2 -> a LAB MATE's document. The import must not write to it.
     existing = SimpleNamespace(id=3, original_path="/data/existing.pdf",
-                               doi=None, source_url=None)
+                               doi=None, source_url=None, user_id=2)
     bg = MagicMock()
 
     with patch.object(rag_r, "_check_discovery_rate_limit", AsyncMock()), \
@@ -277,3 +278,131 @@ async def test_import_reports_duplicates_separately_from_imports(mock_db):
     # The existing document may belong to a lab mate: writes stay owner-only.
     assert existing.doi is None
     assert existing.source_url is None
+
+
+# --------------------------------------------------------------------------- #
+# Startup reaper. Indexing runs as a FastAPI BackgroundTask and does not survive
+# the process, and CLAUDE.md prescribes a container restart on every deploy --
+# so orphaned PENDING/PROCESSING rows are routine, not exotic.
+# --------------------------------------------------------------------------- #
+
+async def test_orphaned_indexing_is_aged_to_failed(mock_db):
+    mock_db.execute.return_value = make_result(rowcount=2)
+
+    reaped = await dind.fail_orphaned_indexing(mock_db)
+
+    assert reaped == 2
+    stmt = mock_db.execute.await_args.args[0]
+    compiled = stmt.compile()
+    sql, params = str(compiled), compiled.params
+
+    assert "UPDATE rag_documents" in sql
+    # The WHERE clause must actually select the two stuck states. Asserting only
+    # on the rowcount and the table name cannot fail if the predicate is wrong.
+    assert "status IN" in sql.replace("\n", " ")
+    # An IN clause keeps its values in a single expanding bindparam, so read the
+    # list rather than scanning flattened params.
+    selected = next(v for v in params.values() if isinstance(v, list))
+    assert set(selected) == {DocumentStatus.PENDING.value, DocumentStatus.PROCESSING.value}
+    # ...and set them to FAILED, the one status the dedupe query excludes.
+    assert params["status"] == DocumentStatus.FAILED.value
+
+
+async def test_reaper_is_a_noop_when_nothing_is_stuck(mock_db):
+    mock_db.execute.return_value = make_result(rowcount=0)
+    assert await dind.fail_orphaned_indexing(mock_db) == 0
+
+
+async def test_reaper_restores_re_upload_as_a_remedy(mock_db, tmp_path):
+    """The reaper and the dedupe's FAILED exclusion are one mechanism.
+
+    Without the reaper a stuck PENDING row would match the dedupe forever, so
+    every re-upload of that file returns "already in your library" and the paper
+    can never be indexed. Group-wide library dedupe makes that unfixable for
+    anyone but the owner.
+    """
+    # After reaping, the document is FAILED -> excluded by the dedupe query, so
+    # the lookup finds nothing and the re-upload really is stored.
+    mock_db.execute.return_value = make_result(scalar=None)
+    with patch.object(dind, "settings", _settings(tmp_path)), \
+         patch.object(dind, "get_user_group_id", AsyncMock(return_value=3)):
+        _doc, created = await dind.save_uploaded_document(
+            user_id=1, filename="stuck.pdf", content=b"%PDF-x", db=mock_db, thread_id=None)
+    assert created is True
+
+
+# --------------------------------------------------------------------------- #
+# The spec's promise that both upload paths share one implementation.
+# --------------------------------------------------------------------------- #
+
+def test_both_upload_paths_go_through_the_same_choke_point():
+    """If either endpoint ever grows its own storage call, dedupe silently stops
+    covering it -- and nothing else in the suite would notice."""
+    import inspect
+    import routers.rag as rag_r
+
+    source = inspect.getsource(rag_r)
+    # The manual upload endpoint and the discovery import must both call it...
+    assert source.count("await save_uploaded_document(") == 2
+    # ...and nothing may construct a RAGDocument row directly to bypass it.
+    assert "RAGDocument(" not in source
+
+
+async def test_import_stamps_the_doi_on_our_own_untagged_duplicate(mock_db):
+    """A paper uploaded by hand before discovery existed has no DOI.
+
+    Without stamping it, the DOI pre-check can never match, so every future
+    import of that paper re-resolves it on Europe PMC and re-downloads the whole
+    PDF before the content hash discards it -- a permanent per-retry cost.
+    """
+    import routers.rag as rag_r
+    import services.paper_discovery_service as pds
+
+    paper = pds.PaperResult(
+        doi="10.1/x", title="T", authors="A", journal="J", year="2026",
+        abstract=None, pmid=None, pmcid=None,
+        pdf_urls=["https://epmc.example/a.pdf"], source_url="https://example.org/abs")
+    mine = SimpleNamespace(id=4, original_path="/data/mine.pdf",
+                           doi=None, source_url=None, user_id=1)
+
+    with patch.object(rag_r, "_check_discovery_rate_limit", AsyncMock()), \
+         patch.object(rag_r, "_resolve_paper_by_doi", AsyncMock(return_value=paper)), \
+         patch.object(rag_r, "fetch_paper_pdf", AsyncMock(return_value=b"%PDF-x")), \
+         patch.object(rag_r, "save_uploaded_document",
+                      AsyncMock(return_value=(mine, False))):
+        out = await rag_r.import_discovered(
+            payload=rag_r.ImportRequest(dois=["10.1/x"]),
+            background_tasks=MagicMock(),
+            current_user=SimpleNamespace(id=1), db=mock_db)
+
+    assert mine.doi == "10.1/x"                    # ours and untagged -> stamped
+    assert mine.source_url == "https://example.org/abs"
+    assert out.already_in_library == ["10.1/x"]    # still not counted as imported
+    assert out.imported == 0
+
+
+async def test_import_never_stamps_a_duplicate_that_already_has_a_doi(mock_db):
+    # Re-tagging would silently rewrite provenance on a document that already
+    # has some -- including one we own.
+    import routers.rag as rag_r
+    import services.paper_discovery_service as pds
+
+    paper = pds.PaperResult(
+        doi="10.1/new", title="T", authors="A", journal="J", year="2026",
+        abstract=None, pmid=None, pmcid=None,
+        pdf_urls=["https://epmc.example/a.pdf"], source_url="https://example.org/new")
+    mine = SimpleNamespace(id=5, original_path="/d.pdf", doi="10.1/original",
+                           source_url="https://example.org/original", user_id=1)
+
+    with patch.object(rag_r, "_check_discovery_rate_limit", AsyncMock()), \
+         patch.object(rag_r, "_resolve_paper_by_doi", AsyncMock(return_value=paper)), \
+         patch.object(rag_r, "fetch_paper_pdf", AsyncMock(return_value=b"%PDF-x")), \
+         patch.object(rag_r, "save_uploaded_document",
+                      AsyncMock(return_value=(mine, False))):
+        await rag_r.import_discovered(
+            payload=rag_r.ImportRequest(dois=["10.1/new"]),
+            background_tasks=MagicMock(),
+            current_user=SimpleNamespace(id=1), db=mock_db)
+
+    assert mine.doi == "10.1/original"
+    assert mine.source_url == "https://example.org/original"

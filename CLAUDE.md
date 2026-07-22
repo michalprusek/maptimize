@@ -604,6 +604,13 @@ při smazání konverzace.
 dokument a přišel by o jedinou možnost nápravy — re-upload by se tiše vyhodnotil jako
 duplicita.
 
+⚠️ **`PENDING`/`PROCESSING` se naopak dedupují** (jinak by dvojklik během indexace založil
+dva dokumenty). Aby to nebyla past, `fail_orphaned_indexing()` v `main.py` lifespanu při
+startu překlopí zaseknuté řádky na `FAILED` — indexace běží jako `BackgroundTask`, který
+restart kontejneru nepřežije, a CLAUDE.md restart předepisuje po každé změně kódu. Bez
+toho by zaseknutý dokument navždy polykal re-uploady a u sdílené knihovny by to nešlo
+opravit nikomu kromě vlastníka.
+
 ### PDF fallback při importu
 
 `pdf_urls_from_result()` vrací **seznam** kandidátů (dřív jen první odkaz).
@@ -617,9 +624,20 @@ picker článek ukázal jako paywallovaný; fallback má zachránit mrtvý odkaz
 co se považuje za volně dostupné. (Test `test_import_refuses_paywalled_paper` to hlídá —
 při implementaci tuhle hranici jednou zrušil a test to chytil.)
 
-Chyba se hlásí jako **poslední reálné selhání**, ne „3 kandidáti selhali": rozdíl mezi
-403, špatným content-type a překročením 100 MB je to, co uživateli řekne, jestli zkusit
-znovu, nebo si PDF stáhnout ručně.
+Chyba se hlásí jako **PRVNÍ selhání** (kandidát, kterému věříme nejvíc), ne poslední a ne
+„3 kandidáti selhali": rozdíl mezi 403, špatným content-type a překročením 100 MB je to,
+co uživateli řekne, jestli zkusit znovu, nebo si PDF stáhnout ručně. Poslední selhání by
+bylo skoro vždy vymyšlená 404 z `preprint_pdf_urls`, který u DOI `10.1101/` schválně
+zkouší biorxiv i medrxiv s vědomím, že jeden neexistuje.
+
+⚠️ **`fetch_pdf` musí převádět transportní chyby httpx na `PdfFetchError`** a `attempt()`
+navíc chytá i `Exception`. Nespadlý connect / read timeout je nejčastější podoba mrtvého
+odkazu — když unikne, přeskočí celý zbytek řetězu, tedy přesně tu záchranu, kvůli které
+řetěz existuje.
+
+⚠️ **`PaperResult` nemá `pdf_url` (jednotné číslo).** Byla to past: `fetch_pdf(paper.pdf_url)`
+se čte přirozeně, přeloží se a tiše obejde celý fallback. Importovatelnost je
+`bool(pdf_urls)`, stahování `fetch_paper_pdf(paper)`.
 
 ## 🌐 Internacionalizace (i18n)
 

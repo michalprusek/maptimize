@@ -80,15 +80,21 @@ def document_dedupe_scope(
     """SSOT for which documents a new upload may be recognised as a duplicate OF.
 
     Deliberately NARROWER than document_scope. For a library upload the two are
-    identical, but ``document_scope(user_id, thread_id=N, ...)`` returns
-    *library OR own attachments in N* -- and deduplicating an attachment against
-    a library document (or the reverse) would alias documents with different
-    lifetimes: an attachment is deleted with its thread, so a library document
-    could vanish when someone deletes a conversation.
+    identical (that branch is library-only either way), but
+    ``document_scope(user_id, thread_id=N, ...)`` returns *library OR own
+    attachments in N*. Using it here would let an ATTACHMENT upload alias onto a
+    group-shared library document: the thread would then reference a row its
+    user does not own -- cannot delete, cannot reindex -- and which disappears
+    entirely if the owner removes it. The reverse cannot happen, since a library
+    upload never sees attachment rows under either function.
 
     Library uploads dedupe group-wide, so one lab indexes a paper once. Chat
     attachments dedupe only against the caller's own attachments in the SAME
     thread, and never widen to a group. ``group_id=None`` -> owner only.
+
+    Callers must ALSO exclude ``status == FAILED``; that half of the eligibility
+    rule lives at the call site in ``save_uploaded_document``, not here, because
+    it is about the document's usefulness rather than its visibility.
     """
     if thread_id is None:
         return and_(RAGDocument.thread_id.is_(None), _library_visible(user_id, group_id))

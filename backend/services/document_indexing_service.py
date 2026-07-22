@@ -16,7 +16,7 @@ from typing import Optional, List, Tuple
 from datetime import datetime
 
 from PIL import Image
-from sqlalchemy import select, func
+from sqlalchemy import select, func, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import get_settings
@@ -86,6 +86,15 @@ async def save_uploaded_document(
         to disk, no row was added, and the returned document is the existing
         one -- callers MUST NOT schedule indexing for it, and must not write to
         it (it may belong to a lab mate; writes stay owner-only).
+
+    Raises:
+        ValueError: unsupported file type, or a filename that resolves outside
+            the user's directory. Both are raised BEFORE anything is written.
+
+    Note the one unrecoverable failure mode: if the DB flush raises after
+    ``original_path.write_bytes`` has run, the file is on disk with no row and
+    the caller cannot clean it up, because no document was returned to name it.
+    Everything that can fail is deliberately ordered before the write.
     """
     file_type = get_file_type(filename)
     if not file_type:
@@ -170,6 +179,43 @@ async def save_uploaded_document(
 
     logger.info(f"Saved document {document.id}: {filename} ({file_type})")
     return document, True
+
+
+async def fail_orphaned_indexing(db: AsyncSession) -> int:
+    """Mark documents whose indexing died with a previous process as FAILED.
+
+    Indexing runs as a FastAPI BackgroundTask, which does NOT survive the
+    process. Every deploy restarts the backend (see CLAUDE.md), so any document
+    left PENDING or PROCESSING when that happened is orphaned: nothing will ever
+    pick it up, and `process_document_async`'s own error handling never runs
+    because the coroutine is gone.
+
+    Safe to run only at startup, and correct there precisely because a fresh
+    process has no background tasks of its own yet -- so any row in these states
+    is necessarily a leftover, never a live job.
+
+    Why this matters beyond a stale badge: deduplication deliberately excludes
+    only FAILED documents, so a stuck PENDING row would swallow every re-upload
+    of that file as "already in your library" and the paper could never be
+    indexed again. Group-wide library dedupe makes that unfixable for anyone but
+    the owner. Ageing the row to FAILED restores the re-upload as a remedy.
+    """
+    result = await db.execute(
+        update(RAGDocument)
+        .where(RAGDocument.status.in_(
+            [DocumentStatus.PENDING.value, DocumentStatus.PROCESSING.value]))
+        .values(
+            status=DocumentStatus.FAILED.value,
+            error_message="Indexing was interrupted by a server restart. "
+                          "Re-upload the file or use reindex to try again.",
+        )
+    )
+    if result.rowcount:
+        logger.warning(
+            "Marked %s document(s) as FAILED: indexing was interrupted by a restart",
+            result.rowcount,
+        )
+    return result.rowcount or 0
 
 
 async def process_document_async(document_id: int) -> None:

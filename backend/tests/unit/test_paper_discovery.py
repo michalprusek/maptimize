@@ -115,14 +115,14 @@ def test_parse_epmc_result_maps_fields():
     assert r.journal == "Molecular horticulture"      # journalInfo.journal.title
     assert r.year == "2026"
     assert r.authors == "Hlavackova K, Ovecka M."
-    assert r.pdf_url is not None
+    assert r.pdf_urls  # importability is bool(pdf_urls), there is no singular accessor
     assert r.source_url == "https://europepmc.org/abstract/MED/42260696"
 
 
 def test_parse_epmc_result_tolerates_missing_journal():
     r = parse_epmc_result(_PREPRINT_RAW)
     assert r.journal is None
-    assert r.pdf_url is None
+    assert r.pdf_urls == []
 
 
 def test_classify_query_detects_dois():
@@ -149,6 +149,7 @@ def test_classify_query_freetext_is_topic():
     assert items == ["MAP bundling in vitro since 2020"]
 
 
+import httpx
 import pytest
 import services.paper_discovery_service as pds
 
@@ -1349,7 +1350,12 @@ async def test_import_discovered_skips_papers_already_in_library(monkeypatch, mo
     )
 
     assert out.imported == 0
-    assert out.failed[0].reason == "Already in your library"
+    # Duplicates are no longer reported as failures: "0 imported - 3 failed"
+    # was the summary for the commonest case there is, re-selecting papers
+    # you already imported.
+    assert out.failed == []
+    # Reported in the caller's original casing, not the lowercased match key.
+    assert out.already_in_library == ["10.1186/s43897-026-00231-0"]
     resolve.assert_not_awaited()
 
 
@@ -1954,3 +1960,87 @@ def test_preprint_pdf_urls(doi, expected):
 def test_preprint_pdf_urls_tolerates_surrounding_whitespace():
     assert pds.preprint_pdf_urls("  10.21203/rs.3.rs-9043146/v1  ") == [
         "https://www.researchsquare.com/article/rs-9043146/v1.pdf"]
+
+
+# --------------------------------------------------------------------------- #
+# Review follow-ups: the fallback chain must survive the failures it exists for.
+# --------------------------------------------------------------------------- #
+
+async def test_transport_errors_do_not_abort_the_candidate_chain(monkeypatch):
+    """A connect error or read timeout is the COMMONEST shape of a dead link.
+
+    fetch_pdf originally let httpx exceptions escape, so the first unreachable
+    host aborted fetch_paper_pdf entirely -- skipping Unpaywall and the preprint
+    host, i.e. exactly the rescue a dead link is supposed to trigger.
+    """
+    async def fake_fetch(url):
+        if "dead" in url:
+            raise httpx.ConnectError("connection refused")
+        return b"%PDF-rescued"
+
+    monkeypatch.setattr(pds, "fetch_pdf", fake_fetch)
+    monkeypatch.setattr(pds, "unpaywall_pdf_urls", AsyncMock(return_value=[]))
+    paper = _candidate_paper(["https://dead.example/x.pdf"],
+                             doi="10.21203/rs.3.rs-9043146/v1")
+
+    assert await pds.fetch_paper_pdf(paper) == b"%PDF-rescued"
+
+
+async def test_fetch_pdf_converts_transport_errors_into_pdf_fetch_error(monkeypatch):
+    class _Boom:
+        def __call__(self, *a, **k):
+            raise httpx.ReadTimeout("too slow")
+
+    monkeypatch.setattr(pds.httpx, "AsyncClient", _Boom())
+    monkeypatch.setattr(pds, "_is_safe_url", lambda u: (True, ""))
+
+    with pytest.raises(pds.PdfFetchError, match="Could not reach the publisher"):
+        await pds.fetch_pdf("https://example.org/x.pdf")
+
+
+async def test_first_error_is_reported_not_the_speculative_last_one(monkeypatch):
+    """preprint_pdf_urls guesses; its 404 must not bury the real diagnosis.
+
+    For any 10.1101 DOI it emits both biorxiv and medrxiv knowing one 404s. If
+    the LAST error won, every failed bioRxiv import would report "HTTP 404" from
+    a URL the user never asked for, hiding "over 100 MB" or "not a PDF".
+    """
+    async def fake_fetch(url):
+        if "europepmc" in url:
+            raise pds.PdfFetchError("PDF is too large (over 100 MB)")
+        raise pds.PdfFetchError("Publisher returned HTTP 404")
+
+    monkeypatch.setattr(pds, "fetch_pdf", fake_fetch)
+    monkeypatch.setattr(pds, "unpaywall_pdf_urls", AsyncMock(return_value=[]))
+    paper = _candidate_paper(["https://europepmc.org/x.pdf"],
+                             doi="10.1101/2020.01.01.123456")
+
+    with pytest.raises(pds.PdfFetchError, match="over 100 MB"):
+        await pds.fetch_paper_pdf(paper)
+
+
+async def test_unpaywall_survives_a_payload_whose_locations_are_not_objects(monkeypatch):
+    """Its docstring promises it never raises -- the comprehension was outside
+    the try, so a list of bare strings escaped and killed the preprint fallback
+    AND discarded the real Europe PMC error."""
+    # MIXED on purpose: a garbage entry must not cost us the VALID one sitting
+    # next to it. Asserting only "returns []" for an all-garbage payload passes
+    # even without the per-entry guard, because the surrounding try already
+    # swallows the AttributeError -- and silently loses every real URL with it.
+    payload = {"oa_locations": [
+        "https://not-an-object.example/a.pdf",          # a bare string
+        None,
+        7,
+        {"url_for_pdf": "https://repo.example/real.pdf"},
+    ]}
+    response = MagicMock(status_code=200, json=MagicMock(return_value=payload))
+    monkeypatch.setattr(pds.httpx, "AsyncClient", _unpaywall_client(response))
+
+    assert await pds.unpaywall_pdf_urls("10.1/x") == ["https://repo.example/real.pdf"]
+
+
+async def test_paper_result_has_no_singular_pdf_url_accessor():
+    # It existed briefly and was a trap: `fetch_pdf(paper.pdf_url)` -- the
+    # pre-fallback spelling -- reads naturally and silently skips the whole
+    # candidate chain.
+    assert not hasattr(_candidate_paper(["https://a.example/x.pdf"]), "pdf_url")

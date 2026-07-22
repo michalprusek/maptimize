@@ -17,23 +17,33 @@ const ACCEPTED_TYPES = {
 
 export function DocumentUpload() {
   const t = useTranslations("chat");
-  const { uploadDocument, isUploadingDocument, duplicateDocumentId, clearDuplicateNotice } =
-    useChatStore();
+  const { uploadDocument, isUploadingDocument } = useChatStore();
   const [uploadSuccess, setUploadSuccess] = useState(false);
+  // Per-batch and local to this surface: a drop of several files can contain
+  // both new and duplicate ones, and each needs naming. Mirrors how
+  // DiscoverSourcesModal reports per-paper failures.
+  const [duplicates, setDuplicates] = useState<string[]>([]);
 
   const onDrop = useCallback(
     async (acceptedFiles: File[]) => {
-      // Clear any earlier notice first, so a fresh upload that succeeds does
-      // not still show "already in your library" from the previous attempt.
-      clearDuplicateNotice();
+      setDuplicates([]);
+      const skipped: string[] = [];
+      let stored = 0;
       for (const file of acceptedFiles) {
-        await uploadDocument(file);
+        const doc = await uploadDocument(file);
+        if (doc?.is_duplicate) skipped.push(file.name);
+        else if (doc) stored += 1;
       }
-      // Show success animation briefly
-      setUploadSuccess(true);
-      setTimeout(() => setUploadSuccess(false), 2000);
+      setDuplicates(skipped);
+      // Only claim success when something was actually stored. Showing the
+      // green tick for a batch that stored nothing is the exact false success
+      // the duplicate notice exists to prevent.
+      if (stored > 0) {
+        setUploadSuccess(true);
+        setTimeout(() => setUploadSuccess(false), 2000);
+      }
     },
-    [uploadDocument, clearDuplicateNotice]
+    [uploadDocument]
   );
 
   const { getRootProps, getInputProps, isDragActive } = useDropzone({
@@ -91,9 +101,9 @@ export function DocumentUpload() {
           </span>
           {/* A skipped upload otherwise looks exactly like a successful one --
               say so explicitly, or the user just sees their library not grow. */}
-          {duplicateDocumentId !== null && (
+          {duplicates.length > 0 && (
             <span className="text-xs text-amber-400/90 text-center">
-              {t("documentDuplicate")}
+              {t("documentDuplicate", { files: duplicates.join(", ") })}
             </span>
           )}
         </div>
