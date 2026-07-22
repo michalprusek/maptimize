@@ -20,7 +20,7 @@ from schemas.group import (
     GroupListResponse,
     MyGroupResponse,
 )
-from utils.groups import adopt_orphan_experiments
+from utils.groups import adopt_orphan_experiments, adopt_orphan_documents
 from utils.security import get_current_user
 
 logger = logging.getLogger(__name__)
@@ -118,6 +118,7 @@ async def create_group(
     )
     db.add(membership)
     adopted = await adopt_orphan_experiments(db, current_user.id, group.id)
+    await adopt_orphan_documents(db, current_user.id, group.id)
     await db.commit()
 
     if adopted:
@@ -332,6 +333,7 @@ async def join_group(
     )
     db.add(membership)
     adopted = await adopt_orphan_experiments(db, current_user.id, group_id)
+    await adopt_orphan_documents(db, current_user.id, group_id)
     try:
         await db.commit()
     except IntegrityError:

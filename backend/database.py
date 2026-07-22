@@ -154,6 +154,8 @@ async def ensure_schema_updates():
             ("rag_documents", "thread_id", "INTEGER REFERENCES chat_threads(id) ON DELETE CASCADE"),
             # True page count when an attachment was capped (NULL = not truncated)
             ("rag_documents", "truncated_from_pages", "INTEGER"),
+            # Group support for shared library documents (thread_id IS NULL only)
+            ("rag_documents", "group_id", "INTEGER REFERENCES groups(id) ON DELETE SET NULL"),
         ]
 
         for table, column, col_type in updates:
@@ -217,7 +219,46 @@ async def ensure_schema_updates():
             logger.info("Backfilled user_id on metric_ratings/metric_comparisons")
         except Exception as e:
             await conn.execute(text("ROLLBACK TO SAVEPOINT backfill_user_id"))
-            logger.debug(f"Backfill user_id skipped: {e}")
+            logger.error(
+                f"Backfill user_id on metric_ratings/metric_comparisons FAILED "
+                f"(pre-existing ratings/comparisons may be missing user_id, breaking per-user filtering): {e}"
+            )
+            failed_updates.append("metric_ratings/metric_comparisons.backfill_user_id")
+
+        # Backfill group_id for existing LIBRARY documents (thread_id IS NULL).
+        # Stamp each with its owner's group so lab members see docs uploaded
+        # before this feature existed. Attachments (thread_id set) stay private.
+        try:
+            await conn.execute(text("SAVEPOINT backfill_doc_group"))
+            await conn.execute(text("""
+                UPDATE rag_documents SET group_id = gm.group_id
+                FROM group_members gm
+                WHERE rag_documents.user_id = gm.user_id
+                  AND rag_documents.thread_id IS NULL
+                  AND rag_documents.group_id IS NULL
+            """))
+            await conn.execute(text("RELEASE SAVEPOINT backfill_doc_group"))
+            logger.info("Backfilled group_id on library rag_documents")
+        except Exception as e:
+            await conn.execute(text("ROLLBACK TO SAVEPOINT backfill_doc_group"))
+            logger.error(
+                f"Backfill group_id on rag_documents FAILED "
+                f"(pre-existing library documents will NOT be shared with the owner's group): {e}"
+            )
+            failed_updates.append("rag_documents.backfill_doc_group")
+
+        # Index for group_id lookups (create_all skips columns added via ALTER TABLE above)
+        try:
+            await conn.execute(text("SAVEPOINT rag_documents_group_id_index"))
+            await conn.execute(text(
+                "CREATE INDEX IF NOT EXISTS ix_rag_documents_group_id ON rag_documents (group_id)"
+            ))
+            await conn.execute(text("RELEASE SAVEPOINT rag_documents_group_id_index"))
+            logger.debug("Ensured index exists: ix_rag_documents_group_id")
+        except Exception as e:
+            await conn.execute(text("ROLLBACK TO SAVEPOINT rag_documents_group_id_index"))
+            logger.error(f"Failed to create ix_rag_documents_group_id: {e}")
+            failed_updates.append("rag_documents.ix_group_id")
 
         # Ensure enum values exist (must be outside transaction for PostgreSQL)
         # We run this in a separate autocommit connection

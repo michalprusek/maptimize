@@ -7,6 +7,7 @@ from sqlalchemy.sql.elements import ColumnElement
 
 from models.experiment import Experiment
 from models.group import GroupMember
+from models.rag_document import RAGDocument
 
 
 async def get_user_group_id(user_id: int, db: AsyncSession) -> Optional[int]:
@@ -53,6 +54,33 @@ async def adopt_orphan_experiments(
     result = await db.execute(
         update(Experiment)
         .where(Experiment.user_id == user_id, Experiment.group_id.is_(None))
+        .values(group_id=group_id)
+    )
+    return result.rowcount
+
+
+async def adopt_orphan_documents(
+    db: AsyncSession,
+    user_id: int,
+    group_id: int,
+) -> int:
+    """Share the joiner's group-less LIBRARY documents with the group they joined.
+
+    Library docs are stamped with group_id at upload, so anything uploaded before
+    the owner had a group keeps group_id NULL and is invisible to peers. Adopting
+    them makes the joiner's existing library visible group-wide, matching
+    adopt_orphan_experiments. Attachments (thread_id set) are never adopted -- they
+    stay private to their conversation. Callers must commit.
+
+    Returns the number of documents adopted.
+    """
+    result = await db.execute(
+        update(RAGDocument)
+        .where(
+            RAGDocument.user_id == user_id,
+            RAGDocument.thread_id.is_(None),
+            RAGDocument.group_id.is_(None),
+        )
         .values(group_id=group_id)
     )
     return result.rowcount

@@ -266,25 +266,39 @@ export function MessageBubble({ message, isNew = false }: MessageBubbleProps) {
 
     let content = message.content;
 
-    // Convert inline citation references to clickable links
-    // Pattern matches: [Doc: "filename" p.XX] or [Doc: "filename"]
-    const citationPattern = /\[Doc:\s*"([^"]+)"(?:\s+p\.?(\d+))?\]/g;
+    // Convert inline citation references to clickable links.
+    // Matches [Doc: "filename"] and [Doc: "filename" p.X] AND the multi-page form
+    // [Doc: "filename" p.1, p.3] — every listed page becomes its own link.
+    const citationPattern = /\[Doc:\s*"([^"]+)"([^\]\n]{0,80})\]/g;
 
-    content = content.replace(citationPattern, (match, filename, page) => {
-      // Find matching citation in the array
-      const citation = message.citations?.find(c =>
-        c.title?.toLowerCase().includes(filename.toLowerCase()) ||
-        filename.toLowerCase().includes(c.title?.toLowerCase() || "")
-      );
+    content = content.replace(citationPattern, (match: string, filename: string, pagesPart: string) => {
+      // Find matching citation in the array. A citation with no title would
+      // otherwise match every marker (empty string is a substring of anything),
+      // so require a non-empty title before comparing.
+      const citation = message.citations?.find(c => {
+        const title = c.title?.toLowerCase();
+        if (!title) return false;
+        return title.includes(filename.toLowerCase()) || filename.toLowerCase().includes(title);
+      });
+
+      // Only page-marked numbers count (e.g. "p.1, p.3" -> [1, 3]); bare digits
+      // elsewhere in the tail (section numbers, years, etc.) must not be
+      // mistaken for page numbers. May be empty.
+      const pageNums = Array.from(pagesPart.matchAll(/p\.?\s*(\d+)/gi), (m) => Number(m[1]));
 
       if (citation && citation.doc_id) {
-        const pageNum = page || citation.page || 1;
-        // Create a special link that we'll handle in ReactMarkdown
-        return `[📄 ${citation.title || filename} p.${pageNum}](citation:${citation.doc_id}:${pageNum})`;
+        const docId = citation.doc_id;
+        const title = citation.title || filename;
+        const nums = pageNums.length ? pageNums : [citation.page || 1];
+        // One clickable link per cited page — "p.1, p.3" renders as two links.
+        return nums
+          .map((p) => `[📄 ${title} p.${p}](citation:${docId}:${p})`)
+          .join(", ");
       }
 
-      // Return a styled version even without a matching citation
-      return `**[📄 ${filename}${page ? ` p.${page}` : ""}]**`;
+      // No matching citation: keep a visible, unlinked marker per page.
+      if (!pageNums.length) return `**[📄 ${filename}]**`;
+      return pageNums.map((p) => `**[📄 ${filename} p.${p}]**`).join(", ");
     });
 
     // Pattern matches: [Web: "source title"] -- the agent cites web/API sources
@@ -294,12 +308,14 @@ export function MessageBubble({ message, isNew = false }: MessageBubbleProps) {
 
     content = content.replace(webPattern, (match, title) => {
       const needle = title.toLowerCase();
-      const citation = message.citations?.find(
-        (c) =>
-          c.type === "web" &&
-          (c.title?.toLowerCase().includes(needle) ||
-            needle.includes(c.title?.toLowerCase() || " "))
-      );
+      // Same guard as the [Doc: matcher above: a citation with no title must
+      // not match every marker via the empty-string-is-a-substring trick.
+      const citation = message.citations?.find((c) => {
+        if (c.type !== "web") return false;
+        const ctitle = c.title?.toLowerCase();
+        if (!ctitle) return false;
+        return ctitle.includes(needle) || needle.includes(ctitle);
+      });
 
       if (citation?.url) {
         // Custom scheme (like citation:/passage:) so the `a` renderer can draw

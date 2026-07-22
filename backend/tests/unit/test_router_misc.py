@@ -448,16 +448,30 @@ async def test_rag_get_redis_lazy_init():
 
 
 async def test_rag_list_documents(mock_db):
-    docs = [SimpleNamespace(id=1, user_id=7, name="d", file_type="pdf",
-                            status="completed", page_count=1, progress=1.0,
-                            error_message=None, created_at=datetime.now(timezone.utc),
-                            indexed_at=None)]
+    # A second doc owned by a different user (id=9), only visible because it is
+    # group-shared -- exercises the per-row is_owner computation.
+    docs = [
+        SimpleNamespace(id=1, user_id=7, name="d", file_type="pdf",
+                        status="completed", page_count=1, progress=1.0,
+                        error_message=None, created_at=datetime.now(timezone.utc),
+                        indexed_at=None),
+        SimpleNamespace(id=2, user_id=9, name="shared", file_type="pdf",
+                        status="completed", page_count=1, progress=1.0,
+                        error_message=None, created_at=datetime.now(timezone.utc),
+                        indexed_at=None),
+    ]
     mock_db.execute.return_value = make_result(scalars_all=docs)
-    with patch.object(rag_r.RAGDocumentResponse, "model_validate",
-                      side_effect=lambda d: {"id": d.id}):
+    # model_validate must return something that supports attribute assignment
+    # (the router sets .is_owner on it) -- a plain dict cannot, a SimpleNamespace
+    # models the real pydantic instance closely enough for this test.
+    with patch.object(rag_r, "get_user_group_id", new=AsyncMock(return_value=7)), \
+         patch.object(rag_r.RAGDocumentResponse, "model_validate",
+                      side_effect=lambda d: SimpleNamespace(id=d.id)):
         out = await rag_r.list_documents(skip=0, limit=10, status_filter="completed",
                                          current_user=user(id=7), db=mock_db)
-    assert out == [{"id": 1}]
+    assert [o.id for o in out] == [1, 2]
+    assert out[0].is_owner is True   # own document
+    assert out[1].is_owner is False  # group-shared, not owned
 
 
 async def test_rag_upload_no_filename(mock_db):
@@ -577,12 +591,27 @@ async def test_rag_upload_value_error(mock_db):
 
 
 async def test_rag_get_document(mock_db):
-    doc = _doc()
-    with patch.object(rag_r, "get_document_for_user", new=AsyncMock(return_value=doc)), \
+    # doc.user_id == 7 == current_user.id -> is_owner must be computed True.
+    doc = _doc(user_id=7)
+    with patch.object(rag_r, "get_user_group_id", new=AsyncMock(return_value=None)), \
+         patch.object(rag_r, "get_document_for_user", new=AsyncMock(return_value=doc)), \
          patch.object(rag_r.RAGDocumentResponse, "model_validate",
-                      side_effect=lambda d: {"id": d.id}):
+                      side_effect=lambda d: SimpleNamespace(id=d.id)):
         out = await rag_r.get_document(1, current_user=user(id=7), db=mock_db)
-    assert out == {"id": 1}
+    assert out.id == 1
+    assert out.is_owner is True
+
+
+async def test_rag_get_document_not_owner(mock_db):
+    # doc.user_id (9) != current_user.id (7) -> group-shared, is_owner False.
+    doc = _doc(user_id=9)
+    with patch.object(rag_r, "get_user_group_id", new=AsyncMock(return_value=3)), \
+         patch.object(rag_r, "get_document_for_user", new=AsyncMock(return_value=doc)), \
+         patch.object(rag_r.RAGDocumentResponse, "model_validate",
+                      side_effect=lambda d: SimpleNamespace(id=d.id)):
+        out = await rag_r.get_document(1, current_user=user(id=7), db=mock_db)
+    assert out.id == 1
+    assert out.is_owner is False
 
 
 async def test_rag_delete_document_not_found(mock_db):
@@ -608,6 +637,20 @@ async def test_rag_reindex_endpoint(mock_db):
     queued = bg.add_task.call_args.args[0]
     with patch.object(rag_r, "reindex_document", new=AsyncMock(return_value={"status": "completed"})):
         await queued()
+
+
+async def test_rag_reindex_endpoint_omits_group_id(mock_db):
+    # Regression guard: reindex is a write, so it must degrade to owner-only
+    # even for a caller in a group. get_document_for_user's 3rd positional arg
+    # is group_id (default None -> owner-only); the endpoint must call it with
+    # ONLY (db, document_id, user_id) -- no group_id at all -- so this can never
+    # accidentally start reindexing a document the caller merely has group read
+    # access to.
+    bg = MagicMock()
+    fake_get_doc = AsyncMock(return_value=_doc())
+    with patch.object(rag_r, "get_document_for_user", new=fake_get_doc):
+        await rag_r.reindex_document_endpoint(1, bg, current_user=user(id=7), db=mock_db)
+    fake_get_doc.assert_awaited_once_with(mock_db, 1, 7)
 
 
 async def test_rag_serve_pdf_not_pdf(mock_db):

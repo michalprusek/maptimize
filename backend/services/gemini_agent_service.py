@@ -252,11 +252,23 @@ def _inject_user_id_filter(query_str: str, table: str, group_id: Optional[int] =
     the original conditions in parentheses to prevent operator-precedence
     bypasses) or by inserting a new WHERE clause after the FROM/JOIN block.
 
-    For ``experiments`` the predicate widens to group-shared rows so that SQL
-    answers match what the same user sees in the UI; other tables have no
+    For ``experiments`` and ``rag_documents`` the predicate widens to
+    group-shared rows so that SQL answers match what the same user sees in
+    the UI (both tables have a ``group_id`` column); other tables have no
     group column and stay owner-scoped.
+
+    ``rag_documents`` additionally gates the group term on ``thread_id IS
+    NULL`` -- mirroring the SSOT in ``document_scope``/``document_read_scope``
+    and the pgvector ``owner_clause`` in rag_service -- so chat attachments
+    (which are never group-shared) can't leak to other group members even if
+    a future change stamps them with a group_id.
     """
-    if table == "experiments" and group_id is not None:
+    if table == "rag_documents" and group_id is not None:
+        predicate = (
+            f"({table}.user_id = :user_id OR "
+            f"({table}.thread_id IS NULL AND {table}.group_id = :group_id))"
+        )
+    elif table == "experiments" and group_id is not None:
         predicate = f"({table}.user_id = :user_id OR {table}.group_id = :group_id)"
     else:
         predicate = f"{table}.user_id = :user_id"
@@ -537,7 +549,7 @@ Use tools to answer questions. NEVER ask the user to look up data themselves.
    - Call `extract_document_region` with the description of what to show
    - The tool returns markdown like `![Figure 2](passage:42:3:abc123)`
    - **INCLUDE this markdown IN YOUR RESPONSE at the appropriate location** where you discuss it
-5. Summarize the findings and add citations like [Doc: "filename" p.X]
+5. Summarize the findings and add citations like [Doc: "filename" p.X] (or, when citing several pages of the same document, [Doc: "filename" p.X, p.Y])
 
 **DOCUMENT EXCERPTS (Agentic Vision):**
 You have FULL CONTROL over which parts of documents to show and WHERE they appear in your response:
@@ -603,7 +615,7 @@ Before writing such a claim you MUST call a tool to back it:
 - `google_search` or `call_external_api` (UniProt/PubMed) — the public literature
 
 Then cite it INLINE, immediately after the sentence it supports:
-- Document: `[Doc: "filename" p.X]`
+- Document: `[Doc: "filename" p.X]` (multiple pages of the same document: `[Doc: "filename" p.X, p.Y]`)
 - Web/API:  `[Web: "source title"]`  <- use the exact title returned by the tool
 - Image:    `[FOV: "filename" from "experiment"]`
 
@@ -1241,10 +1253,14 @@ async def generate_response(
                 config_kwargs["tools"] = current_tools
                 config_kwargs["tool_config"] = types.ToolConfig(
                     function_calling_config=types.FunctionCallingConfig(mode=tool_mode),
-                    # Anticipates migrating Google Search from the separate
-                    # two-phase call (see execute_tool) into this request.
                     # Currently a no-op: `current_tools` holds only function
                     # declarations, no built-in tool for this flag to enable.
+                    # There is NO planned migration of Google Search into this
+                    # request -- native search does not combine with function
+                    # declarations (live-tested: 0 grounding chunks, model
+                    # fabricates citations). See CLAUDE.md. The two-phase
+                    # google_search call (see execute_tool) stays the only
+                    # working path.
                     include_server_side_tool_invocations=True,
                 )
 
@@ -1601,7 +1617,7 @@ async def execute_tool(
                 .outerjoin(CellCrop, Image.id == CellCrop.image_id).where(exp_read)
             )
             row = img_result.first()
-            doc_count = (await db.execute(select(func.count(RAGDocument.id)).where(document_scope(user_id, thread_id)))).scalar() or 0
+            doc_count = (await db.execute(select(func.count(RAGDocument.id)).where(document_scope(user_id, thread_id, group_id)))).scalar() or 0
             mem_count = (await db.execute(select(func.count(AgentMemory.id)).where(AgentMemory.user_id == user_id))).scalar() or 0
             result = {"total_experiments": exp_count, "total_images": row.img if row else 0, "total_cells": row.cell if row else 0, "total_documents": doc_count, "total_memories": mem_count}
 
@@ -1620,7 +1636,7 @@ async def execute_tool(
             return {"images": [{"id": i.id, "filename": i.original_filename, "experiment_id": i.experiment_id, "experiment_name": i.experiment.name if i.experiment else None, "width": i.width, "height": i.height, "thumbnail_url": f"/api/images/{i.id}/file?type=thumbnail"} for i in (await db.execute(q)).scalars().all()]}
 
         elif tool_name == "list_documents":
-            q = select(RAGDocument).where(document_scope(user_id, thread_id)).order_by(RAGDocument.created_at.desc())
+            q = select(RAGDocument).where(document_scope(user_id, thread_id, group_id)).order_by(RAGDocument.created_at.desc())
             if args.get("limit"):
                 q = q.limit(args["limit"])
             docs = (await db.execute(q)).scalars().all()
@@ -1634,18 +1650,18 @@ async def execute_tool(
             } for d in docs]}
 
         elif tool_name == "get_documents_summary":
-            return {"documents": await get_all_documents_summary(user_id=user_id, db=db, include_first_page_text=True)}
+            return {"documents": await get_all_documents_summary(user_id=user_id, db=db, include_first_page_text=True, thread_id=thread_id, group_id=group_id)}
 
         elif tool_name == "semantic_search":
             if not args.get("query"): return {"error": "query required"}
-            results = await combined_search(query=args["query"], user_id=user_id, db=db, doc_limit=args.get("doc_limit", 10), fov_limit=args.get("image_limit", 10))
+            results = await combined_search(query=args["query"], user_id=user_id, db=db, doc_limit=args.get("doc_limit", 10), fov_limit=args.get("image_limit", 10), group_id=group_id)
             return {"query": results["query"], "document_results": {"count": len(results["documents"]), "pages": results["documents"]}, "image_results": {"count": len(results["fov_images"]), "images": results["fov_images"]}}
 
         elif tool_name == "search_documents":
             return {"results": await search_documents(
                 query=args.get("query", ""), user_id=user_id, db=db,
                 limit=_clamp_limit(args.get("limit")), document_ids=args.get("document_ids"),
-                thread_id=thread_id)}
+                thread_id=thread_id, group_id=group_id)}
 
         elif tool_name == "search_fov_images":
             return {"results": await search_fov_images(query=args.get("query", ""), user_id=user_id, db=db, experiment_id=args.get("experiment_id"), limit=10)}
@@ -1662,6 +1678,7 @@ async def execute_tool(
                 db=db,
                 page_numbers=page_numbers,
                 include_images=True,  # Include base64 images for vision reading
+                group_id=group_id,
             )
             if not content:
                 return {"error": "Document not found"}
@@ -2089,10 +2106,15 @@ async def execute_tool(
                         contents=f"Search and summarize information about: {query}",
                         config=genai_types.GenerateContentConfig(
                             tools=[genai_types.Tool(google_search=genai_types.GoogleSearch())],
-                            temperature=0.3,  # Lower temperature for factual search
+                            # Gemini 3.x replaces temperature/top_p/top_k with
+                            # thinking_level; this call relies on the default.
                         )
                     ),
-                    timeout=30.0
+                    # A grounded generate_content (Google Search + summarize) is a
+                    # slow round-trip; 30s was timing out in prod, dropping every
+                    # web source so citations never populated. 60s lets it finish.
+                    # (Runs in a worker thread, so it never blocks the event loop.)
+                    timeout=60.0
                 )
 
                 # Extract response text and grounding metadata.
@@ -2431,6 +2453,7 @@ async def execute_tool(
                     user_id=user_id,
                     db=db,
                     max_passages=1,
+                    group_id=group_id,
                 )
                 if not passages:
                     return {
@@ -2447,6 +2470,7 @@ async def execute_tool(
                     bbox=bbox,
                     user_id=user_id,
                     db=db,
+                    group_id=group_id,
                 )
                 if not passage:
                     return {
@@ -2493,6 +2517,7 @@ async def execute_tool(
             content = await get_document_content(
                 document_id=args["document_id"], user_id=user_id, db=db,
                 page_numbers=args.get("page_numbers"), include_images=False,
+                group_id=group_id,
             )
             if not content:
                 return {"error": "Document not found"}

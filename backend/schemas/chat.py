@@ -135,9 +135,25 @@ class RAGDocumentResponse(BaseModel):
     file_size: Optional[int] = None
     created_at: datetime
     indexed_at: Optional[datetime] = None
+    # Default True is required for model_validate() to work (the ORM object has
+    # no is_owner attribute); for_user() below is the only correct way to set it.
+    # UI-only flag (hides delete/reindex controls) -- mutation endpoints
+    # re-check ownership server-side regardless of this value.
+    is_owner: bool = True
 
     class Config:
         from_attributes = True
+
+    @classmethod
+    def for_user(cls, doc, current_user_id: int) -> "RAGDocumentResponse":
+        """Build a response with ``is_owner`` correctly set for the caller.
+
+        The single correct way to construct this schema -- avoids hand-rolled
+        ``model_validate`` + manual ``is_owner`` assignment at each call site.
+        """
+        resp = cls.model_validate(doc)
+        resp.is_owner = doc.user_id == current_user_id
+        return resp
 
 
 class RAGDocumentPageResponse(BaseModel):

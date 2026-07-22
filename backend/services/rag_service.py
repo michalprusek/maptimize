@@ -20,7 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from config import get_settings
-from models.rag_document import RAGDocument, RAGDocumentPage, DocumentStatus
+from models.rag_document import RAGDocument, RAGDocumentPage, DocumentStatus, document_read_scope, document_scope
 from models.image import Image
 from models.experiment import Experiment
 
@@ -62,6 +62,7 @@ async def search_documents(
     include_text: bool = True,
     document_ids: Optional[List[int]] = None,
     thread_id: Optional[int] = None,
+    group_id: Optional[int] = None,
 ) -> List[dict]:
     """
     Search uploaded documents using vector similarity with Qwen VL embeddings.
@@ -73,6 +74,8 @@ async def search_documents(
         limit: Maximum number of result pages to return
         include_text: Whether to include extracted text content
         document_ids: Optional list of document IDs to restrict the search to
+        thread_id: Current chat thread, for attachment scoping
+        group_id: Caller's group, for widening library docs to the group
 
     Returns:
         List of search results with document info, extracted text, and similarity scores
@@ -82,15 +85,26 @@ async def search_documents(
     if limit is None:
         limit = settings.rag_max_document_results
 
-    # Skip the (expensive) embedding-model load when the user has nothing indexed.
+    # Library docs are group-shared; attachments (group_id NULL) match only the
+    # owner. SSOT mirror of models.rag_document.document_read_scope, expressed in
+    # raw SQL for the pgvector query.
+    if group_id is not None:
+        owner_clause = "(rd.user_id = :user_id OR (rd.thread_id IS NULL AND rd.group_id = :group_id))"
+    else:
+        owner_clause = "rd.user_id = :user_id"
+
+    # Skip the (expensive) embedding-model load when the caller has nothing to search.
+    precheck_params = {"user_id": user_id}
+    if group_id is not None:
+        precheck_params["group_id"] = group_id
     has_indexed = await db.execute(
         text(
             "SELECT 1 FROM rag_document_pages rdp "
             "JOIN rag_documents rd ON rd.id = rdp.document_id "
-            "WHERE rd.user_id = :user_id AND rd.status = 'completed' "
+            f"WHERE {owner_clause} AND rd.status = 'completed' "
             "AND rdp.embedding IS NOT NULL LIMIT 1"
         ),
-        {"user_id": user_id},
+        precheck_params,
     )
     if has_indexed.first() is None:
         return []
@@ -102,14 +116,16 @@ async def search_documents(
         embedding_list = query_embedding.tolist()
 
         # Optional filter: restrict the search to specific documents. Bound as a
-        # parameter (never string-interpolated) and still scoped by user_id, so
-        # it cannot widen access beyond the caller's own documents.
+        # parameter (never string-interpolated) and still scoped by owner_clause
+        # (owner OR group library), so it cannot widen access beyond that scope.
         doc_filter = ""
         params = {
             "embedding": str(embedding_list),
             "user_id": user_id,
             "limit": limit,
         }
+        if group_id is not None:
+            params["group_id"] = group_id
         if document_ids:
             doc_filter = "AND rdp.document_id = ANY(:document_ids)"
             # Coerce: the ids come from model output, and a stray "7" would hit
@@ -140,7 +156,7 @@ async def search_documents(
                 rdp.embedding <=> :embedding as distance
             FROM rag_document_pages rdp
             JOIN rag_documents rd ON rd.id = rdp.document_id
-            WHERE rd.user_id = :user_id
+            WHERE {owner_clause}
               AND rd.status = 'completed'
               AND rdp.embedding IS NOT NULL
               {scope_filter}
@@ -294,6 +310,7 @@ async def combined_search(
     experiment_id: Optional[int] = None,
     doc_limit: int = None,
     fov_limit: int = None,
+    group_id: Optional[int] = None,
 ) -> dict:
     """
     Combined search across documents and FOV images.
@@ -305,6 +322,7 @@ async def combined_search(
         experiment_id: Optional experiment ID for FOV filtering
         doc_limit: Max document results
         fov_limit: Max FOV results
+        group_id: Caller's group, for widening document library search
 
     Returns:
         Dict with 'documents', 'fov_images' lists, and optional 'errors' if any search failed
@@ -320,7 +338,7 @@ async def combined_search(
 
     # Try document search, capture errors but don't fail entirely
     try:
-        documents = await search_documents(query, user_id, db, limit=doc_limit)
+        documents = await search_documents(query, user_id, db, limit=doc_limit, group_id=group_id)
     except RAGServiceError as e:
         logger.error(f"Document search failed in combined_search: {e}")
         errors.append(f"Document search: {str(e)}")
@@ -460,6 +478,7 @@ async def get_document_content(
     page_numbers: Optional[List[int]] = None,
     max_pages: int = 10,
     include_images: bool = True,
+    group_id: Optional[int] = None,
 ) -> Optional[dict]:
     """
     Get document content including page images for AI vision reading.
@@ -471,6 +490,7 @@ async def get_document_content(
         page_numbers: Optional specific pages to return (1-indexed)
         max_pages: Maximum pages to return if no specific pages requested
         include_images: Whether to include base64 encoded images
+        group_id: Caller's group, so group-shared library documents are readable too
 
     Returns:
         Dict with document info and page content (including images), or None if not found
@@ -478,17 +498,16 @@ async def get_document_content(
     import base64
     from pathlib import Path
 
-    # Get document with ownership check
+    # Get document with ownership/group-read check
     result = await db.execute(
         select(RAGDocument)
         .options(selectinload(RAGDocument.pages))
-        .where(
-            RAGDocument.id == document_id,
-            RAGDocument.user_id == user_id
-        )
+        .where(RAGDocument.id == document_id)
+        .where(document_read_scope(user_id, group_id))
     )
     document = result.scalar_one_or_none()
     if not document:
+        logger.warning(f"Document {document_id} not found for user {user_id} (group_id={group_id})")
         return None
 
     # Get pages - either specific ones or first N
@@ -544,6 +563,8 @@ async def get_all_documents_summary(
     user_id: int,
     db: AsyncSession,
     include_first_page_text: bool = True,
+    thread_id: Optional[int] = None,
+    group_id: Optional[int] = None,
 ) -> List[dict]:
     """
     Get summary of all documents with optional first page text preview.
@@ -552,6 +573,10 @@ async def get_all_documents_summary(
         user_id: User ID
         db: Database session
         include_first_page_text: Whether to include text from first page
+        thread_id: Current chat thread, for attachment scoping (this is a LISTING,
+            so it must use document_scope, not the fetch-by-id document_read_scope --
+            otherwise the owner's chat attachments from OTHER threads would leak in)
+        group_id: Caller's group, so group-shared library documents are included
 
     Returns:
         List of document summaries
@@ -559,10 +584,8 @@ async def get_all_documents_summary(
     result = await db.execute(
         select(RAGDocument)
         .options(selectinload(RAGDocument.pages))
-        .where(
-            RAGDocument.user_id == user_id,
-            RAGDocument.status == "completed"
-        )
+        .where(document_scope(user_id, thread_id, group_id))
+        .where(RAGDocument.status == "completed")
         .order_by(RAGDocument.created_at.desc())
     )
     documents = result.scalars().all()
@@ -675,6 +698,7 @@ async def _get_document_page_image_path(
     page_number: int,
     user_id: int,
     db: AsyncSession,
+    group_id: Optional[int] = None,
 ) -> tuple[Optional["RAGDocument"], Optional[Path]]:
     """Load a document and return the filesystem path to a page image.
 
@@ -684,10 +708,8 @@ async def _get_document_page_image_path(
     result = await db.execute(
         select(RAGDocument)
         .options(selectinload(RAGDocument.pages))
-        .where(
-            RAGDocument.id == document_id,
-            RAGDocument.user_id == user_id
-        )
+        .where(RAGDocument.id == document_id)
+        .where(document_read_scope(user_id, group_id))
     )
     document = result.scalar_one_or_none()
     if not document:
@@ -714,6 +736,7 @@ async def extract_passage_image(
     user_id: int,
     db: AsyncSession,
     padding: int = 30,
+    group_id: Optional[int] = None,
 ) -> Optional[Dict[str, Any]]:
     """
     Extract a cropped region (passage) from a document page.
@@ -725,6 +748,7 @@ async def extract_passage_image(
         user_id: User ID for ownership verification
         db: Database session
         padding: Pixels of padding to add around the crop
+        group_id: Caller's group, so group-shared library documents are reachable too
 
     Returns:
         Dict with image_base64, image_url, source metadata, or None if failed
@@ -748,7 +772,9 @@ async def extract_passage_image(
         logger.error(f"Invalid bbox dimensions: ymin={ymin}, ymax={ymax}, xmin={xmin}, xmax={xmax}")
         return None
 
-    document, image_path = await _get_document_page_image_path(document_id, page_number, user_id, db)
+    document, image_path = await _get_document_page_image_path(
+        document_id, page_number, user_id, db, group_id=group_id
+    )
     if not document or not image_path:
         return None
 
@@ -836,6 +862,7 @@ async def get_cached_passage(
     passage_hash: str,
     user_id: int,
     db: AsyncSession,
+    group_id: Optional[int] = None,
 ) -> Optional[Path]:
     """
     Get a cached passage image file path.
@@ -845,16 +872,17 @@ async def get_cached_passage(
         passage_hash: Hash of the passage
         user_id: User ID
         db: Database session
+        group_id: Caller's group, so a group-shared library document's cached
+            passage is still readable
 
     Returns:
         Path to the cached image file, or None if not found/unauthorized
     """
-    # Verify user owns the document
+    # Verify user may read the document (owner or group-shared library)
     result = await db.execute(
         select(RAGDocument.id).where(
-            RAGDocument.id == document_id,
-            RAGDocument.user_id == user_id
-        )
+            RAGDocument.id == document_id
+        ).where(document_read_scope(user_id, group_id))
     )
     if not result.scalar_one_or_none():
         logger.warning(f"Document {document_id} not found for user {user_id}")
@@ -883,6 +911,7 @@ async def extract_relevant_passages(
     user_id: int,
     db: AsyncSession,
     max_passages: int = 3,
+    group_id: Optional[int] = None,
 ) -> List[Dict[str, Any]]:
     """
     Use Gemini vision to find and extract relevant passages from a page.
@@ -894,6 +923,7 @@ async def extract_relevant_passages(
         user_id: User ID
         db: Database session
         max_passages: Maximum passages to extract
+        group_id: Caller's group, so group-shared library documents are reachable too
 
     Returns:
         List of extracted passage dicts
@@ -905,7 +935,9 @@ async def extract_relevant_passages(
         logger.error("GEMINI_API_KEY not configured for passage extraction")
         return []
 
-    document, image_path = await _get_document_page_image_path(document_id, page_number, user_id, db)
+    document, image_path = await _get_document_page_image_path(
+        document_id, page_number, user_id, db, group_id=group_id
+    )
     if not document or not image_path:
         logger.warning(f"Cannot extract passages: doc {document_id} p.{page_number} not found for user {user_id}")
         return []
@@ -958,7 +990,8 @@ Return ONLY the JSON array. Return [] if nothing found. Maximum {max_passages} e
                 )
             ],
             config=types.GenerateContentConfig(
-                temperature=0.1,  # Low temperature for precise extraction
+                # Gemini 3.x replaces temperature/top_p/top_k with thinking_level;
+                # this call relies on the default.
             )
         )
 
@@ -995,6 +1028,7 @@ Return ONLY the JSON array. Return [] if nothing found. Maximum {max_passages} e
                 user_id=user_id,
                 db=db,
                 padding=padding,
+                group_id=group_id,
             )
 
             if passage:

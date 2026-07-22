@@ -64,10 +64,9 @@ export function PDFViewerPanel() {
   const pageElementsRef = useRef<Map<number, HTMLDivElement>>(new Map());
   const isScrollingToPageRef = useRef(false);
   const observerRef = useRef<IntersectionObserver | null>(null);
-
-  // Scroll direction tracking for predictive prefetch
-  const scrollDirectionRef = useRef<"up" | "down" | null>(null);
-  const lastScrollTopRef = useRef(0);
+  // Stable ref callback per page number, so React doesn't detach/re-attach (and
+  // the observer doesn't unobserve/re-observe) on every render.
+  const pageRefCallbacks = useRef<Map<number, (el: HTMLDivElement | null) => void>>(new Map());
 
   const activeDocument = documents.find((d) => d.id === activePDFDocumentId);
   const totalPages = activeDocument?.page_count || 1;
@@ -77,20 +76,98 @@ export function PDFViewerPanel() {
     return Array.from({ length: totalPages }, (_, i) => i + 1);
   }, [totalPages]);
 
-  // Virtualization: only render pages near the current page for better performance
-  // Use asymmetric buffer based on scroll direction for predictive prefetch
-  const [scrollDirection, setScrollDirection] = useState<"up" | "down" | null>(null);
+  // Real page aspect ratio (width / height), measured once from the first loaded
+  // image. Every page reserves a box of this ratio BEFORE its image loads, so the
+  // column height is stable and native lazy-loading can size pages correctly — no
+  // custom virtualization, no scroll feedback loop, no layout shift.
+  const [naturalAspect, setNaturalAspect] = useState<number | null>(null);
 
-  const visiblePageRange = useMemo(() => {
-    // Prefetch more pages in the direction of scroll
-    const forwardBuffer = scrollDirection === "down" ? 5 : 2;
-    const backwardBuffer = scrollDirection === "up" ? 5 : 2;
+  // Resizable panel width (desktop only). Persisted so the user's chosen width
+  // survives reloads. Mobile renders full-width inside an overlay, so the inline
+  // width and the drag handle only apply at lg+.
+  const PANEL_MIN_WIDTH = 360;
+  const PANEL_MAX_WIDTH = 1000;
+  const [isDesktop, setIsDesktop] = useState(false);
+  const [panelWidth, setPanelWidth] = useState(500);
+  const panelWidthRef = useRef(panelWidth);
+  // Keep the ref in sync in an effect, not during render (render purity /
+  // StrictMode) — startResize reads it at drag-start time, and by then the
+  // effect from the previous commit has already run.
+  useEffect(() => {
+    panelWidthRef.current = panelWidth;
+  }, [panelWidth]);
 
-    return {
-      start: Math.max(1, activePDFPage - backwardBuffer),
-      end: Math.min(totalPages, activePDFPage + forwardBuffer),
+  useEffect(() => {
+    const mq = window.matchMedia("(min-width: 1024px)");
+    const update = () => setIsDesktop(mq.matches);
+    update();
+    mq.addEventListener("change", update);
+    return () => mq.removeEventListener("change", update);
+  }, []);
+
+  // Load persisted width once on mount.
+  useEffect(() => {
+    const saved = parseInt(localStorage.getItem("pdfPanelWidth") || "", 10);
+    if (Number.isFinite(saved)) {
+      setPanelWidth(Math.min(PANEL_MAX_WIDTH, Math.max(PANEL_MIN_WIDTH, saved)));
+    }
+  }, []);
+
+  // Persistence happens once the drag ends (see startResize's teardown below),
+  // not on every width change — otherwise every mousemove frame would hit
+  // localStorage.
+
+  // Teardown for an in-flight resize drag, kept in a ref so it can be invoked
+  // from onUp, from a component-unmount cleanup, AND from a window "blur"
+  // safety net (mouse released outside the window; Escape closes the panel
+  // mid-drag, which unmounts this component before onUp ever fires). Without
+  // this, the mousemove/mouseup listeners leak and document.body is left
+  // stuck with cursor: col-resize + unselectable text app-wide.
+  const resizeTeardownRef = useRef<(() => void) | null>(null);
+
+  // Drag the panel's left edge to resize. The panel sits on the right of the
+  // layout, so dragging left widens it.
+  const startResize = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    // Tear down any previous drag first (shouldn't normally overlap, but keeps
+    // startResize itself idempotent/safe to call repeatedly).
+    resizeTeardownRef.current?.();
+
+    const startX = e.clientX;
+    const startW = panelWidthRef.current;
+    const onMove = (ev: MouseEvent) => {
+      const delta = startX - ev.clientX;
+      setPanelWidth(Math.min(PANEL_MAX_WIDTH, Math.max(PANEL_MIN_WIDTH, startW + delta)));
     };
-  }, [activePDFPage, totalPages, scrollDirection]);
+    const teardown = () => {
+      // Idempotent: bail if this drag's teardown already ran (e.g. onUp AND
+      // unmount cleanup both fire).
+      if (resizeTeardownRef.current !== teardown) return;
+      resizeTeardownRef.current = null;
+      document.removeEventListener("mousemove", onMove);
+      document.removeEventListener("mouseup", onUp);
+      window.removeEventListener("blur", onUp);
+      document.body.style.userSelect = "";
+      document.body.style.cursor = "";
+      // Persist only now that the drag has actually ended.
+      localStorage.setItem("pdfPanelWidth", String(panelWidthRef.current));
+    };
+    const onUp = () => teardown();
+    resizeTeardownRef.current = teardown;
+    document.body.style.userSelect = "none";
+    document.body.style.cursor = "col-resize";
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
+    // Safety net: mouse released outside the window never fires "mouseup".
+    window.addEventListener("blur", onUp);
+  }, []);
+
+  // Ensure a drag in progress is always torn down when this panel unmounts
+  // (e.g. Escape mid-drag calls closePDFViewer(), which returns null below
+  // before onUp ever gets a chance to fire).
+  useEffect(() => {
+    return () => resizeTeardownRef.current?.();
+  }, []);
 
   // Pages with search matches (for highlighting)
   const pagesWithMatches = useMemo(() => {
@@ -105,65 +182,6 @@ export function PDFViewerPanel() {
       isMountedRef.current = false;
     };
   }, []);
-
-  // Track scroll direction for predictive prefetching
-  useEffect(() => {
-    const container = containerRef.current;
-    if (!container || !isPDFPanelOpen) return;
-
-    const handleScroll = () => {
-      const currentScrollTop = container.scrollTop;
-      const direction = currentScrollTop > lastScrollTopRef.current ? "down" : "up";
-
-      // Only update state if direction changed (avoid unnecessary re-renders)
-      if (direction !== scrollDirectionRef.current) {
-        scrollDirectionRef.current = direction;
-        setScrollDirection(direction);
-      }
-
-      lastScrollTopRef.current = currentScrollTop;
-    };
-
-    container.addEventListener("scroll", handleScroll, { passive: true });
-    return () => container.removeEventListener("scroll", handleScroll);
-  }, [isPDFPanelOpen]);
-
-  // Prefetch pages beyond the visible buffer using link rel="prefetch"
-  useEffect(() => {
-    if (!activePDFDocumentId || !isPDFPanelOpen) return;
-
-    // Determine pages to prefetch (just beyond the visible range)
-    const pagesToPrefetch: number[] = [];
-    const prefetchDistance = 2; // Prefetch 2 pages beyond visible range
-
-    for (let i = 1; i <= prefetchDistance; i++) {
-      const nextPage = visiblePageRange.end + i;
-      const prevPage = visiblePageRange.start - i;
-
-      if (nextPage <= totalPages) pagesToPrefetch.push(nextPage);
-      if (prevPage >= 1) pagesToPrefetch.push(prevPage);
-    }
-
-    // Create prefetch links
-    const links: HTMLLinkElement[] = [];
-    pagesToPrefetch.forEach((pageNum) => {
-      const link = document.createElement("link");
-      link.rel = "prefetch";
-      link.href = api.getRAGPageImageUrl(activePDFDocumentId, pageNum);
-      link.as = "image";
-      document.head.appendChild(link);
-      links.push(link);
-    });
-
-    // Cleanup prefetch links on unmount or when range changes
-    return () => {
-      links.forEach((link) => {
-        if (link.parentNode) {
-          link.parentNode.removeChild(link);
-        }
-      });
-    };
-  }, [activePDFDocumentId, isPDFPanelOpen, visiblePageRange.start, visiblePageRange.end, totalPages]);
 
   // Debounced search
   const performSearch = useCallback(async (query: string) => {
@@ -340,18 +358,25 @@ export function PDFViewerPanel() {
     }, 50);
 
     return () => clearInterval(retryInterval);
-  }, [activePDFPage, isPDFPanelOpen, activePDFDocumentId]);
+    // naturalAspect is included because every page box is reserved at the
+    // 8.5/11 fallback ratio until it's measured; when it updates, all boxes
+    // resize and an already-scrolled-to target can end up off-screen. The
+    // effect itself no-ops once the target page is visible, so re-running it
+    // here is safe/idempotent.
+  }, [activePDFPage, isPDFPanelOpen, activePDFDocumentId, naturalAspect]);
 
   // Reset state when document changes
   useEffect(() => {
     setLoadedPages(new Set());
     setFailedPages(new Set());
     setErrorDetails(new Map());
-    pageElementsRef.current.clear();
-    // Reset scroll tracking
-    scrollDirectionRef.current = null;
-    lastScrollTopRef.current = 0;
-    setScrollDirection(null);
+    setNaturalAspect(null);
+    // Don't clear pageElementsRef here: the observer effect above already
+    // observed the newly mounted page elements by the time this runs, and
+    // each page's own ref callback (below) deletes its entry when its div
+    // unmounts — which always happens on document change since `key`
+    // includes the document id. Clearing here only "worked" by accident.
+    pageRefCallbacks.current.clear();
     // Reset search when document changes
     closeSearch();
   }, [activePDFDocumentId, closeSearch]);
@@ -386,15 +411,24 @@ export function PDFViewerPanel() {
     window.open(url, "_blank");
   }, [activePDFDocumentId]);
 
-  const handlePageLoad = useCallback((pageNum: number) => {
-    if (!isMountedRef.current) return;
-    setLoadedPages((prev) => new Set(prev).add(pageNum));
-    setFailedPages((prev) => {
-      const next = new Set(prev);
-      next.delete(pageNum);
-      return next;
-    });
-  }, []);
+  const handlePageLoad = useCallback(
+    (pageNum: number, event: React.SyntheticEvent<HTMLImageElement>) => {
+      if (!isMountedRef.current) return;
+      setLoadedPages((prev) => new Set(prev).add(pageNum));
+      setFailedPages((prev) => {
+        const next = new Set(prev);
+        next.delete(pageNum);
+        return next;
+      });
+      // Measure the page aspect ratio once; all pages in a document share it, so
+      // this pins every reserved box to the true ratio (no letterbox, no shift).
+      const img = event.currentTarget;
+      if (img.naturalWidth > 0 && img.naturalHeight > 0) {
+        setNaturalAspect((prev) => prev ?? img.naturalWidth / img.naturalHeight);
+      }
+    },
+    []
+  );
 
   const handlePageError = useCallback((pageNum: number, event: React.SyntheticEvent<HTMLImageElement>) => {
     if (!isMountedRef.current) return;
@@ -411,38 +445,42 @@ export function PDFViewerPanel() {
     });
   }, []);
 
-  // Register page element ref and manage observer subscription
-  const setPageRef = useCallback(
-    (pageNum: number) => (element: HTMLDivElement | null) => {
-      if (element) {
-        pageElementsRef.current.set(pageNum, element);
-        if (observerRef.current && element.isConnected) {
-          try {
-            observerRef.current.observe(element);
-          } catch (error) {
-            // Expected during Fast Refresh when observer is disconnected
-            if (process.env.NODE_ENV === "development") {
-              console.debug(`[PDFViewer] Observer.observe failed for page ${pageNum}:`, error);
+  // Return a STABLE ref callback for a given page number. Memoizing per page
+  // (instead of returning a fresh closure each render) stops React from
+  // detaching/re-attaching the ref — and the observer from unobserve/observe
+  // churn — on every re-render.
+  const getPageRef = useCallback((pageNum: number) => {
+    let cb = pageRefCallbacks.current.get(pageNum);
+    if (!cb) {
+      cb = (element: HTMLDivElement | null) => {
+        if (element) {
+          pageElementsRef.current.set(pageNum, element);
+          if (observerRef.current && element.isConnected) {
+            try {
+              observerRef.current.observe(element);
+            } catch (e) {
+              // Observer may be disconnected during Fast Refresh; the observer
+              // effect re-observes all registered elements when it re-runs.
+              console.debug(`Failed to observe page ${pageNum}:`, e);
             }
           }
-        }
-      } else {
-        const existing = pageElementsRef.current.get(pageNum);
-        if (existing && observerRef.current) {
-          try {
-            observerRef.current.unobserve(existing);
-          } catch (error) {
-            // Element may already be disconnected during cleanup
-            if (process.env.NODE_ENV === "development") {
-              console.debug(`[PDFViewer] Observer.unobserve failed for page ${pageNum}:`, error);
+        } else {
+          const existing = pageElementsRef.current.get(pageNum);
+          if (existing && observerRef.current) {
+            try {
+              observerRef.current.unobserve(existing);
+            } catch (e) {
+              // Element already disconnected during cleanup — safe to ignore.
+              console.debug(`Failed to unobserve page ${pageNum}:`, e);
             }
           }
+          pageElementsRef.current.delete(pageNum);
         }
-        pageElementsRef.current.delete(pageNum);
-      }
-    },
-    []
-  );
+      };
+      pageRefCallbacks.current.set(pageNum, cb);
+    }
+    return cb;
+  }, []);
 
   // Keyboard navigation including Ctrl+F
   useEffect(() => {
@@ -514,10 +552,23 @@ export function PDFViewerPanel() {
   return (
     <div
       className={clsx(
-        "w-full lg:w-[500px] flex-shrink-0 border-l border-white/5 bg-bg-secondary flex flex-col h-full",
-        "animate-slide-in-right"
+        "relative flex-shrink-0 border-l border-white/5 bg-bg-secondary flex flex-col h-full",
+        "animate-slide-in-right",
+        isDesktop ? "" : "w-full"
       )}
+      style={isDesktop ? { width: panelWidth } : undefined}
     >
+      {/* Resize handle (desktop): drag the left edge to widen / narrow */}
+      {isDesktop && (
+        <div
+          onMouseDown={startResize}
+          className="group/resize absolute left-0 top-0 h-full w-2 -translate-x-1/2 z-20 cursor-col-resize"
+          title={t("resizePanel") || "Drag to resize"}
+        >
+          <div className="absolute inset-y-0 left-1/2 w-0.5 -translate-x-1/2 bg-transparent group-hover/resize:bg-primary-500/60 transition-colors" />
+        </div>
+      )}
+
       {/* Header */}
       <div className="flex items-center justify-between px-4 py-3 border-b border-white/5 bg-white/[0.02] backdrop-blur-sm">
         <div className="flex items-center gap-2 min-w-0 flex-1">
@@ -717,28 +768,31 @@ export function PDFViewerPanel() {
         className="flex-1 overflow-auto p-4 bg-bg-primary/50"
       >
         <div
-          className="flex flex-col items-center gap-4"
-          style={{
-            transform: `scale(${zoom})`,
-            transformOrigin: "top center",
-            width: zoom !== 1 ? `${100 / zoom}%` : "100%",
-          }}
+          className="flex flex-col items-center gap-4 mx-auto"
+          // Width-based zoom: >100% overflows and the container scrolls; <100%
+          // stays centered via mx-auto. (The old transform+counter-width canceled
+          // out, so zoom did nothing and overflowed at <1.)
+          style={{ width: `${zoom * 100}%` }}
         >
           {pages.map((pageNum) => {
             const hasMatch = pagesWithMatches.has(pageNum);
             const isCurrentMatch = searchResult?.matches[currentMatchIndex]?.page_number === pageNum;
-            // Virtualization: only render images for pages near the current view
-            const isInVirtualRange = pageNum >= visiblePageRange.start && pageNum <= visiblePageRange.end;
-            // Always render pages that are already loaded or have search matches
-            const shouldRenderImage = isInVirtualRange || loadedPages.has(pageNum) || hasMatch;
+            const isLoaded = loadedPages.has(pageNum);
+            const isFailed = failedPages.has(pageNum);
 
             return (
               <div
                 key={`doc-${activePDFDocumentId}-page-${pageNum}`}
-                ref={setPageRef(pageNum)}
+                ref={getPageRef(pageNum)}
                 data-page={pageNum}
+                // Reserve each page's space up front via a fixed aspect ratio, so the
+                // column height is stable before any image loads. Every page renders a
+                // native lazy <img> that the browser fetches only as it nears the
+                // viewport — no custom virtualization, no scroll feedback loop, no
+                // layout shift.
+                style={{ aspectRatio: String(naturalAspect ?? 8.5 / 11) }}
                 className={clsx(
-                  "relative w-full flex justify-center",
+                  "relative w-full",
                   hasMatch && "ring-2 ring-primary-500/50 ring-offset-2 ring-offset-bg-primary rounded-sm",
                   isCurrentMatch && "ring-primary-500"
                 )}
@@ -758,37 +812,9 @@ export function PDFViewerPanel() {
                   )}
                 </div>
 
-                {!shouldRenderImage ? (
-                  /* Placeholder for virtualized pages outside view range */
-                  <div className="w-full min-h-[600px] aspect-[8.5/11] flex items-center justify-center bg-white/[0.02] rounded-sm border border-white/5 text-text-muted text-sm">
-                    <span className="opacity-50">Page {pageNum}</span>
-                  </div>
-                ) : !failedPages.has(pageNum) ? (
-                  <>
-                    {/* Loading skeleton */}
-                    {!loadedPages.has(pageNum) && (
-                      <div className="absolute inset-0 flex items-center justify-center bg-white/5 rounded-sm animate-pulse min-h-[400px]">
-                        <div className="w-8 h-8 border-2 border-primary-500 border-t-transparent rounded-full animate-spin" />
-                      </div>
-                    )}
-
-                    {/* Page image */}
-                    {/* eslint-disable-next-line @next/next/no-img-element */}
-                    <img
-                      src={api.getRAGPageImageUrl(activePDFDocumentId, pageNum)}
-                      alt={`Page ${pageNum}`}
-                      className={clsx(
-                        "max-w-full shadow-lg rounded-sm border border-white/5 transition-opacity duration-300",
-                        loadedPages.has(pageNum) ? "opacity-100" : "opacity-0"
-                      )}
-                      loading="lazy"
-                      onLoad={() => handlePageLoad(pageNum)}
-                      onError={(e) => handlePageError(pageNum, e)}
-                    />
-                  </>
-                ) : (
-                  /* Error state with retry button */
-                  <div className="w-full min-h-[400px] aspect-[8.5/11] flex flex-col items-center justify-center gap-3 bg-white/5 rounded-sm border border-white/5 text-text-muted p-4">
+                {isFailed ? (
+                  /* Error state with retry button (fills the reserved box) */
+                  <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-white/5 rounded-sm border border-white/5 text-text-muted p-4">
                     <span>{t("failedToLoadPage") || "Failed to load page"}</span>
                     <button
                       onClick={() => {
@@ -808,6 +834,29 @@ export function PDFViewerPanel() {
                       </span>
                     )}
                   </div>
+                ) : (
+                  <>
+                    {/* Loading skeleton — fills the reserved box, no size of its own */}
+                    {!isLoaded && (
+                      <div className="absolute inset-0 flex items-center justify-center bg-white/5 rounded-sm animate-pulse">
+                        <div className="w-8 h-8 border-2 border-primary-500 border-t-transparent rounded-full animate-spin" />
+                      </div>
+                    )}
+
+                    {/* Page image — fills the reserved box, native lazy-loaded */}
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img
+                      src={api.getRAGPageImageUrl(activePDFDocumentId, pageNum)}
+                      alt={`Page ${pageNum}`}
+                      className={clsx(
+                        "w-full h-full object-contain shadow-lg rounded-sm border border-white/5 transition-opacity duration-300",
+                        isLoaded ? "opacity-100" : "opacity-0"
+                      )}
+                      loading="lazy"
+                      onLoad={(e) => handlePageLoad(pageNum, e)}
+                      onError={(e) => handlePageError(pageNum, e)}
+                    />
+                  </>
                 )}
               </div>
             );
