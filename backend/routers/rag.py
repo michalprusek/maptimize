@@ -85,18 +85,18 @@ async def _get_redis() -> redis.Redis:
     return _redis_pool
 
 
-async def _check_upload_rate_limit(user_id: int) -> None:
-    """
-    Check if user has exceeded upload rate limit.
+async def _check_rate_limit_generic(key: str, limit: int, window: int, count: int = 1) -> None:
+    """Sliding-window Redis rate limiter shared by every caller in this router.
 
-    Prevents disk space and GPU exhaustion from excessive uploads.
-    Raises HTTPException 429 if rate limit exceeded.
+    ``count`` lets one call consume more than one slot at once (a discovery
+    import of N papers spends N of the hourly budget in a single request).
+    Fails open if Redis is unavailable -- infra hiccups must not block uploads.
+    Raises HTTPException 429 if the limit would be exceeded.
     """
     try:
         r = await _get_redis()
-        key = f"rate_limit:upload:{user_id}"
         now = time.time()
-        window_start = now - UPLOAD_RATE_LIMIT_WINDOW
+        window_start = now - window
 
         async with r.pipeline(transaction=True) as pipe:
             pipe.zremrangebyscore(key, 0, window_start)
@@ -105,30 +105,47 @@ async def _check_upload_rate_limit(user_id: int) -> None:
 
         request_count = results[1]
 
-        if request_count >= UPLOAD_RATE_LIMIT_REQUESTS:
+        if request_count + count > limit:
             oldest_entries = await r.zrange(key, 0, 0, withscores=True)
             if oldest_entries:
                 oldest_ts = oldest_entries[0][1]
-                retry_after = int(oldest_ts + UPLOAD_RATE_LIMIT_WINDOW - now) + 1
+                retry_after = int(oldest_ts + window - now) + 1
             else:
-                retry_after = UPLOAD_RATE_LIMIT_WINDOW
+                retry_after = window
 
-            logger.warning(f"Upload rate limit exceeded for user {user_id}: {request_count} uploads in 1 hour")
+            logger.warning(
+                f"Rate limit exceeded for {key}: {request_count} in window "
+                f"(+{count} requested, limit {limit})"
+            )
             raise HTTPException(
                 status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-                detail=f"Upload rate limit exceeded. Maximum {UPLOAD_RATE_LIMIT_REQUESTS} uploads per hour.",
+                detail=f"Rate limit exceeded. Maximum {limit} per {window}s.",
                 headers={"Retry-After": str(retry_after)},
             )
 
-        # Record this upload
+        # Record this request (or this many, for a batch call)
         import uuid
-        member = f"{now}:{uuid.uuid4().hex[:8]}"
-        await r.zadd(key, {member: now})
-        await r.expire(key, UPLOAD_RATE_LIMIT_WINDOW + 60)
+        now_members = {f"{now}:{i}:{uuid.uuid4().hex[:8]}": now for i in range(count)}
+        await r.zadd(key, now_members)
+        await r.expire(key, window + 60)
 
     except redis.RedisError as e:
         # Fail-open if Redis is unavailable
-        logger.warning(f"Redis upload rate limit check failed: {e}")
+        logger.warning(f"Redis rate limit check failed for {key}: {e}")
+
+
+async def _check_upload_rate_limit(user_id: int) -> None:
+    """
+    Check if user has exceeded upload rate limit.
+
+    Prevents disk space and GPU exhaustion from excessive uploads.
+    Raises HTTPException 429 if rate limit exceeded.
+    """
+    await _check_rate_limit_generic(
+        key=f"rate_limit:upload:{user_id}",
+        limit=UPLOAD_RATE_LIMIT_REQUESTS,
+        window=UPLOAD_RATE_LIMIT_WINDOW,
+    )
 
 
 async def get_document_for_user(
@@ -511,6 +528,114 @@ async def discover_sources(
             for p in papers
         ],
     )
+
+
+# Discovery imports get their own budget: each one is a user-confirmed,
+# open-access PDF from an allow-listed source, not an arbitrary upload, so the
+# 10/hour upload cap would be far too tight for a bulk import.
+DISCOVERY_RATE_LIMIT_REQUESTS = 1000
+DISCOVERY_RATE_LIMIT_WINDOW = 3600
+
+
+async def _check_discovery_rate_limit(user_id: int, count: int = 1) -> None:
+    """Sliding-window limiter mirroring _check_upload_rate_limit."""
+    await _check_rate_limit_generic(
+        key=f"rate_limit:discovery_import:{user_id}",
+        limit=DISCOVERY_RATE_LIMIT_REQUESTS,
+        window=DISCOVERY_RATE_LIMIT_WINDOW,
+        count=count,
+    )
+
+
+class ImportRequest(_BaseModel):
+    dois: List[str]
+
+
+class ImportFailure(_BaseModel):
+    doi: str
+    reason: str
+
+
+class ImportResponse(_BaseModel):
+    imported: int
+    failed: List[ImportFailure]
+
+
+async def _resolve_paper_by_doi(doi: str):
+    """Re-resolve a paper server-side; never trust a client-supplied PDF URL."""
+    results = await search_epmc(f'DOI:"{doi}"', limit=1)
+    return results[0] if results else None
+
+
+def _paper_filename(paper) -> str:
+    """A readable, collision-tolerant filename. save_uploaded_document sanitises
+    it further and prefixes a timestamp, so this only needs to be human-friendly."""
+    first_author = (paper.authors or "").split(",")[0].strip() or "paper"
+    year = paper.year or "n.d."
+    title = (paper.title or "untitled")[:60]
+    return f"{first_author} {year} - {title}.pdf"
+
+
+@router.post("/discover/import", response_model=ImportResponse)
+async def import_discovered(
+    payload: ImportRequest,
+    background_tasks: BackgroundTasks,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Import the selected papers into the document library.
+
+    The PDF is fetched BEFORE any DB row is created, so a failed download leaves
+    neither an orphan row nor an orphan file.
+    """
+    dois = [d.strip() for d in (payload.dois or []) if d and d.strip()]
+    if not dois:
+        raise HTTPException(status_code=400, detail="No papers selected")
+    await _check_discovery_rate_limit(current_user.id, count=len(dois))
+
+    imported = 0
+    failures: list[ImportFailure] = []
+    semaphore = asyncio.Semaphore(EPMC_MAX_CONCURRENCY)
+
+    async def fetch_one(doi: str):
+        async with semaphore:
+            paper = await _resolve_paper_by_doi(doi)
+            if paper is None:
+                raise PdfFetchError("Not found in Europe PMC")
+            if not paper.pdf_url:
+                raise PdfFetchError("No freely downloadable PDF for this paper")
+            return paper, await fetch_pdf(paper.pdf_url)
+
+    for doi in dois:
+        try:
+            paper, content = await fetch_one(doi)
+        except PdfFetchError as e:
+            failures.append(ImportFailure(doi=doi, reason=str(e)))
+            continue
+        except Exception as e:
+            logger.exception("Discovery import failed for %s", doi)
+            failures.append(ImportFailure(doi=doi, reason=f"Import failed: {e}"))
+            continue
+
+        filename = _paper_filename(paper)
+        try:
+            document = await save_uploaded_document(
+                user_id=current_user.id, filename=filename, content=content,
+                db=db, thread_id=None,
+            )
+            document.doi = paper.doi
+            document.source_url = paper.source_url
+            await db.commit()
+        except Exception as e:
+            await db.rollback()
+            logger.exception("Failed to store discovered paper %s", doi)
+            failures.append(ImportFailure(doi=doi, reason=f"Could not store: {e}"))
+            continue
+
+        background_tasks.add_task(process_document_async, document.id)
+        imported += 1
+
+    return ImportResponse(imported=imported, failed=failures)
 
 
 # ============== Indexing Status ==============

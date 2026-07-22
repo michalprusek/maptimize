@@ -228,3 +228,80 @@ async def test_discover_titles_queries_each_line(monkeypatch):
     await pds.discover("Tau regulates microtubules\nEg5 drives bundling")
     assert len(calls) == 2
     assert all(c.startswith("TITLE:") for c in calls), calls
+
+
+# ============================================================================ #
+# Task 5: /discover/import endpoint + discovery rate limiter
+# ============================================================================ #
+from types import SimpleNamespace
+import routers.rag as rag_router
+
+
+async def test_import_reports_per_paper_failure_without_creating_rows(monkeypatch, mock_db):
+    paper = pds.parse_epmc_result(_OA_RAW)
+
+    async def fake_resolve(doi):
+        return paper
+
+    async def boom(url):
+        raise pds.PdfFetchError("Publisher returned HTTP 404")
+
+    saved = AsyncMock()
+    monkeypatch.setattr(rag_router, "_resolve_paper_by_doi", fake_resolve)
+    monkeypatch.setattr(rag_router, "fetch_pdf", boom)
+    monkeypatch.setattr(rag_router, "save_uploaded_document", saved)
+    monkeypatch.setattr(rag_router, "_check_discovery_rate_limit", AsyncMock())
+
+    out = await rag_router.import_discovered(
+        payload=rag_router.ImportRequest(dois=[paper.doi]),
+        background_tasks=SimpleNamespace(add_task=lambda *a, **k: None),
+        current_user=SimpleNamespace(id=1),
+        db=mock_db,
+    )
+    assert out.imported == 0
+    assert out.failed[0].reason.startswith("Publisher returned HTTP 404")
+    saved.assert_not_awaited()  # no orphan row when the download fails
+
+
+async def test_import_saves_as_library_document(monkeypatch, mock_db):
+    paper = pds.parse_epmc_result(_OA_RAW)
+    doc = SimpleNamespace(id=7, doi=None, source_url=None)
+
+    monkeypatch.setattr(rag_router, "_resolve_paper_by_doi", AsyncMock(return_value=paper))
+    monkeypatch.setattr(rag_router, "fetch_pdf", AsyncMock(return_value=b"%PDF-1.4"))
+    saved = AsyncMock(return_value=doc)
+    monkeypatch.setattr(rag_router, "save_uploaded_document", saved)
+    monkeypatch.setattr(rag_router, "_check_discovery_rate_limit", AsyncMock())
+    scheduled = []
+
+    out = await rag_router.import_discovered(
+        payload=rag_router.ImportRequest(dois=[paper.doi]),
+        background_tasks=SimpleNamespace(add_task=lambda *a, **k: scheduled.append(a)),
+        current_user=SimpleNamespace(id=1),
+        db=mock_db,
+    )
+    assert out.imported == 1
+    # library upload -> inherits group sharing, no page cap
+    assert saved.await_args.kwargs["thread_id"] is None
+    # provenance recorded for dedupe next time
+    assert doc.doi == paper.doi
+    assert doc.source_url == paper.source_url
+    assert scheduled, "indexing must be scheduled"
+
+
+async def test_import_refuses_paywalled_paper(monkeypatch, mock_db):
+    paywalled = pds.parse_epmc_result(_PAYWALLED_RAW)
+    monkeypatch.setattr(rag_router, "_resolve_paper_by_doi", AsyncMock(return_value=paywalled))
+    fetch = AsyncMock()
+    monkeypatch.setattr(rag_router, "fetch_pdf", fetch)
+    monkeypatch.setattr(rag_router, "save_uploaded_document", AsyncMock())
+    monkeypatch.setattr(rag_router, "_check_discovery_rate_limit", AsyncMock())
+
+    out = await rag_router.import_discovered(
+        payload=rag_router.ImportRequest(dois=[paywalled.doi]),
+        background_tasks=SimpleNamespace(add_task=lambda *a, **k: None),
+        current_user=SimpleNamespace(id=1),
+        db=mock_db,
+    )
+    assert out.imported == 0
+    fetch.assert_not_awaited()  # server-side re-verification, never trust the client
