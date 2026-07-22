@@ -117,6 +117,11 @@ class RAGDocument(Base):
         ForeignKey("groups.id", ondelete="SET NULL"),
         nullable=True, index=True,
     )
+    # Provenance for documents imported from Europe PMC (NULL for manual uploads).
+    # doi is indexed because it is the dedupe key: a paper already in the library
+    # must be shown as such instead of being imported twice.
+    doi: Mapped[Optional[str]] = mapped_column(String(255), nullable=True, index=True)
+    source_url: Mapped[Optional[str]] = mapped_column(String(1000), nullable=True)
     name: Mapped[str] = mapped_column(String(255))
     # Store file_type as string but validate against DocumentType values
     file_type: Mapped[str] = mapped_column(String(50))
