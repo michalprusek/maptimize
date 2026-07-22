@@ -91,3 +91,6 @@ backend/.cache/
 backups/
 *.bak
 *.bak.*
+
+# Playwright MCP session artifacts (browser snapshots/console logs)
+.playwright-mcp/
