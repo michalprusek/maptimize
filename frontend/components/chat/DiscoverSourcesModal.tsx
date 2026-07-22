@@ -22,7 +22,8 @@ export function DiscoverSourcesModal({ isOpen, onClose }: DiscoverSourcesModalPr
   const t = useTranslations("chat");
   const tCommon = useTranslations("common");
   const {
-    discoverResults, isDiscovering, isImportingPapers,
+    discoverResults,
+    discoverEffectiveQuery, isDiscovering, isImportingPapers,
     discoverSources, importDiscovered,
   } = useChatStore();
 
@@ -135,6 +136,17 @@ export function DiscoverSourcesModal({ isOpen, onClose }: DiscoverSourcesModalPr
           </div>
 
           <div className="flex-1 overflow-y-auto p-5 space-y-2">
+            {/* Only shown when the natural-language input was rewritten into
+                Europe PMC field syntax, so the user can see what was really
+                asked (and spot a bad translation). */}
+            {discoverEffectiveQuery && !isDiscovering && (
+              <div className="text-xs text-text-muted pb-1">
+                {t("discoverSearchedAs")}{" "}
+                <code className="px-1.5 py-0.5 rounded bg-white/[0.06] text-primary-400 font-mono">
+                  {discoverEffectiveQuery}
+                </code>
+              </div>
+            )}
             {searchFailed && !isDiscovering && (
               <div className="text-center py-8 text-red-400">{summary || t("discoverFailed")}</div>
             )}

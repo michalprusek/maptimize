@@ -274,6 +274,11 @@ async def test_discover_topic_uses_single_query(monkeypatch):
         return []
 
     monkeypatch.setattr(pds, "search_epmc", fake_search)
+    # Rewrite unavailable/off -> falls back to the raw text (pre-rewrite
+    # behaviour). The test harness already forces GEMINI_API_KEY="" so this
+    # would be the real outcome anyway; mocked explicitly so the test doesn't
+    # depend on that incidental environment detail.
+    monkeypatch.setattr(pds, "rewrite_topic_query", AsyncMock(return_value=None))
     await pds.discover("MAP bundling in vitro")
     assert calls == ["MAP bundling in vitro"]
 
@@ -352,6 +357,7 @@ async def test_discover_topic_query_is_not_capped_or_dropped(monkeypatch):
     # The truncation is specific to the doi/titles fan-out; a single free-text
     # topic query is exactly one sub-query and nothing is ever "dropped".
     monkeypatch.setattr(pds, "search_epmc", AsyncMock(return_value=[]))
+    monkeypatch.setattr(pds, "rewrite_topic_query", AsyncMock(return_value=None))
     out = await pds.discover("MAP bundling in vitro")
     assert out.dropped_queries == 0
 
@@ -383,6 +389,283 @@ async def test_discover_escapes_quotes_in_title_query(monkeypatch):
     await pds.discover('x" OR (OPEN_ACCESS:Y)\nsecond title here')
     assert all('"' not in c[len('TITLE:"'):-1] for c in calls), calls
     assert calls[0] == 'TITLE:"x OR (OPEN_ACCESS:Y)"'
+
+
+# ============================================================================ #
+# LLM query rewrite for free-text topic searches (rewrite_topic_query) and its
+# wiring into discover()'s topic branch. See paper_discovery_service.py's
+# module docstring / CLAUDE.md for the motivating live failure: a natural-
+# language request like "find all microtubule related papers from lab of dr.
+# carsten janke" sent to Europe PMC verbatim returns zero relevant papers.
+# ============================================================================ #
+import sys
+import types as pytypes
+from unittest.mock import MagicMock, patch
+
+
+def _rewrite_genai_response(text):
+    """A fake google.genai response carrying `.text` -- rewrite_topic_query
+    reads only that attribute (unlike the vision-extraction path elsewhere in
+    the codebase, this is a plain text-in/text-out call)."""
+    return SimpleNamespace(text=text)
+
+
+def _patch_query_rewrite_genai(response_or_callable):
+    """Inject a fake google.genai module so rewrite_topic_query's lazy import
+    resolves to our stub.
+
+    Unlike rag_service's extract_relevant_passages (which awaits
+    ``client.aio.models.generate_content``), rewrite_topic_query matches
+    gemini_agent_service's pattern: a plain (blocking) ``client.models.
+    generate_content`` invoked through ``asyncio.to_thread`` -- so the stub's
+    ``generate_content`` must be an ordinary callable, not an AsyncMock.
+    """
+    if callable(response_or_callable):
+        generate_content = MagicMock(side_effect=response_or_callable)
+    else:
+        generate_content = MagicMock(return_value=response_or_callable)
+
+    client = SimpleNamespace(models=SimpleNamespace(generate_content=generate_content))
+    genai = pytypes.ModuleType("google.genai")
+    genai.Client = MagicMock(return_value=client)
+    type_mod = pytypes.ModuleType("google.genai.types")
+    type_mod.ThinkingConfig = MagicMock()
+    type_mod.GenerateContentConfig = MagicMock()
+    genai.types = type_mod
+    google_pkg = pytypes.ModuleType("google")
+    google_pkg.genai = genai
+    return patch.dict("sys.modules", {
+        "google": google_pkg,
+        "google.genai": genai,
+        "google.genai.types": type_mod,
+    }), generate_content
+
+
+# --------------------------------------------------------------------------- #
+# rewrite_topic_query: no API key / SDK missing -> None, no call attempted.
+# --------------------------------------------------------------------------- #
+
+async def test_rewrite_topic_query_no_api_key_returns_none_without_calling(monkeypatch):
+    fake_settings = SimpleNamespace(gemini_api_key="", gemini_model="gemini-3.6-flash")
+    ctx, generate_content = _patch_query_rewrite_genai(_rewrite_genai_response("AUTH:\"X\""))
+    with patch.object(pds, "settings", fake_settings), ctx:
+        out = await pds.rewrite_topic_query("papers from the Janke lab")
+    assert out is None
+    generate_content.assert_not_called()  # no API key -> never even attempted
+
+
+async def test_rewrite_topic_query_returns_none_when_sdk_missing(monkeypatch):
+    fake_settings = SimpleNamespace(gemini_api_key="key", gemini_model="gemini-3.6-flash")
+    # sys.modules[name] = None is the standard trick to force `import google.genai`
+    # to raise ImportError, without needing the real package to be absent.
+    monkeypatch.setitem(sys.modules, "google.genai", None)
+    with patch.object(pds, "settings", fake_settings):
+        out = await pds.rewrite_topic_query("papers from the Janke lab")
+    assert out is None
+
+
+# --------------------------------------------------------------------------- #
+# rewrite_topic_query: success path + sanitization of the model's reply.
+# --------------------------------------------------------------------------- #
+
+async def test_rewrite_topic_query_success_uses_configured_model_and_low_thinking(monkeypatch):
+    fake_settings = SimpleNamespace(gemini_api_key="key", gemini_model="gemini-3.6-flash")
+    ctx, generate_content = _patch_query_rewrite_genai(
+        _rewrite_genai_response('AUTH:"Janke C" AND microtubule')
+    )
+    with patch.object(pds, "settings", fake_settings), ctx:
+        out = await pds.rewrite_topic_query(
+            "find all microtubule related papers from lab of dr. carsten janke"
+        )
+    assert out == 'AUTH:"Janke C" AND microtubule'
+    # settings.gemini_model is NEVER hardcoded (CLAUDE.md rule).
+    assert generate_content.call_args.kwargs["model"] == "gemini-3.6-flash"
+
+
+async def test_rewrite_topic_query_strips_markdown_fence(monkeypatch):
+    fake_settings = SimpleNamespace(gemini_api_key="key", gemini_model="gemini-3.6-flash")
+    fenced = '```\nAUTH:"Janke C" AND microtubule\n```'
+    ctx, _ = _patch_query_rewrite_genai(_rewrite_genai_response(fenced))
+    with patch.object(pds, "settings", fake_settings), ctx:
+        out = await pds.rewrite_topic_query("microtubule papers by Janke")
+    assert out == 'AUTH:"Janke C" AND microtubule'
+
+
+async def test_rewrite_topic_query_strips_trailing_prose(monkeypatch):
+    fake_settings = SimpleNamespace(gemini_api_key="key", gemini_model="gemini-3.6-flash")
+    chatty = (
+        'AUTH:"Janke C" AND microtubule\n'
+        "This query searches for papers authored by Janke about microtubules."
+    )
+    ctx, _ = _patch_query_rewrite_genai(_rewrite_genai_response(chatty))
+    with patch.object(pds, "settings", fake_settings), ctx:
+        out = await pds.rewrite_topic_query("microtubule papers by Janke")
+    assert out == 'AUTH:"Janke C" AND microtubule'
+
+
+# --------------------------------------------------------------------------- #
+# rewrite_topic_query: must never raise -- exception and timeout both -> None.
+# --------------------------------------------------------------------------- #
+
+async def test_rewrite_topic_query_returns_none_on_exception(monkeypatch):
+    fake_settings = SimpleNamespace(gemini_api_key="key", gemini_model="gemini-3.6-flash")
+
+    def boom(*a, **k):
+        raise RuntimeError("Gemini API exploded")
+
+    ctx, _ = _patch_query_rewrite_genai(boom)
+    with patch.object(pds, "settings", fake_settings), ctx:
+        out = await pds.rewrite_topic_query("microtubule papers by Janke")
+    assert out is None
+
+
+async def test_rewrite_topic_query_returns_none_on_timeout(monkeypatch):
+    import time as real_time
+    fake_settings = SimpleNamespace(gemini_api_key="key", gemini_model="gemini-3.6-flash")
+    monkeypatch.setattr(pds, "_QUERY_REWRITE_TIMEOUT", 0.05)
+
+    def slow(*a, **k):
+        real_time.sleep(0.3)
+        return _rewrite_genai_response('AUTH:"Janke C"')
+
+    ctx, _ = _patch_query_rewrite_genai(slow)
+    with patch.object(pds, "settings", fake_settings), ctx:
+        out = await pds.rewrite_topic_query("microtubule papers by Janke")
+    assert out is None
+
+
+# --------------------------------------------------------------------------- #
+# _sanitize_rewritten_query: direct unit coverage of edge cases.
+# --------------------------------------------------------------------------- #
+
+def test_sanitize_rewritten_query_empty_and_whitespace_only():
+    assert pds._sanitize_rewritten_query(None) is None
+    assert pds._sanitize_rewritten_query("") is None
+    assert pds._sanitize_rewritten_query("   \n  \n") is None
+
+
+def test_sanitize_rewritten_query_caps_length():
+    huge = "A" * 900
+    out = pds._sanitize_rewritten_query(huge)
+    assert out == "A" * pds._MAX_REWRITTEN_QUERY_LEN
+
+
+# --------------------------------------------------------------------------- #
+# discover()'s topic branch: uses the rewrite when it succeeds, falls back to
+# the raw text on any failure mode, and never calls the rewrite for doi/titles
+# (the hard cost-control requirement: one Gemini call per free-text search,
+# ZERO for doi/title searches, since those are already-structured queries).
+# --------------------------------------------------------------------------- #
+
+async def test_discover_topic_branch_uses_rewritten_query(monkeypatch):
+    calls = []
+
+    async def fake_search(q, limit=25):
+        calls.append(q)
+        return []
+
+    monkeypatch.setattr(pds, "search_epmc", fake_search)
+    monkeypatch.setattr(
+        pds, "rewrite_topic_query",
+        AsyncMock(return_value='AUTH:"Janke C" AND microtubule'),
+    )
+    out = await pds.discover("find all microtubule related papers from lab of dr. carsten janke")
+    assert calls == ['AUTH:"Janke C" AND microtubule']
+    assert out.effective_query == 'AUTH:"Janke C" AND microtubule'
+
+
+async def test_discover_topic_branch_falls_back_when_rewrite_raises(monkeypatch):
+    calls = []
+
+    async def fake_search(q, limit=25):
+        calls.append(q)
+        return []
+
+    monkeypatch.setattr(pds, "search_epmc", fake_search)
+    monkeypatch.setattr(
+        pds, "rewrite_topic_query", AsyncMock(side_effect=RuntimeError("Gemini down")),
+    )
+    out = await pds.discover("MAP bundling in vitro")  # must not raise
+    assert calls == ["MAP bundling in vitro"]
+    assert out.effective_query is None
+
+
+async def test_discover_topic_branch_falls_back_when_rewrite_returns_none(monkeypatch):
+    calls = []
+
+    async def fake_search(q, limit=25):
+        calls.append(q)
+        return []
+
+    monkeypatch.setattr(pds, "search_epmc", fake_search)
+    monkeypatch.setattr(pds, "rewrite_topic_query", AsyncMock(return_value=None))
+    out = await pds.discover("MAP bundling in vitro")
+    assert calls == ["MAP bundling in vitro"]
+    assert out.effective_query is None
+
+
+async def test_discover_topic_branch_falls_back_when_rewrite_returns_whitespace(monkeypatch):
+    calls = []
+
+    async def fake_search(q, limit=25):
+        calls.append(q)
+        return []
+
+    monkeypatch.setattr(pds, "search_epmc", fake_search)
+    monkeypatch.setattr(pds, "rewrite_topic_query", AsyncMock(return_value="   "))
+    out = await pds.discover("MAP bundling in vitro")
+    assert calls == ["MAP bundling in vitro"]
+    assert out.effective_query is None
+
+
+async def test_discover_doi_branch_never_calls_rewrite(monkeypatch):
+    monkeypatch.setattr(pds, "search_epmc", AsyncMock(return_value=[]))
+    rewrite = AsyncMock(return_value="should never be used")
+    monkeypatch.setattr(pds, "rewrite_topic_query", rewrite)
+    await pds.discover("10.1038/nature12373\n10.1016/j.cell.2020.01.001")
+    rewrite.assert_not_awaited()  # DOIs are already structured -- no LLM call, no cost
+
+
+async def test_discover_titles_branch_never_calls_rewrite(monkeypatch):
+    monkeypatch.setattr(pds, "search_epmc", AsyncMock(return_value=[]))
+    rewrite = AsyncMock(return_value="should never be used")
+    monkeypatch.setattr(pds, "rewrite_topic_query", rewrite)
+    await pds.discover("Tau regulates microtubules\nEg5 drives bundling")
+    rewrite.assert_not_awaited()  # pasted titles are already structured -- no LLM call
+
+
+# --------------------------------------------------------------------------- #
+# /discover endpoint: effective_query passes through to the response only
+# when discover() actually set it.
+# --------------------------------------------------------------------------- #
+
+async def test_discover_endpoint_surfaces_effective_query_when_rewrite_applied(monkeypatch, mock_db):
+    monkeypatch.setattr(rag_router, "_check_discovery_search_rate_limit", AsyncMock())
+    monkeypatch.setattr(rag_router, "discover_papers", AsyncMock(return_value=pds.DiscoveryResult(
+        papers=[], failed_queries=0, dropped_queries=0,
+        effective_query='AUTH:"Janke C" AND microtubule',
+    )))
+
+    out = await rag_router.discover_sources(
+        payload=rag_router.DiscoverRequest(query="papers from the Janke lab"),
+        current_user=SimpleNamespace(id=1),
+        db=mock_db,
+    )
+    assert out.effective_query == 'AUTH:"Janke C" AND microtubule'
+
+
+async def test_discover_endpoint_effective_query_is_none_when_rewrite_did_not_apply(monkeypatch, mock_db):
+    monkeypatch.setattr(rag_router, "_check_discovery_search_rate_limit", AsyncMock())
+    monkeypatch.setattr(rag_router, "discover_papers", AsyncMock(return_value=pds.DiscoveryResult(
+        papers=[], failed_queries=0, dropped_queries=0,
+    )))
+
+    out = await rag_router.discover_sources(
+        payload=rag_router.DiscoverRequest(query="10.1038/nature12373"),
+        current_user=SimpleNamespace(id=1),
+        db=mock_db,
+    )
+    assert out.effective_query is None
 
 
 # ============================================================================ #

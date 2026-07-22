@@ -591,6 +591,7 @@
     "discoverPlaceholder": "Décrivez les articles voulus, ou collez des titres / DOI…",
     "discoverSearch": "Rechercher",
     "discoverSearching": "Recherche…",
+    "discoverSearchedAs": "Recherché comme :",
     "discoverNoResults": "Aucun article trouvé",
     "discoverFailed": "Échec de la recherche — réessayez",
     "discoverImportFailed": "Échec de l'importation — réessayez",

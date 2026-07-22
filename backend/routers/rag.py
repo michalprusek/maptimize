@@ -560,6 +560,7 @@ async def discover_sources(
         ],
         failed_queries=result.failed_queries,
         dropped_queries=result.dropped_queries,
+        effective_query=result.effective_query,
     )
 
 

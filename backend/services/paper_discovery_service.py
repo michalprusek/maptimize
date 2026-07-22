@@ -17,7 +17,10 @@ from typing import Any, Optional
 
 import httpx
 
+from config import get_settings
+
 logger = logging.getLogger(__name__)
+settings = get_settings()
 
 EPMC_BASE = "https://www.ebi.ac.uk/europepmc/webservices/rest"
 # Politeness: never open more than this many connections to Europe PMC at once,
@@ -253,6 +256,110 @@ def _escape_query_term(text: str) -> str:
     return text.replace('"', "")
 
 
+# Free text handed to Europe PMC verbatim is treated as plain keyword search:
+# "papers from the lab of dr. carsten janke" matches nothing useful because
+# Europe PMC has no notion of "lab of" meaning "author". rewrite_topic_query
+# asks Gemini to translate the request into EPMC's field syntax first (see
+# its docstring). Kept as a plain constant (not an f-string) so `.format()`
+# is the only place `{query}` is substituted -- the request text itself may
+# contain literal `{`/`}` characters.
+_QUERY_REWRITE_PROMPT = """You are an expert user of the Europe PMC search API. \
+Translate the request below into a single Europe PMC search query.
+
+Europe PMC query syntax:
+- `AUTH:"Lastname I"` -- author search. Surname, a space, then bare initials \
+with NO periods and NO comma (e.g. `AUTH:"Janke C"`, never `AUTH:"Janke, C."` \
+or `AUTH:"C. Janke"`).
+- Plain keywords for a topic/subject; put exact phrases in double quotes \
+(e.g. "microtubule bundling").
+- `FIRST_PDATE:[2020 TO *]` -- restrict to a publication date range; use `*` \
+for an open end.
+- `JOURNAL:"..."`, `TITLE:"..."`, `ABSTRACT:"..."` -- restrict to a specific field.
+- Boolean operators `AND`, `OR`, `NOT` to combine any of the above.
+
+Worked example:
+Request: find all microtubule related papers from lab of dr. carsten janke
+Query: AUTH:"Janke C" AND microtubule
+
+Now translate this request into ONE Europe PMC query. Reply with ONLY the \
+query string itself -- no explanation, no markdown formatting, and no quotes \
+around the whole answer.
+
+Request: {query}"""
+
+# A user-initiated search where the user is watching a spinner can tolerate a
+# few extra seconds, but this happens BEFORE the Europe PMC call and must stay
+# well under EPMC_TIMEOUT so a slow rewrite can't double the worst-case wait.
+_QUERY_REWRITE_TIMEOUT = 20.0
+
+# The model is told to reply with ONLY the query string, but may still wrap it
+# in a markdown fence or add an explanation anyway -- cap the length so a
+# rambling response can never become an absurdly long Europe PMC query.
+_MAX_REWRITTEN_QUERY_LEN = 500
+
+
+def _sanitize_rewritten_query(raw: Optional[str]) -> Optional[str]:
+    """Clean up whatever Gemini returned, or None if nothing usable is left.
+
+    Strips a markdown code fence if present, keeps only the first non-empty
+    line (in case prose follows the query anyway), collapses internal
+    whitespace/newlines, and caps the length.
+    """
+    if not raw:
+        return None
+    text = raw.strip()
+    if text.startswith("```"):
+        lines = text.split("\n")[1:]           # drop the opening ``` / ```lang line
+        if lines and lines[-1].strip().startswith("```"):
+            lines = lines[:-1]                  # drop the closing ``` line
+        text = "\n".join(lines).strip()
+    first_line = next((ln.strip() for ln in text.splitlines() if ln.strip()), "")
+    cleaned = " ".join(first_line.split())[:_MAX_REWRITTEN_QUERY_LEN]
+    return cleaned or None
+
+
+async def rewrite_topic_query(text: str) -> Optional[str]:
+    """Translate a free-text topic description into Europe PMC query syntax.
+
+    Returns None on ANY failure -- no API key configured, the SDK not
+    installed, a timeout, any other exception, or an empty result after
+    sanitizing -- so the caller can always fall back to searching the raw
+    text as before. This function must never raise.
+    """
+    if not settings.gemini_api_key:
+        logger.warning("Query rewrite skipped: GEMINI_API_KEY not configured")
+        return None
+
+    try:
+        import google.genai as genai
+        from google.genai import types
+    except ImportError:
+        logger.warning("Query rewrite skipped: google-genai not installed")
+        return None
+
+    try:
+        client = genai.Client(api_key=settings.gemini_api_key)
+        response = await asyncio.wait_for(
+            asyncio.to_thread(
+                client.models.generate_content,
+                model=settings.gemini_model,
+                contents=_QUERY_REWRITE_PROMPT.format(query=text),
+                config=types.GenerateContentConfig(
+                    # Gemini 3.x replaces temperature/top_p/top_k with
+                    # thinking_level; "low" keeps this cheap, single-shot
+                    # translation fast -- it's not worth deep reasoning.
+                    thinking_config=types.ThinkingConfig(thinking_level="low"),
+                ),
+            ),
+            timeout=_QUERY_REWRITE_TIMEOUT,
+        )
+    except Exception as exc:
+        logger.warning("Query rewrite failed for %r: %s", text[:80], exc)
+        return None
+
+    return _sanitize_rewritten_query(getattr(response, "text", None))
+
+
 @dataclass
 class DiscoveryResult:
     """Everything discover() learned, not just the papers.
@@ -264,6 +371,11 @@ class DiscoveryResult:
     papers: list[PaperResult]
     failed_queries: int    # sub-queries that raised, but didn't sink the whole call
     dropped_queries: int   # sub-queries never run at all (MAX_SUBQUERIES cap)
+    # The query Europe PMC actually ran, ONLY set when rewrite_topic_query
+    # changed it -- None when the raw text was used (rewrite unavailable/
+    # failed, or this was a doi/titles search, which is never rewritten) so
+    # the UI can show "Searched as: ..." only when it's actually informative.
+    effective_query: Optional[str] = None
 
 
 async def discover(query: str, limit: int = 25) -> DiscoveryResult:
@@ -278,6 +390,7 @@ async def discover(query: str, limit: int = 25) -> DiscoveryResult:
     """
     kind, items = classify_query(query)
     dropped_queries = 0
+    effective_query: Optional[str] = None
     per_query_limit = limit
     if kind == "doi":
         capped = items[:MAX_SUBQUERIES]
@@ -290,7 +403,24 @@ async def discover(query: str, limit: int = 25) -> DiscoveryResult:
         queries = [f'TITLE:"{_escape_query_term(t)}"' for t in capped]
         per_query_limit = min(limit, SUBQUERY_RESULT_LIMIT)
     else:
-        queries = list(items)
+        # Structured doi/titles queries are already unambiguous Europe PMC
+        # syntax and cost nothing to build -- only a free-text topic search
+        # needs (and pays for) an LLM rewrite, and only ONE call per /discover.
+        raw_topic = items[0]
+        try:
+            rewritten = await rewrite_topic_query(raw_topic)
+        except Exception:
+            # rewrite_topic_query's contract is "never raises"; this guards
+            # against a violation of that contract (e.g. a misbehaving mock)
+            # so a rewrite failure can never sink the whole search.
+            logger.exception("rewrite_topic_query raised despite its no-raise contract")
+            rewritten = None
+        rewritten = (rewritten or "").strip() or None
+        if rewritten:
+            effective_query = rewritten
+            queries = [rewritten]
+        else:
+            queries = [raw_topic]
 
     semaphore = asyncio.Semaphore(EPMC_MAX_CONCURRENCY)
     failures: list[BaseException] = []
@@ -320,4 +450,5 @@ async def discover(query: str, limit: int = 25) -> DiscoveryResult:
             merged.append(paper)
     return DiscoveryResult(
         papers=merged, failed_queries=len(failures), dropped_queries=dropped_queries,
+        effective_query=effective_query,
     )

@@ -243,6 +243,11 @@ class DiscoverResponse(BaseModel):
     # Sub-queries never run at all because the request was capped (see
     # DiscoverRequest / MAX_SUBQUERIES) -- distinct from failed_queries.
     dropped_queries: int = 0
+    # The query Europe PMC actually ran, set ONLY when the LLM rewrite of a
+    # free-text topic search changed it -- None for doi/titles searches (never
+    # rewritten) and when the rewrite was unavailable/failed (raw text used).
+    # Lets the UI show "Searched as: ..." only when that's actually meaningful.
+    effective_query: Optional[str] = None
 
 
 class ImportRequest(BaseModel):

@@ -2034,6 +2034,11 @@ export interface DiscoveredPaper {
 export interface DiscoverResponse {
   query: string;
   results: DiscoveredPaper[];
+  // The Europe PMC query actually executed, set only when the natural-language
+  // input was rewritten into field syntax (e.g. AUTH:"Janke C" AND microtubule).
+  // Null when the text was searched verbatim, so the UI only explains itself
+  // when there is something to explain.
+  effective_query?: string | null;
 }
 
 export interface ImportResult {
