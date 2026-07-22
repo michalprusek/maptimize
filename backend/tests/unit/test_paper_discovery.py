@@ -435,3 +435,294 @@ async def test_fetch_pdf_gives_up_after_too_many_redirects(monkeypatch):
     with pytest.raises(pds.PdfFetchError) as ei:
         await pds.fetch_pdf("https://europepmc.org/start")
     assert "redirect" in str(ei.value).lower()
+
+
+async def test_fetch_pdf_rejects_redirect_with_no_location_header(monkeypatch):
+    # A 302 that forgets to say where to go is a broken/hostile response, not a
+    # hop to follow.
+    monkeypatch.setattr(pds, "_is_safe_url", lambda u: (True, ""))
+    monkeypatch.setattr(pds.httpx, "AsyncClient",
+                        _client_returning(_FakeStream(status=302, headers={})))
+    with pytest.raises(pds.PdfFetchError) as ei:
+        await pds.fetch_pdf("https://europepmc.org/a.pdf")
+    assert "target" in str(ei.value).lower()
+
+
+# ============================================================================ #
+# Task 6: close remaining coverage gaps (_source_url fallbacks, the real
+# _epmc_search_raw/search_epmc network path, the real _is_safe_url delegate,
+# and the /discover + /discover/import branches no test exercised yet).
+# ============================================================================ #
+
+def test_source_url_falls_back_to_doi_link_when_no_source_or_id():
+    # No "source"/"id" pair (e.g. a record shape Europe PMC didn't fully
+    # populate) but a DOI is present -> a doi.org link, not a dead abstract URL.
+    assert pds._source_url({"doi": "10.1234/x"}) == "https://doi.org/10.1234/x"
+
+
+def test_source_url_falls_back_to_generic_epmc_when_nothing_identifies_it():
+    assert pds._source_url({}) == "https://europepmc.org"
+
+
+def test_is_safe_url_real_delegate_blocks_localhost():
+    # Every other test in this file replaces pds._is_safe_url outright; this one
+    # leaves it alone to exercise the real lazy import + delegation to the
+    # agent service's SSRF guard.
+    ok, reason = pds._is_safe_url("http://localhost/admin")
+    assert ok is False
+    assert "localhost" in reason.lower()
+
+
+class _FakeGetResponse:
+    """Minimal stand-in for httpx's non-streaming GET response."""
+    def __init__(self, payload):
+        self._payload = payload
+
+    def raise_for_status(self):
+        pass
+
+    def json(self):
+        return self._payload
+
+
+def _get_client_returning(response, calls=None):
+    class _C:
+        async def __aenter__(self_inner):
+            return self_inner
+
+        async def __aexit__(self_inner, *a):
+            return False
+
+        async def get(self_inner, url, params=None):
+            if calls is not None:
+                calls.append((url, params))
+            return response
+    return lambda *a, **kw: _C()
+
+
+async def test_epmc_search_raw_hits_search_endpoint_and_parses_result_list(monkeypatch):
+    calls: list = []
+    payload = {"resultList": {"result": [_OA_RAW]}}
+    monkeypatch.setattr(pds.httpx, "AsyncClient",
+                        _get_client_returning(_FakeGetResponse(payload), calls))
+
+    out = await pds._epmc_search_raw("MAP bundling", 5)
+
+    assert out == [_OA_RAW]
+    url, params = calls[0]
+    assert url == f"{pds.EPMC_BASE}/search"
+    assert params["query"] == "MAP bundling"
+    assert params["resultType"] == "core"
+    assert params["pageSize"] == "5"
+
+
+async def test_epmc_search_raw_tolerates_missing_result_list(monkeypatch):
+    # A malformed/empty response body must yield "no results", not a KeyError.
+    monkeypatch.setattr(pds.httpx, "AsyncClient",
+                        _get_client_returning(_FakeGetResponse({})))
+    assert await pds._epmc_search_raw("nothing found", 5) == []
+
+
+async def test_search_epmc_normalises_every_raw_result(monkeypatch):
+    payload = {"resultList": {"result": [_OA_RAW, _PREPRINT_RAW]}}
+    monkeypatch.setattr(pds.httpx, "AsyncClient",
+                        _get_client_returning(_FakeGetResponse(payload)))
+
+    out = await pds.search_epmc("query", limit=10)
+
+    assert [p.doi for p in out] == [_OA_RAW["doi"], _PREPRINT_RAW["doi"]]
+    assert all(isinstance(p, pds.PaperResult) for p in out)
+
+
+# ---------------------------------------------------------------------------
+# /discover endpoint: empty-query 400 + the DOI-dedupe ("already_imported")
+# branch that no existing test drives (the only prior /discover test forces
+# the search itself to raise, never reaching the dedupe/response-building code).
+# ---------------------------------------------------------------------------
+from tests.unit.conftest import make_result
+
+
+async def test_discover_endpoint_rejects_empty_query(mock_db):
+    with pytest.raises(HTTPException) as ei:
+        await rag_router.discover_sources(
+            payload=rag_router.DiscoverRequest(query="   "),
+            current_user=SimpleNamespace(id=1),
+            db=mock_db,
+        )
+    assert ei.value.status_code == 400
+
+
+async def test_discover_endpoint_marks_already_imported_papers(monkeypatch, mock_db):
+    new_paper = pds.parse_epmc_result({**_OA_RAW, "doi": "10.1/new", "id": "new"})
+    old_paper = pds.parse_epmc_result({**_OA_RAW, "doi": "10.1/OLD", "id": "old"})
+    monkeypatch.setattr(rag_router, "discover_papers",
+                        AsyncMock(return_value=[new_paper, old_paper]))
+    monkeypatch.setattr(rag_router, "get_user_group_id", AsyncMock(return_value=7))
+    # The library already holds the lowercase DOI of `old_paper` -> the match
+    # must be case-insensitive.
+    mock_db.execute.return_value = make_result(scalars_all=["10.1/old"])
+
+    out = await rag_router.discover_sources(
+        payload=rag_router.DiscoverRequest(query="MAP bundling"),
+        current_user=SimpleNamespace(id=1),
+        db=mock_db,
+    )
+
+    assert out.query == "MAP bundling"
+    by_doi = {r.doi: r for r in out.results}
+    assert by_doi["10.1/new"].already_imported is False
+    assert by_doi["10.1/OLD"].already_imported is True
+    assert by_doi["10.1/OLD"].importable is True  # _OA_RAW carries a PDF link
+
+
+async def test_discover_endpoint_skips_dedupe_lookup_when_no_dois(monkeypatch, mock_db):
+    # A paper with no DOI can never match the library by DOI, and the dedupe
+    # query must not run at all (no "IN ()" round-trip) when there is nothing
+    # to look up.
+    paper = pds.parse_epmc_result({**_OA_RAW, "doi": None})
+    monkeypatch.setattr(rag_router, "discover_papers", AsyncMock(return_value=[paper]))
+    get_group = AsyncMock(return_value=7)
+    monkeypatch.setattr(rag_router, "get_user_group_id", get_group)
+
+    out = await rag_router.discover_sources(
+        payload=rag_router.DiscoverRequest(query="x"),
+        current_user=SimpleNamespace(id=1),
+        db=mock_db,
+    )
+
+    assert out.results[0].already_imported is False
+    get_group.assert_not_awaited()
+    mock_db.execute.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# _check_discovery_rate_limit: real body (every import test monkeypatches it
+# away outright).
+# ---------------------------------------------------------------------------
+
+async def test_check_discovery_rate_limit_delegates_with_import_budget(monkeypatch):
+    generic = AsyncMock()
+    monkeypatch.setattr(rag_router, "_check_rate_limit_generic", generic)
+
+    await rag_router._check_discovery_rate_limit(42, count=5)
+
+    generic.assert_awaited_once_with(
+        key="rate_limit:discovery_import:42",
+        limit=rag_router.DISCOVERY_RATE_LIMIT_REQUESTS,
+        window=rag_router.DISCOVERY_RATE_LIMIT_WINDOW,
+        count=5,
+    )
+
+
+# ---------------------------------------------------------------------------
+# _resolve_paper_by_doi: real body (every import test monkeypatches it away).
+# ---------------------------------------------------------------------------
+
+async def test_resolve_paper_by_doi_returns_first_result(monkeypatch):
+    paper = pds.parse_epmc_result(_OA_RAW)
+    search = AsyncMock(return_value=[paper])
+    monkeypatch.setattr(rag_router, "search_epmc", search)
+
+    out = await rag_router._resolve_paper_by_doi("10.1186/x")
+
+    assert out is paper
+    search.assert_awaited_once_with('DOI:"10.1186/x"', limit=1)
+
+
+async def test_resolve_paper_by_doi_returns_none_when_epmc_has_nothing(monkeypatch):
+    monkeypatch.setattr(rag_router, "search_epmc", AsyncMock(return_value=[]))
+    assert await rag_router._resolve_paper_by_doi("10.1186/missing") is None
+
+
+# ---------------------------------------------------------------------------
+# _paper_filename: field-missing edge cases.
+# ---------------------------------------------------------------------------
+
+def test_paper_filename_handles_all_fields_missing():
+    paper = SimpleNamespace(authors=None, year=None, title=None)
+    assert rag_router._paper_filename(paper) == "paper n.d. - untitled.pdf"
+
+
+def test_paper_filename_truncates_long_title_and_uses_first_author():
+    paper = SimpleNamespace(authors="Smith J, Doe A., Lee K.", year="2024", title="x" * 90)
+    name = rag_router._paper_filename(paper)
+    assert name.startswith("Smith J 2024 - ")
+    assert name.endswith(".pdf")
+    assert "x" * 60 in name
+    assert "x" * 61 not in name  # title is capped at 60 chars
+
+
+# ---------------------------------------------------------------------------
+# /discover/import: empty-selection 400, DOI-not-found-in-EPMC, generic
+# exception during fetch, and rollback when storing the document fails.
+# ---------------------------------------------------------------------------
+
+async def test_import_discovered_rejects_empty_selection(mock_db):
+    with pytest.raises(HTTPException) as ei:
+        await rag_router.import_discovered(
+            payload=rag_router.ImportRequest(dois=["   ", ""]),
+            background_tasks=SimpleNamespace(add_task=lambda *a, **k: None),
+            current_user=SimpleNamespace(id=1),
+            db=mock_db,
+        )
+    assert ei.value.status_code == 400
+
+
+async def test_import_discovered_reports_doi_not_found_in_epmc(monkeypatch, mock_db):
+    monkeypatch.setattr(rag_router, "_resolve_paper_by_doi", AsyncMock(return_value=None))
+    monkeypatch.setattr(rag_router, "_check_discovery_rate_limit", AsyncMock())
+    saved = AsyncMock()
+    monkeypatch.setattr(rag_router, "save_uploaded_document", saved)
+
+    out = await rag_router.import_discovered(
+        payload=rag_router.ImportRequest(dois=["10.1234/missing"]),
+        background_tasks=SimpleNamespace(add_task=lambda *a, **k: None),
+        current_user=SimpleNamespace(id=1),
+        db=mock_db,
+    )
+
+    assert out.imported == 0
+    assert out.failed[0].doi == "10.1234/missing"
+    assert out.failed[0].reason == "Not found in Europe PMC"
+    saved.assert_not_awaited()
+
+
+async def test_import_discovered_reports_unexpected_exception_as_failure(monkeypatch, mock_db):
+    # Anything other than PdfFetchError during resolve/fetch must still be
+    # caught and reported per-paper, not bubble up and abort the whole batch.
+    monkeypatch.setattr(rag_router, "_resolve_paper_by_doi",
+                        AsyncMock(side_effect=RuntimeError("epmc exploded")))
+    monkeypatch.setattr(rag_router, "_check_discovery_rate_limit", AsyncMock())
+    saved = AsyncMock()
+    monkeypatch.setattr(rag_router, "save_uploaded_document", saved)
+
+    out = await rag_router.import_discovered(
+        payload=rag_router.ImportRequest(dois=["10.1234/x"]),
+        background_tasks=SimpleNamespace(add_task=lambda *a, **k: None),
+        current_user=SimpleNamespace(id=1),
+        db=mock_db,
+    )
+
+    assert out.imported == 0
+    assert out.failed[0].reason == "Import failed: epmc exploded"
+    saved.assert_not_awaited()
+
+
+async def test_import_discovered_rolls_back_when_storing_fails(monkeypatch, mock_db):
+    paper = pds.parse_epmc_result(_OA_RAW)
+    monkeypatch.setattr(rag_router, "_resolve_paper_by_doi", AsyncMock(return_value=paper))
+    monkeypatch.setattr(rag_router, "fetch_pdf", AsyncMock(return_value=b"%PDF-1.4"))
+    monkeypatch.setattr(rag_router, "_check_discovery_rate_limit", AsyncMock())
+    monkeypatch.setattr(rag_router, "save_uploaded_document",
+                        AsyncMock(side_effect=RuntimeError("disk full")))
+
+    out = await rag_router.import_discovered(
+        payload=rag_router.ImportRequest(dois=[paper.doi]),
+        background_tasks=SimpleNamespace(add_task=lambda *a, **k: None),
+        current_user=SimpleNamespace(id=1),
+        db=mock_db,
+    )
+
+    assert out.imported == 0
+    assert out.failed[0].reason == "Could not store: disk full"
+    mock_db.rollback.assert_awaited_once()
