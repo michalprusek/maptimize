@@ -348,3 +348,90 @@ async def test_import_refuses_paywalled_paper(monkeypatch, mock_db):
     )
     assert out.imported == 0
     fetch.assert_not_awaited()  # server-side re-verification, never trust the client
+
+
+def _client_sequence(streams, seen):
+    """Fake httpx.AsyncClient that returns `streams` in order and records URLs.
+
+    Needed to exercise the redirect loop: the single-stream helper above always
+    hands back the same response, so it can never walk a redirect chain.
+    """
+    queue = list(streams)
+
+    class _C:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        def stream(self, method, url, **kw):
+            seen.append(url)
+            return queue.pop(0)
+
+    return lambda *a, **kw: _C()
+
+
+async def test_fetch_pdf_follows_redirect_and_revalidates_each_hop(monkeypatch):
+    """A real Europe PMC PDF URL redirects, so this path must actually work."""
+    checked: list[str] = []
+
+    def guard(u):
+        checked.append(u)
+        return (True, "")
+
+    seen: list[str] = []
+    monkeypatch.setattr(pds, "_is_safe_url", guard)
+    monkeypatch.setattr(pds.httpx, "AsyncClient", _client_sequence([
+        _FakeStream(status=302, headers={"location": "https://cdn.example.org/final.pdf"}),
+        _FakeStream(chunks=(b"%PDF-", b"final")),
+    ], seen))
+
+    assert await pds.fetch_pdf("https://europepmc.org/a?pdf=render") == b"%PDF-final"
+    # every hop was fetched AND every hop was SSRF-checked
+    assert seen == ["https://europepmc.org/a?pdf=render", "https://cdn.example.org/final.pdf"]
+    assert checked == seen
+
+
+async def test_fetch_pdf_resolves_relative_redirect(monkeypatch):
+    """A relative Location must be joined against the current URL, not fetched raw."""
+    seen: list[str] = []
+    monkeypatch.setattr(pds, "_is_safe_url", lambda u: (True, ""))
+    monkeypatch.setattr(pds.httpx, "AsyncClient", _client_sequence([
+        _FakeStream(status=302, headers={"location": "/pdf/final.pdf"}),
+        _FakeStream(chunks=(b"%PDF-rel",)),
+    ], seen))
+
+    assert await pds.fetch_pdf("https://europepmc.org/articles/PMC1?pdf=render") == b"%PDF-rel"
+    assert seen[1] == "https://europepmc.org/pdf/final.pdf"
+
+
+async def test_fetch_pdf_refuses_redirect_to_unsafe_host(monkeypatch):
+    """The whole point of manual redirects: a hop into the internal network is blocked."""
+    seen: list[str] = []
+
+    def guard(u):
+        return (False, "private address") if "169.254" in u else (True, "")
+
+    monkeypatch.setattr(pds, "_is_safe_url", guard)
+    monkeypatch.setattr(pds.httpx, "AsyncClient", _client_sequence([
+        _FakeStream(status=302, headers={"location": "http://169.254.169.254/latest/meta-data"}),
+    ], seen))
+
+    with pytest.raises(pds.PdfFetchError) as ei:
+        await pds.fetch_pdf("https://europepmc.org/a?pdf=render")
+    assert "refused" in str(ei.value).lower()
+
+
+async def test_fetch_pdf_gives_up_after_too_many_redirects(monkeypatch):
+    seen: list[str] = []
+    monkeypatch.setattr(pds, "_is_safe_url", lambda u: (True, ""))
+    hops = [
+        _FakeStream(status=302, headers={"location": f"https://example.org/{i}"})
+        for i in range(pds.MAX_REDIRECTS + 1)
+    ]
+    monkeypatch.setattr(pds.httpx, "AsyncClient", _client_sequence(hops, seen))
+
+    with pytest.raises(pds.PdfFetchError) as ei:
+        await pds.fetch_pdf("https://europepmc.org/start")
+    assert "redirect" in str(ei.value).lower()

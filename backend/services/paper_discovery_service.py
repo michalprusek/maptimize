@@ -171,7 +171,10 @@ async def fetch_pdf(url: str) -> bytes:
                     location = resp.headers.get("location")
                     if not location:
                         raise PdfFetchError("Redirect without a target")
-                    current = httpx.URL(current).join(location).human_repr()
+                    # str(), not .human_repr(): that is yarl's API, not httpx's.
+                    # Resolve relative Locations against the current URL so a
+                    # hop like "/pdf/x.pdf" is re-validated as an absolute URL.
+                    current = str(httpx.URL(current).join(location))
                     continue
                 if resp.status_code != 200:
                     raise PdfFetchError(f"Publisher returned HTTP {resp.status_code}")
