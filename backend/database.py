@@ -156,6 +156,9 @@ async def ensure_schema_updates():
             ("rag_documents", "truncated_from_pages", "INTEGER"),
             # Group support for shared library documents (thread_id IS NULL only)
             ("rag_documents", "group_id", "INTEGER REFERENCES groups(id) ON DELETE SET NULL"),
+            # Provenance for papers imported from Europe PMC
+            ("rag_documents", "doi", "VARCHAR(255)"),
+            ("rag_documents", "source_url", "VARCHAR(1000)"),
         ]
 
         for table, column, col_type in updates:
@@ -259,6 +262,18 @@ async def ensure_schema_updates():
             await conn.execute(text("ROLLBACK TO SAVEPOINT rag_documents_group_id_index"))
             logger.error(f"Failed to create ix_rag_documents_group_id: {e}")
             failed_updates.append("rag_documents.ix_group_id")
+
+        # Index for doi lookups (create_all skips columns added via ALTER TABLE above)
+        try:
+            await conn.execute(text("SAVEPOINT idx_doc_doi"))
+            await conn.execute(text(
+                "CREATE INDEX IF NOT EXISTS ix_rag_documents_doi ON rag_documents (doi)"
+            ))
+            await conn.execute(text("RELEASE SAVEPOINT idx_doc_doi"))
+        except Exception as e:
+            await conn.execute(text("ROLLBACK TO SAVEPOINT idx_doc_doi"))
+            logger.error(f"Failed to create ix_rag_documents_doi: {e}")
+            failed_updates.append("ix_rag_documents_doi")
 
         # Ensure enum values exist (must be outside transaction for PostgreSQL)
         # We run this in a separate autocommit connection

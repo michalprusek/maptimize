@@ -7,6 +7,7 @@ export { ChatInput } from "./ChatInput";
 export { WelcomeSearch } from "./WelcomeSearch";
 export { DocumentUpload } from "./DocumentUpload";
 export { DocumentsModal } from "./DocumentsModal";
+export { DiscoverSourcesModal } from "./DiscoverSourcesModal";
 export { IndexingProgress } from "./IndexingProgress";
 export { PDFViewerPanel } from "./PDFViewerPanel";
 export { WebLinkPanel } from "./WebLinkPanel";

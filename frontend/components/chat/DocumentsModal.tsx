@@ -4,6 +4,7 @@ import { useState } from "react";
 import { useTranslations } from "next-intl";
 import { useChatStore } from "@/stores/chatStore";
 import { DocumentUpload } from "./DocumentUpload";
+import { DiscoverSourcesModal } from "./DiscoverSourcesModal";
 import { ConfirmModal } from "@/components/ui/ConfirmModal";
 import type { RAGDocument } from "@/lib/api";
 import {
@@ -14,6 +15,7 @@ import {
   CheckCircle2,
   Trash2,
   Eye,
+  Search,
 } from "lucide-react";
 import { clsx } from "clsx";
 import { formatDistanceToNow } from "date-fns";
@@ -34,6 +36,7 @@ export function DocumentsModal({ isOpen, onClose }: DocumentsModalProps) {
   } = useChatStore();
 
   const [documentToDelete, setDocumentToDelete] = useState<RAGDocument | null>(null);
+  const [isDiscoverOpen, setIsDiscoverOpen] = useState(false);
 
   const handleDeleteDocument = (doc: RAGDocument, e: React.MouseEvent) => {
     e.stopPropagation();
@@ -95,6 +98,15 @@ export function DocumentsModal({ isOpen, onClose }: DocumentsModalProps) {
 
           {/* Content */}
           <div className="flex-1 overflow-y-auto p-5 space-y-5">
+            {/* Discover Section */}
+            <button
+              onClick={() => setIsDiscoverOpen(true)}
+              className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg bg-primary-500/10 hover:bg-primary-500/20 border border-primary-500/20 text-primary-400 text-sm font-medium transition-colors"
+            >
+              <Search className="w-4 h-4" />
+              {t("discoverSources")}
+            </button>
+
             {/* Upload Section */}
             <DocumentUpload />
 
@@ -243,6 +255,9 @@ export function DocumentsModal({ isOpen, onClose }: DocumentsModalProps) {
         isLoading={isDeletingDocument}
         variant="danger"
       />
+
+      {/* Discover Sources Modal */}
+      <DiscoverSourcesModal isOpen={isDiscoverOpen} onClose={() => setIsDiscoverOpen(false)} />
     </>
   );
 }

@@ -7,6 +7,8 @@ import {
   RAGDocument,
   RAGIndexingStatus,
   GenerationStatus,
+  DiscoveredPaper,
+  ImportResult,
 } from "@/lib/api";
 
 // Image preview types
@@ -84,6 +86,11 @@ interface ChatState {
   // Actions - Documents
   loadDocuments: () => Promise<void>;
   uploadDocument: (file: File, threadId?: number) => Promise<RAGDocument | null>;
+  discoverResults: DiscoveredPaper[];
+  isDiscovering: boolean;
+  isImportingPapers: boolean;
+  discoverSources: (query: string) => Promise<void>;
+  importDiscovered: (dois: string[]) => Promise<ImportResult>;
   deleteDocument: (documentId: number) => Promise<void>;
   refreshIndexingStatus: () => Promise<void>;
 
@@ -707,6 +714,50 @@ export const useChatStore = create<ChatState>()(
       },
 
       // ==================== Document Actions ====================
+
+      discoverResults: [],
+      isDiscovering: false,
+      isImportingPapers: false,
+
+      discoverSources: async (query: string) => {
+        set({ isDiscovering: true });
+        try {
+          const res = await api.discoverSources(query);
+          set({ discoverResults: res.results });
+        } catch (error) {
+          console.error("Failed to discover sources:", error);
+          set({ discoverResults: [] });
+          throw error;
+        } finally {
+          set({ isDiscovering: false });
+        }
+      },
+
+      importDiscovered: async (dois: string[]) => {
+        set({ isImportingPapers: true });
+        try {
+          const result = await api.importDiscovered(dois);
+          // Mark the DOIs that actually succeeded as already imported so the
+          // modal stops showing them as importable (avoids duplicate imports
+          // on a second click). Anything in result.failed did NOT succeed.
+          const failedDois = new Set(result.failed.map((f) => f.doi));
+          const succeededDois = new Set(dois.filter((doi) => !failedDois.has(doi)));
+          set((state) => ({
+            discoverResults: state.discoverResults.map((p) =>
+              p.doi && succeededDois.has(p.doi) ? { ...p, already_imported: true } : p
+            ),
+          }));
+          // Imported papers arrive as PENDING documents; reload so they show up in
+          // the modal's "processing" bucket with progress.
+          await get().loadDocuments();
+          return result;
+        } catch (error) {
+          console.error("Failed to import papers:", error);
+          throw error;
+        } finally {
+          set({ isImportingPapers: false });
+        }
+      },
 
       loadDocuments: async () => {
         set({ error: null });
