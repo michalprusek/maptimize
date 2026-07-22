@@ -20,7 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from config import get_settings
-from models.rag_document import RAGDocument, RAGDocumentPage, DocumentStatus, document_read_scope
+from models.rag_document import RAGDocument, RAGDocumentPage, DocumentStatus, document_read_scope, document_scope
 from models.image import Image
 from models.experiment import Experiment
 
@@ -116,8 +116,8 @@ async def search_documents(
         embedding_list = query_embedding.tolist()
 
         # Optional filter: restrict the search to specific documents. Bound as a
-        # parameter (never string-interpolated) and still scoped by user_id, so
-        # it cannot widen access beyond the caller's own documents.
+        # parameter (never string-interpolated) and still scoped by owner_clause
+        # (owner OR group library), so it cannot widen access beyond that scope.
         doc_filter = ""
         params = {
             "embedding": str(embedding_list),
@@ -507,6 +507,7 @@ async def get_document_content(
     )
     document = result.scalar_one_or_none()
     if not document:
+        logger.warning(f"Document {document_id} not found for user {user_id} (group_id={group_id})")
         return None
 
     # Get pages - either specific ones or first N
@@ -562,6 +563,7 @@ async def get_all_documents_summary(
     user_id: int,
     db: AsyncSession,
     include_first_page_text: bool = True,
+    thread_id: Optional[int] = None,
     group_id: Optional[int] = None,
 ) -> List[dict]:
     """
@@ -571,6 +573,9 @@ async def get_all_documents_summary(
         user_id: User ID
         db: Database session
         include_first_page_text: Whether to include text from first page
+        thread_id: Current chat thread, for attachment scoping (this is a LISTING,
+            so it must use document_scope, not the fetch-by-id document_read_scope --
+            otherwise the owner's chat attachments from OTHER threads would leak in)
         group_id: Caller's group, so group-shared library documents are included
 
     Returns:
@@ -579,7 +584,7 @@ async def get_all_documents_summary(
     result = await db.execute(
         select(RAGDocument)
         .options(selectinload(RAGDocument.pages))
-        .where(document_read_scope(user_id, group_id))
+        .where(document_scope(user_id, thread_id, group_id))
         .where(RAGDocument.status == "completed")
         .order_by(RAGDocument.created_at.desc())
     )
@@ -985,7 +990,8 @@ Return ONLY the JSON array. Return [] if nothing found. Maximum {max_passages} e
                 )
             ],
             config=types.GenerateContentConfig(
-                temperature=0.1,  # Low temperature for precise extraction
+                # Gemini 3.x replaces temperature/top_p/top_k with thinking_level;
+                # this call relies on the default.
             )
         )
 

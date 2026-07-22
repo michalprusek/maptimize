@@ -112,7 +112,16 @@ async def save_uploaded_document(
     # Library uploads (thread_id IS NULL) are shared with the owner's lab group;
     # chat attachments stay private (group_id stays None). Mirrors experiment
     # group stamping in routers/experiments.py::create_experiment.
-    group_id = await get_user_group_id(user_id, db) if thread_id is None else None
+    # Fail-closed: the file is already on disk at this point, so a raise here
+    # would leave an orphaned file with no DB row. owner-only (None) is always
+    # safe for a brand-new upload. Mirrors the same try/except in
+    # gemini_agent_service.py::generate_response.
+    group_id = None
+    if thread_id is None:
+        try:
+            group_id = await get_user_group_id(user_id, db)
+        except Exception:
+            logger.exception(f"Failed to resolve group for user {user_id}; uploading as owner-only")
 
     # Create DB record
     document = RAGDocument(
@@ -493,6 +502,7 @@ async def delete_document(document_id: int, user_id: int, db: AsyncSession) -> b
     Returns:
         True if deleted, False if not found
     """
+    # Intentionally NOT document_read_scope: writes stay owner-only (group grants read, not mutate).
     result = await db.execute(
         select(RAGDocument).where(
             RAGDocument.id == document_id,
@@ -538,6 +548,7 @@ async def reindex_document(document_id: int, user_id: int) -> dict:
     """
     async with get_db_context() as db:
         # Get and verify document
+        # Intentionally NOT document_read_scope: writes stay owner-only (group grants read, not mutate).
         result = await db.execute(
             select(RAGDocument).where(
                 RAGDocument.id == document_id,

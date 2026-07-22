@@ -219,7 +219,11 @@ async def ensure_schema_updates():
             logger.info("Backfilled user_id on metric_ratings/metric_comparisons")
         except Exception as e:
             await conn.execute(text("ROLLBACK TO SAVEPOINT backfill_user_id"))
-            logger.debug(f"Backfill user_id skipped: {e}")
+            logger.error(
+                f"Backfill user_id on metric_ratings/metric_comparisons FAILED "
+                f"(pre-existing ratings/comparisons may be missing user_id, breaking per-user filtering): {e}"
+            )
+            failed_updates.append("metric_ratings/metric_comparisons.backfill_user_id")
 
         # Backfill group_id for existing LIBRARY documents (thread_id IS NULL).
         # Stamp each with its owner's group so lab members see docs uploaded
@@ -237,7 +241,24 @@ async def ensure_schema_updates():
             logger.info("Backfilled group_id on library rag_documents")
         except Exception as e:
             await conn.execute(text("ROLLBACK TO SAVEPOINT backfill_doc_group"))
-            logger.debug(f"Backfill rag_documents.group_id skipped: {e}")
+            logger.error(
+                f"Backfill group_id on rag_documents FAILED "
+                f"(pre-existing library documents will NOT be shared with the owner's group): {e}"
+            )
+            failed_updates.append("rag_documents.backfill_doc_group")
+
+        # Index for group_id lookups (create_all skips columns added via ALTER TABLE above)
+        try:
+            await conn.execute(text("SAVEPOINT rag_documents_group_id_index"))
+            await conn.execute(text(
+                "CREATE INDEX IF NOT EXISTS ix_rag_documents_group_id ON rag_documents (group_id)"
+            ))
+            await conn.execute(text("RELEASE SAVEPOINT rag_documents_group_id_index"))
+            logger.debug("Ensured index exists: ix_rag_documents_group_id")
+        except Exception as e:
+            await conn.execute(text("ROLLBACK TO SAVEPOINT rag_documents_group_id_index"))
+            logger.error(f"Failed to create ix_rag_documents_group_id: {e}")
+            failed_updates.append("rag_documents.ix_group_id")
 
         # Ensure enum values exist (must be outside transaction for PostgreSQL)
         # We run this in a separate autocommit connection

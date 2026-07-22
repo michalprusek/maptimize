@@ -90,7 +90,12 @@ export function PDFViewerPanel() {
   const [isDesktop, setIsDesktop] = useState(false);
   const [panelWidth, setPanelWidth] = useState(500);
   const panelWidthRef = useRef(panelWidth);
-  panelWidthRef.current = panelWidth;
+  // Keep the ref in sync in an effect, not during render (render purity /
+  // StrictMode) — startResize reads it at drag-start time, and by then the
+  // effect from the previous commit has already run.
+  useEffect(() => {
+    panelWidthRef.current = panelWidth;
+  }, [panelWidth]);
 
   useEffect(() => {
     const mq = window.matchMedia("(min-width: 1024px)");
@@ -108,30 +113,60 @@ export function PDFViewerPanel() {
     }
   }, []);
 
-  useEffect(() => {
-    localStorage.setItem("pdfPanelWidth", String(panelWidth));
-  }, [panelWidth]);
+  // Persistence happens once the drag ends (see startResize's teardown below),
+  // not on every width change — otherwise every mousemove frame would hit
+  // localStorage.
+
+  // Teardown for an in-flight resize drag, kept in a ref so it can be invoked
+  // from onUp, from a component-unmount cleanup, AND from a window "blur"
+  // safety net (mouse released outside the window; Escape closes the panel
+  // mid-drag, which unmounts this component before onUp ever fires). Without
+  // this, the mousemove/mouseup listeners leak and document.body is left
+  // stuck with cursor: col-resize + unselectable text app-wide.
+  const resizeTeardownRef = useRef<(() => void) | null>(null);
 
   // Drag the panel's left edge to resize. The panel sits on the right of the
   // layout, so dragging left widens it.
   const startResize = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
+    // Tear down any previous drag first (shouldn't normally overlap, but keeps
+    // startResize itself idempotent/safe to call repeatedly).
+    resizeTeardownRef.current?.();
+
     const startX = e.clientX;
     const startW = panelWidthRef.current;
     const onMove = (ev: MouseEvent) => {
       const delta = startX - ev.clientX;
       setPanelWidth(Math.min(PANEL_MAX_WIDTH, Math.max(PANEL_MIN_WIDTH, startW + delta)));
     };
-    const onUp = () => {
+    const teardown = () => {
+      // Idempotent: bail if this drag's teardown already ran (e.g. onUp AND
+      // unmount cleanup both fire).
+      if (resizeTeardownRef.current !== teardown) return;
+      resizeTeardownRef.current = null;
       document.removeEventListener("mousemove", onMove);
       document.removeEventListener("mouseup", onUp);
+      window.removeEventListener("blur", onUp);
       document.body.style.userSelect = "";
       document.body.style.cursor = "";
+      // Persist only now that the drag has actually ended.
+      localStorage.setItem("pdfPanelWidth", String(panelWidthRef.current));
     };
+    const onUp = () => teardown();
+    resizeTeardownRef.current = teardown;
     document.body.style.userSelect = "none";
     document.body.style.cursor = "col-resize";
     document.addEventListener("mousemove", onMove);
     document.addEventListener("mouseup", onUp);
+    // Safety net: mouse released outside the window never fires "mouseup".
+    window.addEventListener("blur", onUp);
+  }, []);
+
+  // Ensure a drag in progress is always torn down when this panel unmounts
+  // (e.g. Escape mid-drag calls closePDFViewer(), which returns null below
+  // before onUp ever gets a chance to fire).
+  useEffect(() => {
+    return () => resizeTeardownRef.current?.();
   }, []);
 
   // Pages with search matches (for highlighting)
@@ -323,7 +358,12 @@ export function PDFViewerPanel() {
     }, 50);
 
     return () => clearInterval(retryInterval);
-  }, [activePDFPage, isPDFPanelOpen, activePDFDocumentId]);
+    // naturalAspect is included because every page box is reserved at the
+    // 8.5/11 fallback ratio until it's measured; when it updates, all boxes
+    // resize and an already-scrolled-to target can end up off-screen. The
+    // effect itself no-ops once the target page is visible, so re-running it
+    // here is safe/idempotent.
+  }, [activePDFPage, isPDFPanelOpen, activePDFDocumentId, naturalAspect]);
 
   // Reset state when document changes
   useEffect(() => {
@@ -331,7 +371,11 @@ export function PDFViewerPanel() {
     setFailedPages(new Set());
     setErrorDetails(new Map());
     setNaturalAspect(null);
-    pageElementsRef.current.clear();
+    // Don't clear pageElementsRef here: the observer effect above already
+    // observed the newly mounted page elements by the time this runs, and
+    // each page's own ref callback (below) deletes its entry when its div
+    // unmounts — which always happens on document change since `key`
+    // includes the document id. Clearing here only "worked" by accident.
     pageRefCallbacks.current.clear();
     // Reset search when document changes
     closeSearch();
@@ -414,9 +458,10 @@ export function PDFViewerPanel() {
           if (observerRef.current && element.isConnected) {
             try {
               observerRef.current.observe(element);
-            } catch {
+            } catch (e) {
               // Observer may be disconnected during Fast Refresh; the observer
               // effect re-observes all registered elements when it re-runs.
+              console.debug(`Failed to observe page ${pageNum}:`, e);
             }
           }
         } else {
@@ -424,8 +469,9 @@ export function PDFViewerPanel() {
           if (existing && observerRef.current) {
             try {
               observerRef.current.unobserve(existing);
-            } catch {
+            } catch (e) {
               // Element already disconnected during cleanup — safe to ignore.
+              console.debug(`Failed to unobserve page ${pageNum}:`, e);
             }
           }
           pageElementsRef.current.delete(pageNum);

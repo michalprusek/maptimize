@@ -639,6 +639,20 @@ async def test_rag_reindex_endpoint(mock_db):
         await queued()
 
 
+async def test_rag_reindex_endpoint_omits_group_id(mock_db):
+    # Regression guard: reindex is a write, so it must degrade to owner-only
+    # even for a caller in a group. get_document_for_user's 3rd positional arg
+    # is group_id (default None -> owner-only); the endpoint must call it with
+    # ONLY (db, document_id, user_id) -- no group_id at all -- so this can never
+    # accidentally start reindexing a document the caller merely has group read
+    # access to.
+    bg = MagicMock()
+    fake_get_doc = AsyncMock(return_value=_doc())
+    with patch.object(rag_r, "get_document_for_user", new=fake_get_doc):
+        await rag_r.reindex_document_endpoint(1, bg, current_user=user(id=7), db=mock_db)
+    fake_get_doc.assert_awaited_once_with(mock_db, 1, 7)
+
+
 async def test_rag_serve_pdf_not_pdf(mock_db):
     doc = _doc(file_type="image")
     with patch.object(rag_r, "get_document_for_user", new=AsyncMock(return_value=doc)):

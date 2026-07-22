@@ -26,6 +26,7 @@ import numpy as np
 import pytest
 
 import services.gemini_agent_service as svc
+import services.rag_service as rag_service
 from services.gemini_agent_service import (
     FORCE_ANSWER_AFTER,
     StatsCache,
@@ -416,6 +417,121 @@ async def test_execute_tool_outer_exception_rollback_also_fails(mock_db):
     mock_db.rollback.side_effect = RuntimeError("rollback boom")
     res = await execute_tool("get_overview_stats", {}, 1, mock_db)
     assert "failed" in res["error"].lower()
+
+
+# --- group_id forwarding into document tools -------------------------------- #
+# Regression: the SSOT filter functions (document_scope, document_read_scope,
+# _inject_user_id_filter) are proven correct elsewhere (test_document_acl.py),
+# but that says nothing about whether execute_tool's ~7 document-tool call
+# sites actually FORWARD the caller's group_id into them. Two of them already
+# silently dropped it (serve_passage_image, extract_relevant_passages) and had
+# to be fixed in a follow-up commit -- this closes that class of bug for every
+# remaining call site by asserting the forward actually happens, not just that
+# the callee would do the right thing if it received the value.
+_DOCUMENT_TOOL_FORWARDING_CASES = [
+    pytest.param(
+        "get_documents_summary", {}, "get_all_documents_summary", [],
+        id="get_documents_summary-forwards-to-get_all_documents_summary",
+    ),
+    pytest.param(
+        "semantic_search", {"query": "x"}, "combined_search",
+        {"query": "x", "documents": [], "fov_images": []},
+        id="semantic_search-forwards-to-combined_search",
+    ),
+    pytest.param(
+        "search_documents", {"query": "x"}, "search_documents", [],
+        id="search_documents-forwards-to-search_documents",
+    ),
+    pytest.param(
+        "get_document_content", {"document_id": 5}, "get_document_content",
+        {"name": "d", "pages": []},
+        id="get_document_content-forwards-to-get_document_content",
+    ),
+    pytest.param(
+        "show_document_pages", {"document_id": 5}, "get_document_content",
+        {"name": "d", "pages": [{"page_number": 1, "image_url": "/x"}]},
+        id="show_document_pages-forwards-to-get_document_content",
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    "tool_name, args, patched_name, return_value", _DOCUMENT_TOOL_FORWARDING_CASES,
+)
+async def test_execute_tool_forwards_group_id_to_document_tools(
+    mock_db, tool_name, args, patched_name, return_value,
+):
+    # These 5 call sites reach their underlying service function through a
+    # module-level name imported into gemini_agent_service itself (`from
+    # services.rag_service import search_documents, ...`), so patching it on
+    # ``svc`` intercepts the actual call execute_tool makes.
+    fake = AsyncMock(return_value=return_value)
+    with patch.object(svc, patched_name, new=fake):
+        await execute_tool(tool_name, args, user_id=1, db=mock_db, group_id=99)
+    assert fake.await_args.kwargs.get("group_id") == 99
+
+
+@pytest.mark.parametrize(
+    "args, patched_name, return_value",
+    [
+        pytest.param(
+            {"document_id": 5, "page_number": 1, "description": "fig"},
+            "extract_relevant_passages",
+            [{"document_id": 5, "page_number": 1, "passage_hash": "h"}],
+            id="extract_document_region-no-bbox-forwards-to-extract_relevant_passages",
+        ),
+        pytest.param(
+            {"document_id": 5, "page_number": 1, "description": "fig",
+             "bbox": [0, 0, 1, 1]},
+            "extract_passage_image",
+            {"document_id": 5, "page_number": 1, "passage_hash": "h"},
+            id="extract_document_region-bbox-forwards-to-extract_passage_image",
+        ),
+    ],
+)
+async def test_execute_tool_extract_document_region_forwards_group_id(
+    mock_db, args, patched_name, return_value,
+):
+    # Unlike the 5 cases above, extract_relevant_passages/extract_passage_image
+    # are imported LOCALLY inside the elif branch (`from services.rag_service
+    # import ...`) -- exactly what let extract_relevant_passages' group_id drop
+    # slip through review once already. Patch the source module, not ``svc``.
+    fake = AsyncMock(return_value=return_value)
+    with patch.object(rag_service, patched_name, new=fake):
+        await execute_tool("extract_document_region", args, user_id=1, db=mock_db, group_id=99)
+    assert fake.await_args.kwargs.get("group_id") == 99
+
+
+async def test_execute_tool_list_documents_forwards_group_id_via_document_scope(mock_db):
+    # list_documents builds its query with document_scope(user_id, thread_id,
+    # group_id) -- there is no separate function call to intercept, so instead
+    # capture the compiled SQL of the statement execute_tool actually runs and
+    # assert the group term is really in it.
+    captured = {}
+
+    async def fake_execute(stmt, *a, **kw):
+        captured["sql"] = str(stmt.compile(compile_kwargs={"literal_binds": True}))
+        return make_result(scalars_all=[])
+
+    mock_db.execute = fake_execute
+    await execute_tool("list_documents", {}, user_id=1, db=mock_db, group_id=99)
+    assert "rag_documents.group_id = 99" in captured["sql"]
+
+
+async def test_execute_tool_overview_stats_doc_count_forwards_group_id(mock_db):
+    # Same document_scope call site as list_documents, reached via the
+    # get_overview_stats doc-count query instead.
+    StatsCache._cache.clear()
+    calls = []
+
+    async def fake_execute(stmt, *a, **kw):
+        calls.append(str(stmt.compile(compile_kwargs={"literal_binds": True})))
+        return make_result()
+
+    mock_db.execute = fake_execute
+    await execute_tool("get_overview_stats", {}, user_id=1, db=mock_db, group_id=99)
+    doc_count_sql = next(sql for sql in calls if "rag_documents" in sql)
+    assert "rag_documents.group_id = 99" in doc_count_sql
 
 
 # --- get_overview_stats ---------------------------------------------------- #
@@ -1776,6 +1892,22 @@ async def test_generate_response_no_api_key(mock_db, monkeypatch):
 
 async def test_generate_response_text_only(mock_db, monkeypatch):
     monkeypatch.setattr(svc.settings, "gemini_api_key", "fake-key")
+    resp = _fake_response(_model_content_with_text("Hello there"))
+    with _patch_client([resp]):
+        res = await generate_response("hi", 1, 100, mock_db)
+    assert res["content"] == "Hello there"
+    assert res["interaction_id"].startswith("int_100_")
+
+
+async def test_generate_response_group_resolution_failure_is_fail_closed(mock_db, monkeypatch):
+    # Regression guard: get_user_group_id is resolved ONCE per turn and wrapped
+    # in try/except specifically so a transient failure (DB blip, group lookup
+    # error) degrades the WHOLE turn to owner-only scope instead of blowing up
+    # the agent response entirely. Prove the turn still completes normally --
+    # not just that the except block exists syntactically.
+    monkeypatch.setattr(svc.settings, "gemini_api_key", "fake-key")
+    monkeypatch.setattr(svc, "get_user_group_id",
+                        AsyncMock(side_effect=RuntimeError("db down")))
     resp = _fake_response(_model_content_with_text("Hello there"))
     with _patch_client([resp]):
         res = await generate_response("hi", 1, 100, mock_db)

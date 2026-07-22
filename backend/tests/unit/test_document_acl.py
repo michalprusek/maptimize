@@ -1,6 +1,7 @@
 """Unit tests for group-shared RAG document access control."""
 import json as _json
 import types as _pytypes
+from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -11,6 +12,13 @@ import utils.groups as groups_util
 from models.rag_document import RAGDocument, document_read_scope, document_scope
 from services.gemini_agent_service import _inject_user_id_filter
 from tests.unit.conftest import make_result
+
+
+@asynccontextmanager
+async def _db_ctx(db):
+    """A get_db_context() stand-in yielding ``db`` (reindex_document opens its
+    own session rather than taking one as a parameter)."""
+    yield db
 
 
 def test_rag_document_has_group_id_column():
@@ -129,6 +137,41 @@ async def test_search_documents_widens_precheck_to_group(mock_db):
     precheck_sql, precheck_params = calls[0]
     assert "group_id" in precheck_sql.lower()
     assert precheck_params.get("group_id") == 7
+
+
+async def test_search_documents_main_query_is_also_group_widened(mock_db):
+    # The precheck test above short-circuits BEFORE the real pgvector query is
+    # ever built (has_indexed.first() -> None), so it says nothing about the
+    # query that actually returns results. Let the precheck succeed instead and
+    # capture the SECOND db.execute call -- the real similarity search -- to
+    # prove its owner_clause and bound params are group-widened too.
+    calls = []
+
+    async def fake_execute(stmt, params=None):
+        calls.append((str(stmt), params or {}))
+        if len(calls) == 1:
+            return make_result(first=SimpleNamespace(x=1))  # pre-check succeeds
+        return make_result(fetchall=[])  # main query executes, no rows back
+
+    mock_db.execute = fake_execute
+
+    class _FakeQueryVector:
+        def tolist(self):
+            return [0.1, 0.2, 0.3]
+
+    fake_encoder = MagicMock()
+    fake_encoder.encode_query.return_value = _FakeQueryVector()
+
+    with patch("ml.rag.get_qwen_vl_encoder", return_value=fake_encoder):
+        out = await rag_service.search_documents(
+            query="tubulin", user_id=1, db=mock_db, thread_id=None, group_id=7,
+        )
+
+    assert out == []
+    assert len(calls) == 2  # precheck + main query, both executed
+    main_sql, main_params = calls[1]
+    assert "rd.thread_id IS NULL AND rd.group_id = :group_id" in main_sql
+    assert main_params.get("group_id") == 7
 
 
 async def test_get_document_content_uses_read_scope(mock_db):
@@ -268,3 +311,47 @@ async def test_serve_passage_image_resolves_and_forwards_group_id(mock_db):
         group_id=7,
     )
     assert result == "fake-response"
+
+
+# --------------------------------------------------------------------------- #
+# Writes stay owner-only: delete/reindex must NEVER widen to the group, even
+# though the same document could be group-shared for reads. document_scope /
+# document_read_scope are read-scope SSOTs; the write path deliberately does
+# NOT go through either -- these tests lock that omission so a future "helpful"
+# refactor can't quietly make it use document_read_scope and let a group member
+# delete or reindex a document they don't own.
+# --------------------------------------------------------------------------- #
+async def test_delete_document_lookup_never_widens_to_group(mock_db):
+    captured = {}
+
+    async def fake_execute(stmt, *a, **kw):
+        captured["sql"] = str(stmt.compile(compile_kwargs={"literal_binds": True}))
+        return make_result(scalar=None)
+
+    mock_db.execute = fake_execute
+    assert await dis.delete_document(document_id=5, user_id=7, db=mock_db) is False
+    # select(RAGDocument) always lists rag_documents.group_id as a SELECTED
+    # column (it's a mapped attribute) -- that's not the bug we're guarding.
+    # What must never appear is a PREDICATE on it (an equality test or an OR
+    # widening the WHERE clause), which is what document_read_scope would add.
+    assert "rag_documents.group_id =" not in captured["sql"]
+    assert "OR" not in captured["sql"]
+    assert "rag_documents.user_id = 7" in captured["sql"]
+
+
+async def test_reindex_document_lookup_never_widens_to_group(mock_db):
+    captured = {}
+
+    async def fake_execute(stmt, *a, **kw):
+        captured["sql"] = str(stmt.compile(compile_kwargs={"literal_binds": True}))
+        return make_result(scalar=None)
+
+    mock_db.execute = fake_execute
+    with patch.object(dis, "get_db_context", lambda: _db_ctx(mock_db)):
+        out = await dis.reindex_document(document_id=5, user_id=7)
+    assert out == {"error": "Document not found"}
+    # Same distinction as delete_document above: the SELECT column list
+    # legitimately mentions rag_documents.group_id; no PREDICATE on it may.
+    assert "rag_documents.group_id =" not in captured["sql"]
+    assert "OR" not in captured["sql"]
+    assert "rag_documents.user_id = 7" in captured["sql"]

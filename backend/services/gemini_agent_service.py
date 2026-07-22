@@ -549,7 +549,7 @@ Use tools to answer questions. NEVER ask the user to look up data themselves.
    - Call `extract_document_region` with the description of what to show
    - The tool returns markdown like `![Figure 2](passage:42:3:abc123)`
    - **INCLUDE this markdown IN YOUR RESPONSE at the appropriate location** where you discuss it
-5. Summarize the findings and add citations like [Doc: "filename" p.X]
+5. Summarize the findings and add citations like [Doc: "filename" p.X] (or, when citing several pages of the same document, [Doc: "filename" p.X, p.Y])
 
 **DOCUMENT EXCERPTS (Agentic Vision):**
 You have FULL CONTROL over which parts of documents to show and WHERE they appear in your response:
@@ -615,7 +615,7 @@ Before writing such a claim you MUST call a tool to back it:
 - `google_search` or `call_external_api` (UniProt/PubMed) — the public literature
 
 Then cite it INLINE, immediately after the sentence it supports:
-- Document: `[Doc: "filename" p.X]`
+- Document: `[Doc: "filename" p.X]` (multiple pages of the same document: `[Doc: "filename" p.X, p.Y]`)
 - Web/API:  `[Web: "source title"]`  <- use the exact title returned by the tool
 - Image:    `[FOV: "filename" from "experiment"]`
 
@@ -1253,10 +1253,14 @@ async def generate_response(
                 config_kwargs["tools"] = current_tools
                 config_kwargs["tool_config"] = types.ToolConfig(
                     function_calling_config=types.FunctionCallingConfig(mode=tool_mode),
-                    # Anticipates migrating Google Search from the separate
-                    # two-phase call (see execute_tool) into this request.
                     # Currently a no-op: `current_tools` holds only function
                     # declarations, no built-in tool for this flag to enable.
+                    # There is NO planned migration of Google Search into this
+                    # request -- native search does not combine with function
+                    # declarations (live-tested: 0 grounding chunks, model
+                    # fabricates citations). See CLAUDE.md. The two-phase
+                    # google_search call (see execute_tool) stays the only
+                    # working path.
                     include_server_side_tool_invocations=True,
                 )
 
@@ -1646,7 +1650,7 @@ async def execute_tool(
             } for d in docs]}
 
         elif tool_name == "get_documents_summary":
-            return {"documents": await get_all_documents_summary(user_id=user_id, db=db, include_first_page_text=True, group_id=group_id)}
+            return {"documents": await get_all_documents_summary(user_id=user_id, db=db, include_first_page_text=True, thread_id=thread_id, group_id=group_id)}
 
         elif tool_name == "semantic_search":
             if not args.get("query"): return {"error": "query required"}
@@ -2102,7 +2106,8 @@ async def execute_tool(
                         contents=f"Search and summarize information about: {query}",
                         config=genai_types.GenerateContentConfig(
                             tools=[genai_types.Tool(google_search=genai_types.GoogleSearch())],
-                            temperature=0.3,  # Lower temperature for factual search
+                            # Gemini 3.x replaces temperature/top_p/top_k with
+                            # thinking_level; this call relies on the default.
                         )
                     ),
                     # A grounded generate_content (Google Search + summarize) is a

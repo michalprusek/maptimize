@@ -172,12 +172,7 @@ async def list_documents(
     result = await db.execute(query)
     documents = result.scalars().all()
 
-    responses = []
-    for doc in documents:
-        resp = RAGDocumentResponse.model_validate(doc)
-        resp.is_owner = doc.user_id == current_user.id
-        responses.append(resp)
-    return responses
+    return [RAGDocumentResponse.for_user(doc, current_user.id) for doc in documents]
 
 
 @router.post("/documents/upload", response_model=RAGDocumentUploadResponse)
@@ -267,9 +262,7 @@ async def get_document(
     """Get document details and processing status."""
     group_id = await get_user_group_id(current_user.id, db)
     document = await get_document_for_user(db, document_id, current_user.id, group_id)
-    resp = RAGDocumentResponse.model_validate(document)
-    resp.is_owner = document.user_id == current_user.id
-    return resp
+    return RAGDocumentResponse.for_user(document, current_user.id)
 
 
 @router.delete("/documents/{document_id}", status_code=status.HTTP_204_NO_CONTENT)

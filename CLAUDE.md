@@ -413,8 +413,22 @@ takže agent vidí i experimenty sdílené přes skupinu — stejně jako UI.
 `group_id` se resolvuje **jednou za tah** v `generate_response` a předává do
 `execute_tool(..., group_id)`; default `None` = jen vlastník (fail-closed).
 
-⚠️ **Zápisy** (`manage_experiment`, `redetect_cells`) zůstávají striktně
-na vlastníkovi - skupina dává právo číst, ne měnit.
+**Dokumenty mají druhou, paralelní ACL plochu** (od 2026-07-21): `rag_documents`
+se sdílí stejným způsobem přes `document_scope` (listing/search) a
+`document_read_scope` (fetch-by-id) v `models/rag_document.py`. Sdílejí se **jen
+knihovní** dokumenty — group term je **vždy** AND-gated přes `thread_id IS NULL`,
+takže přílohy konverzace se nikdy nerozšíří na skupinu. Tentýž invariant je ručně
+zopakovaný na dalších dvou místech: raw-SQL `owner_clause` v
+`rag_service.search_documents` a `_inject_user_id_filter` v agentově SQL toolu
+(ten widenuje `experiments` i `rag_documents`). **Když měníš jedno, zkontroluj
+všechny čtyři** — testy v `tests/unit/test_document_acl.py` zamykají *strukturu*
+SQL (ne jen substring), takže záměna `and_`→`or_` shodí test.
+
+⚠️ **Zápisy** (`manage_experiment`, `redetect_cells`, a u dokumentů
+`delete_document` / `reindex_document`) zůstávají striktně na vlastníkovi -
+skupina dává právo číst, ne měnit. Ty dvě dokumentové funkce schválně používají
+holý `RAGDocument.user_id == user_id` a **nesmí** se „uklidit" na
+`document_read_scope`.
 
 ### Komprese obrázků
 
