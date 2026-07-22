@@ -2039,6 +2039,12 @@ export interface DiscoverResponse {
   // Null when the text was searched verbatim, so the UI only explains itself
   // when there is something to explain.
   effective_query?: string | null;
+  // True when a smart rewrite was attempted but did not take effect (no API
+  // key, quota exhausted, timeout, bad model output -- or the rewritten query
+  // came back empty and the search was re-run with the raw text). Lets the UI
+  // tell the user their query was searched as typed instead of silently
+  // falling back to keyword-soup search.
+  rewrite_failed?: boolean;
 }
 
 export interface ImportResult {

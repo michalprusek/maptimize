@@ -556,6 +556,22 @@ správné kritérium je záznam ve `fullTextUrlList` s `documentStyle == "pdf"`
 bot-check HTML místo PDF. Název časopisu je `journalInfo.journal.title` (ploché
 `journalTitle` chodí prázdné).
 
+**Free-text dotaz překládá Gemini** (`rewrite_topic_query`). Bez toho hledání
+selhává na nejběžnějším dotazu: „papers from lab of dr. carsten janke" se pošle jako
+klíčová slova a vrátí 0 z 6 relevantních (AlphaFold2, sborníky). Po překladu na
+`AUTH:"Janke C" AND microtubule` vrací 8 z 8. Platí:
+
+- **jedno Gemini volání na free-text hledání, NULA u DOI a seznamu názvů** (ty jsou už
+  strukturované) a nula, když vstup sám obsahuje field syntax. Cena je tvrdý požadavek —
+  testy to vynucují přes `assert_not_awaited()`.
+- Jakékoli selhání (chybí klíč, timeout, výjimka, prázdný výstup) → **fallback na původní
+  text**, hledání nikdy nespadne kvůli překladu.
+- Skutečně odeslaný dotaz se vrací jako `effective_query` a UI ho ukáže („Searched as: …"),
+  takže je vidět, když překlad dopadne špatně.
+- ⚠️ Europe PMC na rozbitý dotaz **nevrací chybu** — vrátí HTTP 200 a nula výsledků. Špatný
+  překlad se proto tváří jako „nic nenalezeno"; proto se při prázdném výsledku hledání
+  jednou zopakuje s původním textem.
+
 **Konstanty a jejich historie** (`paper_discovery_service.py`):
 | Konstanta | Hodnota | Proč |
 |-----------|---------|------|
@@ -563,6 +579,8 @@ bot-check HTML místo PDF. Název časopisu je `journalInfo.journal.title` (ploc
 | `PDF_READ_TIMEOUT` | 60 s | stahování PDF (i desítky MB) |
 | `MAX_PDF_BYTES` | 100 MB | zrcadlí strop upload endpointu |
 | `EPMC_MAX_CONCURRENCY` | 4 | politeness vůči EBI — nenech se zablokovat |
+| `_QUERY_REWRITE_TIMEOUT` | 20 s | musí zůstat výrazně pod EPMC_TIMEOUT, ať stojící překlad nenafoukne čekání |
+| `_MAX_REWRITTEN_QUERY_LEN` | 500 | model má vrátit JEN dotaz, ale stejně přidá prózu/fence — tvrdý strop |
 
 Stahování PDF jde přes `gemini_agent_service._is_safe_url` (SSRF) s **ručním
 následováním redirectů a revalidací každého hopu** — reálné EPMC PDF URL redirectují,

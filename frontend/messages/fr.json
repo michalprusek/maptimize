@@ -592,6 +592,7 @@
     "discoverSearch": "Rechercher",
     "discoverSearching": "Recherche…",
     "discoverSearchedAs": "Recherché comme :",
+    "discoverRewriteFailed": "Impossible d'affiner la recherche — recherche effectuée avec votre texte tel quel.",
     "discoverNoResults": "Aucun article trouvé",
     "discoverFailed": "Échec de la recherche — réessayez",
     "discoverImportFailed": "Échec de l'importation — réessayez",

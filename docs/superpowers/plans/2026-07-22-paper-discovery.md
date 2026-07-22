@@ -1428,7 +1428,7 @@ Expected: 0 errors.
 
 **Spec coverage:** Europe PMC source → Task 2; input classification (DOI/titles/topic) → Tasks 2+4; result list with the three badge states → Tasks 4+7; import flow (fetch-then-store, concurrency 4, size cap, SSRF) → Tasks 3+5; schema `doi`+`source_url`+index → Task 1; rate limit 1000/h separate counter → Task 5; frontend modal/store/api/i18n → Tasks 6+7; error handling per paper → Task 5; testing → every task + Task 8. ✓
 
-**Deferred from the spec, deliberately:** the Gemini query-rewrite step for free-text topics. Europe PMC's own relevance ranking handles plain natural-language queries acceptably, and adding an LLM hop would add latency plus a failure mode on the critical path. The `classify_query` "topic" branch passes the text straight through, and a rewrite can be slotted into that one branch later without touching anything else. Noted here rather than silently dropped.
+**Deferred at plan time, since implemented (PR #37):** the Gemini query-rewrite step was left out of the original implementation and added later, once live testing showed that verbatim free-text search fails for author/lab queries. See the design spec.
 
 **Placeholder scan:** no TBD/TODO; every code step contains complete code; every command has an expected result.
 

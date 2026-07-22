@@ -74,9 +74,21 @@ def test_pdf_url_only_for_open_access_pdf_entries():
 
 
 def test_pdf_url_ignores_isopenaccess_flag():
-    # isOpenAccess must not drive the decision: flip it and nothing changes.
-    flipped = {**_PAYWALLED_RAW, "isOpenAccess": "Y", "hasPDF": "Y"}
-    assert pdf_url_from_result(flipped) is None
+    # isOpenAccess must not drive the decision in EITHER direction -- flip it
+    # on both a downloadable and a non-downloadable record and nothing changes.
+    #
+    # The "Y" case is the load-bearing one: live-verified 2026-07-22, bioRxiv
+    # preprints report isOpenAccess "N" while still exposing a Free Europe_PMC
+    # pdf entry, so an implementation that gated on isOpenAccess would drop
+    # them. Flipping the flag on a record with an EMPTY fullTextUrlList (the
+    # only case this test used to cover) can never fail: the loop has nothing
+    # to iterate, so it returns None no matter what the flag says.
+    still_downloadable = {**_OA_RAW, "isOpenAccess": "N", "hasPDF": "N"}
+    assert (pdf_url_from_result(still_downloadable)
+            == "https://europepmc.org/articles/PMC13248438?pdf=render")
+
+    still_not_downloadable = {**_PAYWALLED_RAW, "isOpenAccess": "Y", "hasPDF": "Y"}
+    assert pdf_url_from_result(still_not_downloadable) is None
 
 
 def test_pdf_url_excludes_pubmedcentral_ncbi_entries():
@@ -398,9 +410,10 @@ async def test_discover_escapes_quotes_in_title_query(monkeypatch):
 # language request like "find all microtubule related papers from lab of dr.
 # carsten janke" sent to Europe PMC verbatim returns zero relevant papers.
 # ============================================================================ #
+import asyncio
 import sys
 import types as pytypes
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 
 def _rewrite_genai_response(text):
@@ -414,18 +427,21 @@ def _patch_query_rewrite_genai(response_or_callable):
     """Inject a fake google.genai module so rewrite_topic_query's lazy import
     resolves to our stub.
 
-    Unlike rag_service's extract_relevant_passages (which awaits
-    ``client.aio.models.generate_content``), rewrite_topic_query matches
-    gemini_agent_service's pattern: a plain (blocking) ``client.models.
-    generate_content`` invoked through ``asyncio.to_thread`` -- so the stub's
-    ``generate_content`` must be an ordinary callable, not an AsyncMock.
+    rewrite_topic_query calls the native async SDK method
+    ``client.aio.models.generate_content`` (matches rag_service's
+    extract_relevant_passages -- genuinely cancellable on timeout, unlike the
+    old ``asyncio.wait_for(asyncio.to_thread(...))`` pattern), so the stub is
+    an ``AsyncMock``. When ``response_or_callable`` is a plain callable,
+    ``AsyncMock.side_effect`` awaits it automatically if it's itself an async
+    function (see the timeout test below), or calls it synchronously
+    otherwise (e.g. a plain function that raises, for the exception test).
     """
     if callable(response_or_callable):
-        generate_content = MagicMock(side_effect=response_or_callable)
+        generate_content = AsyncMock(side_effect=response_or_callable)
     else:
-        generate_content = MagicMock(return_value=response_or_callable)
+        generate_content = AsyncMock(return_value=response_or_callable)
 
-    client = SimpleNamespace(models=SimpleNamespace(generate_content=generate_content))
+    client = SimpleNamespace(aio=SimpleNamespace(models=SimpleNamespace(generate_content=generate_content)))
     genai = pytypes.ModuleType("google.genai")
     genai.Client = MagicMock(return_value=client)
     type_mod = pytypes.ModuleType("google.genai.types")
@@ -520,12 +536,16 @@ async def test_rewrite_topic_query_returns_none_on_exception(monkeypatch):
 
 
 async def test_rewrite_topic_query_returns_none_on_timeout(monkeypatch):
-    import time as real_time
     fake_settings = SimpleNamespace(gemini_api_key="key", gemini_model="gemini-3.6-flash")
     monkeypatch.setattr(pds, "_QUERY_REWRITE_TIMEOUT", 0.05)
 
-    def slow(*a, **k):
-        real_time.sleep(0.3)
+    # Must be a real `await asyncio.sleep`, not a blocking `time.sleep`: the
+    # native async SDK call (Fix #5) is genuinely cancellable by
+    # asyncio.wait_for only because it actually yields control back to the
+    # event loop -- a synchronous sleep here would block the loop itself and
+    # defeat the point of the test (the timeout could never fire mid-call).
+    async def slow(*a, **k):
+        await asyncio.sleep(0.3)
         return _rewrite_genai_response('AUTH:"Janke C"')
 
     ctx, _ = _patch_query_rewrite_genai(slow)
@@ -544,12 +564,6 @@ def test_sanitize_rewritten_query_empty_and_whitespace_only():
     assert pds._sanitize_rewritten_query("   \n  \n") is None
 
 
-def test_sanitize_rewritten_query_caps_length():
-    huge = "A" * 900
-    out = pds._sanitize_rewritten_query(huge)
-    assert out == "A" * pds._MAX_REWRITTEN_QUERY_LEN
-
-
 # --------------------------------------------------------------------------- #
 # discover()'s topic branch: uses the rewrite when it succeeds, falls back to
 # the raw text on any failure mode, and never calls the rewrite for doi/titles
@@ -562,7 +576,11 @@ async def test_discover_topic_branch_uses_rewritten_query(monkeypatch):
 
     async def fake_search(q, limit=25):
         calls.append(q)
-        return []
+        # Non-empty: Fix #2 retries with the raw text once a rewritten query
+        # comes back with zero results, which would add a second call and
+        # defeat the point of this test (that the rewritten query alone is
+        # what got searched). The empty-result retry has its own tests below.
+        return [pds.parse_epmc_result({**_OA_RAW, "doi": "10.1/x", "id": "x"})]
 
     monkeypatch.setattr(pds, "search_epmc", fake_search)
     monkeypatch.setattr(
@@ -572,6 +590,7 @@ async def test_discover_topic_branch_uses_rewritten_query(monkeypatch):
     out = await pds.discover("find all microtubule related papers from lab of dr. carsten janke")
     assert calls == ['AUTH:"Janke C" AND microtubule']
     assert out.effective_query == 'AUTH:"Janke C" AND microtubule'
+    assert out.rewrite_failed is False
 
 
 async def test_discover_topic_branch_falls_back_when_rewrite_raises(monkeypatch):
@@ -1366,3 +1385,402 @@ async def test_import_discovered_fetches_multiple_papers_concurrently(monkeypatc
     assert len(out.failed) == 1
     assert out.failed[0].doi == "10.1038/bad-paper"
     assert out.failed[0].reason == "Not found in Europe PMC"
+
+
+# ============================================================================ #
+# PR #37 review gaps: the LLM query-rewrite step.
+#
+# Unless a test is explicitly unit-testing the sanitizer, it drives the REAL
+# rewrite_topic_query through discover() with a stubbed google.genai module,
+# so the cost invariant ("exactly one Gemini call per free-text search, ZERO
+# for anything already structured" -- CLAUDE.md, hard requirement) is checked
+# against the actual wiring rather than against a stand-in for it.
+# ============================================================================ #
+
+def _rewrite_settings():
+    """Settings that make rewrite_topic_query take its happy path."""
+    return SimpleNamespace(gemini_api_key="key", gemini_model="gemini-3.6-flash")
+
+
+def _one_paper(doi="10.1/x", ext_id="x"):
+    """A single non-empty search result.
+
+    Non-empty matters everywhere the rewrite is expected to *succeed*: an empty
+    result set triggers discover()'s raw-text retry, which adds a second
+    search_epmc call and flips rewrite_failed -- the opposite of what those
+    tests are asserting. The retry has its own dedicated tests below.
+    """
+    return [pds.parse_epmc_result({**_OA_RAW, "doi": doi, "id": ext_id})]
+
+
+# --------------------------------------------------------------------------- #
+# (1) _sanitize_rewritten_query must pick the QUERY line, not the prose around
+#     it. Taking line 1 blindly was a real production bug: the model is told to
+#     reply with only the query and routinely prepends a preamble anyway, so
+#     the preamble silently became the Europe PMC query.
+# --------------------------------------------------------------------------- #
+
+@pytest.mark.parametrize("raw, expected", [
+    # THE regression. Before the fix this returned "Here is the translated
+    # query:" and the real query was thrown away.
+    ('Here is the translated query:\nAUTH:"Janke C" AND microtubule',
+     'AUTH:"Janke C" AND microtubule'),
+    # Same shape, but the real query is bare keywords -- no field prefix and no
+    # boolean operator, so ONLY the preamble's sentence-final "!" distinguishes
+    # them. A colon-only preamble rule lets "Sure!" win here.
+    ('Sure!\nmicrotubule bundling', 'microtubule bundling'),
+    # Degenerate single-line fence: there is no separate opening/closing line
+    # to drop, so the generic fence handling would leave the backticks behind.
+    ('```AUTH:"X"```', 'AUTH:"X"'),
+    # Multi-line fence WITH a language tag on the opening line.
+    ('```text\nAUTH:"Janke C" AND microtubule\n```',
+     'AUTH:"Janke C" AND microtubule'),
+    # Postamble instead of preamble.
+    ('AUTH:"Janke C" AND microtubule\nThis finds every Janke paper on microtubules.',
+     'AUTH:"Janke C" AND microtubule'),
+    # Both at once.
+    ('Sure, here you go:\nAUTH:"Janke C"\nHope that helps.', 'AUTH:"Janke C"'),
+    # Nothing looks like a query at all -> the documented last resort is the
+    # LAST non-empty line (a preamble is far more common than a postamble).
+    ('I am sorry.\nI could not translate that request.',
+     'I could not translate that request.'),
+    # The model narrates the syntax it used, so the PROSE line contains the
+    # very signals ("AND", "OR", "AUTH:") that mark a line as query syntax.
+    # These passed only once the sentence-final punctuation check was moved
+    # BEFORE the prefix/boolean checks instead of after them -- previously the
+    # strong signal short-circuited and the guard never ran.
+    ('Note: I used AND to combine the terms.\nAUTH:"Janke C" AND microtubule',
+     'AUTH:"Janke C" AND microtubule'),
+    ('I used AUTH: to restrict this to the author.\nAUTH:"Janke C"',
+     'AUTH:"Janke C"'),
+    # Sharpest of the three: the preamble ends in the colon the rule was
+    # written for, but `\bOR\b` matched first.
+    ('Here is the query, combining the author OR the topic:\nAUTH:"Janke C"',
+     'AUTH:"Janke C"'),
+    # A bare keyword line must NOT beat a field-syntax line just by coming
+    # first -- both are non-prose, so only the two-tier preference separates
+    # them.
+    ('microtubule bundling\nAUTH:"Janke C"', 'AUTH:"Janke C"'),
+])
+def test_sanitize_rewritten_query_picks_the_query_line_not_the_prose(raw, expected):
+    assert pds._sanitize_rewritten_query(raw) == expected
+
+
+# --------------------------------------------------------------------------- #
+# (2) Cost: exactly ONE Gemini call for a free-text topic, ZERO otherwise.
+# --------------------------------------------------------------------------- #
+
+async def test_discover_topic_branch_makes_exactly_one_gemini_call(monkeypatch):
+    calls = []
+
+    async def fake_search(q, limit=25):
+        calls.append(q)
+        return _one_paper()
+
+    monkeypatch.setattr(pds, "search_epmc", fake_search)
+    ctx, generate_content = _patch_query_rewrite_genai(
+        _rewrite_genai_response('AUTH:"Janke C" AND microtubule')
+    )
+    with patch.object(pds, "settings", _rewrite_settings()), ctx:
+        out = await pds.discover("papers from the lab of dr. carsten janke")
+
+    # ONE call -- not zero (the rewrite must actually happen) and not one per
+    # retry/sub-query.
+    generate_content.assert_awaited_once()
+    assert calls == ['AUTH:"Janke C" AND microtubule']
+    assert out.effective_query == 'AUTH:"Janke C" AND microtubule'
+
+
+async def test_discover_doi_branch_makes_zero_gemini_calls(monkeypatch):
+    # Unlike the existing doi/titles tests, this one leaves the REAL
+    # rewrite_topic_query in place and asserts against the SDK stub, so it
+    # would catch discover() calling Gemini through some other route.
+    monkeypatch.setattr(pds, "search_epmc", AsyncMock(return_value=[]))
+    ctx, generate_content = _patch_query_rewrite_genai(_rewrite_genai_response('AUTH:"X"'))
+    with patch.object(pds, "settings", _rewrite_settings()), ctx:
+        await pds.discover("10.1038/nature12373\n10.1016/j.cell.2020.01.001")
+    generate_content.assert_not_awaited()
+
+
+async def test_discover_titles_branch_makes_zero_gemini_calls(monkeypatch):
+    monkeypatch.setattr(pds, "search_epmc", AsyncMock(return_value=[]))
+    ctx, generate_content = _patch_query_rewrite_genai(_rewrite_genai_response('AUTH:"X"'))
+    with patch.object(pds, "settings", _rewrite_settings()), ctx:
+        await pds.discover("Tau regulates microtubules\nEg5 drives bundling")
+    generate_content.assert_not_awaited()
+
+
+async def test_discover_skips_gemini_when_the_user_already_typed_field_syntax(monkeypatch):
+    # A power user who types `AUTH:"Janke C"` by hand gets nothing from an LLM
+    # translation of it -- the call must be skipped entirely (cost), and the
+    # text searched verbatim.
+    calls = []
+
+    async def fake_search(q, limit=25):
+        calls.append(q)
+        return []
+
+    monkeypatch.setattr(pds, "search_epmc", fake_search)
+    ctx, generate_content = _patch_query_rewrite_genai(
+        _rewrite_genai_response('AUTH:"Someone Else"')  # must never be used
+    )
+    with patch.object(pds, "settings", _rewrite_settings()), ctx:
+        out = await pds.discover('AUTH:"Janke C" AND microtubule')
+
+    generate_content.assert_not_awaited()
+    assert calls == ['AUTH:"Janke C" AND microtubule']
+    assert out.effective_query is None
+    # No rewrite was attempted, so it cannot have "failed" -- the UI must not
+    # warn about a translation that never ran.
+    assert out.rewrite_failed is False
+
+
+@pytest.mark.parametrize("text, is_syntax", [
+    ('AUTH:"Janke C"', True),
+    ('TITLE:"microtubule bundling" AND tubulin', True),
+    ('SRC:MED', True),                       # no quotes, still real syntax
+    # Prose that merely MENTIONS a field is not the user using it. The space
+    # after the colon is the tell -- real syntax has none. Skipping the
+    # rewrite here would send "papers with DOI: ... plus anything on tubulin"
+    # to Europe PMC verbatim, i.e. exactly the keyword-soup search the rewrite
+    # exists to prevent.
+    ('papers with DOI: 10.1234/x, plus anything on tubulin', False),
+    ('what did the janke lab publish on AUTH: authorship?', False),
+    ('microtubule papers from the lab of dr. carsten janke', False),
+])
+def test_is_already_epmc_syntax_needs_a_field_actually_in_use(text, is_syntax):
+    assert pds._is_already_epmc_syntax(text) is is_syntax
+
+
+# --------------------------------------------------------------------------- #
+# (3) The length cap must survive all the way to Europe PMC, not just exist in
+#     the sanitizer.
+# --------------------------------------------------------------------------- #
+
+async def test_discover_truncates_an_overlong_rewrite_before_searching(monkeypatch):
+    captured = []
+
+    async def fake_search(q, limit=25):
+        captured.append(q)
+        return _one_paper()
+
+    monkeypatch.setattr(pds, "search_epmc", fake_search)
+    ctx, _ = _patch_query_rewrite_genai(_rewrite_genai_response("A" * 900))
+    with patch.object(pds, "settings", _rewrite_settings()), ctx:
+        out = await pds.discover("microtubule bundling papers")
+
+    assert len(captured) == 1
+    # Hard literal, deliberately NOT _MAX_REWRITTEN_QUERY_LEN: comparing the
+    # result against the same constant the code truncates with would still pass
+    # if the cap were quietly raised to 900.
+    assert len(captured[0]) == 500
+    assert captured[0] == "A" * 500
+    assert out.effective_query == "A" * 500
+
+
+# --------------------------------------------------------------------------- #
+# (4) thinking_level="low" is really what gets requested.
+# --------------------------------------------------------------------------- #
+
+async def test_rewrite_topic_query_requests_low_thinking_level():
+    ctx, generate_content = _patch_query_rewrite_genai(
+        _rewrite_genai_response('AUTH:"Janke C"')
+    )
+    with patch.object(pds, "settings", _rewrite_settings()), ctx:
+        await pds.rewrite_topic_query("microtubule papers by Janke")
+        type_mod = sys.modules["google.genai.types"]
+        config_kwargs = type_mod.GenerateContentConfig.call_args.kwargs
+        thinking_kwargs = type_mod.ThinkingConfig.call_args.kwargs
+
+    # Gemini 3.x: thinking_level replaces temperature/top_p/top_k. "low" keeps
+    # this one-shot translation cheap and fast.
+    assert thinking_kwargs["thinking_level"] == "low"
+    # ...and that ThinkingConfig is the one actually wired into the request,
+    # rather than built and dropped on the floor.
+    assert config_kwargs["thinking_config"] is type_mod.ThinkingConfig.return_value
+    assert (generate_content.call_args.kwargs["config"]
+            is type_mod.GenerateContentConfig.return_value)
+
+
+# --------------------------------------------------------------------------- #
+# (5) Timeout ordering: the rewrite runs BEFORE the Europe PMC call, so it must
+#     not be able to dominate the worst-case wait the user sits through.
+# --------------------------------------------------------------------------- #
+
+def test_query_rewrite_timeout_stays_well_under_the_epmc_timeout():
+    assert pds._QUERY_REWRITE_TIMEOUT < pds.EPMC_TIMEOUT
+
+
+# --------------------------------------------------------------------------- #
+# (6) A no-op rewrite is not worth showing the user.
+# --------------------------------------------------------------------------- #
+
+async def test_discover_no_op_rewrite_reports_no_effective_query(monkeypatch):
+    topic = "microtubule bundling in vitro"
+    calls = []
+
+    async def fake_search(q, limit=25):
+        calls.append(q)
+        return _one_paper()
+
+    monkeypatch.setattr(pds, "search_epmc", fake_search)
+    ctx, generate_content = _patch_query_rewrite_genai(_rewrite_genai_response(topic))
+    with patch.object(pds, "settings", _rewrite_settings()), ctx:
+        out = await pds.discover(topic)
+
+    generate_content.assert_awaited_once()
+    assert calls == [topic]        # the search still runs
+    assert out.papers              # ...and returns what it found
+    # Echoing the user's own words back as "Searched as: ..." is noise.
+    assert out.effective_query is None
+    # The rewrite worked; it just didn't change anything. Not a failure.
+    assert out.rewrite_failed is False
+
+
+# --------------------------------------------------------------------------- #
+# (7) Empty-result fallback. Europe PMC answers a syntactically valid but
+#     semantically wrong query with HTTP 200 + zero results, so a bad rewrite
+#     is otherwise indistinguishable from "nothing to find".
+# --------------------------------------------------------------------------- #
+
+async def test_discover_retries_with_raw_text_when_the_rewrite_finds_nothing(monkeypatch):
+    raw = "papers from the lab of dr. carsten janke"
+    rewritten = 'AUTH:"Janke X" AND microtubule'   # plausible, but wrong
+    calls = []
+
+    async def fake_search(q, limit=25):
+        calls.append(q)
+        return [] if q == rewritten else _one_paper(doi="10.1/fallback", ext_id="fb")
+
+    monkeypatch.setattr(pds, "search_epmc", fake_search)
+    monkeypatch.setattr(pds, "rewrite_topic_query", AsyncMock(return_value=rewritten))
+
+    out = await pds.discover(raw)
+
+    # Exactly one extra HTTP call, with the user's EXACT wording, and no extra
+    # Gemini call.
+    assert calls == [rewritten, raw]
+    assert [p.doi for p in out.papers] == ["10.1/fallback"]
+    assert out.failed_queries == 0
+    # The rewrite is not what produced these results -- say so, and stop
+    # claiming the discarded rewrite is what ran.
+    assert out.rewrite_failed is True
+    assert out.effective_query is None
+
+
+async def test_discover_survives_a_fallback_search_that_itself_fails(monkeypatch):
+    raw = "papers from the lab of dr. carsten janke"
+    rewritten = 'AUTH:"Janke X"'
+    calls = []
+
+    async def fake_search(q, limit=25):
+        calls.append(q)
+        if q == raw:
+            raise RuntimeError("Europe PMC down")
+        return []
+
+    monkeypatch.setattr(pds, "search_epmc", fake_search)
+    monkeypatch.setattr(pds, "rewrite_topic_query", AsyncMock(return_value=rewritten))
+
+    out = await pds.discover(raw)   # must not raise: the retry is best-effort
+
+    assert calls == [rewritten, raw]
+    assert out.papers == []
+    assert out.rewrite_failed is True
+    assert out.effective_query is None
+
+
+async def test_discover_does_not_retry_when_the_rewritten_query_found_papers(monkeypatch):
+    search = AsyncMock(return_value=_one_paper())
+    monkeypatch.setattr(pds, "search_epmc", search)
+    monkeypatch.setattr(pds, "rewrite_topic_query", AsyncMock(return_value='AUTH:"Janke C"'))
+
+    out = await pds.discover("papers from the lab of dr. carsten janke")
+
+    # The retry costs a real HTTP round-trip -- it must fire ONLY on the
+    # zero-results path.
+    assert search.await_count == 1
+    assert out.rewrite_failed is False
+    assert out.effective_query == 'AUTH:"Janke C"'
+
+
+# --------------------------------------------------------------------------- #
+# (8) rewrite_failed: true only when a rewrite was attempted and didn't deliver.
+# --------------------------------------------------------------------------- #
+
+async def test_discover_flags_rewrite_failed_when_the_rewrite_produces_nothing(monkeypatch):
+    calls = []
+
+    async def fake_search(q, limit=25):
+        calls.append(q)
+        return _one_paper()
+
+    monkeypatch.setattr(pds, "search_epmc", fake_search)
+    monkeypatch.setattr(pds, "rewrite_topic_query", AsyncMock(return_value=None))
+
+    out = await pds.discover("MAP bundling in vitro")
+
+    assert calls == ["MAP bundling in vitro"]   # searched unrewritten
+    assert out.rewrite_failed is True
+    assert out.effective_query is None
+
+
+@pytest.mark.parametrize("query", [
+    "10.1038/nature12373\n10.1016/j.cell.2020.01.001",   # doi branch
+    "Tau regulates microtubules\nEg5 drives bundling",   # titles branch
+])
+async def test_discover_never_flags_rewrite_failed_for_structured_queries(monkeypatch, query):
+    monkeypatch.setattr(pds, "search_epmc", AsyncMock(return_value=[]))
+    rewrite = AsyncMock(return_value='AUTH:"never used"')
+    monkeypatch.setattr(pds, "rewrite_topic_query", rewrite)
+
+    out = await pds.discover(query)
+
+    rewrite.assert_not_awaited()
+    # No rewrite was ever attempted here, so it cannot have failed -- warning
+    # the user about a translation that never ran would be a lie.
+    assert out.rewrite_failed is False
+    assert out.effective_query is None
+
+
+# --------------------------------------------------------------------------- #
+# (9) DiscoveryError.attempted_query: "Europe PMC is down" (retry) vs "the
+#     rewrite mistranslated your query" (rephrase).
+# --------------------------------------------------------------------------- #
+
+async def _always_failing_search(q, limit=25):
+    raise RuntimeError("Europe PMC down")
+
+
+async def test_discovery_error_carries_the_single_attempted_query(monkeypatch):
+    rewritten = 'AUTH:"Janke C" AND microtubule'
+    monkeypatch.setattr(pds, "search_epmc", _always_failing_search)
+    monkeypatch.setattr(pds, "rewrite_topic_query", AsyncMock(return_value=rewritten))
+
+    with pytest.raises(pds.DiscoveryError) as ei:
+        await pds.discover("papers from the lab of dr. carsten janke")
+
+    # The REWRITTEN query, not the user's text: that's what Europe PMC saw, so
+    # that's what the user needs to see to judge whether to rephrase or retry.
+    assert ei.value.attempted_query == rewritten
+
+
+async def test_discovery_error_carries_the_raw_text_when_no_rewrite_happened(monkeypatch):
+    monkeypatch.setattr(pds, "search_epmc", _always_failing_search)
+    monkeypatch.setattr(pds, "rewrite_topic_query", AsyncMock(return_value=None))
+
+    with pytest.raises(pds.DiscoveryError) as ei:
+        await pds.discover("MAP bundling in vitro")
+
+    assert ei.value.attempted_query == "MAP bundling in vitro"
+
+
+async def test_discovery_error_has_no_attempted_query_for_a_multi_query_batch(monkeypatch):
+    monkeypatch.setattr(pds, "search_epmc", _always_failing_search)
+
+    with pytest.raises(pds.DiscoveryError) as ei:
+        await pds.discover("10.1038/nature12373\n10.1016/j.cell.2020.01.001")
+
+    # Several sub-queries were in flight at once; singling one out would be
+    # arbitrary and would mislead the user about what actually failed.
+    assert ei.value.attempted_query is None

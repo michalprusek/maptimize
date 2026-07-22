@@ -62,11 +62,19 @@ The single query field is classified before searching:
 | Multiple lines / clearly a list of titles | One title search per line, best match each |
 | Anything else (free text) | Passed straight to Europe PMC's own relevance ranking |
 
-**Deferred:** an LLM rewrite of free-text topics into a structured Europe PMC query was
-specified but deliberately NOT implemented — Europe PMC's own ranking handles natural
-language acceptably, and an extra LLM hop would add latency and a failure mode on the
-critical path. `classify_query`'s "topic" branch passes the text through unchanged, so a
-rewrite can be slotted into that single branch later without touching anything else.
+**Implemented (PR #37, 2026-07-22):** free-text topic queries are translated into Europe
+PMC field syntax by one Gemini call — `rewrite_topic_query()` in
+`paper_discovery_service.py` — gated to `classify_query`'s "topic" branch only. DOI and
+title-list searches are never rewritten (already structured, so zero added cost or
+latency), and input that already contains field syntax is passed through untouched. Any
+failure (no API key, SDK missing, timeout, exception, empty output) falls back to the raw
+text, so the rewrite can never fail the search itself. The query actually sent is returned
+as `effective_query` and shown as "Searched as: …" in the modal.
+
+Why it was needed: verified live, `find all microtubule related papers from lab of dr.
+carsten janke` searched verbatim returned 0 of 6 relevant hits (AlphaFold2 papers, a
+conference abstract, a tribute to Carol Robinson). Rewritten to
+`AUTH:"Janke C" AND microtubule` it returns 8 of 8 papers with Janke as an author.
 
 ## Result list
 

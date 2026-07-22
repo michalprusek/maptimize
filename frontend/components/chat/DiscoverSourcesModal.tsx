@@ -23,7 +23,7 @@ export function DiscoverSourcesModal({ isOpen, onClose }: DiscoverSourcesModalPr
   const tCommon = useTranslations("common");
   const {
     discoverResults,
-    discoverEffectiveQuery, isDiscovering, isImportingPapers,
+    discoverEffectiveQuery, discoverRewriteFailed, isDiscovering, isImportingPapers,
     discoverSources, importDiscovered,
   } = useChatStore();
 
@@ -135,18 +135,27 @@ export function DiscoverSourcesModal({ isOpen, onClose }: DiscoverSourcesModalPr
             </button>
           </div>
 
+          {/* Kept outside the scrollable results pane (directly under the search
+              input) so it stays visible while scrolling results -- its job is to
+              let the user spot a bad translation, which they can't do if it has
+              scrolled out of view. */}
+          {!isDiscovering && (discoverEffectiveQuery || discoverRewriteFailed) && (
+            <div className="px-5 py-2 border-b border-white/10 space-y-1">
+              {discoverEffectiveQuery && (
+                <div className="text-xs text-text-secondary">
+                  <span className="text-text-muted">{t("discoverSearchedAs")}</span>{" "}
+                  <code className="px-1.5 py-0.5 rounded bg-white/[0.06] text-primary-400 font-mono font-medium break-all">
+                    {discoverEffectiveQuery}
+                  </code>
+                </div>
+              )}
+              {discoverRewriteFailed && (
+                <div className="text-xs text-amber-400/90">{t("discoverRewriteFailed")}</div>
+              )}
+            </div>
+          )}
+
           <div className="flex-1 overflow-y-auto p-5 space-y-2">
-            {/* Only shown when the natural-language input was rewritten into
-                Europe PMC field syntax, so the user can see what was really
-                asked (and spot a bad translation). */}
-            {discoverEffectiveQuery && !isDiscovering && (
-              <div className="text-xs text-text-muted pb-1">
-                {t("discoverSearchedAs")}{" "}
-                <code className="px-1.5 py-0.5 rounded bg-white/[0.06] text-primary-400 font-mono">
-                  {discoverEffectiveQuery}
-                </code>
-              </div>
-            )}
             {searchFailed && !isDiscovering && (
               <div className="text-center py-8 text-red-400">{summary || t("discoverFailed")}</div>
             )}
