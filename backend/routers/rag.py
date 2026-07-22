@@ -2,6 +2,7 @@
 
 Handles document upload, indexing, and search operations.
 """
+import asyncio
 import logging
 import time
 from pathlib import Path
@@ -10,6 +11,7 @@ from typing import Annotated, List, Optional
 import redis.asyncio as redis
 from fastapi import APIRouter, Depends, HTTPException, status, Query, UploadFile, File, Form, BackgroundTasks
 from fastapi.responses import FileResponse
+from pydantic import BaseModel as _BaseModel
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -27,6 +29,8 @@ from schemas.chat import (
     RAGDocumentPageResponse,
     RAGIndexingStatusResponse,
     RAGSearchResponse,
+    DiscoveredPaper,
+    DiscoverResponse,
 )
 from utils.groups import get_user_group_id
 from utils.security import get_current_user, get_current_user_from_query
@@ -45,6 +49,13 @@ from services.rag_service import (
     batch_index_fov_images,
     get_cached_passage,
     image_mime_type,
+)
+from services.paper_discovery_service import (
+    discover as discover_papers,
+    fetch_pdf,
+    PdfFetchError,
+    search_epmc,
+    EPMC_MAX_CONCURRENCY,
 )
 
 logger = logging.getLogger(__name__)
@@ -449,6 +460,56 @@ async def serve_passage_image(
     return FileResponse(
         path=passage_path,
         media_type=image_mime_type(passage_path),
+    )
+
+
+# ============== Paper Discovery ==============
+
+class DiscoverRequest(_BaseModel):
+    query: str
+
+
+@router.post("/discover", response_model=DiscoverResponse)
+async def discover_sources(
+    payload: DiscoverRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Search Europe PMC for papers matching the user's description.
+
+    Returns candidates only — nothing is downloaded here. `importable` reflects
+    whether Europe PMC advertises a legally downloadable PDF.
+    """
+    query = (payload.query or "").strip()
+    if not query:
+        raise HTTPException(status_code=400, detail="Query is required")
+
+    papers = await discover_papers(query)
+
+    # Mark papers already in the caller's readable library (dedupe by DOI).
+    dois = [p.doi for p in papers if p.doi]
+    existing: set[str] = set()
+    if dois:
+        group_id = await get_user_group_id(current_user.id, db)
+        rows = await db.execute(
+            select(RAGDocument.doi)
+            .where(RAGDocument.doi.in_(dois))
+            .where(document_scope(current_user.id, None, group_id))
+        )
+        existing = {d.lower() for d in rows.scalars().all() if d}
+
+    return DiscoverResponse(
+        query=query,
+        results=[
+            DiscoveredPaper(
+                doi=p.doi, title=p.title, authors=p.authors, journal=p.journal,
+                year=p.year, abstract=(p.abstract or "")[:600] or None,
+                source_url=p.source_url,
+                importable=p.pdf_url is not None,
+                already_imported=bool(p.doi and p.doi.lower() in existing),
+            )
+            for p in papers
+        ],
     )
 
 

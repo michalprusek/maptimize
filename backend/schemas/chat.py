@@ -204,3 +204,25 @@ class RAGSearchResponse(BaseModel):
     documents: List[DocumentSearchResult] = []
     fov_images: List[FOVSearchResult] = []
     query: str
+
+
+# ============== Paper Discovery Schemas ==============
+
+class DiscoveredPaper(BaseModel):
+    """One candidate paper in the discovery picker."""
+    doi: Optional[str] = None
+    title: str
+    authors: Optional[str] = None
+    journal: Optional[str] = None
+    year: Optional[str] = None
+    abstract: Optional[str] = None
+    source_url: str
+    # True only when Europe PMC advertises a downloadable PDF for this record.
+    importable: bool
+    # Set when the same DOI is already in the caller's library.
+    already_imported: bool = False
+
+
+class DiscoverResponse(BaseModel):
+    query: str
+    results: List[DiscoveredPaper]

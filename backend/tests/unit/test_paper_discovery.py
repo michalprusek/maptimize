@@ -177,3 +177,54 @@ async def test_fetch_pdf_returns_bytes(monkeypatch):
     monkeypatch.setattr(pds.httpx, "AsyncClient",
                         _client_returning(_FakeStream(chunks=(b"%PDF-", b"ok"))))
     assert await pds.fetch_pdf("https://europepmc.org/a.pdf") == b"%PDF-ok"
+
+
+# ============================================================================ #
+# Task 4: discover() + /discover endpoint
+# ============================================================================ #
+from unittest.mock import AsyncMock
+
+
+async def test_discover_dois_queries_each_doi(monkeypatch):
+    # NOTE: plan's literal fixture used "10.1/a" / "10.2/b", but classify_query's
+    # _DOI_RE (Task 2, already committed) requires a 4-9 digit registrant after
+    # "10." -- a 1-digit registrant is not a valid DOI shape and would classify
+    # as "titles" instead, defeating the point of this test. Swapped in
+    # well-formed DOIs so the query is actually routed through the "doi" branch.
+    calls = []
+
+    async def fake_search(q, limit=25):
+        calls.append(q)
+        return [pds.parse_epmc_result({**_OA_RAW, "doi": "10.1038/a", "id": "a"})]
+
+    monkeypatch.setattr(pds, "search_epmc", fake_search)
+    out = await pds.discover("10.1038/a\n10.1016/b")
+    assert len(calls) == 2
+    assert all(c.startswith("DOI:") for c in calls), calls
+    # same DOI returned twice -> deduped
+    assert len(out) == 1
+
+
+async def test_discover_topic_uses_single_query(monkeypatch):
+    calls = []
+
+    async def fake_search(q, limit=25):
+        calls.append(q)
+        return []
+
+    monkeypatch.setattr(pds, "search_epmc", fake_search)
+    await pds.discover("MAP bundling in vitro")
+    assert calls == ["MAP bundling in vitro"]
+
+
+async def test_discover_titles_queries_each_line(monkeypatch):
+    calls = []
+
+    async def fake_search(q, limit=25):
+        calls.append(q)
+        return []
+
+    monkeypatch.setattr(pds, "search_epmc", fake_search)
+    await pds.discover("Tau regulates microtubules\nEg5 drives bundling")
+    assert len(calls) == 2
+    assert all(c.startswith("TITLE:") for c in calls), calls

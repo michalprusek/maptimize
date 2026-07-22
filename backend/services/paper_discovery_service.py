@@ -185,3 +185,40 @@ async def fetch_pdf(url: str) -> bytes:
                 return b"".join(chunks)
 
     raise PdfFetchError("Too many redirects")
+
+
+import asyncio
+
+
+async def discover(query: str, limit: int = 25) -> list[PaperResult]:
+    """Turn whatever the user typed into a de-duplicated candidate list."""
+    kind, items = classify_query(query)
+    if kind == "doi":
+        queries = [f'DOI:"{d}"' for d in items]
+    elif kind == "titles":
+        queries = [f'TITLE:"{t}"' for t in items]
+    else:
+        queries = list(items)
+
+    semaphore = asyncio.Semaphore(EPMC_MAX_CONCURRENCY)
+
+    async def run(q: str) -> list[PaperResult]:
+        async with semaphore:
+            try:
+                return await search_epmc(q, limit=limit)
+            except Exception:
+                logger.exception("Europe PMC query failed: %s", q[:80])
+                return []
+
+    batches = await asyncio.gather(*(run(q) for q in queries))
+
+    seen: set[str] = set()
+    merged: list[PaperResult] = []
+    for batch in batches:
+        for paper in batch:
+            key = (paper.doi or paper.source_url).lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            merged.append(paper)
+    return merged
