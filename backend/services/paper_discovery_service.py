@@ -22,7 +22,13 @@ EPMC_BASE = "https://www.ebi.ac.uk/europepmc/webservices/rest"
 # Politeness: never open more than this many connections to Europe PMC at once,
 # no matter how many papers the user selected.
 EPMC_MAX_CONCURRENCY = 4
-EPMC_TIMEOUT = 20.0
+# This is a user-initiated, explicitly-awaited action (the user clicked Search
+# and is watching a spinner), so it's fine to wait longer than a background
+# call would. Measured live against the real API: the same query returned in
+# 0.18s, 12.52s, 0.59s and 0.23s on consecutive attempts -- Europe PMC has
+# multi-second latency spikes, and the previous 20s ceiling was actually hit
+# during an end-to-end run.
+EPMC_TIMEOUT = 45.0
 
 # Availability values Europe PMC uses for content we may legally download.
 _DOWNLOADABLE = {"Open access", "Free"}
@@ -190,8 +196,20 @@ async def fetch_pdf(url: str) -> bytes:
 import asyncio
 
 
+class DiscoveryError(Exception):
+    """Search failed (as opposed to finding nothing)."""
+
+
 async def discover(query: str, limit: int = 25) -> list[PaperResult]:
-    """Turn whatever the user typed into a de-duplicated candidate list."""
+    """Turn whatever the user typed into a de-duplicated candidate list.
+
+    Raises:
+        DiscoveryError: every sub-query failed (e.g. Europe PMC timed out or
+            errored) -- this is a search failure, not "zero matches", and must
+            never be silently reported to the caller as an empty result list.
+            If only *some* sub-queries failed, the ones that succeeded are
+            still useful, so partial results are returned instead of raising.
+    """
     kind, items = classify_query(query)
     if kind == "doi":
         queries = [f'DOI:"{d}"' for d in items]
@@ -201,16 +219,21 @@ async def discover(query: str, limit: int = 25) -> list[PaperResult]:
         queries = list(items)
 
     semaphore = asyncio.Semaphore(EPMC_MAX_CONCURRENCY)
+    failures: list[BaseException] = []
 
     async def run(q: str) -> list[PaperResult]:
         async with semaphore:
             try:
                 return await search_epmc(q, limit=limit)
-            except Exception:
+            except Exception as exc:
                 logger.exception("Europe PMC query failed: %s", q[:80])
+                failures.append(exc)
                 return []
 
     batches = await asyncio.gather(*(run(q) for q in queries))
+
+    if failures and len(failures) == len(queries):
+        raise DiscoveryError("Europe PMC search failed") from failures[-1]
 
     seen: set[str] = set()
     merged: list[PaperResult] = []

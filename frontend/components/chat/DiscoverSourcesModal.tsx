@@ -22,6 +22,10 @@ export function DiscoverSourcesModal({ isOpen, onClose }: DiscoverSourcesModalPr
   const [query, setQuery] = useState("");
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [summary, setSummary] = useState<string | null>(null);
+  // Distinguishes "searched and found nothing" from "search errored out" --
+  // an empty discoverResults array means both, so it can't drive the UI alone.
+  const [hasSearched, setHasSearched] = useState(false);
+  const [searchFailed, setSearchFailed] = useState(false);
 
   // Only open-access, not-yet-imported papers can be selected.
   const selectable = useMemo(
@@ -33,10 +37,14 @@ export function DiscoverSourcesModal({ isOpen, onClose }: DiscoverSourcesModalPr
     if (!query.trim()) return;
     setSelected(new Set());
     setSummary(null);
+    setSearchFailed(false);
     try {
       await discoverSources(query.trim());
+      setHasSearched(true);
     } catch {
-      setSummary(t("discoverNoResults"));
+      setHasSearched(true);
+      setSearchFailed(true);
+      setSummary(t("discoverFailed"));
     }
   };
 
@@ -108,7 +116,10 @@ export function DiscoverSourcesModal({ isOpen, onClose }: DiscoverSourcesModalPr
           </div>
 
           <div className="flex-1 overflow-y-auto p-5 space-y-2">
-            {discoverResults.length === 0 && !isDiscovering && (
+            {searchFailed && !isDiscovering && (
+              <div className="text-center py-8 text-red-400">{t("discoverFailed")}</div>
+            )}
+            {!searchFailed && hasSearched && discoverResults.length === 0 && !isDiscovering && (
               <div className="text-center py-8 text-text-muted">{t("discoverNoResults")}</div>
             )}
             {discoverResults.map((p) => {

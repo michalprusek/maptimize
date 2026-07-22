@@ -592,6 +592,7 @@
     "discoverSearch": "Rechercher",
     "discoverSearching": "Recherche…",
     "discoverNoResults": "Aucun article trouvé",
+    "discoverFailed": "Échec de la recherche — réessayez",
     "discoverPaywalled": "Payant",
     "discoverAlreadyImported": "Dans la bibliothèque",
     "discoverOpenAccess": "Libre accès",

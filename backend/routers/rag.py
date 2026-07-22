@@ -54,6 +54,7 @@ from services.paper_discovery_service import (
     discover as discover_papers,
     fetch_pdf,
     PdfFetchError,
+    DiscoveryError,
     search_epmc,
     EPMC_MAX_CONCURRENCY,
 )
@@ -501,7 +502,13 @@ async def discover_sources(
     if not query:
         raise HTTPException(status_code=400, detail="Query is required")
 
-    papers = await discover_papers(query)
+    try:
+        papers = await discover_papers(query)
+    except DiscoveryError as exc:
+        logger.error("Paper discovery search failed: %s", exc)
+        raise HTTPException(
+            status_code=502, detail="Search service unavailable, please try again"
+        ) from exc
 
     # Mark papers already in the caller's readable library (dedupe by DOI).
     dois = [p.doi for p in papers if p.doi]

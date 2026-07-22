@@ -230,6 +230,31 @@ async def test_discover_titles_queries_each_line(monkeypatch):
     assert all(c.startswith("TITLE:") for c in calls), calls
 
 
+async def test_discover_raises_discovery_error_when_all_subqueries_fail(monkeypatch):
+    # A live timeout/outage must not be reported to the caller as "no results"
+    # — every sub-query failing is a search failure, not an empty match set.
+    async def always_fail(q, limit=25):
+        raise RuntimeError("Europe PMC down")
+
+    monkeypatch.setattr(pds, "search_epmc", always_fail)
+    with pytest.raises(pds.DiscoveryError):
+        await pds.discover("10.1038/a\n10.1016/b")
+
+
+async def test_discover_returns_partial_results_when_some_subqueries_fail(monkeypatch):
+    # One failing DOI in a multi-DOI batch must not sink the whole batch, and
+    # must not raise -- the caller still gets the papers that DID resolve.
+    async def flaky(q, limit=25):
+        if "10.1038/a" in q:
+            raise RuntimeError("Europe PMC down")
+        return [pds.parse_epmc_result({**_OA_RAW, "doi": "10.1016/b", "id": "b"})]
+
+    monkeypatch.setattr(pds, "search_epmc", flaky)
+    out = await pds.discover("10.1038/a\n10.1016/b")
+    assert len(out) == 1
+    assert out[0].doi == "10.1016/b"
+
+
 # ============================================================================ #
 # Task 5: /discover/import endpoint + discovery rate limiter
 # ============================================================================ #
@@ -287,6 +312,24 @@ async def test_import_saves_as_library_document(monkeypatch, mock_db):
     assert doc.doi == paper.doi
     assert doc.source_url == paper.source_url
     assert scheduled, "indexing must be scheduled"
+
+
+from fastapi import HTTPException
+
+
+async def test_discover_endpoint_maps_discovery_error_to_502(monkeypatch, mock_db):
+    monkeypatch.setattr(
+        rag_router, "discover_papers",
+        AsyncMock(side_effect=pds.DiscoveryError("Europe PMC search failed")),
+    )
+
+    with pytest.raises(HTTPException) as ei:
+        await rag_router.discover_sources(
+            payload=rag_router.DiscoverRequest(query="MAP bundling"),
+            current_user=SimpleNamespace(id=1),
+            db=mock_db,
+        )
+    assert ei.value.status_code == 502
 
 
 async def test_import_refuses_paywalled_paper(monkeypatch, mock_db):
