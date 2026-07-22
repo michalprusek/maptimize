@@ -725,6 +725,10 @@ async def import_discovered(
             logger.exception("Discovery fetch failed for %s", doi)
             return e
 
+    # gather() parallelises only the FETCH. The store loop below is sequential
+    # over one session, which is what makes dedupe correct inside a single batch
+    # (the same PDF under two DOIs is caught by the second iteration). Making
+    # these saves concurrent would silently reintroduce the duplicate.
     fetched = await asyncio.gather(*(fetch_or_capture(doi) for doi in to_fetch))
 
     imported = 0

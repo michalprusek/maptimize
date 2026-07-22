@@ -611,6 +611,18 @@ restart kontejneru nepřežije, a CLAUDE.md restart předepisuje po každé změ
 toho by zaseknutý dokument navždy polykal re-uploady a u sdílené knihovny by to nešlo
 opravit nikomu kromě vlastníka.
 
+⚠️ **Dedup NENÍ chráněný unique constraintem** — je to check-then-act. Dva současné
+uploady téhož nového souboru projdou oba (cena: jeden zbytečný běh indexace, sám se
+nezhorší). Vědomé rozhodnutí: správný klíč je `(content_hash, vlastník/skupina, thread_id)`
+a špatně napsaný constraint by odmítal legitimní uploady. Discovery import je bezpečný
+konstrukcí — `asyncio.gather` paralelizuje jen stahování, ukládací smyčka je sekvenční nad
+jednou session. **Kdyby někdo chtěl paralelizovat i ukládání, tahle vlastnost tiše zmizí.**
+
+⚠️ **Testy dedup dotazu asertuj na `stmt.whereclause`, NIKDY na `str(stmt)`.** `str()`
+vyrenderuje i seznam sloupců v `SELECT`, takže `assert "content_hash" in str(stmt)` projde
+i tehdy, když se filtruje podle úplně jiného sloupce. Reálně se to stalo: přepnutí dedupu
+na porovnávání podle názvu souboru nechalo všech 1626 testů zelených.
+
 ### PDF fallback při importu
 
 `pdf_urls_from_result()` vrací **seznam** kandidátů (dřív jen první odkaz).

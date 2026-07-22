@@ -102,9 +102,12 @@ async def test_lookup_excludes_failed_documents(mock_db, tmp_path):
             user_id=1, filename="p.pdf", content=b"%PDF-x", db=mock_db, thread_id=None,
         )
 
-    sql = str(mock_db.execute.await_args_list[0].args[0])
-    assert "content_hash" in sql
-    assert "status !=" in sql
+    # whereclause, NOT str(stmt): str() renders "SELECT rag_documents.content_hash,
+    # ... FROM" so a substring check against it passes no matter what is filtered.
+    # This was a live hole -- repointing the predicate at RAGDocument.name left
+    # the entire suite green.
+    where = str(mock_db.execute.await_args_list[0].args[0].whereclause)
+    assert "rag_documents.status !=" in where
 
 
 async def test_lookup_runs_before_any_filesystem_work(mock_db, tmp_path):
@@ -313,24 +316,6 @@ async def test_reaper_is_a_noop_when_nothing_is_stuck(mock_db):
     assert await dind.fail_orphaned_indexing(mock_db) == 0
 
 
-async def test_reaper_restores_re_upload_as_a_remedy(mock_db, tmp_path):
-    """The reaper and the dedupe's FAILED exclusion are one mechanism.
-
-    Without the reaper a stuck PENDING row would match the dedupe forever, so
-    every re-upload of that file returns "already in your library" and the paper
-    can never be indexed. Group-wide library dedupe makes that unfixable for
-    anyone but the owner.
-    """
-    # After reaping, the document is FAILED -> excluded by the dedupe query, so
-    # the lookup finds nothing and the re-upload really is stored.
-    mock_db.execute.return_value = make_result(scalar=None)
-    with patch.object(dind, "settings", _settings(tmp_path)), \
-         patch.object(dind, "get_user_group_id", AsyncMock(return_value=3)):
-        _doc, created = await dind.save_uploaded_document(
-            user_id=1, filename="stuck.pdf", content=b"%PDF-x", db=mock_db, thread_id=None)
-    assert created is True
-
-
 # --------------------------------------------------------------------------- #
 # The spec's promise that both upload paths share one implementation.
 # --------------------------------------------------------------------------- #
@@ -406,3 +391,140 @@ async def test_import_never_stamps_a_duplicate_that_already_has_a_doi(mock_db):
 
     assert mine.doi == "10.1/original"
     assert mine.source_url == "https://example.org/original"
+
+
+# --------------------------------------------------------------------------- #
+# WIRING. The suite tested the pieces thoroughly and the connections between
+# them barely at all: document_dedupe_scope was well covered, save_uploaded_document
+# was well covered, and nothing checked that the second actually uses the first.
+# Every test below was written after a mutant proved the gap was real.
+# --------------------------------------------------------------------------- #
+
+async def test_lookup_keys_on_the_content_hash_within_the_dedupe_scope(mock_db, tmp_path):
+    """The PR's central premise, previously enforced by nothing.
+
+    Repointing the predicate at RAGDocument.name left all 1626 tests green.
+    Filename dedupe would alias two different papers both saved as "paper.pdf":
+    the second one's content is discarded while the user is told it is already
+    in their library.
+    """
+    content = b"%PDF-1.4 payload"
+    mock_db.execute.return_value = make_result(scalar=None)
+    with patch.object(dind, "settings", _settings(tmp_path)), \
+         patch.object(dind, "get_user_group_id", AsyncMock(return_value=3)):
+        await dind.save_uploaded_document(
+            user_id=1, filename="p.pdf", content=content, db=mock_db, thread_id=None)
+
+    stmt = mock_db.execute.await_args_list[0].args[0]
+    where = str(stmt.whereclause)
+    assert "rag_documents.content_hash =" in where
+    assert "rag_documents.name" not in where            # the name is NOT the key
+    assert "rag_documents.status !=" in where
+    assert "rag_documents.group_id" in where            # library dedupes group-wide
+    assert "rag_documents.thread_id IS NULL" in where
+    # ...and the bound value is the sha256 of the BYTES, tying the lookup to the
+    # same value the stored row gets.
+    assert hashlib.sha256(content).hexdigest() in stmt.compile().params.values()
+
+
+async def test_attachment_lookup_never_widens_to_the_group(mock_db, tmp_path):
+    # Guards the call site, not just document_dedupe_scope in isolation: passing
+    # document_scope here would let an attachment alias onto a group-shared
+    # library row it can neither delete nor reindex.
+    mock_db.execute.return_value = make_result(scalar=None)
+    with patch.object(dind, "settings", _settings(tmp_path)), \
+         patch.object(dind, "get_user_group_id", AsyncMock(return_value=3)):
+        await dind.save_uploaded_document(
+            user_id=1, filename="p.pdf", content=b"%PDF-x", db=mock_db, thread_id=42)
+
+    where = str(mock_db.execute.await_args_list[0].args[0].whereclause)
+    assert "rag_documents.group_id" not in where
+    assert "rag_documents.thread_id =" in where
+    assert "rag_documents.thread_id IS NULL" not in where
+
+
+async def test_a_duplicate_mid_batch_does_not_abandon_the_remaining_papers(mock_db):
+    """Changing the duplicate branch's `continue` to `break` left the suite green.
+
+    Every other duplicate test imports exactly one DOI, so none of them can see
+    it. In production: select 10 papers, #2 is a byte-identical duplicate, and
+    papers 3-10 are silently dropped -- not imported, not reported as failures,
+    their PDFs already downloaded and thrown away.
+    """
+    import routers.rag as rag_r
+    import services.paper_discovery_service as pds
+
+    def _paper(doi):
+        return pds.PaperResult(
+            doi=doi, title="T", authors="A", journal="J", year="2026",
+            abstract=None, pmid=None, pmcid=None,
+            pdf_urls=["https://epmc.example/a.pdf"], source_url="https://x/abs")
+
+    async def fake_save(**kw):
+        # The MIDDLE paper is the duplicate.
+        dup = kw["filename"].startswith("b")
+        return SimpleNamespace(id=9, original_path="/d.pdf", doi=None,
+                               source_url=None, user_id=1), not dup
+
+    bg = MagicMock()
+    with patch.object(rag_r, "_check_discovery_rate_limit", AsyncMock()), \
+         patch.object(rag_r, "_resolve_paper_by_doi",
+                      AsyncMock(side_effect=lambda d: _paper(d))), \
+         patch.object(rag_r, "fetch_paper_pdf", AsyncMock(return_value=b"%PDF-x")), \
+         patch.object(rag_r, "_paper_filename", lambda p: p.doi.split("/")[1] + ".pdf"), \
+         patch.object(rag_r, "save_uploaded_document", fake_save):
+        out = await rag_r.import_discovered(
+            payload=rag_r.ImportRequest(dois=["10.1/a", "10.1/b", "10.1/c"]),
+            background_tasks=bg, current_user=SimpleNamespace(id=1), db=mock_db)
+
+    assert out.already_in_library == ["10.1/b"]
+    assert out.imported == 2                 # the papers either side still land
+    assert out.failed == []
+    assert bg.add_task.call_count == 2
+
+
+async def test_commit_failure_on_a_duplicate_does_not_delete_the_existing_file(
+        mock_db, tmp_path):
+    """The only mutant here with data-loss consequences.
+
+    Dropping `and created` from the orphan cleanup left the suite green. That
+    unlinks the file backing a PRE-EXISTING row -- possibly a lab mate's. Their
+    DB row survives pointing at nothing and their document silently stops
+    rendering, unrecoverably on an instance with no per-user file backups.
+    """
+    import routers.rag as rag_r
+    import services.paper_discovery_service as pds
+
+    victim = tmp_path / "labmates_paper.pdf"
+    victim.write_bytes(b"%PDF-1.4 someone else's copy")
+    existing = SimpleNamespace(id=3, original_path=str(victim), doi=None,
+                               source_url=None, user_id=2)   # NOT ours
+    paper = pds.PaperResult(
+        doi="10.1/x", title="T", authors="A", journal="J", year="2026",
+        abstract=None, pmid=None, pmcid=None,
+        pdf_urls=["https://epmc.example/a.pdf"], source_url="https://x/abs")
+
+    mock_db.commit = AsyncMock(side_effect=RuntimeError("constraint violation"))
+    with patch.object(rag_r, "_check_discovery_rate_limit", AsyncMock()), \
+         patch.object(rag_r, "_resolve_paper_by_doi", AsyncMock(return_value=paper)), \
+         patch.object(rag_r, "fetch_paper_pdf", AsyncMock(return_value=b"%PDF-x")), \
+         patch.object(rag_r, "save_uploaded_document",
+                      AsyncMock(return_value=(existing, False))):
+        out = await rag_r.import_discovered(
+            payload=rag_r.ImportRequest(dois=["10.1/x"]),
+            background_tasks=MagicMock(),
+            current_user=SimpleNamespace(id=1), db=mock_db)
+
+    assert victim.exists(), "orphan cleanup deleted a pre-existing document's file"
+    assert out.imported == 0
+
+
+async def test_reaper_never_sweeps_up_completed_documents(mock_db):
+    # Widening the .in_() to COMPLETED would mark a whole library FAILED at
+    # startup, stranding every page and embedding behind a failure badge.
+    mock_db.execute.return_value = make_result(rowcount=1)
+    await dind.fail_orphaned_indexing(mock_db)
+    stmt = mock_db.execute.await_args.args[0]
+    bound = [v for val in stmt.compile().params.values()
+             for v in (val if isinstance(val, list) else [val])]
+    assert DocumentStatus.COMPLETED.value not in bound

@@ -2044,3 +2044,31 @@ async def test_paper_result_has_no_singular_pdf_url_accessor():
     # pre-fallback spelling -- reads naturally and silently skips the whole
     # candidate chain.
     assert not hasattr(_candidate_paper(["https://a.example/x.pdf"]), "pdf_url")
+
+
+async def test_discover_marks_a_paper_without_pdf_candidates_as_not_importable(monkeypatch):
+    """`importable` is the field the picker's checkbox reads.
+
+    Getting it wrong walks the user into a guaranteed failure: import_discovered
+    re-verifies `pdf_urls` server-side and refuses, so a paper advertised as
+    importable but carrying no candidates can only ever fail.
+    """
+    paywalled = pds.parse_epmc_result(_PAYWALLED_RAW)
+    open_access = pds.parse_epmc_result(_OA_RAW)
+    assert paywalled.pdf_urls == [] and open_access.pdf_urls
+
+    monkeypatch.setattr(rag_router, "discover_papers", AsyncMock(
+        return_value=pds.DiscoveryResult(
+            papers=[paywalled, open_access], failed_queries=0, dropped_queries=0)))
+    monkeypatch.setattr(rag_router, "_check_discovery_rate_limit", AsyncMock())
+    monkeypatch.setattr(rag_router, "get_user_group_id", AsyncMock(return_value=None))
+
+    db = AsyncMock()
+    db.execute.return_value = make_result(scalars_all=[])
+    out = await rag_router.discover_sources(
+        payload=rag_router.DiscoverRequest(query="tubulin"),
+        current_user=SimpleNamespace(id=1), db=db)
+
+    by_doi = {r.doi: r.importable for r in out.results}
+    assert by_doi[paywalled.doi] is False
+    assert by_doi[open_access.doi] is True
