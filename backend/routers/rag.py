@@ -526,9 +526,12 @@ async def discover_sources(
         result = await discover_papers(query)
     except DiscoveryError as exc:
         logger.error("Paper discovery search failed: %s", exc)
-        raise HTTPException(
-            status_code=502, detail="Search service unavailable, please try again"
-        ) from exc
+        detail = "Search service unavailable, please try again"
+        if exc.attempted_query:
+            # Distinguishes "Europe PMC is down" (retry) from "the rewrite
+            # mistranslated your query" (rephrase) -- different remediations.
+            detail = f'{detail} (searched as: "{exc.attempted_query}")'
+        raise HTTPException(status_code=502, detail=detail) from exc
 
     papers = result.papers
 
@@ -560,6 +563,8 @@ async def discover_sources(
         ],
         failed_queries=result.failed_queries,
         dropped_queries=result.dropped_queries,
+        effective_query=result.effective_query,
+        rewrite_failed=result.rewrite_failed,
     )
 
 

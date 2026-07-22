@@ -573,6 +573,8 @@
     "discoverPlaceholder": "Describe the papers you want, or paste titles / DOIs…",
     "discoverSearch": "Search",
     "discoverSearching": "Searching…",
+    "discoverSearchedAs": "Searched as:",
+    "discoverRewriteFailed": "Couldn't refine your search — searched your text as typed.",
     "discoverNoResults": "No papers found",
     "discoverFailed": "Search failed — please try again",
     "discoverImportFailed": "Import failed — please try again",

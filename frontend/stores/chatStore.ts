@@ -87,6 +87,8 @@ interface ChatState {
   loadDocuments: () => Promise<void>;
   uploadDocument: (file: File, threadId?: number) => Promise<RAGDocument | null>;
   discoverResults: DiscoveredPaper[];
+  discoverEffectiveQuery: string | null;
+  discoverRewriteFailed: boolean;
   isDiscovering: boolean;
   isImportingPapers: boolean;
   discoverSources: (query: string) => Promise<void>;
@@ -716,6 +718,8 @@ export const useChatStore = create<ChatState>()(
       // ==================== Document Actions ====================
 
       discoverResults: [],
+      discoverEffectiveQuery: null,
+      discoverRewriteFailed: false,
       isDiscovering: false,
       isImportingPapers: false,
 
@@ -723,10 +727,14 @@ export const useChatStore = create<ChatState>()(
         set({ isDiscovering: true });
         try {
           const res = await api.discoverSources(query);
-          set({ discoverResults: res.results });
+          set({
+            discoverResults: res.results,
+            discoverEffectiveQuery: res.effective_query ?? null,
+            discoverRewriteFailed: res.rewrite_failed ?? false,
+          });
         } catch (error) {
           console.error("Failed to discover sources:", error);
-          set({ discoverResults: [] });
+          set({ discoverResults: [], discoverEffectiveQuery: null, discoverRewriteFailed: false });
           throw error;
         } finally {
           set({ isDiscovering: false });
