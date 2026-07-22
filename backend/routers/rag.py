@@ -55,7 +55,7 @@ from services.rag_service import (
 )
 from services.paper_discovery_service import (
     discover as discover_papers,
-    fetch_pdf,
+    fetch_paper_pdf,
     PdfFetchError,
     DiscoveryError,
     search_epmc,
@@ -265,7 +265,7 @@ async def upload_document(
 
     try:
         # Save document
-        document = await save_uploaded_document(
+        document, created = await save_uploaded_document(
             user_id=current_user.id,
             filename=file.filename,
             content=content,
@@ -274,12 +274,17 @@ async def upload_document(
         )
         await db.commit()
 
-        # Process document in background
-        background_tasks.add_task(process_document_async, document.id)
+        # A duplicate is already stored and already indexed -- re-running the
+        # pipeline would burn GPU time to produce the pages it already has.
+        if created:
+            background_tasks.add_task(process_document_async, document.id)
+            logger.info(f"Queued document {document.id} for processing")
+        else:
+            logger.info(f"Upload of {file.filename} deduplicated to document {document.id}")
 
-        logger.info(f"Queued document {document.id} for processing")
-
-        return RAGDocumentUploadResponse.model_validate(document)
+        response = RAGDocumentUploadResponse.model_validate(document)
+        response.is_duplicate = not created
+        return response
 
     except ValueError as e:
         raise HTTPException(
@@ -693,9 +698,14 @@ async def import_discovered(
             paper = await _resolve_paper_by_doi(doi)
             if paper is None:
                 raise PdfFetchError("Not found in Europe PMC")
-            if not paper.pdf_url:
+            # Server-side re-verification, unchanged: no Europe PMC PDF entry
+            # means the picker showed this as paywalled, and the fallback chain
+            # must NOT quietly promote it to importable. The fallbacks exist to
+            # rescue a paper whose advertised PDF link is dead -- not to widen
+            # what counts as freely available.
+            if not paper.pdf_urls:
                 raise PdfFetchError("No freely downloadable PDF for this paper")
-            return paper, await fetch_pdf(paper.pdf_url)
+            return paper, await fetch_paper_pdf(paper)
 
     async def fetch_or_capture(doi: str):
         """Never let one paper's exception cancel the sibling gather()s --
@@ -711,6 +721,7 @@ async def import_discovered(
     fetched = await asyncio.gather(*(fetch_or_capture(doi) for doi in to_fetch))
 
     imported = 0
+    already_in_library: list[str] = []
     for doi, outcome in zip(to_fetch, fetched):
         if isinstance(outcome, PdfFetchError):
             # The most common failure path (paywalled / not found / SSRF
@@ -730,33 +741,49 @@ async def import_discovered(
         paper, content = outcome
         filename = _paper_filename(paper)
         document = None
+        created = False
         try:
-            document = await save_uploaded_document(
+            document, created = await save_uploaded_document(
                 user_id=current_user.id, filename=filename, content=content,
                 db=db, thread_id=None,
             )
-            document.doi = paper.doi
-            document.source_url = paper.source_url
+            if created:
+                document.doi = paper.doi
+                document.source_url = paper.source_url
+            # Deliberately NOT stamping doi/source_url on a duplicate: the
+            # existing document may belong to a lab mate, and writes stay
+            # owner-only (group membership grants read, never modify).
             await db.commit()
         except Exception:
             await db.rollback()
             logger.exception("Failed to store discovered paper %s", doi)
-            if document is not None:
-                # save_uploaded_document returned successfully (the file is on
-                # disk) but the commit above failed -- delete it so it isn't
-                # orphaned. If save_uploaded_document itself raised, `document`
-                # is still None here and there is no path to clean up (that
-                # failure mode is documented on save_uploaded_document).
+            if document is not None and created:
+                # save_uploaded_document created and wrote a NEW file, but the
+                # commit above failed -- delete it so it isn't orphaned. A
+                # deduplicated document must never be unlinked here: its file
+                # backs a pre-existing row (possibly a lab mate's).
+                # If save_uploaded_document itself raised, `document` is still
+                # None and there is nothing to clean up (that failure mode is
+                # documented on save_uploaded_document).
                 orphan_path = Path(document.original_path)
                 orphan_path.unlink(missing_ok=True)
                 logger.info("Cleaned up orphaned PDF for %s: %s", doi, orphan_path)
             failures.append(ImportFailure(doi=doi, reason=_GENERIC_IMPORT_ERROR))
             continue
 
+        if not created:
+            # Neither a success nor a failure: the paper is already here and
+            # nothing was done. Counting it as "imported" would claim an import
+            # that never happened.
+            already_in_library.append(doi)
+            continue
+
         background_tasks.add_task(process_document_async, document.id)
         imported += 1
 
-    return ImportResponse(imported=imported, failed=failures)
+    return ImportResponse(
+        imported=imported, failed=failures, already_in_library=already_in_library,
+    )
 
 
 # ============== Indexing Status ==============

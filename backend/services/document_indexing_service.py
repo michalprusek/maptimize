@@ -8,6 +8,7 @@ This service handles:
 """
 
 import asyncio
+import hashlib
 import logging
 import shutil
 from pathlib import Path
@@ -20,7 +21,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import get_settings
 from database import get_db_context
-from models.rag_document import RAGDocument, RAGDocumentPage, DocumentStatus
+from models.rag_document import (
+    RAGDocument, RAGDocumentPage, DocumentStatus, document_dedupe_scope,
+)
 from utils.groups import get_user_group_id
 
 logger = logging.getLogger(__name__)
@@ -62,9 +65,12 @@ async def save_uploaded_document(
     content: bytes,
     db: AsyncSession,
     thread_id: Optional[int] = None,
-) -> RAGDocument:
+) -> Tuple[RAGDocument, bool]:
     """
-    Save an uploaded document and create DB record.
+    Save an uploaded document and create DB record, unless it is already here.
+
+    This is the single choke point for BOTH the manual upload endpoint and the
+    discovery import, so deduplication applies to both by construction.
 
     Args:
         user_id: Owner user ID
@@ -75,11 +81,44 @@ async def save_uploaded_document(
             (NULL = a document-library upload)
 
     Returns:
-        Created RAGDocument record
+        ``(document, created)``. When ``created`` is False the content was
+        already present in a document the caller can see: nothing was written
+        to disk, no row was added, and the returned document is the existing
+        one -- callers MUST NOT schedule indexing for it, and must not write to
+        it (it may belong to a lab mate; writes stay owner-only).
     """
     file_type = get_file_type(filename)
     if not file_type:
         raise ValueError(f"Unsupported file type: {filename}")
+
+    # Resolve the group BEFORE touching the filesystem: the dedupe scope needs
+    # it, and so does the row we may be about to create. Fail-closed to
+    # owner-only, mirroring experiment group stamping.
+    group_id = None
+    if thread_id is None:
+        try:
+            group_id = await get_user_group_id(user_id, db)
+        except Exception:
+            logger.exception(f"Failed to resolve group for user {user_id}; uploading as owner-only")
+
+    # Deduplicate before anything is written, so a duplicate leaves no trace.
+    # FAILED documents are excluded: deduplicating to one would hand the user a
+    # broken document AND silently consume the re-upload that was their only
+    # way to fix it.
+    content_hash = hashlib.sha256(content).hexdigest()
+    existing = (await db.execute(
+        select(RAGDocument).where(
+            RAGDocument.content_hash == content_hash,
+            RAGDocument.status != DocumentStatus.FAILED.value,
+            document_dedupe_scope(user_id, thread_id, group_id),
+        ).limit(1)
+    )).scalar_one_or_none()
+    if existing is not None:
+        logger.info(
+            "Duplicate upload of %s (sha256 %s...) -> existing document %s",
+            filename, content_hash[:12], existing.id,
+        )
+        return existing, False
 
     # Create user's RAG document directory
     user_rag_dir = settings.rag_document_dir / str(user_id)
@@ -109,19 +148,10 @@ async def save_uploaded_document(
     # Save file
     original_path.write_bytes(content)
 
+    # group_id was resolved above, before the dedupe lookup that needed it.
     # Library uploads (thread_id IS NULL) are shared with the owner's lab group;
     # chat attachments stay private (group_id stays None). Mirrors experiment
     # group stamping in routers/experiments.py::create_experiment.
-    # Fail-closed: the file is already on disk at this point, so a raise here
-    # would leave an orphaned file with no DB row. owner-only (None) is always
-    # safe for a brand-new upload. Mirrors the same try/except in
-    # gemini_agent_service.py::generate_response.
-    group_id = None
-    if thread_id is None:
-        try:
-            group_id = await get_user_group_id(user_id, db)
-        except Exception:
-            logger.exception(f"Failed to resolve group for user {user_id}; uploading as owner-only")
 
     # Create DB record
     document = RAGDocument(
@@ -133,12 +163,13 @@ async def save_uploaded_document(
         original_path=str(original_path),
         status=DocumentStatus.PENDING.value,
         file_size=len(content),
+        content_hash=content_hash,
     )
     db.add(document)
     await db.flush()
 
     logger.info(f"Saved document {document.id}: {filename} ({file_type})")
-    return document
+    return document, True
 
 
 async def process_document_async(document_id: int) -> None:

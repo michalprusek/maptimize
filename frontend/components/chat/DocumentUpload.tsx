@@ -17,11 +17,15 @@ const ACCEPTED_TYPES = {
 
 export function DocumentUpload() {
   const t = useTranslations("chat");
-  const { uploadDocument, isUploadingDocument } = useChatStore();
+  const { uploadDocument, isUploadingDocument, duplicateDocumentId, clearDuplicateNotice } =
+    useChatStore();
   const [uploadSuccess, setUploadSuccess] = useState(false);
 
   const onDrop = useCallback(
     async (acceptedFiles: File[]) => {
+      // Clear any earlier notice first, so a fresh upload that succeeds does
+      // not still show "already in your library" from the previous attempt.
+      clearDuplicateNotice();
       for (const file of acceptedFiles) {
         await uploadDocument(file);
       }
@@ -29,7 +33,7 @@ export function DocumentUpload() {
       setUploadSuccess(true);
       setTimeout(() => setUploadSuccess(false), 2000);
     },
-    [uploadDocument]
+    [uploadDocument, clearDuplicateNotice]
   );
 
   const { getRootProps, getInputProps, isDragActive } = useDropzone({
@@ -85,6 +89,13 @@ export function DocumentUpload() {
           <span className="text-xs text-text-muted">
             PDF, DOCX, PPTX, XLSX, {t("orImages")}
           </span>
+          {/* A skipped upload otherwise looks exactly like a successful one --
+              say so explicitly, or the user just sees their library not grow. */}
+          {duplicateDocumentId !== null && (
+            <span className="text-xs text-amber-400/90 text-center">
+              {t("documentDuplicate")}
+            </span>
+          )}
         </div>
       )}
     </div>

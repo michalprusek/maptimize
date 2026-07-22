@@ -72,6 +72,29 @@ def document_read_scope(user_id: int, group_id: Optional[int] = None) -> ColumnE
     return or_(owner, shared_library)
 
 
+def document_dedupe_scope(
+    user_id: int,
+    thread_id: Optional[int],
+    group_id: Optional[int],
+) -> ColumnElement:
+    """SSOT for which documents a new upload may be recognised as a duplicate OF.
+
+    Deliberately NARROWER than document_scope. For a library upload the two are
+    identical, but ``document_scope(user_id, thread_id=N, ...)`` returns
+    *library OR own attachments in N* -- and deduplicating an attachment against
+    a library document (or the reverse) would alias documents with different
+    lifetimes: an attachment is deleted with its thread, so a library document
+    could vanish when someone deletes a conversation.
+
+    Library uploads dedupe group-wide, so one lab indexes a paper once. Chat
+    attachments dedupe only against the caller's own attachments in the SAME
+    thread, and never widen to a group. ``group_id=None`` -> owner only.
+    """
+    if thread_id is None:
+        return and_(RAGDocument.thread_id.is_(None), _library_visible(user_id, group_id))
+    return and_(RAGDocument.user_id == user_id, RAGDocument.thread_id == thread_id)
+
+
 class DocumentStatus(str, PyEnum):
     """Document processing status."""
     PENDING = "pending"
@@ -122,6 +145,11 @@ class RAGDocument(Base):
     # must be shown as such instead of being imported twice.
     doi: Mapped[Optional[str]] = mapped_column(String(255), nullable=True, index=True)
     source_url: Mapped[Optional[str]] = mapped_column(String(1000), nullable=True)
+    # sha256 of the uploaded bytes -- the deduplication key, checked before a
+    # file is written or a row created. NULL for rows predating the column and
+    # for any row whose file could not be read during backfill; NULL != NULL in
+    # SQL, so those never match each other by accident.
+    content_hash: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, index=True)
     name: Mapped[str] = mapped_column(String(255))
     # Store file_type as string but validate against DocumentType values
     file_type: Mapped[str] = mapped_column(String(50))

@@ -761,8 +761,11 @@ async def test_save_uploaded_success(mock_db, tmp_path):
         captured["doc"] = obj
 
     mock_db.add = MagicMock(side_effect=add)
+    mock_db.execute.return_value = make_result(scalar=None)  # no dedupe hit
     with patch.object(dind, "settings", fake_settings):
-        doc = await dind.save_uploaded_document(7, "My Report!.pdf", b"hello", mock_db, thread_id=42)
+        doc, created = await dind.save_uploaded_document(
+            7, "My Report!.pdf", b"hello", mock_db, thread_id=42)
+    assert created is True
     assert doc.file_type == "pdf"
     assert doc.file_size == 5
     assert doc.status == DocumentStatus.PENDING.value
@@ -778,9 +781,10 @@ async def test_save_uploaded_success(mock_db, tmp_path):
 async def test_save_uploaded_sanitizes_special_chars(mock_db, tmp_path):
     fake_settings = SimpleNamespace(rag_document_dir=tmp_path / "rag_documents")
     mock_db.add = MagicMock()
+    mock_db.execute.return_value = make_result(scalar=None)  # no dedupe hit
     with patch.object(dind, "settings", fake_settings):
         # special chars replaced/stripped; alnum extension chars survive
-        doc = await dind.save_uploaded_document(7, "!!!.png", b"x", mock_db)
+        doc, _ = await dind.save_uploaded_document(7, "!!!.png", b"x", mock_db)
     name = Path(doc.original_path).name
     assert "!" not in name
     assert name.endswith(".png")

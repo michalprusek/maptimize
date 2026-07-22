@@ -86,6 +86,10 @@ interface ChatState {
   // Actions - Documents
   loadDocuments: () => Promise<void>;
   uploadDocument: (file: File, threadId?: number) => Promise<RAGDocument | null>;
+  // Set when the last upload was recognised as already present, so the modal
+  // can say so and highlight the existing entry. Cleared by the next upload.
+  duplicateDocumentId: number | null;
+  clearDuplicateNotice: () => void;
   discoverResults: DiscoveredPaper[];
   discoverEffectiveQuery: string | null;
   discoverRewriteFailed: boolean;
@@ -717,6 +721,9 @@ export const useChatStore = create<ChatState>()(
 
       // ==================== Document Actions ====================
 
+      duplicateDocumentId: null,
+      clearDuplicateNotice: () => set({ duplicateDocumentId: null }),
+
       discoverResults: [],
       discoverEffectiveQuery: null,
       discoverRewriteFailed: false,
@@ -783,6 +790,12 @@ export const useChatStore = create<ChatState>()(
         set({ isUploadingDocument: true, error: null });
         try {
           const document = await api.uploadRAGDocument(file, threadId);
+          // A duplicate is already in `documents` -- prepending it would show
+          // the same document twice and React would warn on the duplicate key.
+          if (document.is_duplicate) {
+            set({ isUploadingDocument: false, duplicateDocumentId: document.id });
+            return document;
+          }
           set((state) => ({
             documents: [document, ...state.documents],
             // Attachments belong to the open conversation; keep them listed
@@ -791,12 +804,14 @@ export const useChatStore = create<ChatState>()(
               ? { ...state.threadAttachments, [threadId]: [...(state.threadAttachments[threadId] || []), document] }
               : state.threadAttachments,
             isUploadingDocument: false,
+            duplicateDocumentId: null,
           }));
           return document;
         } catch (error) {
           set({
             error: error instanceof Error ? error.message : "Failed to upload document",
             isUploadingDocument: false,
+            duplicateDocumentId: null,
           });
           return null;
         }

@@ -45,6 +45,10 @@ class Settings(BaseSettings):
 
     # RAG / Chat Configuration
     gemini_api_key: str = ""  # Set via GEMINI_API_KEY env var
+    # Unpaywall requires a contact address as a query parameter. Free API
+    # indexing only legally deposited open-access copies -- never a paywall
+    # bypass. Used solely as a fallback when Europe PMC's own PDF link fails.
+    unpaywall_email: str = "maptimize@utia.cas.cz"
 
     # Single source of truth for Gemini model IDs. These were previously
     # hardcoded in three places across two files; two of them still named

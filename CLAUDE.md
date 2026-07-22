@@ -587,6 +587,40 @@ následováním redirectů a revalidací každého hopu** — reálné EPMC PDF 
 takže tahle větev musí být otestovaná (jednou už tu byl bug, který spadl na každém
 skutečném stažení, protože žádný test redirect nevracel).
 
+### Deduplikace dokumentů (od 2026-07-22)
+
+Klíč je **`sha256` obsahu** v `rag_documents.content_hash`. Počítá se v
+`save_uploaded_document()` — jediném hrdle, kterým jde ruční upload **i** discovery
+import, takže obě cesty dedupují automaticky. Vrací `(document, created)`; při
+`created=False` se **nesmí** plánovat indexace ani nic zapisovat (dokument může patřit
+kolegovi — zápisy zůstávají na vlastníkovi).
+
+Rozsah hledání je `document_dedupe_scope()` v `models/rag_document.py`, **záměrně užší
+než `document_scope`**: knihovní upload dedupuje napříč skupinou, příloha chatu jen proti
+vlastním přílohám téhož threadu. Kdyby se hranice překročila, knihovní dokument by zmizel
+při smazání konverzace.
+
+⚠️ **Dokumenty ve stavu `FAILED` se nededuplikují.** Jinak by uživatel dostal rozbitý
+dokument a přišel by o jedinou možnost nápravy — re-upload by se tiše vyhodnotil jako
+duplicita.
+
+### PDF fallback při importu
+
+`pdf_urls_from_result()` vrací **seznam** kandidátů (dřív jen první odkaz).
+`fetch_paper_pdf()` je zkouší v pořadí: všechny EPMC odkazy → Unpaywall → vzory preprint
+serverů (Research Square, bioRxiv/medRxiv, odvozené z DOI bez extra requestu). Resolvery
+se volají **až když všechny EPMC odkazy selžou**, takže běžná cesta nestojí nic navíc —
+testy to hlídají přes `assert_not_awaited()`.
+
+⚠️ **Když `pdf_urls` je prázdné, import se odmítne i s DOI.** Prázdný seznam znamená, že
+picker článek ukázal jako paywallovaný; fallback má zachránit mrtvý odkaz, ne rozšířit,
+co se považuje za volně dostupné. (Test `test_import_refuses_paywalled_paper` to hlídá —
+při implementaci tuhle hranici jednou zrušil a test to chytil.)
+
+Chyba se hlásí jako **poslední reálné selhání**, ne „3 kandidáti selhali": rozdíl mezi
+403, špatným content-type a překročením 100 MB je to, co uživateli řekne, jestli zkusit
+znovu, nebo si PDF stáhnout ručně.
+
 ## 🌐 Internacionalizace (i18n)
 
 **CRITICAL: Každý textový řetězec v UI musí používat i18n wrapper!**

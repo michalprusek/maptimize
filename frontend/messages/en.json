@@ -574,6 +574,8 @@
     "discoverSearch": "Search",
     "discoverSearching": "Searching…",
     "discoverSearchedAs": "Searched as:",
+    "documentDuplicate": "This file is already in your library — nothing was uploaded.",
+    "importAlreadyInLibrary": "{count} already in your library",
     "discoverRewriteFailed": "Couldn't refine your search — searched your text as typed.",
     "discoverNoResults": "No papers found",
     "discoverFailed": "Search failed — please try again",
