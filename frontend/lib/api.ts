@@ -1087,6 +1087,20 @@ class ApiClient {
     return this.request<RAGSearchResponse>(`/api/rag/search?${params}`);
   }
 
+  async discoverSources(query: string): Promise<DiscoverResponse> {
+    return this.request<DiscoverResponse>("/api/rag/discover", {
+      method: "POST",
+      body: JSON.stringify({ query }),
+    });
+  }
+
+  async importDiscovered(dois: string[]): Promise<ImportResult> {
+    return this.request<ImportResult>("/api/rag/discover/import", {
+      method: "POST",
+      body: JSON.stringify({ dois }),
+    });
+  }
+
   async getMyBugReports() {
     return this.request<BugReportListResponse>("/api/bug-reports");
   }
@@ -2003,6 +2017,28 @@ export interface RAGSearchResponse {
   query: string;
   documents: RAGDocumentSearchResult[];
   fov_images: RAGFOVSearchResult[];
+}
+
+export interface DiscoveredPaper {
+  doi?: string;
+  title: string;
+  authors?: string;
+  journal?: string;
+  year?: string;
+  abstract?: string;
+  source_url: string;
+  importable: boolean;
+  already_imported: boolean;
+}
+
+export interface DiscoverResponse {
+  query: string;
+  results: DiscoveredPaper[];
+}
+
+export interface ImportResult {
+  imported: number;
+  failed: { doi: string; reason: string }[];
 }
 
 // ============================================================================
