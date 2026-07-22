@@ -3,12 +3,19 @@
 import { useState, useMemo } from "react";
 import { useTranslations } from "next-intl";
 import { useChatStore } from "@/stores/chatStore";
+import type { DiscoveredPaper } from "@/lib/api";
 import { X, Search, ExternalLink, Loader2, Lock, Check } from "lucide-react";
 import { clsx } from "clsx";
 
 interface DiscoverSourcesModalProps {
   isOpen: boolean;
   onClose: () => void;
+}
+
+// Selectability rule shared between the "select all" memo and each row's
+// checkbox/disabled state -- keep it in one place so they can never drift.
+function isSelectable(p: DiscoveredPaper): boolean {
+  return Boolean(p.importable && !p.already_imported && p.doi);
 }
 
 export function DiscoverSourcesModal({ isOpen, onClose }: DiscoverSourcesModalProps) {
@@ -26,25 +33,30 @@ export function DiscoverSourcesModal({ isOpen, onClose }: DiscoverSourcesModalPr
   // an empty discoverResults array means both, so it can't drive the UI alone.
   const [hasSearched, setHasSearched] = useState(false);
   const [searchFailed, setSearchFailed] = useState(false);
+  const [importFailed, setImportFailed] = useState(false);
+  const [failedImports, setFailedImports] = useState<{ doi: string; reason: string }[]>([]);
 
   // Only open-access, not-yet-imported papers can be selected.
   const selectable = useMemo(
-    () => discoverResults.filter((p) => p.importable && !p.already_imported && p.doi),
+    () => discoverResults.filter(isSelectable),
     [discoverResults]
   );
+  const allSelected = selectable.length > 0 && selected.size === selectable.length;
 
   const runSearch = async () => {
     if (!query.trim()) return;
     setSelected(new Set());
     setSummary(null);
     setSearchFailed(false);
+    setImportFailed(false);
+    setFailedImports([]);
     try {
       await discoverSources(query.trim());
       setHasSearched(true);
-    } catch {
+    } catch (error) {
       setHasSearched(true);
       setSearchFailed(true);
-      setSummary(t("discoverFailed"));
+      setSummary(error instanceof Error ? error.message : t("discoverFailed"));
     }
   };
 
@@ -65,15 +77,22 @@ export function DiscoverSourcesModal({ isOpen, onClose }: DiscoverSourcesModalPr
   };
 
   const runImport = async () => {
-    const result = await importDiscovered(Array.from(selected));
-    if (result) {
+    setSummary(null);
+    setImportFailed(false);
+    setFailedImports([]);
+    try {
+      const result = await importDiscovered(Array.from(selected));
       setSummary(
         `${t("discoverImportedCount", { count: result.imported })}` +
           (result.failed.length
             ? ` · ${t("discoverFailedCount", { count: result.failed.length })}`
             : "")
       );
+      setFailedImports(result.failed);
       setSelected(new Set());
+    } catch (error) {
+      setImportFailed(true);
+      setSummary(error instanceof Error ? error.message : t("discoverImportFailed"));
     }
   };
 
@@ -81,8 +100,8 @@ export function DiscoverSourcesModal({ isOpen, onClose }: DiscoverSourcesModalPr
 
   return (
     <>
-      <div className="fixed inset-0 z-[100] bg-black/60 backdrop-blur-sm animate-fade-in" onClick={onClose} />
-      <div className="fixed inset-0 z-[101] flex items-center justify-center p-4 pointer-events-none">
+      <div className="fixed inset-0 z-[110] bg-black/60 backdrop-blur-sm animate-fade-in" onClick={onClose} />
+      <div className="fixed inset-0 z-[111] flex items-center justify-center p-4 pointer-events-none">
         <div
           className={clsx(
             "w-full max-w-2xl max-h-[85vh] bg-bg-secondary rounded-xl border border-white/10",
@@ -101,7 +120,7 @@ export function DiscoverSourcesModal({ isOpen, onClose }: DiscoverSourcesModalPr
             <input
               value={query}
               onChange={(e) => setQuery(e.target.value)}
-              onKeyDown={(e) => { if (e.key === "Enter") runSearch(); }}
+              onKeyDown={(e) => { if (e.key === "Enter" && !isDiscovering) runSearch(); }}
               placeholder={t("discoverPlaceholder")}
               className="flex-1 px-3 py-2 text-sm bg-white/5 border border-white/10 rounded-lg text-text-primary placeholder:text-text-muted focus:outline-none focus:border-primary-500/50"
             />
@@ -117,13 +136,13 @@ export function DiscoverSourcesModal({ isOpen, onClose }: DiscoverSourcesModalPr
 
           <div className="flex-1 overflow-y-auto p-5 space-y-2">
             {searchFailed && !isDiscovering && (
-              <div className="text-center py-8 text-red-400">{t("discoverFailed")}</div>
+              <div className="text-center py-8 text-red-400">{summary || t("discoverFailed")}</div>
             )}
             {!searchFailed && hasSearched && discoverResults.length === 0 && !isDiscovering && (
               <div className="text-center py-8 text-text-muted">{t("discoverNoResults")}</div>
             )}
             {discoverResults.map((p) => {
-              const disabled = !p.importable || p.already_imported || !p.doi;
+              const disabled = !isSelectable(p);
               return (
                 <label
                   key={p.doi || p.source_url}
@@ -179,30 +198,49 @@ export function DiscoverSourcesModal({ isOpen, onClose }: DiscoverSourcesModalPr
             })}
           </div>
 
-          <div className="flex items-center justify-between px-5 py-4 border-t border-white/10">
-            <div className="flex items-center gap-3">
-              <button
-                onClick={toggleAll}
-                disabled={selectable.length === 0}
-                className="text-xs text-text-secondary hover:text-text-primary disabled:opacity-40"
-              >
-                {t("discoverSelectAll")}
-              </button>
-              {summary && <span className="text-xs text-text-muted">{summary}</span>}
+          <div className="px-5 py-4 border-t border-white/10 space-y-2">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <button
+                  onClick={toggleAll}
+                  disabled={selectable.length === 0}
+                  className="text-xs text-text-secondary hover:text-text-primary disabled:opacity-40"
+                >
+                  {allSelected ? tCommon("deselect") : t("discoverSelectAll")}
+                </button>
+                {summary && (
+                  <span className={clsx("text-xs", (searchFailed || importFailed) ? "text-red-400" : "text-text-muted")}>
+                    {summary}
+                  </span>
+                )}
+              </div>
+              <div className="flex items-center gap-2">
+                <button onClick={onClose} className="px-3 py-2 rounded-lg text-sm text-text-secondary hover:bg-white/5">
+                  {tCommon("cancel")}
+                </button>
+                <button
+                  onClick={runImport}
+                  disabled={selected.size === 0 || isImportingPapers}
+                  className="px-4 py-2 rounded-lg bg-primary-500/20 hover:bg-primary-500/30 border border-primary-500/30 text-primary-400 text-sm font-medium disabled:opacity-50 flex items-center gap-2"
+                >
+                  {isImportingPapers && <Loader2 className="w-4 h-4 animate-spin" />}
+                  {isImportingPapers ? t("discoverImporting") : `${t("discoverImportSelected")} (${selected.size})`}
+                </button>
+              </div>
             </div>
-            <div className="flex items-center gap-2">
-              <button onClick={onClose} className="px-3 py-2 rounded-lg text-sm text-text-secondary hover:bg-white/5">
-                {tCommon("cancel")}
-              </button>
-              <button
-                onClick={runImport}
-                disabled={selected.size === 0 || isImportingPapers}
-                className="px-4 py-2 rounded-lg bg-primary-500/20 hover:bg-primary-500/30 border border-primary-500/30 text-primary-400 text-sm font-medium disabled:opacity-50 flex items-center gap-2"
-              >
-                {isImportingPapers && <Loader2 className="w-4 h-4 animate-spin" />}
-                {isImportingPapers ? t("discoverImporting") : `${t("discoverImportSelected")} (${selected.size})`}
-              </button>
-            </div>
+            {failedImports.length > 0 && (
+              <ul className="max-h-24 overflow-y-auto space-y-0.5">
+                {failedImports.map((f) => (
+                  <li
+                    key={f.doi}
+                    className="text-[10px] text-red-400/90 font-mono truncate"
+                    title={`${f.doi}: ${f.reason}`}
+                  >
+                    {f.doi} — {f.reason}
+                  </li>
+                ))}
+              </ul>
+            )}
           </div>
         </div>
       </div>

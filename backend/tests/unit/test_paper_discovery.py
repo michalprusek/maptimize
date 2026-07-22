@@ -28,8 +28,22 @@ _OA_RAW = {
     "fullTextUrlList": {"fullTextUrl": [
         {"availability": "Subscription required", "documentStyle": "doi",
          "url": "https://doi.org/10.1186/s43897-026-00231-0"},
-        {"availability": "Open access", "documentStyle": "pdf",
+        {"availability": "Open access", "documentStyle": "pdf", "site": "Europe_PMC",
          "url": "https://europepmc.org/articles/PMC13248438?pdf=render"},
+    ]},
+}
+# Live-verified 2026-07-22: a "site": "PubMedCentral" pdf entry looks importable
+# (documentStyle pdf, availability Open access) but its url redirects to an NCBI
+# bot-check page when fetched server-side -- must NOT be treated as importable.
+_PMC_NCBI_RAW = {
+    "id": "9999999", "source": "MED", "doi": "10.1000/pmc-ncbi",
+    "title": "A paper only mirrored on PMC/NCBI", "authorString": "Doe J.",
+    "pubYear": "2025", "abstractText": "...",
+    "isOpenAccess": "Y", "hasPDF": "Y",
+    "journalInfo": {"journal": {"title": "Some journal"}},
+    "fullTextUrlList": {"fullTextUrl": [
+        {"availability": "Open access", "documentStyle": "pdf", "site": "PubMedCentral",
+         "url": "https://www.ncbi.nlm.nih.gov/pmc/articles/PMC9999999/pdf/paper.pdf"},
     ]},
 }
 # A bioRxiv preprint: isOpenAccess "N" but availability "Free" — and NO pdf entry.
@@ -63,6 +77,23 @@ def test_pdf_url_ignores_isopenaccess_flag():
     # isOpenAccess must not drive the decision: flip it and nothing changes.
     flipped = {**_PAYWALLED_RAW, "isOpenAccess": "Y", "hasPDF": "Y"}
     assert pdf_url_from_result(flipped) is None
+
+
+def test_pdf_url_excludes_pubmedcentral_ncbi_entries():
+    # documentStyle=pdf + availability=Open access alone are NOT enough --
+    # a PubMedCentral-sited entry's url 404s/bot-checks when fetched
+    # server-side, so it must be excluded despite otherwise qualifying.
+    assert pdf_url_from_result(_PMC_NCBI_RAW) is None
+
+
+def test_pdf_url_requires_europe_pmc_site_even_with_no_site_key():
+    # A malformed/older record shape with no "site" key at all must not be
+    # treated as importable by accident (missing != "Europe_PMC").
+    no_site = {**_OA_RAW, "fullTextUrlList": {"fullTextUrl": [
+        {"availability": "Open access", "documentStyle": "pdf",
+         "url": "https://example.org/no-site-field.pdf"},
+    ]}}
+    assert pdf_url_from_result(no_site) is None
 
 
 def test_parse_epmc_result_maps_fields():
@@ -146,6 +177,19 @@ async def test_fetch_pdf_rejects_unsafe_url(monkeypatch):
         await pds.fetch_pdf("http://169.254.169.254/latest/meta-data")
 
 
+async def test_fetch_pdf_ssrf_refusal_message_is_generic_but_log_has_detail(monkeypatch, caplog):
+    # _is_safe_url's internal reason can contain a resolved private IP and
+    # must never reach the client; the raised message is a fixed, generic
+    # string, while the real reason still goes to the server-side log.
+    monkeypatch.setattr(pds, "_is_safe_url", lambda u: (False, "Access to private IP address (10.0.0.5) is not allowed"))
+    with caplog.at_level("WARNING", logger=pds.logger.name):
+        with pytest.raises(pds.PdfFetchError) as ei:
+            await pds.fetch_pdf("http://169.254.169.254/latest/meta-data")
+    assert str(ei.value) == pds.SSRF_REFUSAL_MESSAGE
+    assert "10.0.0.5" not in str(ei.value)
+    assert "10.0.0.5" in caplog.text
+
+
 async def test_fetch_pdf_enforces_size_cap(monkeypatch):
     monkeypatch.setattr(pds, "_is_safe_url", lambda u: (True, ""))
     monkeypatch.setattr(pds, "MAX_PDF_BYTES", 10)
@@ -179,6 +223,21 @@ async def test_fetch_pdf_returns_bytes(monkeypatch):
     assert await pds.fetch_pdf("https://europepmc.org/a.pdf") == b"%PDF-ok"
 
 
+async def test_fetch_pdf_rejects_body_not_starting_with_pdf_magic_bytes(monkeypatch):
+    # A 200 response with a "pdf" content-type can still be an HTML error page
+    # some publishers mislabel -- fail fast instead of storing a file the
+    # indexer will choke on later.
+    monkeypatch.setattr(pds, "_is_safe_url", lambda u: (True, ""))
+    not_really_pdf = _FakeStream(
+        headers={"content-type": "application/pdf"},
+        chunks=(b"<html>not a pdf</html>",),
+    )
+    monkeypatch.setattr(pds.httpx, "AsyncClient", _client_returning(not_really_pdf))
+    with pytest.raises(pds.PdfFetchError) as ei:
+        await pds.fetch_pdf("https://europepmc.org/fake.pdf")
+    assert "not a valid pdf" in str(ei.value).lower()
+
+
 # ============================================================================ #
 # Task 4: discover() + /discover endpoint
 # ============================================================================ #
@@ -202,7 +261,9 @@ async def test_discover_dois_queries_each_doi(monkeypatch):
     assert len(calls) == 2
     assert all(c.startswith("DOI:") for c in calls), calls
     # same DOI returned twice -> deduped
-    assert len(out) == 1
+    assert len(out.papers) == 1
+    assert out.failed_queries == 0
+    assert out.dropped_queries == 0
 
 
 async def test_discover_topic_uses_single_query(monkeypatch):
@@ -251,8 +312,77 @@ async def test_discover_returns_partial_results_when_some_subqueries_fail(monkey
 
     monkeypatch.setattr(pds, "search_epmc", flaky)
     out = await pds.discover("10.1038/a\n10.1016/b")
-    assert len(out) == 1
-    assert out[0].doi == "10.1016/b"
+    assert len(out.papers) == 1
+    assert out.papers[0].doi == "10.1016/b"
+    assert out.failed_queries == 1  # the caller can tell one sub-query broke
+
+
+async def test_discover_caps_titles_at_max_subqueries(monkeypatch):
+    # A pasted 300-entry bibliography must not turn into 300 outbound EPMC
+    # requests -- only the first MAX_SUBQUERIES lines are ever queried, and the
+    # caller is told how many were dropped.
+    calls = []
+
+    async def fake_search(q, limit=25):
+        calls.append(q)
+        return []
+
+    monkeypatch.setattr(pds, "search_epmc", fake_search)
+    many_titles = "\n".join(f"Title number {i}" for i in range(pds.MAX_SUBQUERIES + 5))
+    out = await pds.discover(many_titles)
+    assert len(calls) == pds.MAX_SUBQUERIES
+    assert out.dropped_queries == 5
+
+
+async def test_discover_caps_dois_at_max_subqueries(monkeypatch):
+    calls = []
+
+    async def fake_search(q, limit=25):
+        calls.append(q)
+        return []
+
+    monkeypatch.setattr(pds, "search_epmc", fake_search)
+    many_dois = "\n".join(f"10.1038/nature{10000 + i}" for i in range(pds.MAX_SUBQUERIES + 3))
+    out = await pds.discover(many_dois)
+    assert len(calls) == pds.MAX_SUBQUERIES
+    assert out.dropped_queries == 3
+
+
+async def test_discover_topic_query_is_not_capped_or_dropped(monkeypatch):
+    # The truncation is specific to the doi/titles fan-out; a single free-text
+    # topic query is exactly one sub-query and nothing is ever "dropped".
+    monkeypatch.setattr(pds, "search_epmc", AsyncMock(return_value=[]))
+    out = await pds.discover("MAP bundling in vitro")
+    assert out.dropped_queries == 0
+
+
+async def test_discover_uses_small_result_limit_for_doi_and_titles(monkeypatch):
+    # doi/title sub-queries are a specific match target -- don't ask Europe PMC
+    # for a caller-sized page of fuzzy matches per pasted title.
+    seen_limits = []
+
+    async def fake_search(q, limit=25):
+        seen_limits.append(limit)
+        return []
+
+    monkeypatch.setattr(pds, "search_epmc", fake_search)
+    await pds.discover("Tau regulates microtubules\nEg5 drives bundling", limit=25)
+    assert seen_limits == [pds.SUBQUERY_RESULT_LIMIT, pds.SUBQUERY_RESULT_LIMIT]
+
+
+async def test_discover_escapes_quotes_in_title_query(monkeypatch):
+    # A pasted title containing a literal `"` must not be able to break out of
+    # the quoted TITLE:"..." term and inject new Europe PMC query syntax.
+    calls = []
+
+    async def fake_search(q, limit=25):
+        calls.append(q)
+        return []
+
+    monkeypatch.setattr(pds, "search_epmc", fake_search)
+    await pds.discover('x" OR (OPEN_ACCESS:Y)\nsecond title here')
+    assert all('"' not in c[len('TITLE:"'):-1] for c in calls), calls
+    assert calls[0] == 'TITLE:"x OR (OPEN_ACCESS:Y)"'
 
 
 # ============================================================================ #
@@ -318,6 +448,7 @@ from fastapi import HTTPException
 
 
 async def test_discover_endpoint_maps_discovery_error_to_502(monkeypatch, mock_db):
+    monkeypatch.setattr(rag_router, "_check_discovery_search_rate_limit", AsyncMock())
     monkeypatch.setattr(
         rag_router, "discover_papers",
         AsyncMock(side_effect=pds.DiscoveryError("Europe PMC search failed")),
@@ -421,6 +552,9 @@ async def test_fetch_pdf_refuses_redirect_to_unsafe_host(monkeypatch):
     with pytest.raises(pds.PdfFetchError) as ei:
         await pds.fetch_pdf("https://europepmc.org/a?pdf=render")
     assert "refused" in str(ei.value).lower()
+    # The generic, fixed message -- not guard()'s internal "private address" reason.
+    assert str(ei.value) == pds.SSRF_REFUSAL_MESSAGE
+    assert "private address" not in str(ei.value)
 
 
 async def test_fetch_pdf_gives_up_after_too_many_redirects(monkeypatch):
@@ -552,11 +686,26 @@ async def test_discover_endpoint_rejects_empty_query(mock_db):
     assert ei.value.status_code == 400
 
 
+def test_discover_request_rejects_oversized_query():
+    # A pasted 300-entry bibliography must be rejected at the schema layer,
+    # before classify_query/discover ever see it (defense in depth alongside
+    # discover()'s own MAX_SUBQUERIES cap).
+    import pydantic
+
+    with pytest.raises(pydantic.ValidationError):
+        rag_router.DiscoverRequest(query="x" * 4001)
+
+    # Exactly at the limit is fine.
+    rag_router.DiscoverRequest(query="x" * 4000)
+
+
 async def test_discover_endpoint_marks_already_imported_papers(monkeypatch, mock_db):
+    monkeypatch.setattr(rag_router, "_check_discovery_search_rate_limit", AsyncMock())
     new_paper = pds.parse_epmc_result({**_OA_RAW, "doi": "10.1/new", "id": "new"})
     old_paper = pds.parse_epmc_result({**_OA_RAW, "doi": "10.1/OLD", "id": "old"})
-    monkeypatch.setattr(rag_router, "discover_papers",
-                        AsyncMock(return_value=[new_paper, old_paper]))
+    monkeypatch.setattr(rag_router, "discover_papers", AsyncMock(return_value=pds.DiscoveryResult(
+        papers=[new_paper, old_paper], failed_queries=0, dropped_queries=0,
+    )))
     monkeypatch.setattr(rag_router, "get_user_group_id", AsyncMock(return_value=7))
     # The library already holds the lowercase DOI of `old_paper` -> the match
     # must be case-insensitive.
@@ -569,18 +718,41 @@ async def test_discover_endpoint_marks_already_imported_papers(monkeypatch, mock
     )
 
     assert out.query == "MAP bundling"
+    assert out.failed_queries == 0
+    assert out.dropped_queries == 0
     by_doi = {r.doi: r for r in out.results}
     assert by_doi["10.1/new"].already_imported is False
     assert by_doi["10.1/OLD"].already_imported is True
     assert by_doi["10.1/OLD"].importable is True  # _OA_RAW carries a PDF link
 
 
+async def test_discover_endpoint_surfaces_failed_and_dropped_query_counts(monkeypatch, mock_db):
+    # Partial search failures / the MAX_SUBQUERIES cap must be visible to the
+    # caller, not silently swallowed into an apparently-complete result list.
+    monkeypatch.setattr(rag_router, "_check_discovery_search_rate_limit", AsyncMock())
+    monkeypatch.setattr(rag_router, "discover_papers", AsyncMock(return_value=pds.DiscoveryResult(
+        papers=[], failed_queries=3, dropped_queries=5,
+    )))
+
+    out = await rag_router.discover_sources(
+        payload=rag_router.DiscoverRequest(query="MAP bundling"),
+        current_user=SimpleNamespace(id=1),
+        db=mock_db,
+    )
+
+    assert out.failed_queries == 3
+    assert out.dropped_queries == 5
+
+
 async def test_discover_endpoint_skips_dedupe_lookup_when_no_dois(monkeypatch, mock_db):
     # A paper with no DOI can never match the library by DOI, and the dedupe
     # query must not run at all (no "IN ()" round-trip) when there is nothing
     # to look up.
+    monkeypatch.setattr(rag_router, "_check_discovery_search_rate_limit", AsyncMock())
     paper = pds.parse_epmc_result({**_OA_RAW, "doi": None})
-    monkeypatch.setattr(rag_router, "discover_papers", AsyncMock(return_value=[paper]))
+    monkeypatch.setattr(rag_router, "discover_papers", AsyncMock(return_value=pds.DiscoveryResult(
+        papers=[paper], failed_queries=0, dropped_queries=0,
+    )))
     get_group = AsyncMock(return_value=7)
     monkeypatch.setattr(rag_router, "get_user_group_id", get_group)
 
@@ -614,6 +786,21 @@ async def test_check_discovery_rate_limit_delegates_with_import_budget(monkeypat
     )
 
 
+async def test_check_discovery_search_rate_limit_delegates_with_search_budget(monkeypatch):
+    # /discover previously had NO rate limiter at all -- this is its own,
+    # distinct budget/key from the import limiter above.
+    generic = AsyncMock()
+    monkeypatch.setattr(rag_router, "_check_rate_limit_generic", generic)
+
+    await rag_router._check_discovery_search_rate_limit(42)
+
+    generic.assert_awaited_once_with(
+        key="rate_limit:discover:42",
+        limit=rag_router.DISCOVERY_SEARCH_RATE_LIMIT_REQUESTS,
+        window=rag_router.DISCOVERY_SEARCH_RATE_LIMIT_WINDOW,
+    )
+
+
 # ---------------------------------------------------------------------------
 # _resolve_paper_by_doi: real body (every import test monkeypatches it away).
 # ---------------------------------------------------------------------------
@@ -623,15 +810,44 @@ async def test_resolve_paper_by_doi_returns_first_result(monkeypatch):
     search = AsyncMock(return_value=[paper])
     monkeypatch.setattr(rag_router, "search_epmc", search)
 
-    out = await rag_router._resolve_paper_by_doi("10.1186/x")
+    # Call with the SAME doi the fake result carries -- the point of this test
+    # is "a genuine match is returned", not the mismatch-rejection behaviour,
+    # which has its own test below.
+    out = await rag_router._resolve_paper_by_doi(paper.doi)
 
     assert out is paper
-    search.assert_awaited_once_with('DOI:"10.1186/x"', limit=1)
+    search.assert_awaited_once_with(f'DOI:"{paper.doi}"', limit=1)
 
 
 async def test_resolve_paper_by_doi_returns_none_when_epmc_has_nothing(monkeypatch):
     monkeypatch.setattr(rag_router, "search_epmc", AsyncMock(return_value=[]))
     assert await rag_router._resolve_paper_by_doi("10.1186/missing") is None
+
+
+async def test_resolve_paper_by_doi_rejects_malformed_doi_without_querying(monkeypatch):
+    # A client value that doesn't even look like a DOI must never reach the
+    # Europe PMC query string unescaped (e.g. `x" OR (OPEN_ACCESS:Y)`).
+    search = AsyncMock()
+    monkeypatch.setattr(rag_router, "search_epmc", search)
+
+    assert await rag_router._resolve_paper_by_doi('x" OR (OPEN_ACCESS:Y)') is None
+    search.assert_not_awaited()
+
+
+async def test_resolve_paper_by_doi_rejects_mismatched_result(monkeypatch):
+    # Europe PMC's search can fuzzy-match; if the record it returns carries a
+    # DIFFERENT doi than requested, that is not a resolution -- the caller
+    # must not import the wrong paper under the requested paper's provenance.
+    mismatched = pds.parse_epmc_result({**_OA_RAW, "doi": "10.1234/some-other-paper"})
+    monkeypatch.setattr(rag_router, "search_epmc", AsyncMock(return_value=[mismatched]))
+    assert await rag_router._resolve_paper_by_doi("10.1186/requested-paper") is None
+
+
+async def test_resolve_paper_by_doi_rejects_mismatched_result_case_insensitively(monkeypatch):
+    # Case must not matter for the equality check either way.
+    paper = pds.parse_epmc_result({**_OA_RAW, "doi": "10.1186/X"})
+    monkeypatch.setattr(rag_router, "search_epmc", AsyncMock(return_value=[paper]))
+    assert await rag_router._resolve_paper_by_doi("10.1186/x") is paper
 
 
 # ---------------------------------------------------------------------------
@@ -650,6 +866,18 @@ def test_paper_filename_truncates_long_title_and_uses_first_author():
     assert name.endswith(".pdf")
     assert "x" * 60 in name
     assert "x" * 61 not in name  # title is capped at 60 chars
+
+
+def test_paper_filename_clamps_long_author_with_no_comma():
+    # RAGDocument.name is String(255); a consortium authorString with no comma
+    # means .split(",")[0] returns the WHOLE string -- must still be clamped
+    # or a long-enough author line + title can overflow the column and fail
+    # the commit.
+    long_author = "A" * 200
+    paper = SimpleNamespace(authors=long_author, year="2024", title="Short title")
+    name = rag_router._paper_filename(paper)
+    assert name.startswith(("A" * 80) + " 2024 - ")
+    assert ("A" * 81) not in name
 
 
 # ---------------------------------------------------------------------------
@@ -690,6 +918,8 @@ async def test_import_discovered_reports_doi_not_found_in_epmc(monkeypatch, mock
 async def test_import_discovered_reports_unexpected_exception_as_failure(monkeypatch, mock_db):
     # Anything other than PdfFetchError during resolve/fetch must still be
     # caught and reported per-paper, not bubble up and abort the whole batch.
+    # The reason shown to the client must be the fixed generic message --
+    # NOT the raw exception text, which could carry internal detail.
     monkeypatch.setattr(rag_router, "_resolve_paper_by_doi",
                         AsyncMock(side_effect=RuntimeError("epmc exploded")))
     monkeypatch.setattr(rag_router, "_check_discovery_rate_limit", AsyncMock())
@@ -704,11 +934,15 @@ async def test_import_discovered_reports_unexpected_exception_as_failure(monkeyp
     )
 
     assert out.imported == 0
-    assert out.failed[0].reason == "Import failed: epmc exploded"
+    assert out.failed[0].reason == rag_router._GENERIC_IMPORT_ERROR
+    assert "epmc exploded" not in out.failed[0].reason  # internal detail not leaked
     saved.assert_not_awaited()
 
 
 async def test_import_discovered_rolls_back_when_storing_fails(monkeypatch, mock_db):
+    # save_uploaded_document itself raises (as if its own db.flush() failed) --
+    # `document` is never bound in the router, so there is no path to unlink;
+    # the router must guard on that instead of raising AttributeError.
     paper = pds.parse_epmc_result(_OA_RAW)
     monkeypatch.setattr(rag_router, "_resolve_paper_by_doi", AsyncMock(return_value=paper))
     monkeypatch.setattr(rag_router, "fetch_pdf", AsyncMock(return_value=b"%PDF-1.4"))
@@ -724,5 +958,128 @@ async def test_import_discovered_rolls_back_when_storing_fails(monkeypatch, mock
     )
 
     assert out.imported == 0
-    assert out.failed[0].reason == "Could not store: disk full"
+    assert out.failed[0].reason == rag_router._GENERIC_IMPORT_ERROR
+    assert "disk full" not in out.failed[0].reason  # internal detail not leaked
     mock_db.rollback.assert_awaited_once()
+
+
+async def test_import_discovered_deletes_orphaned_file_when_commit_fails(monkeypatch, mock_db, tmp_path):
+    # save_uploaded_document RETURNS a document (the file made it to disk) but
+    # the subsequent db.commit() fails -- the file must be deleted so it isn't
+    # orphaned forever (data/rag_documents/ has no reaper).
+    paper = pds.parse_epmc_result(_OA_RAW)
+    pdf_path = tmp_path / "orphan.pdf"
+    pdf_path.write_bytes(b"%PDF-1.4")
+    doc = SimpleNamespace(id=7, doi=None, source_url=None, original_path=str(pdf_path))
+
+    monkeypatch.setattr(rag_router, "_resolve_paper_by_doi", AsyncMock(return_value=paper))
+    monkeypatch.setattr(rag_router, "fetch_pdf", AsyncMock(return_value=b"%PDF-1.4"))
+    monkeypatch.setattr(rag_router, "_check_discovery_rate_limit", AsyncMock())
+    monkeypatch.setattr(rag_router, "save_uploaded_document", AsyncMock(return_value=doc))
+    mock_db.commit = AsyncMock(side_effect=RuntimeError("constraint violation"))
+
+    out = await rag_router.import_discovered(
+        payload=rag_router.ImportRequest(dois=[paper.doi]),
+        background_tasks=SimpleNamespace(add_task=lambda *a, **k: None),
+        current_user=SimpleNamespace(id=1),
+        db=mock_db,
+    )
+
+    assert out.imported == 0
+    assert out.failed[0].reason == rag_router._GENERIC_IMPORT_ERROR
+    assert not pdf_path.exists(), "orphaned PDF must be cleaned up when the commit fails"
+    mock_db.rollback.assert_awaited_once()
+
+
+async def test_import_discovered_caps_batch_size(mock_db):
+    too_many = [f"10.1038/nature{10000 + i}" for i in range(rag_router.MAX_IMPORT_BATCH + 1)]
+    with pytest.raises(HTTPException) as ei:
+        await rag_router.import_discovered(
+            payload=rag_router.ImportRequest(dois=too_many),
+            background_tasks=SimpleNamespace(add_task=lambda *a, **k: None),
+            current_user=SimpleNamespace(id=1),
+            db=mock_db,
+        )
+    assert ei.value.status_code == 400
+
+
+async def test_import_discovered_dedupes_request_list(monkeypatch, mock_db):
+    # The same DOI ticked/submitted twice in one request must only be fetched
+    # (and counted against the rate limit) once.
+    paper = pds.parse_epmc_result(_OA_RAW)
+    doc = SimpleNamespace(id=7, doi=None, source_url=None)
+    resolve = AsyncMock(return_value=paper)
+    monkeypatch.setattr(rag_router, "_resolve_paper_by_doi", resolve)
+    monkeypatch.setattr(rag_router, "fetch_pdf", AsyncMock(return_value=b"%PDF-1.4"))
+    monkeypatch.setattr(rag_router, "save_uploaded_document", AsyncMock(return_value=doc))
+    rate_limit = AsyncMock()
+    monkeypatch.setattr(rag_router, "_check_discovery_rate_limit", rate_limit)
+
+    out = await rag_router.import_discovered(
+        payload=rag_router.ImportRequest(dois=[paper.doi, paper.doi, f"  {paper.doi}  "]),
+        background_tasks=SimpleNamespace(add_task=lambda *a, **k: None),
+        current_user=SimpleNamespace(id=1),
+        db=mock_db,
+    )
+
+    assert out.imported == 1
+    assert resolve.await_count == 1
+    rate_limit.assert_awaited_once_with(1, count=1)  # budget charged once, not 3x
+
+
+async def test_import_discovered_skips_papers_already_in_library(monkeypatch, mock_db):
+    # A DOI already present in the caller's readable library must be reported
+    # as skipped WITHOUT ever being fetched -- avoids duplicate documents from
+    # a re-click, a retried 504, or two lab members importing the same paper.
+    monkeypatch.setattr(rag_router, "_check_discovery_rate_limit", AsyncMock())
+    monkeypatch.setattr(rag_router, "get_user_group_id", AsyncMock(return_value=None))
+    # DB reports the DOI already in the library, in a different case.
+    mock_db.execute.return_value = make_result(scalars_all=["10.1186/S43897-026-00231-0"])
+    resolve = AsyncMock()
+    monkeypatch.setattr(rag_router, "_resolve_paper_by_doi", resolve)
+
+    out = await rag_router.import_discovered(
+        payload=rag_router.ImportRequest(dois=["10.1186/s43897-026-00231-0"]),
+        background_tasks=SimpleNamespace(add_task=lambda *a, **k: None),
+        current_user=SimpleNamespace(id=1),
+        db=mock_db,
+    )
+
+    assert out.imported == 0
+    assert out.failed[0].reason == "Already in your library"
+    resolve.assert_not_awaited()
+
+
+async def test_import_discovered_fetches_multiple_papers_concurrently(monkeypatch, mock_db):
+    # One paper failing must not prevent the others in the same batch from
+    # being fetched and imported -- the fetch phase runs all of them via
+    # asyncio.gather, not a loop that could short-circuit.
+    ok_paper = pds.parse_epmc_result({**_OA_RAW, "doi": "10.1038/ok-paper", "id": "ok"})
+    docs = []
+
+    async def fake_resolve(doi):
+        if doi == "10.1038/bad-paper":
+            return None
+        return ok_paper
+
+    async def fake_save(**kwargs):
+        doc = SimpleNamespace(id=len(docs) + 1, doi=None, source_url=None)
+        docs.append(doc)
+        return doc
+
+    monkeypatch.setattr(rag_router, "_resolve_paper_by_doi", fake_resolve)
+    monkeypatch.setattr(rag_router, "fetch_pdf", AsyncMock(return_value=b"%PDF-1.4"))
+    monkeypatch.setattr(rag_router, "save_uploaded_document", fake_save)
+    monkeypatch.setattr(rag_router, "_check_discovery_rate_limit", AsyncMock())
+
+    out = await rag_router.import_discovered(
+        payload=rag_router.ImportRequest(dois=["10.1038/ok-paper", "10.1038/bad-paper"]),
+        background_tasks=SimpleNamespace(add_task=lambda *a, **k: None),
+        current_user=SimpleNamespace(id=1),
+        db=mock_db,
+    )
+
+    assert out.imported == 1
+    assert len(out.failed) == 1
+    assert out.failed[0].doi == "10.1038/bad-paper"
+    assert out.failed[0].reason == "Not found in Europe PMC"

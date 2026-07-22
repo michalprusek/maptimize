@@ -1,5 +1,14 @@
 # Paper discovery & import — Implementation Plan
 
+> **⚠️ Historical document.** This plan records the pre-implementation state. Several
+> snippets below were corrected during implementation and no longer match the shipped code
+> — do not re-implement from them verbatim. Known divergences: `fetch_pdf`'s redirect line
+> used `httpx.URL(...).human_repr()`, which does not exist (fixed in `549c6b4` to
+> `str(httpx.URL(...).join(location))`); `EPMC_TIMEOUT` was raised 20.0 → 45.0; the
+> `test_discover_dois_queries_each_doi` fixtures used DOIs (`10.1/a`) that do not match the
+> DOI regex; and the post-merge review round changed the import loop, dedupe and error
+> handling further. The code and its tests are the source of truth.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Let a user describe papers they want, see Europe PMC results with metadata, tick the ones with a legally downloadable PDF, and import those into the existing RAG document library.

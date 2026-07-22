@@ -90,7 +90,7 @@ interface ChatState {
   isDiscovering: boolean;
   isImportingPapers: boolean;
   discoverSources: (query: string) => Promise<void>;
-  importDiscovered: (dois: string[]) => Promise<ImportResult | null>;
+  importDiscovered: (dois: string[]) => Promise<ImportResult>;
   deleteDocument: (documentId: number) => Promise<void>;
   refreshIndexingStatus: () => Promise<void>;
 
@@ -737,13 +737,23 @@ export const useChatStore = create<ChatState>()(
         set({ isImportingPapers: true });
         try {
           const result = await api.importDiscovered(dois);
+          // Mark the DOIs that actually succeeded as already imported so the
+          // modal stops showing them as importable (avoids duplicate imports
+          // on a second click). Anything in result.failed did NOT succeed.
+          const failedDois = new Set(result.failed.map((f) => f.doi));
+          const succeededDois = new Set(dois.filter((doi) => !failedDois.has(doi)));
+          set((state) => ({
+            discoverResults: state.discoverResults.map((p) =>
+              p.doi && succeededDois.has(p.doi) ? { ...p, already_imported: true } : p
+            ),
+          }));
           // Imported papers arrive as PENDING documents; reload so they show up in
           // the modal's "processing" bucket with progress.
           await get().loadDocuments();
           return result;
         } catch (error) {
           console.error("Failed to import papers:", error);
-          return null;
+          throw error;
         } finally {
           set({ isImportingPapers: false });
         }

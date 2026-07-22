@@ -208,6 +208,17 @@ class RAGSearchResponse(BaseModel):
 
 # ============== Paper Discovery Schemas ==============
 
+class DiscoverRequest(BaseModel):
+    """Request body for POST /discover.
+
+    ``max_length`` bounds the classify_query() fan-out at the door: without it
+    a pasted 300-entry bibliography turns into hundreds of sub-queries (see
+    paper_discovery_service.discover's own MAX_SUBQUERIES cap for the second
+    layer of defense).
+    """
+    query: str = Field(..., max_length=4000)
+
+
 class DiscoveredPaper(BaseModel):
     """One candidate paper in the discovery picker."""
     doi: Optional[str] = None
@@ -226,3 +237,24 @@ class DiscoveredPaper(BaseModel):
 class DiscoverResponse(BaseModel):
     query: str
     results: List[DiscoveredPaper]
+    # Sub-queries that errored (e.g. a transient Europe PMC timeout) but didn't
+    # sink the whole search -- some results may still be missing.
+    failed_queries: int = 0
+    # Sub-queries never run at all because the request was capped (see
+    # DiscoverRequest / MAX_SUBQUERIES) -- distinct from failed_queries.
+    dropped_queries: int = 0
+
+
+class ImportRequest(BaseModel):
+    """Request body for POST /discover/import."""
+    dois: List[str]
+
+
+class ImportFailure(BaseModel):
+    doi: str
+    reason: str
+
+
+class ImportResponse(BaseModel):
+    imported: int
+    failed: List[ImportFailure]

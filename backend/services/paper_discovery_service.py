@@ -9,6 +9,7 @@ verified live 2026-07-22, bioRxiv preprints report ``isOpenAccess: "N"`` yet
 ``availability: "Free"``, while exposing only a DOI link and no PDF. We only ever
 download an entry that explicitly advertises a PDF as Open access / Free.
 """
+import asyncio
 import logging
 import re
 from dataclasses import dataclass
@@ -26,8 +27,8 @@ EPMC_MAX_CONCURRENCY = 4
 # and is watching a spinner), so it's fine to wait longer than a background
 # call would. Measured live against the real API: the same query returned in
 # 0.18s, 12.52s, 0.59s and 0.23s on consecutive attempts -- Europe PMC has
-# multi-second latency spikes, and the previous 20s ceiling was actually hit
-# during an end-to-end run.
+# multi-second latency spikes (one of four consecutive calls took >12s), and
+# leaving only ~7s of headroom above that under a 20s ceiling was too tight.
 EPMC_TIMEOUT = 45.0
 
 # Availability values Europe PMC uses for content we may legally download.
@@ -78,12 +79,23 @@ def pdf_url_from_result(raw: dict[str, Any]) -> Optional[str]:
     """Return a legally downloadable PDF URL, or None.
 
     Only an entry that is explicitly a PDF *and* marked Open access / Free
-    qualifies. ``isOpenAccess`` is deliberately ignored (see module docstring).
+    *and* served directly by Europe PMC qualifies. ``isOpenAccess`` is
+    deliberately ignored (see module docstring).
+
+    ``site`` must be ``"Europe_PMC"``: live-verified 2026-07-22, Europe PMC
+    search results also carry ``site: "PubMedCentral"`` entries whose ``url``
+    points at ``ncbi.nlm.nih.gov/pmc/articles/.../pdf/``. Fetched server-side
+    (no browser, no cookies), that URL redirects to a 200 ``text/html`` NCBI
+    bot-check page, not the PDF. ``fetch_pdf`` correctly rejects it (wrong
+    content-type), but by then the picker has already told the user it was
+    importable. Filtering here means /discover only ever advertises entries
+    that actually download.
     """
     urls = ((raw.get("fullTextUrlList") or {}).get("fullTextUrl")) or []
     for entry in urls:
         if (entry.get("documentStyle") == "pdf"
                 and entry.get("availability") in _DOWNLOADABLE
+                and entry.get("site") == "Europe_PMC"
                 and entry.get("url")):
             return entry["url"]
     return None
@@ -146,6 +158,14 @@ class PdfFetchError(Exception):
     """A PDF could not be fetched; the message is safe to show the user."""
 
 
+# The one message fetch_pdf raises for an SSRF refusal. A shared constant (not
+# just the same string typed twice) so routers/rag.py can recognise this
+# specific case for logging without re-deriving _is_safe_url's internal
+# reason, which can contain a resolved private IP and must never reach the
+# client (see fetch_pdf's docstring).
+SSRF_REFUSAL_MESSAGE = "Refused to fetch this URL for security reasons"
+
+
 def _is_safe_url(url: str) -> tuple[bool, str]:
     """Delegate to the agent service's SSRF guard (imported lazily to avoid a
     heavy import at module load; monkeypatchable in tests)."""
@@ -163,7 +183,11 @@ async def fetch_pdf(url: str) -> bytes:
     for _ in range(MAX_REDIRECTS + 1):
         ok, reason = _is_safe_url(current)
         if not ok:
-            raise PdfFetchError(f"Refused to fetch URL: {reason}")
+            # `reason` is _is_safe_url's internal diagnostic (e.g. "Access to
+            # private IP address (10.0.0.5) is not allowed") -- log it, but
+            # raise only the generic, safe-to-display message.
+            logger.warning("Refused to fetch PDF URL %s: %s", current, reason)
+            raise PdfFetchError(SSRF_REFUSAL_MESSAGE)
 
         async with httpx.AsyncClient(timeout=PDF_READ_TIMEOUT, follow_redirects=False) as client:
             async with client.stream("GET", current) as resp:
@@ -191,19 +215,58 @@ async def fetch_pdf(url: str) -> bytes:
                     if total > MAX_PDF_BYTES:
                         raise PdfFetchError("PDF is too large (over 100 MB)")
                     chunks.append(chunk)
-                return b"".join(chunks)
+                body = b"".join(chunks)
+                if not body.startswith(b"%PDF"):
+                    # Fail fast rather than storing a file the indexer will
+                    # choke on later -- a 200 + "pdf" content-type can still be
+                    # an HTML error page some publishers mislabel.
+                    raise PdfFetchError("Downloaded file is not a valid PDF")
+                return body
 
     raise PdfFetchError("Too many redirects")
-
-
-import asyncio
 
 
 class DiscoveryError(Exception):
     """Search failed (as opposed to finding nothing)."""
 
 
-async def discover(query: str, limit: int = 25) -> list[PaperResult]:
+# A pasted bibliography turns into one Europe PMC sub-query per DOI/title; cap
+# how many we ever issue for one /discover call so a 300-entry paste can't fan
+# out into hundreds of outbound requests. Anything beyond the cap is silently
+# dropped -- the caller (routers/rag.py) surfaces the drop count to the user.
+MAX_SUBQUERIES = 20
+
+# A DOI or a single title is already a specific, near-unique match target
+# (unlike a free-text topic search), so a handful of results per sub-query is
+# plenty -- this keeps 10 pasted titles from coming back as 250 fuzzy matches.
+SUBQUERY_RESULT_LIMIT = 3
+
+
+def _escape_query_term(text: str) -> str:
+    """Strip characters that could break out of a quoted Europe PMC query term.
+
+    A client-supplied title/DOI is interpolated into e.g. ``TITLE:"{t}"``
+    verbatim; a literal ``"`` in the input would close the quote early and let
+    the rest of the string be parsed as new query syntax (e.g.
+    ``x" OR (OPEN_ACCESS:Y)``).
+    """
+    return text.replace('"', "")
+
+
+@dataclass
+class DiscoveryResult:
+    """Everything discover() learned, not just the papers.
+
+    A user pasting a 300-entry bibliography or hitting a flaky Europe PMC
+    outage must be able to tell that something was skipped/failed rather than
+    silently seeing an incomplete list with no explanation.
+    """
+    papers: list[PaperResult]
+    failed_queries: int    # sub-queries that raised, but didn't sink the whole call
+    dropped_queries: int   # sub-queries never run at all (MAX_SUBQUERIES cap)
+
+
+async def discover(query: str, limit: int = 25) -> DiscoveryResult:
     """Turn whatever the user typed into a de-duplicated candidate list.
 
     Raises:
@@ -214,10 +277,18 @@ async def discover(query: str, limit: int = 25) -> list[PaperResult]:
             still useful, so partial results are returned instead of raising.
     """
     kind, items = classify_query(query)
+    dropped_queries = 0
+    per_query_limit = limit
     if kind == "doi":
-        queries = [f'DOI:"{d}"' for d in items]
+        capped = items[:MAX_SUBQUERIES]
+        dropped_queries = len(items) - len(capped)
+        queries = [f'DOI:"{d}"' for d in capped]
+        per_query_limit = min(limit, SUBQUERY_RESULT_LIMIT)
     elif kind == "titles":
-        queries = [f'TITLE:"{t}"' for t in items]
+        capped = items[:MAX_SUBQUERIES]
+        dropped_queries = len(items) - len(capped)
+        queries = [f'TITLE:"{_escape_query_term(t)}"' for t in capped]
+        per_query_limit = min(limit, SUBQUERY_RESULT_LIMIT)
     else:
         queries = list(items)
 
@@ -227,7 +298,7 @@ async def discover(query: str, limit: int = 25) -> list[PaperResult]:
     async def run(q: str) -> list[PaperResult]:
         async with semaphore:
             try:
-                return await search_epmc(q, limit=limit)
+                return await search_epmc(q, limit=per_query_limit)
             except Exception as exc:
                 logger.exception("Europe PMC query failed: %s", q[:80])
                 failures.append(exc)
@@ -247,4 +318,6 @@ async def discover(query: str, limit: int = 25) -> list[PaperResult]:
                 continue
             seen.add(key)
             merged.append(paper)
-    return merged
+    return DiscoveryResult(
+        papers=merged, failed_queries=len(failures), dropped_queries=dropped_queries,
+    )

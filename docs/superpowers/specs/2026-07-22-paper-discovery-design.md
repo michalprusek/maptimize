@@ -46,7 +46,11 @@ One REST API covers the whole flow:
   version of a paywalled paper — surface naturally.
 
 PubMed (already in `APPROVED_APIS`) is deliberately NOT the primary source: it has no PDFs.
-Europe PMC is added to `APPROVED_APIS` alongside it.
+
+Europe PMC is **not** added to `APPROVED_APIS` — discovery uses a dedicated client
+(`paper_discovery_service.py`) that calls it directly over httpx. `APPROVED_APIS` gates the
+chat agent's generic `call_external_api` tool, which is a different access path; the agent
+cannot reach Europe PMC through it.
 
 ## Input handling
 
@@ -56,11 +60,13 @@ The single query field is classified before searching:
 |---|---|
 | One or more DOIs (`10.xxxx/...`) | Direct lookup per DOI (`query=DOI:"..."`) |
 | Multiple lines / clearly a list of titles | One title search per line, best match each |
-| Anything else (free text) | Gemini rewrites it into a Europe PMC query string, then search |
+| Anything else (free text) | Passed straight to Europe PMC's own relevance ranking |
 
-The Gemini rewrite uses `settings.gemini_model` (never a hardcoded id) with a short,
-strict prompt: return only the query string. If it fails or times out, fall back to
-passing the raw user text straight to Europe PMC — degraded but still useful.
+**Deferred:** an LLM rewrite of free-text topics into a structured Europe PMC query was
+specified but deliberately NOT implemented — Europe PMC's own ranking handles natural
+language acceptably, and an extra LLM hop would add latency and a failure mode on the
+critical path. `classify_query`'s "topic" branch passes the text through unchanged, so a
+rewrite can be slotted into that single branch later without touching anything else.
 
 ## Result list
 

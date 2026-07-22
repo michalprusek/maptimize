@@ -538,6 +538,37 @@ dokud do volume nezapíše root.
 
 **Důvod:** Prevence nechtěné ztráty dat - uživatel musí explicitně potvrdit, že chce smazat i comparison historii.
 
+### 📚 Discovery: import článků z Europe PMC ("Find sources")
+
+Uživatel v Documents modálu popíše, co hledá (téma / nalepené názvy / DOI), vybere
+zaškrtávátky a naimportuje. Backend: `services/paper_discovery_service.py` +
+`POST /api/rag/discover` a `/api/rag/discover/import`.
+
+⚠️ **Europe PMC NENÍ v `APPROVED_APIS`** — discovery má vlastního httpx klienta.
+`APPROVED_APIS` hlídá agentův generický `call_external_api`, což je jiná cesta; přes ni
+se na Europe PMC dostat nedá (a nemá to tak být).
+
+**Importovatelnost NIKDY neurčuj podle `isOpenAccess`.** Ověřeno živě 2026-07-22:
+bioRxiv preprinty vracejí `isOpenAccess: "N"` a přitom `availability: "Free"`. Jediné
+správné kritérium je záznam ve `fullTextUrlList` s `documentStyle == "pdf"`
+**a** `availability ∈ {Open access, Free}` **a** `site == "Europe_PMC"` — záznamy se
+`site: "PubMedCentral"` vedou na `ncbi.nlm.nih.gov`, které serverovému klientovi vrátí
+bot-check HTML místo PDF. Název časopisu je `journalInfo.journal.title` (ploché
+`journalTitle` chodí prázdné).
+
+**Konstanty a jejich historie** (`paper_discovery_service.py`):
+| Konstanta | Hodnota | Proč |
+|-----------|---------|------|
+| `EPMC_TIMEOUT` | 45 s | latence kolísá; naměřeno 0,18 s i 12,5 s na tomtéž dotazu, 20 s bylo málo |
+| `PDF_READ_TIMEOUT` | 60 s | stahování PDF (i desítky MB) |
+| `MAX_PDF_BYTES` | 100 MB | zrcadlí strop upload endpointu |
+| `EPMC_MAX_CONCURRENCY` | 4 | politeness vůči EBI — nenech se zablokovat |
+
+Stahování PDF jde přes `gemini_agent_service._is_safe_url` (SSRF) s **ručním
+následováním redirectů a revalidací každého hopu** — reálné EPMC PDF URL redirectují,
+takže tahle větev musí být otestovaná (jednou už tu byl bug, který spadl na každém
+skutečném stažení, protože žádný test redirect nevracel).
+
 ## 🌐 Internacionalizace (i18n)
 
 **CRITICAL: Každý textový řetězec v UI musí používat i18n wrapper!**

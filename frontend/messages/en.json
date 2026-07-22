@@ -575,6 +575,7 @@
     "discoverSearching": "Searching…",
     "discoverNoResults": "No papers found",
     "discoverFailed": "Search failed — please try again",
+    "discoverImportFailed": "Import failed — please try again",
     "discoverPaywalled": "Paywall",
     "discoverAlreadyImported": "In library",
     "discoverOpenAccess": "Open access",

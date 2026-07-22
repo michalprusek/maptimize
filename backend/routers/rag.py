@@ -11,7 +11,6 @@ from typing import Annotated, List, Optional
 import redis.asyncio as redis
 from fastapi import APIRouter, Depends, HTTPException, status, Query, UploadFile, File, Form, BackgroundTasks
 from fastapi.responses import FileResponse
-from pydantic import BaseModel as _BaseModel
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -29,8 +28,12 @@ from schemas.chat import (
     RAGDocumentPageResponse,
     RAGIndexingStatusResponse,
     RAGSearchResponse,
+    DiscoverRequest,
     DiscoveredPaper,
     DiscoverResponse,
+    ImportRequest,
+    ImportFailure,
+    ImportResponse,
 )
 from utils.groups import get_user_group_id
 from utils.security import get_current_user, get_current_user_from_query
@@ -57,6 +60,8 @@ from services.paper_discovery_service import (
     DiscoveryError,
     search_epmc,
     EPMC_MAX_CONCURRENCY,
+    SSRF_REFUSAL_MESSAGE,
+    _DOI_RE,
 )
 
 logger = logging.getLogger(__name__)
@@ -87,11 +92,12 @@ async def _get_redis() -> redis.Redis:
 
 
 async def _check_rate_limit_generic(key: str, limit: int, window: int, count: int = 1) -> None:
-    """Sliding-window Redis rate limiter shared by every caller in this router.
+    """Sliding-window Redis rate limiter shared by every caller in this router
+    (uploads, paper discovery searches, and paper discovery imports).
 
     ``count`` lets one call consume more than one slot at once (a discovery
     import of N papers spends N of the hourly budget in a single request).
-    Fails open if Redis is unavailable -- infra hiccups must not block uploads.
+    Fails open if Redis is unavailable -- infra hiccups must not block callers.
     Raises HTTPException 429 if the limit would be exceeded.
     """
     try:
@@ -483,8 +489,20 @@ async def serve_passage_image(
 
 # ============== Paper Discovery ==============
 
-class DiscoverRequest(_BaseModel):
-    query: str
+# /discover fans out into up to MAX_SUBQUERIES Europe PMC requests per call
+# (see paper_discovery_service.discover), so its budget is much tighter than
+# the plain-search endpoints and distinct from the import budget below.
+DISCOVERY_SEARCH_RATE_LIMIT_REQUESTS = 120
+DISCOVERY_SEARCH_RATE_LIMIT_WINDOW = 3600
+
+
+async def _check_discovery_search_rate_limit(user_id: int) -> None:
+    """Sliding-window limiter for /discover searches."""
+    await _check_rate_limit_generic(
+        key=f"rate_limit:discover:{user_id}",
+        limit=DISCOVERY_SEARCH_RATE_LIMIT_REQUESTS,
+        window=DISCOVERY_SEARCH_RATE_LIMIT_WINDOW,
+    )
 
 
 @router.post("/discover", response_model=DiscoverResponse)
@@ -502,22 +520,28 @@ async def discover_sources(
     if not query:
         raise HTTPException(status_code=400, detail="Query is required")
 
+    await _check_discovery_search_rate_limit(current_user.id)
+
     try:
-        papers = await discover_papers(query)
+        result = await discover_papers(query)
     except DiscoveryError as exc:
         logger.error("Paper discovery search failed: %s", exc)
         raise HTTPException(
             status_code=502, detail="Search service unavailable, please try again"
         ) from exc
 
-    # Mark papers already in the caller's readable library (dedupe by DOI).
+    papers = result.papers
+
+    # Mark papers already in the caller's readable library (dedupe by DOI,
+    # case-insensitively on BOTH sides -- a stored DOI's case can differ from
+    # what Europe PMC returns today).
     dois = [p.doi for p in papers if p.doi]
     existing: set[str] = set()
     if dois:
         group_id = await get_user_group_id(current_user.id, db)
         rows = await db.execute(
             select(RAGDocument.doi)
-            .where(RAGDocument.doi.in_(dois))
+            .where(func.lower(RAGDocument.doi).in_([d.lower() for d in dois]))
             .where(document_scope(current_user.id, None, group_id))
         )
         existing = {d.lower() for d in rows.scalars().all() if d}
@@ -534,6 +558,8 @@ async def discover_sources(
             )
             for p in papers
         ],
+        failed_queries=result.failed_queries,
+        dropped_queries=result.dropped_queries,
     )
 
 
@@ -542,6 +568,17 @@ async def discover_sources(
 # 10/hour upload cap would be far too tight for a bulk import.
 DISCOVERY_RATE_LIMIT_REQUESTS = 1000
 DISCOVERY_RATE_LIMIT_WINDOW = 3600
+
+# Hard ceiling on how many papers one /discover/import call will touch, even
+# with the rate limiter's budget available -- and even if Redis (and so the
+# rate limiter's fail-open path) is down.
+MAX_IMPORT_BATCH = 50
+
+# Both the fetch-phase (resolve/download) and the store-phase (disk+DB) except
+# blocks report this instead of the raw exception -- internal exception text
+# can carry file paths, DB constraint names, etc. and must not reach the
+# client. Full detail always goes to logger.exception server-side.
+_GENERIC_IMPORT_ERROR = "Could not import this paper due to an internal error"
 
 
 async def _check_discovery_rate_limit(user_id: int, count: int = 1) -> None:
@@ -554,30 +591,35 @@ async def _check_discovery_rate_limit(user_id: int, count: int = 1) -> None:
     )
 
 
-class ImportRequest(_BaseModel):
-    dois: List[str]
-
-
-class ImportFailure(_BaseModel):
-    doi: str
-    reason: str
-
-
-class ImportResponse(_BaseModel):
-    imported: int
-    failed: List[ImportFailure]
-
-
 async def _resolve_paper_by_doi(doi: str):
-    """Re-resolve a paper server-side; never trust a client-supplied PDF URL."""
+    """Re-resolve a paper server-side; never trust a client-supplied PDF URL.
+
+    Two independent checks, both required:
+    1. ``doi`` must itself look like a DOI (``_DOI_RE.fullmatch``) -- otherwise
+       it is interpolated unescaped into ``DOI:"{doi}"`` and a value like
+       ``x" OR (OPEN_ACCESS:Y)`` could break out of the quoted term and match
+       an arbitrary record.
+    2. The record Europe PMC actually returns must carry the SAME doi we asked
+       for -- EPMC's search can fuzzy-match, so without this check a client
+       could tick one paper and have a different one imported (and its
+       provenance wrongly recorded as the paper the user selected).
+    """
+    if not _DOI_RE.fullmatch(doi):
+        return None
     results = await search_epmc(f'DOI:"{doi}"', limit=1)
-    return results[0] if results else None
+    paper = results[0] if results else None
+    if paper is None or (paper.doi or "").lower() != doi.lower():
+        return None
+    return paper
 
 
 def _paper_filename(paper) -> str:
     """A readable, collision-tolerant filename. save_uploaded_document sanitises
     it further and prefixes a timestamp, so this only needs to be human-friendly."""
-    first_author = (paper.authors or "").split(",")[0].strip() or "paper"
+    # RAGDocument.name is String(255); a consortium authorString with no comma
+    # (so .split(",")[0] returns the whole string) could otherwise overflow it
+    # and fail the commit.
+    first_author = ((paper.authors or "").split(",")[0].strip() or "paper")[:80]
     year = paper.year or "n.d."
     title = (paper.title or "untitled")[:60]
     return f"{first_author} {year} - {title}.pdf"
@@ -592,16 +634,53 @@ async def import_discovered(
 ):
     """Import the selected papers into the document library.
 
-    The PDF is fetched BEFORE any DB row is created, so a failed download leaves
-    neither an orphan row nor an orphan file.
+    Two phases:
+    1. FETCH (resolve on Europe PMC + download the PDF) runs concurrently,
+       bounded by EPMC_MAX_CONCURRENCY, so at most that many downloads are
+       resident in memory at once.
+    2. STORE (write to disk + create the DB row) then runs sequentially over
+       whatever fetched successfully, since it shares one DB session.
+
+    A DOI already present in the caller's readable library is skipped before
+    it is ever fetched (no duplicate documents from a re-click, a retried 504,
+    or two lab members importing the same paper). The PDF is fetched before
+    any DB row is created, so a failed download leaves no DB row and no file.
+    If the STORE step's own commit then fails, the just-written file is
+    deleted so it isn't orphaned -- unless the failure happened *inside*
+    save_uploaded_document before it returned a document (see that function's
+    docstring: a raise there already leaves a since-documented orphan file,
+    which this endpoint cannot reach because it has no path to delete yet).
     """
-    dois = [d.strip() for d in (payload.dois or []) if d and d.strip()]
+    raw_dois = [d.strip() for d in (payload.dois or []) if d and d.strip()]
+    dois = list(dict.fromkeys(raw_dois))  # de-dupe the request itself, keep order
     if not dois:
         raise HTTPException(status_code=400, detail="No papers selected")
+    if len(dois) > MAX_IMPORT_BATCH:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Too many papers selected (max {MAX_IMPORT_BATCH} per import)",
+        )
     await _check_discovery_rate_limit(current_user.id, count=len(dois))
 
-    imported = 0
     failures: list[ImportFailure] = []
+
+    # Skip DOIs already in the caller's readable library -- checked against the
+    # SAME scope /discover used to mark them "already_imported".
+    group_id = await get_user_group_id(current_user.id, db)
+    existing_rows = await db.execute(
+        select(RAGDocument.doi)
+        .where(func.lower(RAGDocument.doi).in_([d.lower() for d in dois]))
+        .where(document_scope(current_user.id, None, group_id))
+    )
+    already_in_library = {d.lower() for d in existing_rows.scalars().all() if d}
+
+    to_fetch = []
+    for doi in dois:
+        if doi.lower() in already_in_library:
+            failures.append(ImportFailure(doi=doi, reason="Already in your library"))
+        else:
+            to_fetch.append(doi)
+
     semaphore = asyncio.Semaphore(EPMC_MAX_CONCURRENCY)
 
     async def fetch_one(doi: str):
@@ -613,18 +692,39 @@ async def import_discovered(
                 raise PdfFetchError("No freely downloadable PDF for this paper")
             return paper, await fetch_pdf(paper.pdf_url)
 
-    for doi in dois:
+    async def fetch_or_capture(doi: str):
+        """Never let one paper's exception cancel the sibling gather()s --
+        capture it and report per-paper, same as the old sequential loop did."""
         try:
-            paper, content = await fetch_one(doi)
+            return await fetch_one(doi)
         except PdfFetchError as e:
-            failures.append(ImportFailure(doi=doi, reason=str(e)))
-            continue
+            return e
         except Exception as e:
-            logger.exception("Discovery import failed for %s", doi)
-            failures.append(ImportFailure(doi=doi, reason=f"Import failed: {e}"))
+            logger.exception("Discovery fetch failed for %s", doi)
+            return e
+
+    fetched = await asyncio.gather(*(fetch_or_capture(doi) for doi in to_fetch))
+
+    imported = 0
+    for doi, outcome in zip(to_fetch, fetched):
+        if isinstance(outcome, PdfFetchError):
+            # The most common failure path (paywalled / not found / SSRF
+            # refusal) -- must not log silently, or "why did this import only
+            # get 6 of 10" is undebuggable.
+            if str(outcome) == SSRF_REFUSAL_MESSAGE:
+                logger.warning("Discovery import refused for %s: %s", doi, outcome)
+            else:
+                logger.info("Discovery import skipped %s: %s", doi, outcome)
+            failures.append(ImportFailure(doi=doi, reason=str(outcome)))
+            continue
+        if isinstance(outcome, Exception):
+            # Already logger.exception'd inside fetch_or_capture with full detail.
+            failures.append(ImportFailure(doi=doi, reason=_GENERIC_IMPORT_ERROR))
             continue
 
+        paper, content = outcome
         filename = _paper_filename(paper)
+        document = None
         try:
             document = await save_uploaded_document(
                 user_id=current_user.id, filename=filename, content=content,
@@ -633,10 +733,19 @@ async def import_discovered(
             document.doi = paper.doi
             document.source_url = paper.source_url
             await db.commit()
-        except Exception as e:
+        except Exception:
             await db.rollback()
             logger.exception("Failed to store discovered paper %s", doi)
-            failures.append(ImportFailure(doi=doi, reason=f"Could not store: {e}"))
+            if document is not None:
+                # save_uploaded_document returned successfully (the file is on
+                # disk) but the commit above failed -- delete it so it isn't
+                # orphaned. If save_uploaded_document itself raised, `document`
+                # is still None here and there is no path to clean up (that
+                # failure mode is documented on save_uploaded_document).
+                orphan_path = Path(document.original_path)
+                orphan_path.unlink(missing_ok=True)
+                logger.info("Cleaned up orphaned PDF for %s: %s", doi, orphan_path)
+            failures.append(ImportFailure(doi=doi, reason=_GENERIC_IMPORT_ERROR))
             continue
 
         background_tasks.add_task(process_document_async, document.id)
