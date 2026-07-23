@@ -267,14 +267,13 @@ async def search_documents_metadata(
     created_before=None,
     min_pages: Optional[int] = None,
     max_pages: Optional[int] = None,
-    text_query: Optional[str] = None,
     group_id: Optional[int] = None,
     thread_id: Optional[int] = None,
     skip: int = 0,
     limit: int = 50,
 ) -> List:
-    """Filter/search documents by metadata (name/doi/type/status/date/page-range)
-    and optional full-text over page OCR. Returns RAGDocument ORM rows."""
+    """Filter documents by metadata (name/doi/type/status/date/page-range).
+    Returns RAGDocument ORM rows. (Vision-RAG: no OCR text to full-text search.)"""
     from sqlalchemy import select as _select
     from models.rag_document import RAGDocument, document_scope
 
@@ -295,13 +294,6 @@ async def search_documents_metadata(
         stmt = stmt.where(RAGDocument.page_count >= min_pages)
     if max_pages is not None:
         stmt = stmt.where(RAGDocument.page_count <= max_pages)
-    if text_query:
-        stmt = stmt.where(text(
-            "EXISTS (SELECT 1 FROM rag_document_pages p "
-            "WHERE p.document_id = rag_documents.id "
-            "AND to_tsvector('simple', coalesce(p.extracted_text, '')) "
-            "@@ websearch_to_tsquery('simple', :fts))"
-        ).bindparams(fts=text_query))
     stmt = stmt.order_by(RAGDocument.created_at.desc()).offset(skip).limit(limit)
     return list((await db.execute(stmt)).scalars().all())
 

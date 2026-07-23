@@ -1126,33 +1126,6 @@ class ApiClient {
   }
 
   // ============================================================================
-  // MCP Access Tokens ("Connect to Claude")
-  // ============================================================================
-
-  /** List the user's personal MCP access tokens (prefixes only, never the secret). */
-  async listAccessTokens() {
-    return this.request<AccessToken[]>("/api/mcp-tokens");
-  }
-
-  /**
-   * Create a new MCP access token. The plaintext `token` is returned exactly
-   * once in this response and never again — surface it to the user immediately.
-   */
-  async createAccessToken(label: string) {
-    return this.request<AccessTokenCreated>("/api/mcp-tokens", {
-      method: "POST",
-      body: JSON.stringify({ label }),
-    });
-  }
-
-  /** Revoke (delete) an MCP access token. */
-  async revokeAccessToken(id: number) {
-    return this.request<void>(`/api/mcp-tokens/${id}`, {
-      method: "DELETE",
-    });
-  }
-
-  // ============================================================================
   // Admin API
   // ============================================================================
 
@@ -2122,29 +2095,6 @@ export interface ImportResult {
   // them. Neither a success nor a failure, so they are counted separately --
   // folding them into `imported` would claim an import that never happened.
   already_in_library?: string[];
-}
-
-// ============================================================================
-// MCP Access Token types
-// ============================================================================
-
-export interface AccessToken {
-  id: number;
-  label: string;
-  token_prefix: string;
-  created_at: string;
-  last_used_at: string | null;
-  revoked_at: string | null;
-}
-
-// Returned once by createAccessToken: same as AccessToken minus the lifecycle
-// timestamps, plus the plaintext `token` shown to the user a single time.
-export interface AccessTokenCreated {
-  id: number;
-  label: string;
-  token_prefix: string;
-  created_at: string;
-  token: string;
 }
 
 // ============================================================================

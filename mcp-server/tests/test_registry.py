@@ -18,7 +18,7 @@ def _noop(request: httpx.Request) -> httpx.Response:
 def test_list_tools_builds_schema_from_yaml(make_registry):
     tools = {t.name: t for t in make_registry(_noop).list_tools()}
     assert {"search_documents", "semantic_search", "list_documents",
-            "search_within_document", "read_document_pages", "web_search"} <= set(tools)
+            "get_document_metadata", "read_document_pages", "web_search"} <= set(tools)
 
     schema = tools["search_documents"].inputSchema
     assert schema["properties"]["query"]["type"] == "string"
@@ -31,7 +31,7 @@ def test_list_tools_builds_schema_from_yaml(make_registry):
 
 def test_path_param_is_in_schema_but_stays_declarative(make_registry):
     tools = {t.name: t for t in make_registry(_noop).list_tools()}
-    schema = tools["search_within_document"].inputSchema
+    schema = tools["get_document_metadata"].inputSchema
     assert "document_id" in schema["properties"]
     assert "document_id" in schema["required"]
 

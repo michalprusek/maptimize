@@ -465,26 +465,17 @@ async def process_pdf_pages(
                 method=4,
             )
 
-            # Extract text using OCR (pytesseract)
-            extracted_text = None
-            try:
-                import pytesseract
-                extracted_text = pytesseract.image_to_string(image, lang='eng+ces')
-                if extracted_text:
-                    extracted_text = extracted_text.strip()
-            except Exception as ocr_err:
-                logger.warning(f"OCR failed for page {page_num}: {ocr_err}")
-
-            # Generate embedding
+            # Vision-RAG: pages are indexed as images (visual embeddings), NOT
+            # OCR'd to text. extracted_text stays NULL; search is semantic over
+            # the page-image embeddings and the agent reads the page images.
             embedding = encoder.encode_document(image)
 
-            # Create page record with extracted text
             page = RAGDocumentPage(
                 document_id=document.id,
                 page_number=page_num,
                 image_path=str(image_path),
                 embedding=embedding.tolist(),
-                extracted_text=extracted_text,
+                extracted_text=None,
             )
             db.add(page)
 

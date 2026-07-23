@@ -15,9 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from config import get_settings
 from database import get_db
 from models.user import User
-from models.mcp_token import MCPToken
 from schemas.user import TokenPayload
-from utils.tokens import PAT_PREFIX, hash_pat
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -104,37 +102,15 @@ def decode_token(token: str) -> Optional[TokenPayload]:
 async def _authenticate(
     token: str, db: AsyncSession, request: Optional[Request]
 ) -> User:
-    """Resolve a bearer to a User, accepting EITHER a JWT or a personal access
-    token (PAT). Prefix-dispatch avoids a needless JWT decode for a PAT and vice
-    versa. Records ``request.state.principal_kind`` so downstream guards can tell
-    a PAT-authenticated request from an interactive login.
+    """Resolve a bearer JWT to a User — either an interactive login or an OAuth
+    connector token (kind='oauth'). Records ``request.state.principal_kind`` so
+    guards can tell a connector token from an interactive login.
     """
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Could not validate credentials",
         headers={"WWW-Authenticate": "Bearer"},
     )
-
-    if token.startswith(PAT_PREFIX):
-        result = await db.execute(
-            select(MCPToken).where(
-                MCPToken.token_hash == hash_pat(token),
-                MCPToken.revoked_at.is_(None),
-            )
-        )
-        mtok = result.scalar_one_or_none()
-        if mtok is None:
-            raise credentials_exception
-        now = datetime.now(timezone.utc)
-        # Throttle the write: stamp at most ~once/60s to avoid write amplification.
-        if mtok.last_used_at is None or (now - mtok.last_used_at).total_seconds() > 60:
-            mtok.last_used_at = now
-        user = await db.get(User, mtok.user_id)
-        if user is None:
-            raise credentials_exception
-        if request is not None:
-            request.state.principal_kind = "pat"
-        return user
 
     payload = decode_token(token)
     if payload is None:
@@ -176,11 +152,11 @@ async def require_interactive_user(
     request: Request,
     user: User = Depends(get_current_user),
 ) -> User:
-    """Reject requests authenticated with a PAT — for account-sensitive actions
-    (password/email change, token management, admin) that a pasted-into-a-tool
-    credential must never perform.
+    """Reject requests authenticated with an OAuth connector token — for
+    account-sensitive actions (password/email change, admin) that a connector
+    must never perform.
     """
-    if getattr(request.state, "principal_kind", None) in ("pat", "oauth"):
+    if getattr(request.state, "principal_kind", None) == "oauth":
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="This action requires an interactive login, not a connector token.",

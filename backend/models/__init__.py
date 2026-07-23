@@ -11,7 +11,6 @@ from .sam_embedding import SAMEmbedding
 from .segmentation import SegmentationMask, UserSegmentationPrompt, FOVSegmentationMask
 from .rag_document import RAGDocument, RAGDocumentPage, DocumentStatus, DocumentType
 from .group import Group, GroupMember
-from .mcp_token import MCPToken
 from .oauth_client import OAuthClient
 
 __all__ = [
@@ -44,6 +43,5 @@ __all__ = [
     "DocumentType",
     "Group",
     "GroupMember",
-    "MCPToken",
     "OAuthClient",
 ]

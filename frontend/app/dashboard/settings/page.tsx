@@ -42,7 +42,7 @@ import { useAuthStore } from "@/stores/authStore";
 import { useSettingsStore, DisplayMode, Theme, Language } from "@/stores/settingsStore";
 import { api, GroupDetail, GroupMember } from "@/lib/api";
 import { ConfirmModal } from "@/components/ui";
-import { AccessTokensPanel } from "@/components/documents/AccessTokensPanel";
+import { ConnectClaudePanel } from "@/components/documents/ConnectClaudePanel";
 
 // Display mode visual configuration (labels come from translations)
 const displayModeConfig: Record<DisplayMode, { bgColor: string; fgColor: string }> = {
@@ -548,18 +548,18 @@ export default function SettingsPage(): JSX.Element {
       {/* Group Section */}
       <GroupSection />
 
-      {/* MCP Access Tokens Section ("Connect to Claude") */}
-      <AccessTokensSection />
+      {/* MCP Connector Section ("Connect to Claude") */}
+      <ConnectClaudeSection />
     </div>
   );
 }
 
 // =============================================================================
-// MCP Access Tokens Section
+// MCP Connector Section ("Connect to Claude")
 // =============================================================================
 
-function AccessTokensSection(): JSX.Element {
-  const t = useTranslations("accessTokens");
+function ConnectClaudeSection(): JSX.Element {
+  const t = useTranslations("connectClaude");
 
   return (
     <motion.section
@@ -573,7 +573,7 @@ function AccessTokensSection(): JSX.Element {
         <h2 className="text-xl font-display font-semibold text-text-primary">{t("title")}</h2>
       </div>
       <p className="text-sm text-text-secondary">{t("description")}</p>
-      <AccessTokensPanel />
+      <ConnectClaudePanel />
     </motion.section>
   );
 }

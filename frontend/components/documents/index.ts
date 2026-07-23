@@ -4,4 +4,4 @@ export { DocumentUpload } from "./DocumentUpload";
 export { DiscoverSourcesModal } from "./DiscoverSourcesModal";
 export { PDFViewerPanel } from "./PDFViewerPanel";
 export { IndexingProgress } from "./IndexingProgress";
-export { AccessTokensPanel } from "./AccessTokensPanel";
+export { ConnectClaudePanel } from "./ConnectClaudePanel";

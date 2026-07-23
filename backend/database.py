@@ -335,23 +335,6 @@ async def ensure_schema_updates():
             logger.error(f"Failed to create ix_rag_documents_content_hash: {e}")
             failed_updates.append("ix_rag_documents_content_hash")
 
-        # Full-text index over page OCR text (powers metadata/full-text document
-        # search). 'simple' config because OCR is mixed eng+ces; pg_trgm backs the
-        # ILIKE name/doi substring filters.
-        try:
-            await conn.execute(text("SAVEPOINT idx_pages_fts"))
-            await conn.execute(text("CREATE EXTENSION IF NOT EXISTS pg_trgm"))
-            await conn.execute(text(
-                "CREATE INDEX IF NOT EXISTS ix_rag_pages_fts ON rag_document_pages "
-                "USING gin (to_tsvector('simple', coalesce(extracted_text, '')))"
-            ))
-            await conn.execute(text("RELEASE SAVEPOINT idx_pages_fts"))
-            logger.debug("Ensured index exists: ix_rag_pages_fts")
-        except Exception as e:
-            await conn.execute(text("ROLLBACK TO SAVEPOINT idx_pages_fts"))
-            logger.error(f"Failed to create ix_rag_pages_fts: {e}")
-            failed_updates.append("ix_rag_pages_fts")
-
         # Hash pre-existing documents so they participate in deduplication.
         try:
             await conn.execute(text("SAVEPOINT backfill_doc_hash"))

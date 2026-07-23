@@ -86,27 +86,6 @@ tools:
         default: 100
         description: Maximum number of documents to return (1-100).
 
-  - name: search_within_document
-    description: >
-      Keyword / substring search INSIDE a single document (like Ctrl+F over its
-      text). Returns matching pages. Requires a document_id from list_documents
-      or search_documents.
-    handler: http_json
-    method: GET
-    path: /api/rag/documents/{document_id}/search
-    params:
-      - name: document_id
-        in: path
-        type: integer
-        required: true
-        description: Id of the document to search within.
-      - name: query
-        in: query
-        maps_to: q
-        type: string
-        required: true
-        description: Text to look for.
-
   - name: read_document_pages
     description: >
       Read the actual CONTENT of a document. maptalk is a Vision-RAG system, so
@@ -192,10 +171,6 @@ tools:
         in: query
         type: string
         description: pending | processing | completed | failed.
-      - name: text
-        in: query
-        type: string
-        description: Full-text search over the documents' OCR text.
       - name: min_pages
         in: query
         type: integer
@@ -217,23 +192,6 @@ tools:
     path: /api/rag/documents/{document_id}
     params:
       - name: document_id
-        in: path
-        type: integer
-        required: true
-
-  - name: get_page_ocr_text
-    description: >
-      Get the OCR/extracted text of a single page (no images, cheap). Ideal for
-      exact quoting or grepping after a visual search.
-    handler: http_json
-    method: GET
-    path: /api/rag/documents/{document_id}/pages/{page_number}/text
-    params:
-      - name: document_id
-        in: path
-        type: integer
-        required: true
-      - name: page_number
         in: path
         type: integer
         required: true

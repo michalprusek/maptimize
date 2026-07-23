@@ -16,7 +16,6 @@ if TYPE_CHECKING:
     from .bug_report import BugReport
     from .rag_document import RAGDocument
     from .group import GroupMember
-    from .mcp_token import MCPToken
 
 
 class UserRole(str, PyEnum):
@@ -51,10 +50,6 @@ class User(Base):
 
     # Relationships
     experiments: Mapped[List["Experiment"]] = relationship(
-        back_populates="user",
-        cascade="all, delete-orphan"
-    )
-    mcp_tokens: Mapped[List["MCPToken"]] = relationship(
         back_populates="user",
         cascade="all, delete-orphan"
     )

@@ -31,16 +31,16 @@ async def test_search_documents_maps_query_and_limit(make_registry):
     assert "document_id" in blocks[0].text
 
 
-async def test_search_within_document_substitutes_path_param(make_registry):
+async def test_path_param_substitution(make_registry):
     def routes(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/api/rag/documents/42/search":
-            assert request.url.params["q"] == "tubulin"
-            return httpx.Response(200, json={"results": []})
+        if request.url.path == "/api/rag/documents/42":
+            return httpx.Response(200, json={"id": 42, "name": "x"})
         return httpx.Response(404)
 
     reg = make_registry(_with_login(routes))
-    blocks = await reg.dispatch("search_within_document", {"document_id": 42, "query": "tubulin"})
+    blocks = await reg.dispatch("get_document_metadata", {"document_id": 42})
     assert blocks[0].type == "text"
+    assert "42" in blocks[0].text
 
 
 async def test_read_document_pages_returns_page_images(make_registry):

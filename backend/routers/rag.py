@@ -194,7 +194,6 @@ async def list_documents(
     name: Optional[str] = Query(None, description="Substring match on document name"),
     doi: Optional[str] = Query(None, description="Substring match on DOI"),
     file_type: Optional[str] = Query(None, description="Exact file type"),
-    text: Optional[str] = Query(None, description="Full-text search over page OCR text"),
     min_pages: Optional[int] = Query(None, ge=0),
     max_pages: Optional[int] = Query(None, ge=0),
     current_user: User = Depends(get_current_user),
@@ -216,7 +215,6 @@ async def list_documents(
         status=status_filter,
         min_pages=min_pages,
         max_pages=max_pages,
-        text_query=text,
         group_id=group_id,
         thread_id=None,
         skip=skip,
@@ -962,28 +960,6 @@ async def search_by_image(
         emb.tolist(), current_user.id, db, limit=limit, group_id=group_id,
     )
     return {"results": results}
-
-
-@router.get("/documents/{document_id}/pages/{page_number}/text")
-async def get_page_text(
-    document_id: int,
-    page_number: int,
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
-):
-    """Return the OCR/extracted text of a single page (cheap, no image)."""
-    group_id = await get_user_group_id(current_user.id, db)
-    await get_document_for_user(db, document_id, current_user.id, group_id)
-    result = await db.execute(
-        select(RAGDocumentPage).where(
-            RAGDocumentPage.document_id == document_id,
-            RAGDocumentPage.page_number == page_number,
-        )
-    )
-    page = result.scalar_one_or_none()
-    if page is None:
-        raise HTTPException(status_code=404, detail="Page not found")
-    return {"document_id": document_id, "page_number": page_number, "text": page.extracted_text or ""}
 
 
 @router.post("/documents/text")

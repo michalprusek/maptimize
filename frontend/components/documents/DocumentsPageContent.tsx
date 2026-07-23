@@ -5,7 +5,7 @@
  *
  * The document database UI: a searchable library of indexed documents with a
  * persistent upload dropzone, paper discovery ("Find sources"), an inline PDF
- * viewer, and the "Connect to Claude" MCP access-token panel. Full-screen and
+ * viewer, and the "Connect to Claude" MCP connector panel. Full-screen and
  * outside /dashboard, using the collapsible navigation sidebar like the editor.
  */
 
@@ -28,7 +28,7 @@ import { DocumentUpload } from "./DocumentUpload";
 import { DiscoverSourcesModal } from "./DiscoverSourcesModal";
 import { PDFViewerPanel } from "./PDFViewerPanel";
 import { IndexingProgress } from "./IndexingProgress";
-import { AccessTokensPanel } from "./AccessTokensPanel";
+import { ConnectClaudePanel } from "./ConnectClaudePanel";
 import { api, DocumentSearchHit } from "@/lib/api";
 import { clsx } from "clsx";
 
@@ -383,7 +383,7 @@ export function DocumentsPageContent() {
               </div>
               <div className="p-5">
                 <p className="text-sm text-text-secondary mb-5">{t("connectDescription")}</p>
-                <AccessTokensPanel />
+                <ConnectClaudePanel />
               </div>
             </motion.div>
           </motion.div>

@@ -532,27 +532,22 @@ async def test_get_current_user_from_query_unknown_user_raises_401(mock_db):
     assert exc.value.status_code == 401
 
 
-async def test_get_current_user_pat_success(mock_db):
-    """A valid personal access token authenticates and marks the principal 'pat'."""
-    mtok = MagicMock(user_id=7, last_used_at=None)
-    mock_db.execute.return_value = _scalar_result(mtok)
-    mock_db.get.return_value = MagicMock(id=7)
+async def test_get_current_user_oauth_marks_principal(mock_db):
+    """An OAuth connector token (kind='oauth') authenticates and is marked 'oauth'."""
+    user = MagicMock(name="User", id=7)
+    mock_db.execute.return_value = _scalar_result(user)
+    payload = _valid_payload()
+    payload.kind = "oauth"
     req = MagicMock()
-    got = await security.get_current_user(req, token="mtk_pat_valid", db=mock_db)
-    assert got.id == 7
-    assert req.state.principal_kind == "pat"
+    with patch.object(security, "decode_token", return_value=payload):
+        got = await security.get_current_user(req, token="oauth-jwt", db=mock_db)
+    assert got is user
+    assert req.state.principal_kind == "oauth"
 
 
-async def test_get_current_user_pat_unknown_or_revoked_raises_401(mock_db):
-    mock_db.execute.return_value = _scalar_result(None)  # no active token matches
-    with pytest.raises(HTTPException) as exc:
-        await security.get_current_user(MagicMock(), token="mtk_pat_bad", db=mock_db)
-    assert exc.value.status_code == 401
-
-
-async def test_require_interactive_user_rejects_pat():
+async def test_require_interactive_user_rejects_oauth():
     req = MagicMock()
-    req.state.principal_kind = "pat"
+    req.state.principal_kind = "oauth"
     with pytest.raises(HTTPException) as exc:
         await security.require_interactive_user(req, user=MagicMock())
     assert exc.value.status_code == 403

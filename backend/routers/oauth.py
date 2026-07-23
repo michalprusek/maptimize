@@ -112,37 +112,73 @@ async def _client_allows(db: AsyncSession, client_id: str, redirect_uri: str) ->
 # ---- authorization endpoint (login + consent) ------------------------------
 
 
+# Rendered by the backend, so it can't use the app's Tailwind classes — the CSS
+# below reproduces maptimize's look (dark #0a0f14 bg, teal #00d4aa primary, logo).
+_LOGIN_TEMPLATE = """<!doctype html><html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Connect Claude · maptimize</title>
+<link rel="icon" href="/icon.svg">
+<style>
+ :root{--bg:#0a0f14;--panel:#0f1620;--text:#e8f0f5;--muted:#8ba3b5;--primary:#00d4aa;--primary2:#00b894;--border:rgba(0,212,170,.18)}
+ *{box-sizing:border-box}
+ body{margin:0;min-height:100vh;font-family:'Inter',system-ui,-apple-system,Segoe UI,Roboto,sans-serif;
+   color:var(--text);display:flex;align-items:center;justify-content:center;padding:1.5rem;
+   background:radial-gradient(1100px 560px at 50% -12%, rgba(0,212,170,.13), transparent 60%), var(--bg)}
+ .card{width:100%;max-width:384px;background:linear-gradient(180deg, rgba(255,255,255,.035), rgba(255,255,255,0)), var(--panel);
+   border:1px solid var(--border);border-radius:20px;padding:2rem 2rem 1.75rem;
+   box-shadow:0 24px 64px rgba(0,0,0,.55), 0 0 46px rgba(0,212,170,.07)}
+ .brand{display:flex;align-items:center;gap:.6rem;margin-bottom:1.6rem}
+ .brand img{width:40px;height:40px;filter:drop-shadow(0 0 9px rgba(0,212,170,.55))}
+ .brand .name{font-weight:700;font-size:1.05rem;letter-spacing:.2px}
+ h1{font-size:1.2rem;margin:0 0 .4rem}
+ p.sub{color:var(--muted);font-size:.86rem;line-height:1.45;margin:0 0 1.4rem}
+ label{display:block;font-size:.76rem;color:var(--muted);margin:.9rem 0 .35rem;letter-spacing:.3px;text-transform:uppercase}
+ input{width:100%;padding:.72rem .85rem;border-radius:12px;border:1px solid rgba(255,255,255,.08);
+   background:rgba(255,255,255,.03);color:var(--text);font-size:.95rem;outline:none;transition:border .15s,box-shadow .15s}
+ input:focus{border-color:var(--primary);box-shadow:0 0 0 3px rgba(0,212,170,.16)}
+ button{width:100%;margin-top:1.7rem;padding:.82rem;border:0;border-radius:12px;cursor:pointer;font-weight:600;
+   font-size:.95rem;color:#04140f;background:linear-gradient(180deg,var(--primary),var(--primary2));
+   box-shadow:0 8px 24px rgba(0,212,170,.25);transition:transform .1s,box-shadow .15s}
+ button:hover{box-shadow:0 10px 30px rgba(0,212,170,.36)}
+ button:active{transform:translateY(1px)}
+ .err{color:#ff6b6b;font-size:.82rem;margin:.35rem 0 0;background:rgba(255,107,107,.08);
+   border:1px solid rgba(255,107,107,.22);padding:.55rem .7rem;border-radius:10px}
+ .foot{margin-top:1.3rem;font-size:.72rem;color:var(--muted);text-align:center;line-height:1.45}
+</style></head><body>
+ <div class="card">
+  <div class="brand"><img src="/logo.svg" alt=""><span class="name">maptimize</span></div>
+  <h1>Connect Claude</h1>
+  <p class="sub">Sign in with your maptimize account to let the Claude connector search and read your documents.</p>
+  __ERR__
+  <form method="post" action="/oauth/authorize">
+   <input type="hidden" name="client_id" value="__CID__">
+   <input type="hidden" name="redirect_uri" value="__RURI__">
+   <input type="hidden" name="code_challenge" value="__CC__">
+   <input type="hidden" name="state" value="__STATE__">
+   <input type="hidden" name="scope" value="__SCOPE__">
+   <label>Email</label>
+   <input name="email" type="email" autocomplete="username" required autofocus>
+   <label>Password</label>
+   <input name="password" type="password" autocomplete="current-password" required>
+   <button type="submit">Authorize access</button>
+  </form>
+  <div class="foot">You'll be redirected back to Claude after signing in.</div>
+ </div>
+</body></html>"""
+
+
 def _login_page(client_id, redirect_uri, code_challenge, state, scope, error="") -> str:
     f = html.escape
-    err = f'<p class="err">{f(error)}</p>' if error else ""
-    return f"""<!doctype html><html><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Connect to maptimize</title>
-<style>
- body{{font-family:system-ui,sans-serif;background:#0f172a;color:#e2e8f0;display:flex;
-   min-height:100vh;align-items:center;justify-content:center;margin:0}}
- .card{{background:#1e293b;padding:2rem;border-radius:12px;width:340px;box-shadow:0 10px 30px rgba(0,0,0,.4)}}
- h1{{font-size:1.15rem;margin:0 0 .25rem}} p.sub{{color:#94a3b8;font-size:.85rem;margin:0 0 1.25rem}}
- label{{display:block;font-size:.8rem;margin:.75rem 0 .25rem;color:#cbd5e1}}
- input{{width:100%;box-sizing:border-box;padding:.6rem;border-radius:8px;border:1px solid #334155;
-   background:#0f172a;color:#e2e8f0}}
- button{{width:100%;margin-top:1.25rem;padding:.7rem;border:0;border-radius:8px;background:#6366f1;
-   color:#fff;font-weight:600;cursor:pointer}}
- .err{{color:#f87171;font-size:.8rem;margin:.5rem 0 0}}
-</style></head><body><div class="card">
- <h1>Connect Claude to maptimize</h1>
- <p class="sub">Sign in to authorize the AI connector to access your documents.</p>
- {err}
- <form method="post" action="/oauth/authorize">
-  <input type="hidden" name="client_id" value="{f(client_id)}">
-  <input type="hidden" name="redirect_uri" value="{f(redirect_uri)}">
-  <input type="hidden" name="code_challenge" value="{f(code_challenge)}">
-  <input type="hidden" name="state" value="{f(state)}">
-  <input type="hidden" name="scope" value="{f(scope)}">
-  <label>Email</label><input name="email" type="email" autocomplete="username" required autofocus>
-  <label>Password</label><input name="password" type="password" autocomplete="current-password" required>
-  <button type="submit">Authorize</button>
- </form></div></body></html>"""
+    err_html = f'<div class="err">{f(error)}</div>' if error else ""
+    return (
+        _LOGIN_TEMPLATE
+        .replace("__ERR__", err_html)
+        .replace("__CID__", f(client_id))
+        .replace("__RURI__", f(redirect_uri))
+        .replace("__CC__", f(code_challenge))
+        .replace("__STATE__", f(state))
+        .replace("__SCOPE__", f(scope))
+    )
 
 
 @router.get("/oauth/authorize", response_class=HTMLResponse)
