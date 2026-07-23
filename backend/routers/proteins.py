@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import get_db
 from models.user import User
-from models.image import MapProtein, Image
+from models.image import DEFAULT_PROTEINS, MapProtein, Image
 from schemas.image import (
     MapProteinCreate,
     MapProteinUpdate,
@@ -59,6 +59,21 @@ async def get_image_counts_by_protein(db: AsyncSession) -> Dict[int, int]:
         .group_by(Image.map_protein_id)
     )
     return dict(result.all())
+
+
+def empty_protein_umap(total_proteins: int) -> UmapProteinDataResponse:
+    """A "nothing to plot" UMAP response.
+
+    Both reasons for it — too few proteins, and too few *distinct* embeddings —
+    must look the same to the client, so the shape is written once.
+    """
+    return UmapProteinDataResponse(
+        points=[],
+        total_proteins=total_proteins,
+        silhouette_score=None,
+        is_precomputed=False,
+        computed_at=None,
+    )
 
 
 async def check_protein_name_unique(
@@ -147,17 +162,6 @@ async def pick_protein_color(db: AsyncSession) -> str:
     return fallback
 
 
-# Default MAP proteins with colors for visualization
-DEFAULT_PROTEINS = [
-    {"name": "PRC1", "full_name": "Protein Regulator of Cytokinesis 1", "color": "#00d4aa"},
-    {"name": "Tau4R", "full_name": "Microtubule-Associated Protein Tau (4R)", "color": "#ff6b6b"},
-    {"name": "MAP2d", "full_name": "Microtubule-Associated Protein 2d", "color": "#4ecdc4"},
-    {"name": "MAP9", "full_name": "Microtubule-Associated Protein 9", "color": "#ffe66d"},
-    {"name": "EML3", "full_name": "Echinoderm Microtubule-Associated Protein Like 3", "color": "#95e1d3"},
-    {"name": "HMMR", "full_name": "Hyaluronan Mediated Motility Receptor", "color": "#f38181"},
-]
-
-
 @router.get("", response_model=List[MapProteinDetailedResponse])
 async def list_proteins(
     current_user: User = Depends(get_current_user),
@@ -229,13 +233,7 @@ async def get_protein_umap(
     proteins = result.scalars().all()
 
     if len(proteins) < 3:
-        return UmapProteinDataResponse(
-            points=[],
-            total_proteins=len(proteins),
-            silhouette_score=None,
-            is_precomputed=False,
-            computed_at=None,
-        )
+        return empty_protein_umap(len(proteins))
 
     image_counts = await get_image_counts_by_protein(db)
     all_precomputed = all(p.umap_x is not None and p.umap_y is not None for p in proteins)
@@ -277,13 +275,7 @@ async def get_protein_umap(
             f"Protein UMAP not computable: {len(proteins)} proteins have "
             f"fewer than 3 distinct embeddings"
         )
-        return UmapProteinDataResponse(
-            points=[],
-            total_proteins=len(proteins),
-            silhouette_score=None,
-            is_precomputed=False,
-            computed_at=None,
-        )
+        return empty_protein_umap(len(proteins))
 
     points = [
         UmapProteinPointResponse(

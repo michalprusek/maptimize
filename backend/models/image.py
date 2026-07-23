@@ -87,6 +87,22 @@ class MapProtein(Base):
         return f"<MapProtein(id={self.id}, name={self.name})>"
 
 
+# The reference MAP proteins the lab works with. SSOT for both paths that can
+# create them: the startup seed (``database.seed_default_data``) and the
+# router's fallback provisioning when the table is empty. They used to be two
+# hand-written lists that disagreed on full names *and* colours for the same six
+# proteins, so what you got depended on which path happened to run first. These
+# are the seed's values, i.e. the ones already in production.
+DEFAULT_PROTEINS = [
+    {"name": "PRC1", "full_name": "Protein Regulator of Cytokinesis 1", "color": "#e91e8c"},
+    {"name": "Tau4R", "full_name": "Tau protein (4 repeat)", "color": "#00d4aa"},
+    {"name": "MAP2d", "full_name": "Microtubule-Associated Protein 2d", "color": "#ffc107"},
+    {"name": "MAP9", "full_name": "Microtubule-Associated Protein 9", "color": "#3b82f6"},
+    {"name": "EML3", "full_name": "Echinoderm Microtubule-Associated Protein-Like 3", "color": "#8b5cf6"},
+    {"name": "HMMR", "full_name": "Hyaluronan Mediated Motility Receptor", "color": "#ef4444"},
+]
+
+
 class Image(Base):
     """Microscopy image model."""
 

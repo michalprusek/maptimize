@@ -308,7 +308,7 @@ async def seed_default_data():
     """Create default user, MAP proteins, and experiment if they don't exist."""
     from sqlalchemy import select
     from models.user import User, UserRole
-    from models.image import MapProtein
+    from models.image import DEFAULT_PROTEINS, MapProtein
     from models.experiment import Experiment
     from utils.security import hash_password
 
@@ -332,16 +332,8 @@ async def seed_default_data():
         # Check if MAP proteins exist
         result = await db.execute(select(MapProtein).limit(1))
         if not result.scalar_one_or_none():
-            proteins = [
-                MapProtein(name="PRC1", full_name="Protein Regulator of Cytokinesis 1", color="#e91e8c"),
-                MapProtein(name="Tau4R", full_name="Tau protein (4 repeat)", color="#00d4aa"),
-                MapProtein(name="MAP2d", full_name="Microtubule-Associated Protein 2d", color="#ffc107"),
-                MapProtein(name="MAP9", full_name="Microtubule-Associated Protein 9", color="#3b82f6"),
-                MapProtein(name="EML3", full_name="Echinoderm Microtubule-Associated Protein-Like 3", color="#8b5cf6"),
-                MapProtein(name="HMMR", full_name="Hyaluronan Mediated Motility Receptor", color="#ef4444"),
-            ]
-            for p in proteins:
-                db.add(p)
+            for p_data in DEFAULT_PROTEINS:
+                db.add(MapProtein(**p_data))
             print("Created default MAP proteins")
 
         await db.commit()

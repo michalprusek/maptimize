@@ -91,6 +91,8 @@ def _compute_umap_projection(
     np.random.seed(RANDOM_STATE)
 
     unique_rows, inverse = np.unique(embeddings_norm, axis=0, return_inverse=True)
+    # Flattened because NumPy 2.0 returned this index as a column vector; used
+    # as-is it would index the projection into an (N, 1, 2) array.
     inverse = np.asarray(inverse).reshape(-1)
     n_samples = len(unique_rows)
 

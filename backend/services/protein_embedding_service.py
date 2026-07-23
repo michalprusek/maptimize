@@ -129,7 +129,7 @@ async def compute_protein_embedding(
     Raises:
         ValueError: If protein not found or has no FASTA sequence.
     """
-    from ml.features.esmc_encoder import parse_fasta_sequence
+    from ml.features.esmc_encoder import get_esmc_encoder, parse_fasta_sequence
 
     # Get protein
     result = await db.execute(
@@ -162,8 +162,6 @@ async def compute_protein_embedding(
         embedding = twin.embedding
         model_name = twin.embedding_model
     else:
-        from ml.features.esmc_encoder import get_esmc_encoder
-
         logger.info(
             f"Computing ESM-C embedding for protein '{protein.name}' "
             f"(length: {len(clean_sequence)} aa)"
@@ -334,18 +332,21 @@ async def batch_compute_protein_embeddings(
 
     await db.commit()
 
-    not_attempted = len(proteins) - computed - reused - failed
+    if aborted:
+        # An aborted run must not report a clean tally: the proteins the loop
+        # never reached are counted nowhere else.
+        not_attempted = len(proteins) - computed - reused - failed
+        message = (
+            f"Aborted after GPU out of memory: computed {computed}, "
+            f"reused {reused}, {failed} failed, {not_attempted} not attempted"
+        )
+    else:
+        message = f"Computed {computed} embeddings, reused {reused}, {failed} failed"
+
     return {
         "computed": computed,
         "reused": reused,
         "failed": failed,
         "errors": errors or None,
-        # An aborted run must not report a clean tally: the proteins the loop
-        # never reached are counted nowhere else.
-        "message": (
-            f"Aborted after GPU out of memory: computed {computed}, "
-            f"reused {reused}, {failed} failed, {not_attempted} not attempted"
-            if aborted else
-            f"Computed {computed} embeddings, reused {reused}, {failed} failed"
-        ),
+        "message": message,
     }
