@@ -143,6 +143,72 @@ async def test_compute_embedding_reuses_vector_of_sequence_twin(mock_db):
     mock_db.commit.assert_awaited_once()
 
 
+async def test_single_recompute_does_not_reuse_its_own_stale_vector(mock_db):
+    """The live endpoint must exclude the target from its own lookup.
+
+    Without that, "compute embedding" matches the protein's own row and becomes
+    a permanent no-op for any protein that has no twin.
+    """
+    target = _protein(id=1, name="A", fasta_sequence="MKT",
+                      embedding=[9.9], embedding_model="esmc-600m", sequence_length=3)
+    mock_db.execute.side_effect = [
+        make_result(scalar=target),
+        make_result(scalars_all=[target]),  # the index query returns the target itself
+    ]
+    encoder = _fake_encoder(vector=np.array([0.1, 0.2]))
+
+    with patch("ml.features.esmc_encoder.get_esmc_encoder", return_value=encoder):
+        out = await pes.compute_protein_embedding(1, mock_db)
+
+    encoder.encode_sequence.assert_called_once()
+    assert out["reused_from"] is None
+    assert target.embedding == [0.1, 0.2]
+
+
+async def test_force_skips_reuse_and_re_encodes(mock_db):
+    """force=True is the only escape when the twin's own vector is bad."""
+    target = _protein(id=1, name="A", fasta_sequence="MKT")
+    twin = _protein(id=2, name="Twin", fasta_sequence="MKT",
+                    embedding=[0.5, 0.6], embedding_model="esmc-600m", sequence_length=3)
+    mock_db.execute.side_effect = [
+        make_result(scalar=target),
+        make_result(scalars_all=[twin]),
+    ]
+    encoder = _fake_encoder(vector=np.array([0.1, 0.2]))
+
+    with patch("ml.features.esmc_encoder.get_esmc_encoder", return_value=encoder):
+        out = await pes.compute_protein_embedding(1, mock_db, force=True)
+
+    encoder.encode_sequence.assert_called_once()
+    assert out["reused_from"] is None
+    assert target.embedding == [0.1, 0.2]
+
+
+async def test_stored_model_name_matches_the_one_reuse_queries_on():
+    """`_load_sequence_index` filters on the class constant while
+    `_update_protein_embedding` stores the instance attribute. If those ever
+    diverge, reuse silently matches nothing and twins drift apart again.
+    """
+    from ml.features.esmc_encoder import ESMCEncoder
+    assert ESMCEncoder(device="cpu").model_name == ESMCEncoder.MODEL_NAME
+
+
+async def test_encoder_load_failure_aborts_the_batch_instead_of_blaming_proteins(mock_db):
+    """A GPU/model outage is not a per-sequence problem.
+
+    Filing it against each protein would report 'invalid sequence, not
+    retryable' N times and hide the real cause completely.
+    """
+    proteins = [_protein(id=1, name="A"), _protein(id=2, name="B")]
+    mock_db.execute.return_value = make_result(scalars_all=proteins)
+
+    with patch("ml.features.esmc_encoder.get_esmc_encoder",
+               side_effect=ValueError("Unknown model: esmc")), \
+         patch("ml.features.esmc_encoder.parse_fasta_sequence", return_value="MKT"):
+        with pytest.raises(pes.EncoderUnavailableError, match="could not be loaded"):
+            await pes.batch_compute_protein_embeddings(mock_db)
+
+
 async def test_compute_embedding_encodes_when_no_twin_matches(mock_db):
     target = _protein(id=1, fasta_sequence="MKT")
     other = _protein(id=2, name="Different", fasta_sequence="WWW",
@@ -205,7 +271,9 @@ async def test_batch_no_proteins_returns_early(mock_db):
     mock_db.execute.return_value = make_result(scalars_all=[])
     with patch("ml.features.esmc_encoder.get_esmc_encoder") as get_enc:
         out = await pes.batch_compute_protein_embeddings(mock_db)
-    assert out == {"computed": 0, "failed": 0,
+    # Shape must match the normal return, or a caller reading result["reused"]
+    # gets a KeyError on the empty-batch path only.
+    assert out == {"computed": 0, "reused": 0, "failed": 0, "errors": None,
                    "message": "No proteins need embedding computation"}
     # Encoder not loaded when nothing to do.
     get_enc.assert_not_called()
@@ -283,12 +351,15 @@ async def test_batch_gpu_oom_aborts_remaining(mock_db):
          patch("ml.features.esmc_encoder.parse_fasta_sequence", return_value="MKT"):
         out = await pes.batch_compute_protein_embeddings(mock_db)
     assert out["computed"] == 0
-    assert out["failed"] == 0  # OOM does not increment failed
+    assert out["failed"] == 1
     assert len(out["errors"]) == 1
     assert out["errors"][0]["error_type"] == "gpu_oom"
     assert out["errors"][0]["retryable"] is False
     # Loop broke before encoding the second protein.
     assert encoder.encode_sequence.call_count == 1
+    # The abandoned protein is counted nowhere else, so the summary must not
+    # read like a clean run.
+    assert "Aborted" in out["message"] and "1 not attempted" in out["message"]
     mock_db.commit.assert_awaited_once()
 
 

@@ -45,15 +45,12 @@ def _normalize_embeddings(embeddings: np.ndarray) -> np.ndarray:
     return embeddings / norms
 
 
-def _ring_layout(n_points: int) -> np.ndarray:
-    """Evenly spaced points on the unit circle (origin for a single point).
+class DegenerateEmbeddingsError(ValueError):
+    """Too few *distinct* embeddings to project.
 
-    Used when there are too few distinct embeddings to fit UMAP at all.
+    A ValueError subclass so callers that already handle the "not enough
+    samples" case keep working.
     """
-    if n_points <= 1:
-        return np.zeros((max(n_points, 1), 2))
-    angles = np.linspace(0, 2 * np.pi, n_points, endpoint=False)
-    return np.column_stack([np.cos(angles), np.sin(angles)])
 
 
 def _compute_umap_projection(
@@ -65,13 +62,17 @@ def _compute_umap_projection(
     """
     Core UMAP projection computation.
 
-    Rows that are exactly equal are fitted once and share the resulting
-    coordinates. UMAP's layout optimiser applies random negative sampling per
-    row, so passing duplicates straight through scatters them — on real data two
-    proteins with the same sequence landed ~7% of the plot diagonal apart, which
-    reads as "the same protein is in two places". Collapsing first is what makes
-    equal input give equal output; ``random_state`` alone does not, since it only
-    makes a whole run repeatable.
+    Rows that compare *exactly* equal are fitted once and share the resulting
+    coordinates. UMAP does not guarantee equal coordinates for equal rows — its
+    layout is stochastic — so passing duplicates straight through puts the same
+    protein in two places. ``random_state`` does not help: it makes a whole run
+    repeatable, which is a different property from equal input giving equal
+    output.
+
+    Note the equality is exact. Near-identical rows are NOT collapsed, which is
+    why protein_embedding_service reuses stored vectors verbatim instead of
+    re-encoding: if that reuse is ever removed, twins drift apart by ~1e-5, this
+    collapse silently stops matching them, and the bug returns.
 
     Args:
         embeddings_norm: L2-normalized embedding vectors (N x D)
@@ -81,6 +82,9 @@ def _compute_umap_projection(
 
     Returns:
         2D projection array (N x 2), in the order the rows were given
+
+    Raises:
+        DegenerateEmbeddingsError: If fewer than 3 distinct rows are given.
     """
     import umap
 
@@ -90,16 +94,18 @@ def _compute_umap_projection(
     inverse = np.asarray(inverse).reshape(-1)
     n_samples = len(unique_rows)
 
-    # UMAP needs at least 3 distinct points to build a neighbour graph. Fewer
-    # means every embedding is (nearly) the same one, so there is no structure
-    # to project — lay them out deterministically instead of raising.
+    # Fewer than 3 *distinct* rows leaves no neighbour graph to build. Returning
+    # a made-up layout here would be worse than failing: the caller stores it in
+    # umap_x/umap_y and serves it as a real projection, so nobody ever learns the
+    # plot is fiction.
     if n_samples < 3:
-        logger.warning(
-            "UMAP skipped: %d embeddings collapse to %d distinct value(s)",
-            len(embeddings_norm), n_samples,
+        raise DegenerateEmbeddingsError(
+            f"{len(embeddings_norm)} embeddings collapse to {n_samples} distinct "
+            f"value(s); need at least 3 to compute a projection"
         )
-        return _ring_layout(n_samples)[inverse]
 
+    # Safe without the old floor-to-2 only because of the early return above,
+    # which guarantees n_samples - 1 >= 2.
     effective_n_neighbors = min(n_neighbors, n_samples - 1)
 
     # Use random init for small datasets (spectral fails with k >= N)
@@ -569,7 +575,13 @@ async def compute_protein_umap(db: AsyncSession) -> dict:
         }
 
     embeddings = np.array([p.embedding for p in proteins])
-    projection, _ = compute_protein_umap_online(embeddings)
+    try:
+        projection, _ = compute_protein_umap_online(embeddings)
+    except DegenerateEmbeddingsError as exc:
+        # Storing a placeholder layout would leave umap_x/umap_y looking like a
+        # real projection forever. Report it and write nothing.
+        logger.warning(f"Protein UMAP skipped: {exc}")
+        return {"error": str(exc), "count": len(proteins)}
 
     now = datetime.now(timezone.utc)
     for i, protein in enumerate(proteins):

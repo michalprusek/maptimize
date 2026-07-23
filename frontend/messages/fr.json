@@ -228,6 +228,7 @@
     "embeddingModel": "Modele",
     "computedAt": "Calcule le",
     "embeddingSuccess": "Embedding calcule avec succes",
+    "embeddingReused": "Meme sequence que {from} — embedding reutilise",
     "embeddingError": "Echec du calcul de l'embedding",
     "deleteSuccess": "Proteine supprimee avec succes",
     "deleteError": "Echec de la suppression de la proteine",

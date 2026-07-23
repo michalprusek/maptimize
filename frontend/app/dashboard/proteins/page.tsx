@@ -35,10 +35,8 @@ import {
   Download,
 } from "lucide-react";
 
-// Shown in the picker while no colour has been chosen. It is never submitted —
-// an empty colour is left to the backend, which assigns one that no other
-// protein is using. Sending a form default instead is what made every uploaded
-// protein the same blue and indistinguishable on the UMAP.
+// Display-only value for the swatch while formData.color is empty. It is not
+// written into formData unless the user actively picks it in the native picker.
 const COLOR_PLACEHOLDER = "#64748b";
 
 const DEFAULT_FORM_DATA: MapProteinCreate = {
@@ -219,9 +217,16 @@ export default function ProteinsPage(): JSX.Element {
 
   const computeEmbeddingMutation = useMutation({
     mutationFn: (id: number) => api.computeProteinEmbedding(id),
-    onSuccess: () => {
+    onSuccess: (result) => {
       invalidateProteinQueries();
-      showSuccess(t("embeddingSuccess"));
+      // Say when the vector was copied from an identical sequence rather than
+      // encoded. Reporting "computed" either way is how a bad shared vector
+      // stays invisible — the user has no reason to suspect the other protein.
+      showSuccess(
+        result.reused_from
+          ? t("embeddingReused", { from: result.reused_from })
+          : t("embeddingSuccess"),
+      );
     },
     onError: (err: Error) => setError(err.message || t("embeddingError")),
   });
@@ -259,14 +264,18 @@ export default function ProteinsPage(): JSX.Element {
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    // Drop an unset colour rather than sending "": the backend picks an unused
-    // one only when the field is absent, and "" fails its hex validation.
+    // "" would fail the backend's hex pattern, so it never goes on the wire.
+    // The two endpoints read its absence differently: POST assigns an unused
+    // colour for a missing field, while PATCH treats a missing field as "leave
+    // unchanged" — so an edit has to send an explicit null to mean "re-pick".
     const { color, ...rest } = formData;
-    const payload: MapProteinCreate = color ? { ...rest, color } : rest;
     if (editingProtein) {
-      updateMutation.mutate({ id: editingProtein.id, data: payload });
+      updateMutation.mutate({
+        id: editingProtein.id,
+        data: { ...rest, color: color || null },
+      });
     } else {
-      createMutation.mutate(payload);
+      createMutation.mutate(color ? { ...rest, color } : rest);
     }
   };
 

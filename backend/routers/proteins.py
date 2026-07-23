@@ -75,10 +75,9 @@ async def check_protein_name_unique(
             detail="Protein with this name already exists"
         )
 
-# Distinct hues for protein markers, in assignment order. A protein created
-# without an explicit colour takes the first one nobody is using yet — the UI
-# used to send its form default for every upload, so a whole batch came out in
-# the same blue and was indistinguishable on the UMAP.
+# Assignment order for auto-assigned protein colours. pick_protein_color
+# guarantees only that the exact hex is unused — not that it is visually
+# distinct from what is already on the plot.
 PROTEIN_COLOR_PALETTE = [
     "#3b82f6",  # blue
     "#ef4444",  # red
@@ -102,9 +101,8 @@ PROTEIN_COLOR_PALETTE = [
     "#65a30d",  # olive
 ]
 
-# Turns of a full circle between generated hues. The golden angle spreads any
-# number of extra colours about as far apart as they can get, so proteins added
-# past the palette still look distinct instead of drifting into near-duplicates.
+# Golden angle as a fraction of a turn (137.5 degrees). Spreads *generated*
+# hues evenly among themselves; it is not coordinated with the palette above.
 _HUE_STEP = 0.381966
 
 
@@ -115,7 +113,13 @@ def _generated_color(index: int) -> str:
 
 
 async def pick_protein_color(db: AsyncSession) -> str:
-    """Pick a colour no existing protein is using."""
+    """Pick a colour no existing protein is using.
+
+    Check-then-act: two concurrent creates can pick the same colour. Accepted
+    for the same reason as the document dedup in CLAUDE.md — the cost is one
+    duplicate marker, while a unique constraint on colour would reject
+    perfectly legitimate user-chosen values.
+    """
     result = await db.execute(
         select(MapProtein.color).where(MapProtein.color.isnot(None))
     )
@@ -125,13 +129,22 @@ async def pick_protein_color(db: AsyncSession) -> str:
         if color.lower() not in used:
             return color
 
-    # Palette exhausted. Bounded so a pathological colour set can't spin here;
-    # past that a repeat is preferable to failing the create.
+    # Palette exhausted. The generator is injective over this range, so a free
+    # colour is found in practice; the bound only stops a pathological colour
+    # set from spinning here.
     for offset in range(len(used) + 1):
         candidate = _generated_color(len(PROTEIN_COLOR_PALETTE) + offset)
         if candidate.lower() not in used:
             return candidate
-    return _generated_color(len(used))
+
+    # Every candidate collided. Reusing a colour beats failing the create, but
+    # it silently reintroduces the very bug this palette exists to prevent.
+    fallback = _generated_color(len(used))
+    logger.warning(
+        "Protein colour palette exhausted (%d in use); reusing %s - two "
+        "proteins will now share a colour.", len(used), fallback,
+    )
+    return fallback
 
 
 # Default MAP proteins with colors for visualization
@@ -202,7 +215,10 @@ async def get_protein_umap(
     db: AsyncSession = Depends(get_db)
 ):
     """Get UMAP visualization data for proteins with embeddings."""
-    from services.umap_service import compute_protein_umap_online
+    from services.umap_service import (
+        DegenerateEmbeddingsError,
+        compute_protein_umap_online,
+    )
     import numpy as np
 
     result = await db.execute(
@@ -251,7 +267,23 @@ async def get_protein_umap(
 
     # Compute UMAP on-the-fly
     embeddings = np.array([p.embedding for p in proteins])
-    projection, silhouette = compute_protein_umap_online(embeddings)
+    try:
+        projection, silhouette = compute_protein_umap_online(embeddings)
+    except DegenerateEmbeddingsError:
+        # Every protein shares one or two embeddings, so there is nothing to
+        # project. Report "no data" rather than serving a made-up layout the
+        # user would read as a real result.
+        logger.warning(
+            f"Protein UMAP not computable: {len(proteins)} proteins have "
+            f"fewer than 3 distinct embeddings"
+        )
+        return UmapProteinDataResponse(
+            points=[],
+            total_proteins=len(proteins),
+            silhouette_score=None,
+            is_precomputed=False,
+            computed_at=None,
+        )
 
     points = [
         UmapProteinPointResponse(
@@ -308,6 +340,13 @@ async def update_protein(
 
     # Update fields
     update_data = data.model_dump(exclude_unset=True)
+
+    # An explicitly null colour means "assign me an unused one" (the UI's Auto
+    # button). Omitting the field entirely still means "leave it alone" — the
+    # two must stay distinguishable, which is why exclude_unset is load-bearing.
+    if "color" in update_data and not update_data["color"]:
+        update_data["color"] = await pick_protein_color(db)
+
     for field, value in update_data.items():
         setattr(protein, field, value)
 
@@ -351,14 +390,20 @@ async def delete_protein(
 @router.post("/{protein_id}/compute-embedding")
 async def compute_protein_embedding_endpoint(
     protein_id: int,
+    force: bool = False,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
-    """Compute ESM-C 600M embedding for a protein's FASTA sequence."""
+    """Compute ESM-C 600M embedding for a protein's FASTA sequence.
+
+    ``force=true`` encodes from scratch instead of reusing a same-sequence
+    protein's vector — the only way out if the vector being copied is itself
+    bad.
+    """
     from services.protein_embedding_service import compute_protein_embedding
 
     try:
-        return await compute_protein_embedding(protein_id, db)
+        return await compute_protein_embedding(protein_id, db, force=force)
     except LookupError as e:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,

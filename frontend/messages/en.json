@@ -228,6 +228,7 @@
     "embeddingModel": "Model",
     "computedAt": "Computed",
     "embeddingSuccess": "Embedding computed successfully",
+    "embeddingReused": "Same sequence as {from} — reused its embedding",
     "embeddingError": "Failed to compute embedding",
     "deleteSuccess": "Protein deleted successfully",
     "deleteError": "Failed to delete protein",

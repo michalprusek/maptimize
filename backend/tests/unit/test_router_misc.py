@@ -984,6 +984,54 @@ async def test_pick_colour_ignores_null_colours(mock_db):
     assert await prot_r.pick_protein_color(mock_db) == prot_r.PROTEIN_COLOR_PALETTE[0]
 
 
+async def test_generated_colours_differ_from_each_other(mock_db):
+    """Past the palette, successive picks must still be distinct.
+
+    Asserting only "not a palette entry" would pass even if the generator
+    returned one constant colour — i.e. the exact bug this feature fixes,
+    reintroduced for proteins 21+.
+    """
+    used = {c.lower() for c in prot_r.PROTEIN_COLOR_PALETTE}
+    picked = []
+    for _ in range(5):
+        mock_db.execute.return_value = make_result(
+            fetchall=[(c,) for c in used]
+        )
+        colour = await prot_r.pick_protein_color(mock_db)
+        picked.append(colour)
+        used.add(colour.lower())
+    assert len(set(picked)) == 5
+
+
+async def test_update_protein_explicit_null_colour_reassigns(mock_db):
+    """The UI's Auto button sends null on edit; that must re-pick, not no-op."""
+    p = protein(id=1)
+    p.color = prot_r.PROTEIN_COLOR_PALETTE[0]
+    mock_db.execute.side_effect = [
+        make_result(scalar=p),                                      # get_protein_or_404
+        make_result(fetchall=[(prot_r.PROTEIN_COLOR_PALETTE[0],)]),  # colours in use
+        make_result(scalar=0),                                      # image count
+    ]
+    await prot_r.update_protein(
+        1, prot_r.MapProteinUpdate(color=None), current_user=user(), db=mock_db
+    )
+    assert p.color == prot_r.PROTEIN_COLOR_PALETTE[1]
+
+
+async def test_update_protein_omitted_colour_left_alone(mock_db):
+    """Omitting the field still means 'leave unchanged'."""
+    p = protein(id=1)
+    p.color = "#abcdef"
+    mock_db.execute.side_effect = [
+        make_result(scalar=p),   # get_protein_or_404
+        make_result(scalar=0),   # image count — no colour query in between
+    ]
+    await prot_r.update_protein(
+        1, prot_r.MapProteinUpdate(full_name="x"), current_user=user(), db=mock_db
+    )
+    assert p.color == "#abcdef"
+
+
 def test_palette_entries_are_unique_valid_hex():
     palette = prot_r.PROTEIN_COLOR_PALETTE
     assert all(re.fullmatch(r"#[0-9a-f]{6}", c) for c in palette)
