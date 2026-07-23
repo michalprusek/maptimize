@@ -40,6 +40,7 @@ class RAGDocumentResponse(BaseModel):
     page_count: int
     error_message: Optional[str] = None
     file_size: Optional[int] = None
+    folder_id: Optional[int] = None
     created_at: datetime
     indexed_at: Optional[datetime] = None
     # Default True is required for model_validate() to work (the ORM object has

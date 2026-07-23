@@ -196,6 +196,8 @@ async def list_documents(
     file_type: Optional[str] = Query(None, description="Exact file type"),
     min_pages: Optional[int] = Query(None, ge=0),
     max_pages: Optional[int] = Query(None, ge=0),
+    folder_id: Optional[int] = Query(None, description="Folder to scope to (with in_folder=true)"),
+    in_folder: bool = Query(False, description="Scope to folder_id; folder_id omitted = root"),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
@@ -203,7 +205,7 @@ async def list_documents(
 
     Chat attachments are excluded: they belong to their thread, not the library.
     Group-shared library documents from other members are included, marked
-    ``is_owner=False``. Optional filters search by metadata and full text.
+    ``is_owner=False``. With ``in_folder=true`` the list is scoped to one folder.
     """
     group_id = await get_user_group_id(current_user.id, db)
     documents = await search_documents_metadata(
@@ -211,6 +213,8 @@ async def list_documents(
         db,
         name=name,
         doi=doi,
+        folder_id=folder_id,
+        in_folder=in_folder,
         file_type=file_type,
         status=status_filter,
         min_pages=min_pages,
@@ -227,6 +231,7 @@ async def list_documents(
 async def upload_document(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
+    folder_id: Optional[int] = Form(None),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
@@ -269,6 +274,8 @@ async def upload_document(
             content=content,
             db=db,
         )
+        if created and folder_id is not None:
+            document.folder_id = folder_id
         await db.commit()
 
         # A duplicate is already stored, and its indexing has either finished or
@@ -304,6 +311,33 @@ async def get_document(
     group_id = await get_user_group_id(current_user.id, db)
     document = await get_document_for_user(db, document_id, current_user.id, group_id)
     return RAGDocumentResponse.for_user(document, current_user.id)
+
+
+@router.patch("/documents/{document_id}")
+async def move_document(
+    document_id: int,
+    payload: dict,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Move a document into a folder (folder_id=null -> root). Any group member
+    who can see the shared document may organize it."""
+    from models.document_folder import DocumentFolder
+    from routers.folders import _visible
+
+    group_id = await get_user_group_id(current_user.id, db)
+    document = await get_document_for_user(db, document_id, current_user.id, group_id)
+    folder_id = payload.get("folder_id")
+    if folder_id is not None:
+        folder = (await db.execute(
+            select(DocumentFolder).where(
+                DocumentFolder.id == int(folder_id), _visible(current_user.id, group_id)
+            )
+        )).scalar_one_or_none()
+        if folder is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Folder not found")
+    document.folder_id = int(folder_id) if folder_id is not None else None
+    return {"id": document.id, "folder_id": document.folder_id}
 
 
 @router.delete("/documents/{document_id}", status_code=status.HTTP_204_NO_CONTENT)

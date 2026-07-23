@@ -16,6 +16,7 @@ from .rag import router as rag_router
 from .admin import router as admin_router
 from .groups import router as groups_router
 from .user_files import router as user_files_router
+from .folders import router as folders_router
 
 api_router = APIRouter()
 
@@ -33,5 +34,6 @@ api_router.include_router(export_import_router, prefix="/data", tags=["Export/Im
 api_router.include_router(rag_router, prefix="/rag", tags=["RAG"])
 api_router.include_router(admin_router, prefix="/admin", tags=["Admin"])
 api_router.include_router(groups_router, prefix="/groups", tags=["Groups"])
+api_router.include_router(folders_router, prefix="/rag/folders", tags=["Folders"])
 # No prefix: serves /api/exports/...
 api_router.include_router(user_files_router, tags=["User Files"])

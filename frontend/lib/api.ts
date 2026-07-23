@@ -1005,26 +1005,100 @@ class ApiClient {
   // RAG API
   // ============================================================================
 
-  async getRAGDocuments(status?: string) {
-    const params = status ? `?status=${status}` : "";
-    return this.request<RAGDocument[]>(`/api/rag/documents${params}`);
+  /**
+   * List documents. When `inFolder` is set the response is scoped to a single
+   * folder (file-explorer view): pass `folderId` for a specific folder, or omit
+   * it (folderId null/undefined) for the ROOT folder. Without `inFolder` the
+   * flat, folder-agnostic listing is returned (used by search / legacy callers).
+   */
+  async getRAGDocuments(opts?: {
+    inFolder?: boolean;
+    folderId?: number | null;
+    status?: string;
+  }) {
+    const params = new URLSearchParams();
+    if (opts?.status) params.append("status", opts.status);
+    if (opts?.inFolder) {
+      params.append("in_folder", "true");
+      if (opts.folderId != null) params.append("folder_id", String(opts.folderId));
+    }
+    const qs = params.toString();
+    return this.request<RAGDocument[]>(`/api/rag/documents${qs ? `?${qs}` : ""}`);
   }
 
   /**
-   * Upload a document. Passing threadId attaches it to that chat thread
-   * (the agent treats it as context for that conversation); omitting it
-   * uploads to the shared document library.
+   * Upload a document. `threadId` attaches it to a chat thread (the agent
+   * treats it as context for that conversation); `folderId` files it into a
+   * library folder (null/undefined = root). The two are mutually exclusive in
+   * practice — a chat attachment isn't part of the folder tree.
    */
-  async uploadRAGDocument(file: File, threadId?: number) {
+  async uploadRAGDocument(
+    file: File,
+    opts?: { threadId?: number; folderId?: number | null }
+  ) {
     const formData = new FormData();
     formData.append("file", file);
-    if (threadId !== undefined) {
-      formData.append("thread_id", String(threadId));
+    if (opts?.threadId !== undefined) {
+      formData.append("thread_id", String(opts.threadId));
+    }
+    if (opts?.folderId != null) {
+      formData.append("folder_id", String(opts.folderId));
     }
 
     return this.request<RAGDocument>("/api/rag/documents/upload", {
       method: "POST",
       body: formData,
+    });
+  }
+
+  /**
+   * Move a document into a folder. `folderId` null moves it to the root.
+   */
+  async moveDocument(documentId: number, folderId: number | null) {
+    return this.request<RAGDocument>(`/api/rag/documents/${documentId}`, {
+      method: "PATCH",
+      body: JSON.stringify({ folder_id: folderId }),
+    });
+  }
+
+  // ---- Folders ----
+
+  async listFolders() {
+    return this.request<Folder[]>("/api/rag/folders");
+  }
+
+  async createFolder(name: string, parentId?: number | null) {
+    return this.request<Folder>("/api/rag/folders", {
+      method: "POST",
+      body: JSON.stringify({ name, parent_id: parentId ?? null }),
+    });
+  }
+
+  async renameFolder(folderId: number, name: string) {
+    return this.request<Folder>(`/api/rag/folders/${folderId}`, {
+      method: "PATCH",
+      body: JSON.stringify({ name }),
+    });
+  }
+
+  /**
+   * Move a folder under another parent. `parentId` null moves it to the root.
+   * The server rejects (400) moving a folder into its own subtree.
+   */
+  async moveFolder(folderId: number, parentId: number | null) {
+    return this.request<Folder>(`/api/rag/folders/${folderId}`, {
+      method: "PATCH",
+      body: JSON.stringify({ parent_id: parentId }),
+    });
+  }
+
+  /**
+   * Delete (dissolve) a folder: the server moves its subfolders and documents
+   * up to its parent — nothing is deleted.
+   */
+  async deleteFolder(folderId: number) {
+    return this.request<void>(`/api/rag/folders/${folderId}`, {
+      method: "DELETE",
     });
   }
 
@@ -1985,6 +2059,14 @@ export interface SendMessageResponse {
 
 export type RAGDocumentStatus = "pending" | "processing" | "completed" | "failed";
 
+/** A library folder. The tree is built client-side from the flat list via parent_id. */
+export interface Folder {
+  id: number;
+  name: string;
+  parent_id: number | null;
+  created_at: string;
+}
+
 export interface RAGDocument {
   id: number;
   name: string;
@@ -1992,6 +2074,8 @@ export interface RAGDocument {
   status: RAGDocumentStatus;
   progress: number;
   page_count: number;
+  // Which folder the document lives in; null = library root.
+  folder_id?: number | null;
   error_message?: string;
   file_size?: number;
   created_at: string;

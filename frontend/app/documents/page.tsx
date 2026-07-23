@@ -18,7 +18,7 @@ export default function DocumentsPage() {
   const router = useRouter();
 
   const { isAuthenticated, isLoading: authLoading, checkAuth } = useAuthStore();
-  const { loadDocuments, refreshIndexingStatus } = useDocumentStore();
+  const { loadDocuments, refreshIndexingStatus, loadFolders } = useDocumentStore();
 
   useEffect(() => {
     checkAuth();
@@ -33,6 +33,7 @@ export default function DocumentsPage() {
   // Load initial data, then poll so upload/indexing progress stays fresh.
   useEffect(() => {
     if (isAuthenticated) {
+      loadFolders();
       loadDocuments();
       refreshIndexingStatus();
 
@@ -42,7 +43,7 @@ export default function DocumentsPage() {
       }, 5000);
       return () => clearInterval(interval);
     }
-  }, [isAuthenticated, loadDocuments, refreshIndexingStatus]);
+  }, [isAuthenticated, loadDocuments, refreshIndexingStatus, loadFolders]);
 
   if (authLoading) {
     return (

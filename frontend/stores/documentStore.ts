@@ -5,6 +5,7 @@ import {
   RAGIndexingStatus,
   DiscoveredPaper,
   ImportResult,
+  Folder,
 } from "@/lib/api";
 
 // Image preview types (page crops / passages opened in a lightbox)
@@ -19,6 +20,12 @@ interface DocumentState {
   documents: RAGDocument[];
   indexingStatus: RAGIndexingStatus | null;
   indexingStatusError: string | null;
+
+  // Folder tree (file explorer). `folders` is the flat list; the tree is built
+  // client-side via parent_id. `currentFolderId` null = library root.
+  folders: Folder[];
+  currentFolderId: number | null;
+  isLoadingFolders: boolean;
 
   // PDF viewer UI state
   isPDFPanelOpen: boolean;
@@ -55,6 +62,18 @@ interface DocumentState {
   reindexDocument: (documentId: number) => Promise<void>;
   refreshIndexingStatus: () => Promise<void>;
 
+  // Actions - Folders
+  loadFolders: () => Promise<void>;
+  setCurrentFolder: (folderId: number | null) => void;
+  createFolder: (name: string, parentId?: number | null) => Promise<Folder | null>;
+  renameFolder: (folderId: number, name: string) => Promise<void>;
+  // Move a folder/document into another folder (null = root). Both throw on
+  // failure (e.g. 400 when moving a folder into its own subtree) so callers can
+  // surface the message; the store also mirrors it into `error`.
+  moveFolder: (folderId: number, parentId: number | null) => Promise<void>;
+  deleteFolder: (folderId: number) => Promise<void>;
+  moveDocument: (documentId: number, folderId: number | null) => Promise<void>;
+
   // Actions - Discovery
   discoverSources: (query: string) => Promise<void>;
   importDiscovered: (dois: string[]) => Promise<ImportResult>;
@@ -78,6 +97,11 @@ export const useDocumentStore = create<DocumentState>()((set, get) => ({
   documents: [],
   indexingStatus: null,
   indexingStatusError: null,
+
+  // Initial folder state
+  folders: [],
+  currentFolderId: null,
+  isLoadingFolders: false,
 
   // Initial PDF viewer state
   isPDFPanelOpen: false,
@@ -108,7 +132,12 @@ export const useDocumentStore = create<DocumentState>()((set, get) => ({
   loadDocuments: async () => {
     set({ error: null });
     try {
-      const documents = await api.getRAGDocuments();
+      // Folder-scoped: the file explorer shows one folder at a time. Root =
+      // omit folder_id (folderId null), otherwise the current folder's docs.
+      const documents = await api.getRAGDocuments({
+        inFolder: true,
+        folderId: get().currentFolderId,
+      });
       set({ documents });
     } catch (error) {
       set({
@@ -120,7 +149,9 @@ export const useDocumentStore = create<DocumentState>()((set, get) => ({
   uploadDocument: async (file: File) => {
     set({ isUploadingDocument: true, error: null });
     try {
-      const document = await api.uploadRAGDocument(file);
+      const document = await api.uploadRAGDocument(file, {
+        folderId: get().currentFolderId,
+      });
       // A library duplicate is normally already in `documents`, so prepending
       // would double the row and trip React's key warning; nothing new to add.
       if (document.is_duplicate) {
@@ -194,6 +225,110 @@ export const useDocumentStore = create<DocumentState>()((set, get) => ({
       set({
         indexingStatusError: error instanceof Error ? error.message : "Status unavailable",
       });
+    }
+  },
+
+  // ==================== Folder Actions ====================
+
+  loadFolders: async () => {
+    set({ isLoadingFolders: true });
+    try {
+      const folders = await api.listFolders();
+      set({ folders, isLoadingFolders: false });
+    } catch (error) {
+      set({
+        error: error instanceof Error ? error.message : "Failed to load folders",
+        isLoadingFolders: false,
+      });
+    }
+  },
+
+  setCurrentFolder: (folderId: number | null) => {
+    set({ currentFolderId: folderId, documents: [] });
+    // Reload the (now folder-scoped) document list for the new folder.
+    get().loadDocuments();
+  },
+
+  createFolder: async (name: string, parentId?: number | null) => {
+    set({ error: null });
+    try {
+      const parent = parentId === undefined ? get().currentFolderId : parentId;
+      const folder = await api.createFolder(name, parent);
+      set((state) => ({ folders: [...state.folders, folder] }));
+      return folder;
+    } catch (error) {
+      set({
+        error: error instanceof Error ? error.message : "Failed to create folder",
+      });
+      throw error;
+    }
+  },
+
+  renameFolder: async (folderId: number, name: string) => {
+    set({ error: null });
+    try {
+      const updated = await api.renameFolder(folderId, name);
+      set((state) => ({
+        folders: state.folders.map((f) => (f.id === folderId ? updated : f)),
+      }));
+    } catch (error) {
+      set({
+        error: error instanceof Error ? error.message : "Failed to rename folder",
+      });
+      throw error;
+    }
+  },
+
+  moveFolder: async (folderId: number, parentId: number | null) => {
+    set({ error: null });
+    try {
+      const updated = await api.moveFolder(folderId, parentId);
+      // Updating parent_id re-derives which folder is a child of what; the
+      // moved folder simply leaves the current view when its parent changes.
+      set((state) => ({
+        folders: state.folders.map((f) => (f.id === folderId ? updated : f)),
+      }));
+    } catch (error) {
+      set({
+        error: error instanceof Error ? error.message : "Failed to move folder",
+      });
+      throw error;
+    }
+  },
+
+  deleteFolder: async (folderId: number) => {
+    set({ error: null });
+    try {
+      await api.deleteFolder(folderId);
+      // The server dissolves the folder — its subfolders and documents move up
+      // to the parent — so refresh both the tree and the current listing.
+      await get().loadFolders();
+      await get().loadDocuments();
+    } catch (error) {
+      set({
+        error: error instanceof Error ? error.message : "Failed to delete folder",
+      });
+      throw error;
+    }
+  },
+
+  moveDocument: async (documentId: number, folderId: number | null) => {
+    set({ error: null });
+    try {
+      await api.moveDocument(documentId, folderId);
+      // Moving out of the current folder removes the row from view; the periodic
+      // refresh reconciles anything else.
+      set((state) => ({
+        documents:
+          folderId === state.currentFolderId
+            ? state.documents
+            : state.documents.filter((d) => d.id !== documentId),
+      }));
+    } catch (error) {
+      set({
+        error: error instanceof Error ? error.message : "Failed to move document",
+      });
+      throw error;
     }
   },
 

@@ -148,6 +148,10 @@ class RAGDocument(Base):
         ForeignKey("groups.id", ondelete="SET NULL"),
         nullable=True, index=True,
     )
+    # File-explorer folder this library document lives in. NULL = root. Plain
+    # Integer (no hard FK) so folders can be reparented/dissolved freely; folder
+    # deletion moves docs up to the parent (handled in routers/folders.py).
+    folder_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True, index=True)
     # Provenance for documents imported from Europe PMC (NULL for manual uploads).
     # doi is indexed because it is the dedupe key: a paper already in the library
     # must be shown as such instead of being imported twice.

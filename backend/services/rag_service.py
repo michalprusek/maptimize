@@ -267,6 +267,8 @@ async def search_documents_metadata(
     created_before=None,
     min_pages: Optional[int] = None,
     max_pages: Optional[int] = None,
+    folder_id: Optional[int] = None,
+    in_folder: bool = False,
     group_id: Optional[int] = None,
     thread_id: Optional[int] = None,
     skip: int = 0,
@@ -294,6 +296,11 @@ async def search_documents_metadata(
         stmt = stmt.where(RAGDocument.page_count >= min_pages)
     if max_pages is not None:
         stmt = stmt.where(RAGDocument.page_count <= max_pages)
+    if in_folder:  # scope to one folder (folder_id=None -> root)
+        stmt = stmt.where(
+            RAGDocument.folder_id.is_(None) if folder_id is None
+            else RAGDocument.folder_id == folder_id
+        )
     stmt = stmt.order_by(RAGDocument.created_at.desc()).offset(skip).limit(limit)
     return list((await db.execute(stmt)).scalars().all())
 

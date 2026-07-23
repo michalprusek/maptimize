@@ -178,6 +178,8 @@ async def ensure_schema_updates():
             # RAG embedding for FOV images (2048-dim for Qwen VL)
             ("images", "rag_embedding", "vector(2048)"),
             ("images", "rag_indexed_at", "TIMESTAMP WITH TIME ZONE"),
+            # File-explorer folder for library documents (NULL = root)
+            ("rag_documents", "folder_id", "INTEGER"),
             # Group support for shared experiments and metrics
             ("experiments", "group_id", "INTEGER REFERENCES groups(id) ON DELETE SET NULL"),
             ("metrics", "group_id", "INTEGER REFERENCES groups(id) ON DELETE SET NULL"),

@@ -16,7 +16,7 @@ import {
   Search,
 } from "lucide-react";
 import { clsx } from "clsx";
-import { api } from "@/lib/api";
+import { api, type RAGDocument } from "@/lib/api";
 
 interface SearchMatch {
   page_number: number;
@@ -68,7 +68,31 @@ export function PDFViewerPanel() {
   // the observer doesn't unobserve/re-observe) on every render.
   const pageRefCallbacks = useRef<Map<number, (el: HTMLDivElement | null) => void>>(new Map());
 
-  const activeDocument = documents.find((d) => d.id === activePDFDocumentId);
+  // The store's `documents` is scoped to the current library folder, so a
+  // document opened from a global search hit (a different folder) may not be in
+  // it. Fall back to fetching that one document's metadata by id so the header
+  // and page count stay correct wherever the viewer is opened from.
+  const storeDocument = documents.find((d) => d.id === activePDFDocumentId);
+  const [fetchedDocument, setFetchedDocument] = useState<RAGDocument | null>(null);
+  useEffect(() => {
+    if (!activePDFDocumentId || storeDocument) {
+      setFetchedDocument(null);
+      return;
+    }
+    let cancelled = false;
+    api
+      .getRAGDocument(activePDFDocumentId)
+      .then((doc) => {
+        if (!cancelled) setFetchedDocument(doc);
+      })
+      .catch(() => {
+        if (!cancelled) setFetchedDocument(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [activePDFDocumentId, storeDocument]);
+  const activeDocument = storeDocument ?? fetchedDocument;
   const totalPages = activeDocument?.page_count || 1;
 
   // Generate array of page numbers
