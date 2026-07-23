@@ -12,6 +12,7 @@ from .segmentation import SegmentationMask, UserSegmentationPrompt, FOVSegmentat
 from .rag_document import RAGDocument, RAGDocumentPage, DocumentStatus, DocumentType
 from .group import Group, GroupMember
 from .mcp_token import MCPToken
+from .oauth_client import OAuthClient
 
 __all__ = [
     "User",
@@ -44,4 +45,5 @@ __all__ = [
     "Group",
     "GroupMember",
     "MCPToken",
+    "OAuthClient",
 ]

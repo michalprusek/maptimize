@@ -63,6 +63,19 @@ def create_access_token(
     )
 
 
+def create_oauth_access_token(
+    user_id: int, role: str, expires_delta: Optional[timedelta] = None
+) -> str:
+    """Access token issued via the OAuth flow. Carries kind='oauth' so it is
+    treated as data-plane-only (like a PAT) — never usable for account-sensitive
+    actions even though it is a normal signed JWT otherwise."""
+    expire = datetime.now(timezone.utc) + (
+        expires_delta or timedelta(minutes=settings.jwt_expire_minutes)
+    )
+    to_encode = {"sub": str(user_id), "role": role, "exp": expire, "kind": "oauth"}
+    return jwt.encode(to_encode, settings.jwt_secret, algorithm=settings.jwt_algorithm)
+
+
 def decode_token(token: str) -> Optional[TokenPayload]:
     """Decode and validate a JWT token."""
     try:
@@ -74,7 +87,8 @@ def decode_token(token: str) -> Optional[TokenPayload]:
         return TokenPayload(
             sub=int(payload["sub"]),
             exp=datetime.fromtimestamp(payload["exp"], tz=timezone.utc),
-            role=payload["role"]
+            role=payload["role"],
+            kind=payload.get("kind"),
         )
     except ExpiredSignatureError:
         logger.debug("Token expired")
@@ -132,7 +146,7 @@ async def _authenticate(
     if user is None:
         raise credentials_exception
     if request is not None:
-        request.state.principal_kind = "jwt"
+        request.state.principal_kind = "oauth" if payload.kind == "oauth" else "jwt"
     return user
 
 
@@ -166,10 +180,10 @@ async def require_interactive_user(
     (password/email change, token management, admin) that a pasted-into-a-tool
     credential must never perform.
     """
-    if getattr(request.state, "principal_kind", None) == "pat":
+    if getattr(request.state, "principal_kind", None) in ("pat", "oauth"):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="This action requires an interactive login, not a personal access token.",
+            detail="This action requires an interactive login, not a connector token.",
         )
     return user
 

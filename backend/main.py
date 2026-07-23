@@ -141,6 +141,12 @@ app.mount("/uploads", StaticFiles(directory=str(settings.upload_dir)), name="upl
 # Include API routes
 app.include_router(api_router, prefix="/api")
 
+# OAuth 2.0 authorization server for MCP remote connectors — mounted at ROOT
+# (/.well-known/oauth-*, /authorize, /token, /register) because that is where
+# MCP clients (Claude Desktop) look for them.
+from routers.oauth import router as oauth_router  # noqa: E402
+app.include_router(oauth_router)
+
 
 @app.get("/")
 async def root():

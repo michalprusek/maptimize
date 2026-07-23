@@ -46,3 +46,4 @@ class TokenPayload(BaseModel):
     sub: int  # user_id
     exp: datetime
     role: UserRole
+    kind: Optional[str] = None  # e.g. "oauth" for tokens issued via the OAuth flow

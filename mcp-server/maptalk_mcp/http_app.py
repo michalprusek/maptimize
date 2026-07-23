@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import os
 
 from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
 from mcp.server.transport_security import TransportSecuritySettings
@@ -24,22 +25,25 @@ from starlette.types import Receive, Scope, Send
 from .registry import ToolRegistry
 from .server import build_server
 
-# Mirrors backend/utils/tokens.py — used only to fail fast on non-PAT bearers.
-PAT_PREFIX = "mtk_pat_"
+# On a 401, point clients at the OAuth protected-resource metadata so Claude
+# Desktop's remote connector can discover the authorization server and start the
+# OAuth flow. Claude Code just sends its bearer (PAT) and never sees this.
+_RESOURCE_METADATA_URL = os.environ.get(
+    "MCP_RESOURCE_METADATA_URL",
+    "https://maptimize.utia.cas.cz/.well-known/oauth-protected-resource",
+)
+_WWW_AUTHENTICATE = f'Bearer resource_metadata="{_RESOURCE_METADATA_URL}"'
 
 
-async def _send_json(send: Send, status: int, payload: dict) -> None:
+async def _send_json(send: Send, status: int, payload: dict, extra_headers=None) -> None:
     body = json.dumps(payload).encode()
-    await send(
-        {
-            "type": "http.response.start",
-            "status": status,
-            "headers": [
-                (b"content-type", b"application/json"),
-                (b"content-length", str(len(body)).encode()),
-            ],
-        }
-    )
+    headers = [
+        (b"content-type", b"application/json"),
+        (b"content-length", str(len(body)).encode()),
+    ]
+    if extra_headers:
+        headers.extend(extra_headers)
+    await send({"type": "http.response.start", "status": status, "headers": headers})
     await send({"type": "http.response.body", "body": body})
 
 
@@ -69,15 +73,18 @@ def build_http_app(
         headers = dict(scope.get("headers") or [])
         auth = headers.get(b"authorization", b"").decode()
         token = auth[7:].strip() if auth[:7].lower() == "bearer " else ""
-        if not token.startswith(PAT_PREFIX):
-            await _send_json(send, 401, {"error": "unauthorized"})
-            return
-        try:
-            valid = await registry.client.validate_token(token)
-        except Exception:
-            valid = False
+        valid = False
+        if token:
+            try:
+                valid = await registry.client.validate_token(token)
+            except Exception:
+                valid = False
         if not valid:
-            await _send_json(send, 401, {"error": "unauthorized"})
+            # 401 + WWW-Authenticate triggers Claude Desktop's OAuth discovery.
+            await _send_json(
+                send, 401, {"error": "unauthorized"},
+                extra_headers=[(b"www-authenticate", _WWW_AUTHENTICATE.encode())],
+            )
             return
         await manager.handle_request(scope, receive, send)
 
