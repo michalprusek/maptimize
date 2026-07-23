@@ -49,22 +49,21 @@ export function IndexStatusDot({
   const t = useTranslations("folders");
   const { state, percent } = getIndexState(doc);
 
-  const label =
-    state === "indexed"
-      ? t("statusIndexed")
-      : state === "partial"
-        ? t("statusPartial", { percent })
-        : t("statusNotIndexed");
+  const label: Record<IndexState, string> = {
+    indexed: t("statusIndexed"),
+    partial: t("statusPartial", { percent }),
+    notIndexed: t("statusNotIndexed"),
+  };
 
   return (
-    <span className={clsx("inline-flex items-center gap-1.5", className)} title={label}>
+    <span className={clsx("inline-flex items-center gap-1.5", className)} title={label[state]}>
       <span
         className={clsx(
           "w-2.5 h-2.5 rounded-full ring-2 flex-shrink-0",
           DOT_STYLES[state],
           RING_STYLES[state]
         )}
-        aria-label={label}
+        aria-label={label[state]}
         role="img"
       />
       {showPercent && state === "partial" && (

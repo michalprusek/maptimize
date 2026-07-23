@@ -11,6 +11,7 @@ where ``reg`` is the ToolRegistry (exposes ``.client`` and ``.web_client``).
 from __future__ import annotations
 
 import base64
+import binascii
 import json
 import re
 import urllib.parse
@@ -39,36 +40,14 @@ def _text(payload: Any) -> types.TextContent:
     return types.TextContent(type="text", text=text)
 
 
-# -- http_json: proxy a single GET to a backend REST endpoint ---------------
-
-
-async def http_json(
-    reg: "ToolRegistry", spec: "ToolSpec", args: dict, token: str | None = None
-) -> list[ContentBlock]:
-    path = spec.path or ""
-    query: dict[str, Any] = {}
-    for param in spec.params:
-        if param.name not in args:
-            continue
-        value = args[param.name]
-        if param.location == "path":
-            path = path.replace("{" + param.name + "}", str(value))
-        elif param.location == "query":
-            query[param.maps_to or param.name] = value
-    resp = await reg.client.request(spec.method or "GET", path, params=query, token=token)
-    return _response_blocks(resp)
-
-
 def _response_blocks(resp) -> list[ContentBlock]:
     if resp.status_code == 204 or not resp.content:
         return [_text({"status": "ok"})]
     return [_text(resp.json())]
 
 
-async def http_post_json(
-    reg: "ToolRegistry", spec: "ToolSpec", args: dict, token: str | None = None
-) -> list[ContentBlock]:
-    """POST with a JSON body built from ``in: body`` params (path/query still honored)."""
+def _route(spec: "ToolSpec", args: dict) -> tuple[str, dict[str, Any], dict[str, Any]]:
+    """Split resolved args into (path, query, body) by each param's ``in:`` location."""
     path = spec.path or ""
     query: dict[str, Any] = {}
     body: dict[str, Any] = {}
@@ -82,6 +61,25 @@ async def http_post_json(
             query[param.maps_to or param.name] = value
         elif param.location == "body":
             body[param.maps_to or param.name] = value
+    return path, query, body
+
+
+# -- http_json / http_post_json: proxy one request to a backend REST endpoint --
+
+
+async def http_json(
+    reg: "ToolRegistry", spec: "ToolSpec", args: dict, token: str | None = None
+) -> list[ContentBlock]:
+    path, query, _ = _route(spec, args)
+    resp = await reg.client.request(spec.method or "GET", path, params=query, token=token)
+    return _response_blocks(resp)
+
+
+async def http_post_json(
+    reg: "ToolRegistry", spec: "ToolSpec", args: dict, token: str | None = None
+) -> list[ContentBlock]:
+    """POST with a JSON body built from ``in: body`` params (path/query still honored)."""
+    path, query, body = _route(spec, args)
     resp = await reg.client.request(
         spec.method or "POST", path, params=query, json=body or None, token=token
     )
@@ -117,6 +115,22 @@ def _hit_summary(hits) -> types.TextContent:
     )
 
 
+async def _page_hit_blocks(reg, data, count, token, empty_message: str) -> list[ContentBlock]:
+    """A ``{results: [...]}`` search payload as a summary + the page images it names."""
+    hits = (data.get("results") or [])[:count]
+    if not hits:
+        return [_text(empty_message)]
+    return [_hit_summary(hits), *await _pages_as_images(reg, hits, token)]
+
+
+def _decode_base64_arg(args: dict, field: str) -> tuple[bytes | None, ContentBlock | None]:
+    """Decode ``args[field]``; on failure return an error block instead of bytes."""
+    try:
+        return base64.b64decode(args[field]), None
+    except (binascii.Error, ValueError):
+        return None, _text(f"{field} is not valid base64.")
+
+
 async def semantic_image_search(
     reg: "ToolRegistry", spec: "ToolSpec", args: dict, token: str | None = None
 ) -> list[ContentBlock]:
@@ -125,44 +139,32 @@ async def semantic_image_search(
     data = await reg.client.get_json(
         "/api/rag/search/documents", params={"q": query, "limit": count}, token=token
     )
-    hits = (data.get("results") or [])[:count]
-    if not hits:
-        return [_text(f"No document pages matched: {query}")]
-    return [_hit_summary(hits), *await _pages_as_images(reg, hits, token)]
+    return await _page_hit_blocks(reg, data, count, token, f"No document pages matched: {query}")
 
 
 async def search_by_image(
     reg: "ToolRegistry", spec: "ToolSpec", args: dict, token: str | None = None
 ) -> list[ContentBlock]:
-    import binascii
-
     filename = args.get("filename", "query.png")
     count = min(int(args.get("count", 10)), _MAX_SEARCH_IMAGES)
-    try:
-        raw = base64.b64decode(args["image_base64"])
-    except (binascii.Error, ValueError):
-        return [_text("image_base64 is not valid base64.")]
+    raw, error = _decode_base64_arg(args, "image_base64")
+    if error is not None:
+        return [error]
     data = await reg.client.post_multipart(
         "/api/rag/search/by-image",
         files={"file": (filename, raw)},
         data={"limit": str(count)},
         token=token,
     )
-    hits = (data.get("results") or [])[:count]
-    if not hits:
-        return [_text("No document pages matched the image.")]
-    return [_hit_summary(hits), *await _pages_as_images(reg, hits, token)]
+    return await _page_hit_blocks(reg, data, count, token, "No document pages matched the image.")
 
 
 async def index_document(
     reg: "ToolRegistry", spec: "ToolSpec", args: dict, token: str | None = None
 ) -> list[ContentBlock]:
-    import binascii
-
-    try:
-        raw = base64.b64decode(args["content_base64"])
-    except (binascii.Error, ValueError):
-        return [_text("content_base64 is not valid base64.")]
+    raw, error = _decode_base64_arg(args, "content_base64")
+    if error is not None:
+        return [error]
     result = await reg.client.post_multipart(
         "/api/rag/documents/upload",
         files={"file": (args["filename"], raw)},

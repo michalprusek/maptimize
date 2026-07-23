@@ -3,8 +3,9 @@
 - ``--transport stdio`` (default): a local server for Claude Code / Claude
   Desktop. Whether the backend is local or remote is decided by
   ``MAPTALK_BASE_URL``.
-- ``--transport http``: a hosted remote connector (Streamable HTTP). Requires
-  ``MCP_AUTH_TOKEN`` — it is a public, Anthropic-cloud-reachable endpoint.
+- ``--transport http``: a hosted remote connector (Streamable HTTP). A public,
+  Anthropic-cloud-reachable endpoint; each caller authenticates with their own
+  personal access token, validated per request against the backend.
 """
 from __future__ import annotations
 

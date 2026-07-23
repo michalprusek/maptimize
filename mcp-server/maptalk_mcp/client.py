@@ -107,14 +107,16 @@ class MaptalkClient:
         ``data`` / ``files`` carry a request body for POST tools.
         """
         clean = {k: v for k, v in (params or {}).items() if v is not None}
+
+        async def send(tok: str) -> httpx.Response:
+            return await self._send(method, path, clean, tok, auth, json, data, files)
+
         if token is not None:
-            resp = await self._send(method, path, clean, token, auth, json, data, files)
+            resp = await send(token)
         else:
-            tok = await self._ensure_token()
-            resp = await self._send(method, path, clean, tok, auth, json, data, files)
+            resp = await send(await self._ensure_token())
             if resp.status_code == 401 and self._config.has_credentials:
-                tok = await self._reauthenticate()
-                resp = await self._send(method, path, clean, tok, auth, json, data, files)
+                resp = await send(await self._reauthenticate())
         if resp.status_code >= 400:
             raise MaptalkAPIError(
                 f"{method} {path} -> {resp.status_code}: {resp.text[:300]}"
@@ -125,10 +127,6 @@ class MaptalkClient:
         """Return True if the token authenticates against the backend (GET /api/auth/me)."""
         resp = await self._send("GET", "/api/auth/me", {}, token, "header")
         return resp.status_code == 200
-
-    async def post_json(self, path: str, body: Any, token: str | None = None) -> Any:
-        resp = await self.request("POST", path, json=body, token=token)
-        return resp.json()
 
     async def post_multipart(
         self, path: str, files: dict, data: dict | None = None, token: str | None = None

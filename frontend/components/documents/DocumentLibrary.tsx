@@ -801,6 +801,37 @@ function NameDialog({
 // Move-to dialog (folder picker)
 // ---------------------------------------------------------------------------
 
+function MoveRow({
+  label,
+  depth,
+  disabled,
+  onClick,
+  icon,
+}: {
+  label: string;
+  depth: number;
+  disabled: boolean;
+  onClick: () => void;
+  icon: React.ReactNode;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      disabled={disabled}
+      style={{ paddingLeft: `${depth * 16 + 12}px` }}
+      className={clsx(
+        "w-full flex items-center gap-2 py-2 pr-3 rounded-lg text-sm text-left transition-colors",
+        disabled
+          ? "text-text-muted/50 cursor-not-allowed"
+          : "text-text-secondary hover:text-text-primary hover:bg-white/5"
+      )}
+    >
+      {icon}
+      <span className="truncate">{label}</span>
+    </button>
+  );
+}
+
 function MoveToDialog({
   item,
   folders,
@@ -829,35 +860,6 @@ function MoveToDialog({
   };
   build(null, 0);
 
-  const RowButton = ({
-    label,
-    depth,
-    disabled,
-    onClick,
-    icon,
-  }: {
-    label: string;
-    depth: number;
-    disabled: boolean;
-    onClick: () => void;
-    icon: React.ReactNode;
-  }) => (
-    <button
-      onClick={onClick}
-      disabled={disabled}
-      style={{ paddingLeft: `${depth * 16 + 12}px` }}
-      className={clsx(
-        "w-full flex items-center gap-2 py-2 pr-3 rounded-lg text-sm text-left transition-colors",
-        disabled
-          ? "text-text-muted/50 cursor-not-allowed"
-          : "text-text-secondary hover:text-text-primary hover:bg-white/5"
-      )}
-    >
-      {icon}
-      <span className="truncate">{label}</span>
-    </button>
-  );
-
   return (
     <Dialog
       isOpen
@@ -867,7 +869,7 @@ function MoveToDialog({
     >
       <div className="space-y-1">
         <div className="text-xs text-text-muted mb-2">{t("selectDestination")}</div>
-        <RowButton
+        <MoveRow
           label={t("root")}
           depth={0}
           disabled={currentParentId === null}
@@ -877,7 +879,7 @@ function MoveToDialog({
         {rows.map(({ folder, depth }) => {
           const disabled = blocked.has(folder.id) || currentParentId === folder.id;
           return (
-            <RowButton
+            <MoveRow
               key={folder.id}
               label={folder.name}
               depth={depth + 1}

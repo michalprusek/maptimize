@@ -276,10 +276,7 @@ async def search_documents_metadata(
 ) -> List:
     """Filter documents by metadata (name/doi/type/status/date/page-range).
     Returns RAGDocument ORM rows. (Vision-RAG: no OCR text to full-text search.)"""
-    from sqlalchemy import select as _select
-    from models.rag_document import RAGDocument, document_scope
-
-    stmt = _select(RAGDocument).where(document_scope(user_id, thread_id, group_id))
+    stmt = select(RAGDocument).where(document_scope(user_id, thread_id, group_id))
     if name:
         stmt = stmt.where(RAGDocument.name.ilike(f"%{name}%"))
     if doi:

@@ -35,7 +35,6 @@ class Config:
     timeout: float
     tools_file: str
     # HTTP transport (remote connector) settings — unused by the stdio path.
-    auth_token: str | None = None
     http_host: str = "0.0.0.0"
     http_port: int = 8080
     allowed_hosts: list[str] | None = None
@@ -53,7 +52,6 @@ class Config:
             verify_tls=_env_bool("MAPTALK_VERIFY_TLS", True),
             timeout=float(os.environ.get("MAPTALK_TIMEOUT", "60")),
             tools_file=os.environ.get("MAPTALK_TOOLS_FILE") or DEFAULT_TOOLS_FILE,
-            auth_token=os.environ.get("MCP_AUTH_TOKEN") or None,
             http_host=os.environ.get("MCP_HTTP_HOST", "0.0.0.0"),
             http_port=int(os.environ.get("MCP_HTTP_PORT", "8080")),
             allowed_hosts=[h.strip() for h in hosts.split(",") if h.strip()] or None,

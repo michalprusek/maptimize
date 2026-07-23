@@ -9,7 +9,7 @@
  * outside /dashboard, using the collapsible navigation sidebar like the editor.
  */
 
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useCallback, useRef } from "react";
 import { useTranslations } from "next-intl";
 import { AnimatePresence, motion } from "framer-motion";
 import {
@@ -23,6 +23,7 @@ import {
 } from "lucide-react";
 import { useDocumentStore } from "@/stores/documentStore";
 import { AppSidebar } from "@/components/layout";
+import { BREAKPOINTS, useMediaQuery, useReducedMotion } from "@/hooks/useMediaQuery";
 import { DocumentLibrary } from "./DocumentLibrary";
 import { DocumentUpload } from "./DocumentUpload";
 import { DiscoverSourcesModal } from "./DiscoverSourcesModal";
@@ -32,39 +33,6 @@ import { ConnectClaudePanel } from "./ConnectClaudePanel";
 import { api, DocumentSearchHit } from "@/lib/api";
 import { clsx } from "clsx";
 
-const TABLET_BREAKPOINT = 1024;
-
-function useMediaQuery(breakpoint: number): boolean {
-  const [matches, setMatches] = useState(false);
-  useEffect(() => {
-    const checkMatch = () => setMatches(window.innerWidth >= breakpoint);
-    checkMatch();
-    let timeoutId: NodeJS.Timeout;
-    const handleResize = () => {
-      clearTimeout(timeoutId);
-      timeoutId = setTimeout(checkMatch, 100);
-    };
-    window.addEventListener("resize", handleResize);
-    return () => {
-      window.removeEventListener("resize", handleResize);
-      clearTimeout(timeoutId);
-    };
-  }, [breakpoint]);
-  return matches;
-}
-
-function useReducedMotion(): boolean {
-  const [reducedMotion, setReducedMotion] = useState(false);
-  useEffect(() => {
-    const mediaQuery = window.matchMedia("(prefers-reduced-motion: reduce)");
-    setReducedMotion(mediaQuery.matches);
-    const handler = (e: MediaQueryListEvent) => setReducedMotion(e.matches);
-    mediaQuery.addEventListener("change", handler);
-    return () => mediaQuery.removeEventListener("change", handler);
-  }, []);
-  return reducedMotion;
-}
-
 export function DocumentsPageContent() {
   const t = useTranslations("documents");
   const {
@@ -72,11 +40,10 @@ export function DocumentsPageContent() {
     indexingStatus,
     isPDFPanelOpen,
     closePDFViewer,
-    activePDFDocumentId,
     openPDFViewer,
   } = useDocumentStore();
 
-  const isDesktop = useMediaQuery(TABLET_BREAKPOINT);
+  const isDesktop = useMediaQuery(BREAKPOINTS.tablet);
   const reducedMotion = useReducedMotion();
 
   const [showNavigation, setShowNavigation] = useState(false);

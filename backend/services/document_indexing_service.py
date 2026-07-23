@@ -59,6 +59,42 @@ def is_supported_file(filename: str) -> bool:
     return ext in ALL_SUPPORTED
 
 
+async def _resolve_upload_group(
+    user_id: int, thread_id: Optional[int], db: AsyncSession
+) -> Optional[int]:
+    """Group to stamp on / scope by for a new document. Library uploads
+    (thread_id IS NULL) belong to the owner's lab group; chat attachments stay
+    owner-private (None). Fail-closed to owner-only if the group can't be
+    resolved. Mirrors experiment group stamping in routers/experiments.py."""
+    if thread_id is not None:
+        return None
+    try:
+        return await get_user_group_id(user_id, db)
+    except Exception:
+        logger.exception("Failed to resolve group for user %s; uploading as owner-only", user_id)
+        return None
+
+
+async def _find_duplicate_document(
+    user_id: int,
+    thread_id: Optional[int],
+    group_id: Optional[int],
+    content_hash: str,
+    db: AsyncSession,
+) -> Optional[RAGDocument]:
+    """SSOT for the dedupe lookup shared by file and text uploads: the existing
+    non-FAILED document with this content hash within the dedupe scope, or None.
+    FAILED is excluded so a broken document never absorbs the re-upload that is
+    the user's only way to fix it."""
+    return (await db.execute(
+        select(RAGDocument).where(
+            RAGDocument.content_hash == content_hash,
+            RAGDocument.status != DocumentStatus.FAILED.value,
+            document_dedupe_scope(user_id, thread_id, group_id),
+        ).limit(1)
+    )).scalar_one_or_none()
+
+
 async def save_uploaded_document(
     user_id: int,
     filename: str,
@@ -101,27 +137,12 @@ async def save_uploaded_document(
         raise ValueError(f"Unsupported file type: {filename}")
 
     # Resolve the group BEFORE touching the filesystem: the dedupe scope needs
-    # it, and so does the row we may be about to create. Fail-closed to
-    # owner-only, mirroring experiment group stamping.
-    group_id = None
-    if thread_id is None:
-        try:
-            group_id = await get_user_group_id(user_id, db)
-        except Exception:
-            logger.exception(f"Failed to resolve group for user {user_id}; uploading as owner-only")
+    # it, and so does the row we may be about to create.
+    group_id = await _resolve_upload_group(user_id, thread_id, db)
 
     # Deduplicate before anything is written, so a duplicate leaves no trace.
-    # FAILED documents are excluded: deduplicating to one would hand the user a
-    # broken document AND silently consume the re-upload that was their only
-    # way to fix it.
     content_hash = hashlib.sha256(content).hexdigest()
-    existing = (await db.execute(
-        select(RAGDocument).where(
-            RAGDocument.content_hash == content_hash,
-            RAGDocument.status != DocumentStatus.FAILED.value,
-            document_dedupe_scope(user_id, thread_id, group_id),
-        ).limit(1)
-    )).scalar_one_or_none()
+    existing = await _find_duplicate_document(user_id, thread_id, group_id, content_hash, db)
     if existing is not None:
         logger.info(
             "Duplicate upload of %s (sha256 %s...) -> existing document %s",
@@ -157,12 +178,8 @@ async def save_uploaded_document(
     # Save file
     original_path.write_bytes(content)
 
-    # group_id was resolved above, before the dedupe lookup that needed it.
-    # Library uploads (thread_id IS NULL) are shared with the owner's lab group;
-    # chat attachments stay private (group_id stays None). Mirrors experiment
-    # group stamping in routers/experiments.py::create_experiment.
-
-    # Create DB record
+    # Create DB record (group_id resolved above stamps library uploads for the
+    # lab group; chat attachments keep it None).
     document = RAGDocument(
         user_id=user_id,
         thread_id=thread_id,
@@ -572,20 +589,8 @@ async def index_text_snippet(
     content = text_content.encode("utf-8")
     content_hash = hashlib.sha256(content).hexdigest()
 
-    group_id = None
-    if thread_id is None:
-        try:
-            group_id = await get_user_group_id(user_id, db)
-        except Exception:
-            logger.exception("Failed to resolve group for user %s; text as owner-only", user_id)
-
-    existing = (await db.execute(
-        select(RAGDocument).where(
-            RAGDocument.content_hash == content_hash,
-            RAGDocument.status != DocumentStatus.FAILED.value,
-            document_dedupe_scope(user_id, thread_id, group_id),
-        ).limit(1)
-    )).scalar_one_or_none()
+    group_id = await _resolve_upload_group(user_id, thread_id, db)
+    existing = await _find_duplicate_document(user_id, thread_id, group_id, content_hash, db)
     if existing is not None:
         return existing, False
 

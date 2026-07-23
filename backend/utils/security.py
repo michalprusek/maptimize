@@ -6,7 +6,6 @@ from typing import Optional
 import bcrypt
 from fastapi import Depends, HTTPException, status, Query, Request
 from fastapi.security import OAuth2PasswordBearer
-from typing import Optional
 from jose import jwt
 from jose.exceptions import ExpiredSignatureError, JWTClaimsError, JWTError
 from sqlalchemy import select
