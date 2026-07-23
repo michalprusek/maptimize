@@ -12,7 +12,7 @@ def test_rag_document_has_provenance_columns():
 
 
 from services.paper_discovery_service import (
-    classify_query, parse_epmc_result, pdf_url_from_result,
+    classify_query, parse_epmc_result, pdf_urls_from_result,
 )
 
 # Shape verified against the live Europe PMC API on 2026-07-22.
@@ -67,10 +67,11 @@ _PAYWALLED_RAW = {
 
 
 def test_pdf_url_only_for_open_access_pdf_entries():
-    assert pdf_url_from_result(_OA_RAW) == "https://europepmc.org/articles/PMC13248438?pdf=render"
+    assert pdf_urls_from_result(_OA_RAW) == [
+        "https://europepmc.org/articles/PMC13248438?pdf=render"]
     # Free-but-no-pdf preprint is NOT importable, despite availability "Free"
-    assert pdf_url_from_result(_PREPRINT_RAW) is None
-    assert pdf_url_from_result(_PAYWALLED_RAW) is None
+    assert pdf_urls_from_result(_PREPRINT_RAW) == []
+    assert pdf_urls_from_result(_PAYWALLED_RAW) == []
 
 
 def test_pdf_url_ignores_isopenaccess_flag():
@@ -84,18 +85,18 @@ def test_pdf_url_ignores_isopenaccess_flag():
     # only case this test used to cover) can never fail: the loop has nothing
     # to iterate, so it returns None no matter what the flag says.
     still_downloadable = {**_OA_RAW, "isOpenAccess": "N", "hasPDF": "N"}
-    assert (pdf_url_from_result(still_downloadable)
-            == "https://europepmc.org/articles/PMC13248438?pdf=render")
+    assert (pdf_urls_from_result(still_downloadable)
+            == ["https://europepmc.org/articles/PMC13248438?pdf=render"])
 
     still_not_downloadable = {**_PAYWALLED_RAW, "isOpenAccess": "Y", "hasPDF": "Y"}
-    assert pdf_url_from_result(still_not_downloadable) is None
+    assert pdf_urls_from_result(still_not_downloadable) == []
 
 
 def test_pdf_url_excludes_pubmedcentral_ncbi_entries():
     # documentStyle=pdf + availability=Open access alone are NOT enough --
     # a PubMedCentral-sited entry's url 404s/bot-checks when fetched
     # server-side, so it must be excluded despite otherwise qualifying.
-    assert pdf_url_from_result(_PMC_NCBI_RAW) is None
+    assert pdf_urls_from_result(_PMC_NCBI_RAW) == []
 
 
 def test_pdf_url_requires_europe_pmc_site_even_with_no_site_key():
@@ -105,7 +106,7 @@ def test_pdf_url_requires_europe_pmc_site_even_with_no_site_key():
         {"availability": "Open access", "documentStyle": "pdf",
          "url": "https://example.org/no-site-field.pdf"},
     ]}}
-    assert pdf_url_from_result(no_site) is None
+    assert pdf_urls_from_result(no_site) == []
 
 
 def test_parse_epmc_result_maps_fields():
@@ -114,14 +115,14 @@ def test_parse_epmc_result_maps_fields():
     assert r.journal == "Molecular horticulture"      # journalInfo.journal.title
     assert r.year == "2026"
     assert r.authors == "Hlavackova K, Ovecka M."
-    assert r.pdf_url is not None
+    assert r.pdf_urls  # importability is bool(pdf_urls), there is no singular accessor
     assert r.source_url == "https://europepmc.org/abstract/MED/42260696"
 
 
 def test_parse_epmc_result_tolerates_missing_journal():
     r = parse_epmc_result(_PREPRINT_RAW)
     assert r.journal is None
-    assert r.pdf_url is None
+    assert r.pdf_urls == []
 
 
 def test_classify_query_detects_dois():
@@ -148,6 +149,7 @@ def test_classify_query_freetext_is_topic():
     assert items == ["MAP bundling in vitro since 2020"]
 
 
+import httpx
 import pytest
 import services.paper_discovery_service as pds
 
@@ -705,7 +707,7 @@ async def test_import_reports_per_paper_failure_without_creating_rows(monkeypatc
 
     saved = AsyncMock()
     monkeypatch.setattr(rag_router, "_resolve_paper_by_doi", fake_resolve)
-    monkeypatch.setattr(rag_router, "fetch_pdf", boom)
+    monkeypatch.setattr(rag_router, "fetch_paper_pdf", boom)
     monkeypatch.setattr(rag_router, "save_uploaded_document", saved)
     monkeypatch.setattr(rag_router, "_check_discovery_rate_limit", AsyncMock())
 
@@ -725,8 +727,8 @@ async def test_import_saves_as_library_document(monkeypatch, mock_db):
     doc = SimpleNamespace(id=7, doi=None, source_url=None)
 
     monkeypatch.setattr(rag_router, "_resolve_paper_by_doi", AsyncMock(return_value=paper))
-    monkeypatch.setattr(rag_router, "fetch_pdf", AsyncMock(return_value=b"%PDF-1.4"))
-    saved = AsyncMock(return_value=doc)
+    monkeypatch.setattr(rag_router, "fetch_paper_pdf", AsyncMock(return_value=b"%PDF-1.4"))
+    saved = AsyncMock(return_value=(doc, True))
     monkeypatch.setattr(rag_router, "save_uploaded_document", saved)
     monkeypatch.setattr(rag_router, "_check_discovery_rate_limit", AsyncMock())
     scheduled = []
@@ -769,7 +771,7 @@ async def test_import_refuses_paywalled_paper(monkeypatch, mock_db):
     paywalled = pds.parse_epmc_result(_PAYWALLED_RAW)
     monkeypatch.setattr(rag_router, "_resolve_paper_by_doi", AsyncMock(return_value=paywalled))
     fetch = AsyncMock()
-    monkeypatch.setattr(rag_router, "fetch_pdf", fetch)
+    monkeypatch.setattr(rag_router, "fetch_paper_pdf", fetch)
     monkeypatch.setattr(rag_router, "save_uploaded_document", AsyncMock())
     monkeypatch.setattr(rag_router, "_check_discovery_rate_limit", AsyncMock())
 
@@ -1247,7 +1249,7 @@ async def test_import_discovered_rolls_back_when_storing_fails(monkeypatch, mock
     # the router must guard on that instead of raising AttributeError.
     paper = pds.parse_epmc_result(_OA_RAW)
     monkeypatch.setattr(rag_router, "_resolve_paper_by_doi", AsyncMock(return_value=paper))
-    monkeypatch.setattr(rag_router, "fetch_pdf", AsyncMock(return_value=b"%PDF-1.4"))
+    monkeypatch.setattr(rag_router, "fetch_paper_pdf", AsyncMock(return_value=b"%PDF-1.4"))
     monkeypatch.setattr(rag_router, "_check_discovery_rate_limit", AsyncMock())
     monkeypatch.setattr(rag_router, "save_uploaded_document",
                         AsyncMock(side_effect=RuntimeError("disk full")))
@@ -1275,9 +1277,9 @@ async def test_import_discovered_deletes_orphaned_file_when_commit_fails(monkeyp
     doc = SimpleNamespace(id=7, doi=None, source_url=None, original_path=str(pdf_path))
 
     monkeypatch.setattr(rag_router, "_resolve_paper_by_doi", AsyncMock(return_value=paper))
-    monkeypatch.setattr(rag_router, "fetch_pdf", AsyncMock(return_value=b"%PDF-1.4"))
+    monkeypatch.setattr(rag_router, "fetch_paper_pdf", AsyncMock(return_value=b"%PDF-1.4"))
     monkeypatch.setattr(rag_router, "_check_discovery_rate_limit", AsyncMock())
-    monkeypatch.setattr(rag_router, "save_uploaded_document", AsyncMock(return_value=doc))
+    monkeypatch.setattr(rag_router, "save_uploaded_document", AsyncMock(return_value=(doc, True)))
     mock_db.commit = AsyncMock(side_effect=RuntimeError("constraint violation"))
 
     out = await rag_router.import_discovered(
@@ -1312,8 +1314,8 @@ async def test_import_discovered_dedupes_request_list(monkeypatch, mock_db):
     doc = SimpleNamespace(id=7, doi=None, source_url=None)
     resolve = AsyncMock(return_value=paper)
     monkeypatch.setattr(rag_router, "_resolve_paper_by_doi", resolve)
-    monkeypatch.setattr(rag_router, "fetch_pdf", AsyncMock(return_value=b"%PDF-1.4"))
-    monkeypatch.setattr(rag_router, "save_uploaded_document", AsyncMock(return_value=doc))
+    monkeypatch.setattr(rag_router, "fetch_paper_pdf", AsyncMock(return_value=b"%PDF-1.4"))
+    monkeypatch.setattr(rag_router, "save_uploaded_document", AsyncMock(return_value=(doc, True)))
     rate_limit = AsyncMock()
     monkeypatch.setattr(rag_router, "_check_discovery_rate_limit", rate_limit)
 
@@ -1348,7 +1350,12 @@ async def test_import_discovered_skips_papers_already_in_library(monkeypatch, mo
     )
 
     assert out.imported == 0
-    assert out.failed[0].reason == "Already in your library"
+    # Duplicates are no longer reported as failures: "0 imported - 3 failed"
+    # was the summary for the commonest case there is, re-selecting papers
+    # you already imported.
+    assert out.failed == []
+    # Reported in the caller's original casing, not the lowercased match key.
+    assert out.already_in_library == ["10.1186/s43897-026-00231-0"]
     resolve.assert_not_awaited()
 
 
@@ -1367,10 +1374,10 @@ async def test_import_discovered_fetches_multiple_papers_concurrently(monkeypatc
     async def fake_save(**kwargs):
         doc = SimpleNamespace(id=len(docs) + 1, doi=None, source_url=None)
         docs.append(doc)
-        return doc
+        return doc, True
 
     monkeypatch.setattr(rag_router, "_resolve_paper_by_doi", fake_resolve)
-    monkeypatch.setattr(rag_router, "fetch_pdf", AsyncMock(return_value=b"%PDF-1.4"))
+    monkeypatch.setattr(rag_router, "fetch_paper_pdf", AsyncMock(return_value=b"%PDF-1.4"))
     monkeypatch.setattr(rag_router, "save_uploaded_document", fake_save)
     monkeypatch.setattr(rag_router, "_check_discovery_rate_limit", AsyncMock())
 
@@ -1784,3 +1791,284 @@ async def test_discovery_error_has_no_attempted_query_for_a_multi_query_batch(mo
     # Several sub-queries were in flight at once; singling one out would be
     # arbitrary and would mislead the user about what actually failed.
     assert ei.value.attempted_query is None
+
+
+# =========================================================================== #
+# PDF fetch fallback chain.
+#
+# Europe PMC's own PDF link can be dead while the paper is freely downloadable
+# elsewhere. Live-verified 2026-07-22 on 10.21203/rs.3.rs-9043146/v1: Europe PMC
+# lists exactly one qualifying pdf entry, and it answers HTTP 403 with
+# {"error":"PDF link has expired or is invalid"} -- while Research Square serves
+# 34 MB of real PDF for the same DOI.
+# =========================================================================== #
+
+def _candidate_paper(pdf_urls, doi="10.1/x"):
+    return pds.PaperResult(
+        doi=doi, title="T", authors="A", journal="J", year="2026",
+        abstract=None, pmid=None, pmcid=None,
+        pdf_urls=list(pdf_urls), source_url="https://example.org/abs",
+    )
+
+
+async def test_second_candidate_is_tried_when_the_first_fails(monkeypatch):
+    tried = []
+
+    async def fake_fetch(url):
+        tried.append(url)
+        if url.endswith("dead.pdf"):
+            raise pds.PdfFetchError("Publisher returned HTTP 403")
+        return b"%PDF-real"
+
+    monkeypatch.setattr(pds, "fetch_pdf", fake_fetch)
+    paper = _candidate_paper(["https://a.example/dead.pdf", "https://b.example/live.pdf"])
+
+    assert await pds.fetch_paper_pdf(paper) == b"%PDF-real"
+    assert tried == ["https://a.example/dead.pdf", "https://b.example/live.pdf"]
+
+
+async def test_resolvers_are_not_consulted_when_europe_pmc_works(monkeypatch):
+    # Cost invariant: the fallback must add ZERO requests to the common path.
+    unpaywall = AsyncMock(return_value=[])
+    preprint = MagicMock(return_value=[])
+    monkeypatch.setattr(pds, "fetch_pdf", AsyncMock(return_value=b"%PDF-x"))
+    monkeypatch.setattr(pds, "unpaywall_pdf_urls", unpaywall)
+    monkeypatch.setattr(pds, "preprint_pdf_urls", preprint)
+
+    await pds.fetch_paper_pdf(_candidate_paper(["https://a.example/live.pdf"]))
+
+    unpaywall.assert_not_awaited()
+    preprint.assert_not_called()
+
+
+async def test_falls_through_to_the_preprint_host(monkeypatch):
+    # The reported failure, in miniature: the only Europe PMC candidate 403s,
+    # Unpaywall knows no PDF, and the preprint host has the file.
+    async def fake_fetch(url):
+        if "researchsquare" in url:
+            return b"%PDF-from-preprint-host"
+        raise pds.PdfFetchError("Publisher returned HTTP 403")
+
+    monkeypatch.setattr(pds, "fetch_pdf", fake_fetch)
+    monkeypatch.setattr(pds, "unpaywall_pdf_urls", AsyncMock(return_value=[]))
+    paper = _candidate_paper(["https://europepmc.org/api/fulltextRepo?x=1"],
+                             doi="10.21203/rs.3.rs-9043146/v1")
+
+    assert await pds.fetch_paper_pdf(paper) == b"%PDF-from-preprint-host"
+
+
+async def test_reports_the_last_real_error_when_everything_fails(monkeypatch):
+    # "3 candidates failed" is useless: 403 vs wrong content-type vs too large
+    # is what tells the user whether to retry or fetch the PDF by hand.
+    monkeypatch.setattr(pds, "fetch_pdf",
+                        AsyncMock(side_effect=pds.PdfFetchError("File exceeds 100 MB limit")))
+    monkeypatch.setattr(pds, "unpaywall_pdf_urls", AsyncMock(return_value=[]))
+    monkeypatch.setattr(pds, "preprint_pdf_urls", MagicMock(return_value=[]))
+
+    with pytest.raises(pds.PdfFetchError, match="exceeds 100 MB"):
+        await pds.fetch_paper_pdf(_candidate_paper(["https://a.example/x.pdf"]))
+
+
+async def test_no_candidates_at_all_still_raises_a_usable_message(monkeypatch):
+    monkeypatch.setattr(pds, "unpaywall_pdf_urls", AsyncMock(return_value=[]))
+    monkeypatch.setattr(pds, "preprint_pdf_urls", MagicMock(return_value=[]))
+
+    with pytest.raises(pds.PdfFetchError, match="No freely downloadable PDF"):
+        await pds.fetch_paper_pdf(_candidate_paper([]))
+
+
+# --------------------------------------------------------------------------- #
+# Unpaywall resolver
+# --------------------------------------------------------------------------- #
+
+def _unpaywall_client(response):
+    client = MagicMock()
+    client.__aenter__ = AsyncMock(return_value=client)
+    client.__aexit__ = AsyncMock(return_value=False)
+    client.get = AsyncMock(return_value=response)
+    return MagicMock(return_value=client)
+
+
+async def test_unpaywall_returns_pdf_locations_and_skips_nulls(monkeypatch):
+    payload = {"oa_locations": [
+        {"url_for_pdf": None},                          # landing page only
+        {"url_for_pdf": "https://repo.example/a.pdf"},
+        {},                                             # malformed entry
+    ]}
+    response = MagicMock(status_code=200, json=MagicMock(return_value=payload))
+    monkeypatch.setattr(pds.httpx, "AsyncClient", _unpaywall_client(response))
+
+    assert await pds.unpaywall_pdf_urls("10.1/x") == ["https://repo.example/a.pdf"]
+
+
+async def test_unpaywall_passes_the_configured_contact_email(monkeypatch):
+    # Unpaywall requires it; omitting it gets the caller blocked.
+    response = MagicMock(status_code=200, json=MagicMock(return_value={"oa_locations": []}))
+    factory = _unpaywall_client(response)
+    monkeypatch.setattr(pds.httpx, "AsyncClient", factory)
+
+    await pds.unpaywall_pdf_urls("10.1/x")
+
+    get = factory.return_value.get
+    assert get.await_args.kwargs["params"]["email"] == pds.settings.unpaywall_email
+
+
+async def test_unpaywall_returns_empty_on_http_error(monkeypatch):
+    response = MagicMock(status_code=404, json=MagicMock(return_value={}))
+    monkeypatch.setattr(pds.httpx, "AsyncClient", _unpaywall_client(response))
+    assert await pds.unpaywall_pdf_urls("10.1/x") == []
+
+
+async def test_unpaywall_never_raises(monkeypatch):
+    # It runs only after Europe PMC already failed -- degrading to "no more
+    # candidates" must always beat turning a fetch problem into an error.
+    monkeypatch.setattr(pds.httpx, "AsyncClient", MagicMock(side_effect=RuntimeError("boom")))
+    assert await pds.unpaywall_pdf_urls("10.1/x") == []
+
+
+async def test_unpaywall_skips_the_call_without_a_doi(monkeypatch):
+    factory = MagicMock()
+    monkeypatch.setattr(pds.httpx, "AsyncClient", factory)
+    assert await pds.unpaywall_pdf_urls(None) == []
+    factory.assert_not_called()
+
+
+# --------------------------------------------------------------------------- #
+# Preprint-host URL derivation (from the DOI itself -- no extra request)
+# --------------------------------------------------------------------------- #
+
+@pytest.mark.parametrize("doi, expected", [
+    # THE reported failure. Verified live: this URL serves 34 MB of %PDF-.
+    ("10.21203/rs.3.rs-9043146/v1",
+     ["https://www.researchsquare.com/article/rs-9043146/v1.pdf"]),
+    ("10.21203/rs.2.rs-1234/v3",
+     ["https://www.researchsquare.com/article/rs-1234/v3.pdf"]),
+    # bioRxiv and medRxiv share the 10.1101 prefix and the DOI does not say
+    # which, so both are offered; the wrong one costs one 404.
+    ("10.1101/2020.01.01.123456", [
+        "https://www.biorxiv.org/content/10.1101/2020.01.01.123456v1.full.pdf",
+        "https://www.medrxiv.org/content/10.1101/2020.01.01.123456v1.full.pdf"]),
+    ("10.1038/nature12373", []),      # a journal, not a preprint host
+    ("10.21203/not-the-right-shape", []),
+    ("", []),
+    (None, []),
+])
+def test_preprint_pdf_urls(doi, expected):
+    assert pds.preprint_pdf_urls(doi) == expected
+
+
+def test_preprint_pdf_urls_tolerates_surrounding_whitespace():
+    assert pds.preprint_pdf_urls("  10.21203/rs.3.rs-9043146/v1  ") == [
+        "https://www.researchsquare.com/article/rs-9043146/v1.pdf"]
+
+
+# --------------------------------------------------------------------------- #
+# Review follow-ups: the fallback chain must survive the failures it exists for.
+# --------------------------------------------------------------------------- #
+
+async def test_transport_errors_do_not_abort_the_candidate_chain(monkeypatch):
+    """A connect error or read timeout is the COMMONEST shape of a dead link.
+
+    fetch_pdf originally let httpx exceptions escape, so the first unreachable
+    host aborted fetch_paper_pdf entirely -- skipping Unpaywall and the preprint
+    host, i.e. exactly the rescue a dead link is supposed to trigger.
+    """
+    async def fake_fetch(url):
+        if "dead" in url:
+            raise httpx.ConnectError("connection refused")
+        return b"%PDF-rescued"
+
+    monkeypatch.setattr(pds, "fetch_pdf", fake_fetch)
+    monkeypatch.setattr(pds, "unpaywall_pdf_urls", AsyncMock(return_value=[]))
+    paper = _candidate_paper(["https://dead.example/x.pdf"],
+                             doi="10.21203/rs.3.rs-9043146/v1")
+
+    assert await pds.fetch_paper_pdf(paper) == b"%PDF-rescued"
+
+
+async def test_fetch_pdf_converts_transport_errors_into_pdf_fetch_error(monkeypatch):
+    class _Boom:
+        def __call__(self, *a, **k):
+            raise httpx.ReadTimeout("too slow")
+
+    monkeypatch.setattr(pds.httpx, "AsyncClient", _Boom())
+    monkeypatch.setattr(pds, "_is_safe_url", lambda u: (True, ""))
+
+    with pytest.raises(pds.PdfFetchError, match="Could not reach the publisher"):
+        await pds.fetch_pdf("https://example.org/x.pdf")
+
+
+async def test_first_error_is_reported_not_the_speculative_last_one(monkeypatch):
+    """preprint_pdf_urls guesses; its 404 must not bury the real diagnosis.
+
+    For any 10.1101 DOI it emits both biorxiv and medrxiv knowing one 404s. If
+    the LAST error won, every failed bioRxiv import would report "HTTP 404" from
+    a URL the user never asked for, hiding "over 100 MB" or "not a PDF".
+    """
+    async def fake_fetch(url):
+        if "europepmc" in url:
+            raise pds.PdfFetchError("PDF is too large (over 100 MB)")
+        raise pds.PdfFetchError("Publisher returned HTTP 404")
+
+    monkeypatch.setattr(pds, "fetch_pdf", fake_fetch)
+    monkeypatch.setattr(pds, "unpaywall_pdf_urls", AsyncMock(return_value=[]))
+    paper = _candidate_paper(["https://europepmc.org/x.pdf"],
+                             doi="10.1101/2020.01.01.123456")
+
+    with pytest.raises(pds.PdfFetchError, match="over 100 MB"):
+        await pds.fetch_paper_pdf(paper)
+
+
+async def test_unpaywall_survives_a_payload_whose_locations_are_not_objects(monkeypatch):
+    """Its docstring promises it never raises -- the comprehension was outside
+    the try, so a list of bare strings escaped and killed the preprint fallback
+    AND discarded the real Europe PMC error."""
+    # MIXED on purpose: a garbage entry must not cost us the VALID one sitting
+    # next to it. Asserting only "returns []" for an all-garbage payload passes
+    # even without the per-entry guard, because the surrounding try already
+    # swallows the AttributeError -- and silently loses every real URL with it.
+    payload = {"oa_locations": [
+        "https://not-an-object.example/a.pdf",          # a bare string
+        None,
+        7,
+        {"url_for_pdf": "https://repo.example/real.pdf"},
+    ]}
+    response = MagicMock(status_code=200, json=MagicMock(return_value=payload))
+    monkeypatch.setattr(pds.httpx, "AsyncClient", _unpaywall_client(response))
+
+    assert await pds.unpaywall_pdf_urls("10.1/x") == ["https://repo.example/real.pdf"]
+
+
+async def test_paper_result_has_no_singular_pdf_url_accessor():
+    # It existed briefly and was a trap: `fetch_pdf(paper.pdf_url)` -- the
+    # pre-fallback spelling -- reads naturally and silently skips the whole
+    # candidate chain.
+    assert not hasattr(_candidate_paper(["https://a.example/x.pdf"]), "pdf_url")
+
+
+async def test_discover_marks_a_paper_without_pdf_candidates_as_not_importable(monkeypatch):
+    """`importable` is the field the picker's checkbox reads.
+
+    Getting it wrong walks the user into a guaranteed failure: import_discovered
+    re-verifies `pdf_urls` server-side and refuses, so a paper advertised as
+    importable but carrying no candidates can only ever fail.
+    """
+    paywalled = pds.parse_epmc_result(_PAYWALLED_RAW)
+    open_access = pds.parse_epmc_result(_OA_RAW)
+    assert paywalled.pdf_urls == [] and open_access.pdf_urls
+
+    monkeypatch.setattr(rag_router, "discover_papers", AsyncMock(
+        return_value=pds.DiscoveryResult(
+            papers=[paywalled, open_access], failed_queries=0, dropped_queries=0)))
+    monkeypatch.setattr(rag_router, "_check_discovery_rate_limit", AsyncMock())
+    monkeypatch.setattr(rag_router, "get_user_group_id", AsyncMock(return_value=None))
+
+    db = AsyncMock()
+    db.execute.return_value = make_result(scalars_all=[])
+    out = await rag_router.discover_sources(
+        payload=rag_router.DiscoverRequest(query="tubulin"),
+        current_user=SimpleNamespace(id=1), db=db)
+
+    by_doi = {r.doi: r.importable for r in out.results}
+    assert by_doi[paywalled.doi] is False
+    assert by_doi[open_access.doi] is True

@@ -51,8 +51,16 @@ class PaperResult:
     abstract: Optional[str]
     pmid: Optional[str]
     pmcid: Optional[str]
-    pdf_url: Optional[str]   # None => not importable (paywalled / no free PDF)
+    # Every known Europe PMC PDF candidate, in the order Europe PMC listed them.
+    # Empty => Europe PMC offers no free PDF (paywalled, or metadata-only).
+    pdf_urls: list[str]
     source_url: str          # always set: where a human can read about it
+
+    # NOTE: deliberately NO `pdf_url` singular accessor. It existed briefly and
+    # was a trap: `fetch_pdf(paper.pdf_url)` -- the pre-fallback spelling --
+    # still reads naturally, compiles, and silently skips the whole candidate
+    # chain, reintroducing the dead-link failure this module exists to survive.
+    # Importability is `bool(pdf_urls)`; downloading is `fetch_paper_pdf(paper)`.
 
 
 def classify_query(text: str) -> tuple[str, list[str]]:
@@ -78,8 +86,11 @@ def classify_query(text: str) -> tuple[str, list[str]]:
     return "topic", [stripped]
 
 
-def pdf_url_from_result(raw: dict[str, Any]) -> Optional[str]:
-    """Return a legally downloadable PDF URL, or None.
+def pdf_urls_from_result(raw: dict[str, Any]) -> list[str]:
+    """Return every legally downloadable PDF URL, in Europe PMC's own order.
+
+    All of them, not just the first: a record can list several PDF entries and
+    the first one can be dead while a sibling works.
 
     Only an entry that is explicitly a PDF *and* marked Open access / Free
     *and* served directly by Europe PMC qualifies. ``isOpenAccess`` is
@@ -95,13 +106,13 @@ def pdf_url_from_result(raw: dict[str, Any]) -> Optional[str]:
     that actually download.
     """
     urls = ((raw.get("fullTextUrlList") or {}).get("fullTextUrl")) or []
-    for entry in urls:
+    return [
+        entry["url"] for entry in urls
         if (entry.get("documentStyle") == "pdf"
-                and entry.get("availability") in _DOWNLOADABLE
-                and entry.get("site") == "Europe_PMC"
-                and entry.get("url")):
-            return entry["url"]
-    return None
+            and entry.get("availability") in _DOWNLOADABLE
+            and entry.get("site") == "Europe_PMC"
+            and entry.get("url"))
+    ]
 
 
 def _source_url(raw: dict[str, Any]) -> str:
@@ -125,7 +136,7 @@ def parse_epmc_result(raw: dict[str, Any]) -> PaperResult:
         abstract=raw.get("abstractText"),
         pmid=raw.get("pmid"),
         pmcid=raw.get("pmcid"),
-        pdf_url=pdf_url_from_result(raw),
+        pdf_urls=pdf_urls_from_result(raw),
         source_url=_source_url(raw),
     )
 
@@ -183,6 +194,7 @@ async def fetch_pdf(url: str) -> bytes:
     exactly how an open-access URL could be turned into an internal one.
     """
     current = url
+    redirected = False
     for _ in range(MAX_REDIRECTS + 1):
         ok, reason = _is_safe_url(current)
         if not ok:
@@ -192,41 +204,189 @@ async def fetch_pdf(url: str) -> bytes:
             logger.warning("Refused to fetch PDF URL %s: %s", current, reason)
             raise PdfFetchError(SSRF_REFUSAL_MESSAGE)
 
-        async with httpx.AsyncClient(timeout=PDF_READ_TIMEOUT, follow_redirects=False) as client:
-            async with client.stream("GET", current) as resp:
-                if resp.status_code in (301, 302, 303, 307, 308):
-                    location = resp.headers.get("location")
-                    if not location:
-                        raise PdfFetchError("Redirect without a target")
-                    # str(), not .human_repr(): that is yarl's API, not httpx's.
-                    # Resolve relative Locations against the current URL so a
-                    # hop like "/pdf/x.pdf" is re-validated as an absolute URL.
-                    current = str(httpx.URL(current).join(location))
-                    continue
-                if resp.status_code != 200:
-                    raise PdfFetchError(f"Publisher returned HTTP {resp.status_code}")
+        try:
+            async with httpx.AsyncClient(timeout=PDF_READ_TIMEOUT, follow_redirects=False) as client:
+                async with client.stream("GET", current) as resp:
+                    if resp.status_code in (301, 302, 303, 307, 308):
+                        location = resp.headers.get("location")
+                        if not location:
+                            raise PdfFetchError("Redirect without a target")
+                        # str(), not .human_repr(): that is yarl's API, not httpx's.
+                        # Resolve relative Locations against the current URL so a
+                        # hop like "/pdf/x.pdf" is re-validated as an absolute URL.
+                        current = str(httpx.URL(current).join(location))
+                        redirected = True
+                    else:
+                        if resp.status_code != 200:
+                            raise PdfFetchError(f"Publisher returned HTTP {resp.status_code}")
 
-                ctype = (resp.headers.get("content-type") or "").lower()
-                if "pdf" not in ctype:
-                    # A paywall usually answers with an HTML landing page.
-                    raise PdfFetchError(f"Not a PDF (content-type: {ctype or 'unknown'})")
+                        ctype = (resp.headers.get("content-type") or "").lower()
+                        if "pdf" not in ctype:
+                            # A paywall usually answers with an HTML landing page.
+                            raise PdfFetchError(f"Not a PDF (content-type: {ctype or 'unknown'})")
 
-                chunks: list[bytes] = []
-                total = 0
-                async for chunk in resp.aiter_bytes():
-                    total += len(chunk)
-                    if total > MAX_PDF_BYTES:
-                        raise PdfFetchError("PDF is too large (over 100 MB)")
-                    chunks.append(chunk)
-                body = b"".join(chunks)
-                if not body.startswith(b"%PDF"):
-                    # Fail fast rather than storing a file the indexer will
-                    # choke on later -- a 200 + "pdf" content-type can still be
-                    # an HTML error page some publishers mislabel.
-                    raise PdfFetchError("Downloaded file is not a valid PDF")
-                return body
+                        chunks: list[bytes] = []
+                        total = 0
+                        async for chunk in resp.aiter_bytes():
+                            total += len(chunk)
+                            if total > MAX_PDF_BYTES:
+                                raise PdfFetchError("PDF is too large (over 100 MB)")
+                            chunks.append(chunk)
+                        body = b"".join(chunks)
+                        if not body.startswith(b"%PDF"):
+                            # Fail fast rather than storing a file the indexer will
+                            # choke on later -- a 200 + "pdf" content-type can still
+                            # be an HTML error page some publishers mislabel.
+                            raise PdfFetchError("Downloaded file is not a valid PDF")
+        except httpx.HTTPError as exc:
+            # Transport-level failures (connect refused, DNS, read timeout,
+            # protocol error) must become PdfFetchError like every other
+            # failure here. Letting them escape raw would abort fetch_paper_pdf's
+            # candidate loop on the FIRST unreachable host -- skipping Unpaywall
+            # and the preprint fallbacks, i.e. exactly the rescue path a dead
+            # link is supposed to trigger.
+            raise PdfFetchError(f"Could not reach the publisher ({type(exc).__name__})") from exc
+
+        if redirected:
+            redirected = False
+            continue
+        return body
 
     raise PdfFetchError("Too many redirects")
+
+
+# Europe PMC's own PDF link can be dead while the paper is freely downloadable
+# elsewhere. Verified live 2026-07-22 on 10.21203/rs.3.rs-9043146/v1: Europe PMC
+# lists exactly one qualifying pdf entry and it answers HTTP 403 with
+# {"error":"PDF link has expired or is invalid"} -- not a bot check (a browser
+# User-Agent, a Referer and a JSESSIONID from the article page all change
+# nothing), while Research Square serves 34 MB of real PDF for the same DOI.
+_UNPAYWALL_URL = "https://api.unpaywall.org/v2/{doi}"
+_RESEARCH_SQUARE_RE = re.compile(r"^10\.21203/rs\.\d+\.(rs-\d+)/(v\d+)$", re.IGNORECASE)
+_BIORXIV_PREFIX = "10.1101/"
+
+
+async def unpaywall_pdf_urls(doi: Optional[str]) -> list[str]:
+    """Open-access PDF locations Unpaywall knows for this DOI.
+
+    Returns [] on ANY failure and never raises: this runs only after Europe PMC
+    has already failed, so degrading to "no more candidates" is always better
+    than turning a fetch problem into an error.
+
+    Unpaywall indexes only legally deposited OA copies -- it is a way to find
+    the free version, never a way around a paywall.
+    """
+    if not doi:
+        return []
+    try:
+        async with httpx.AsyncClient(timeout=EPMC_TIMEOUT, follow_redirects=True) as client:
+            response = await client.get(
+                _UNPAYWALL_URL.format(doi=doi),
+                params={"email": settings.unpaywall_email},
+            )
+        if response.status_code != 200:
+            logger.info("Unpaywall returned HTTP %s for %s", response.status_code, doi)
+            return []
+        locations = response.json().get("oa_locations") or []
+        # Inside the try: Unpaywall is a third party and `oa_locations` is only
+        # documented, not guaranteed, to be a list of objects. A list of bare
+        # strings would make `.get` raise -- and because this is awaited OUTSIDE
+        # fetch_paper_pdf's per-candidate handler, that escape would skip the
+        # preprint fallback entirely and discard the real Europe PMC error.
+        return [loc["url_for_pdf"] for loc in locations
+                if isinstance(loc, dict) and loc.get("url_for_pdf")]
+    except Exception as exc:
+        logger.warning("Unpaywall lookup failed for %s: %s: %s", doi, type(exc).__name__, exc)
+        return []
+
+
+def preprint_pdf_urls(doi: Optional[str]) -> list[str]:
+    """PDF URLs derivable from a known preprint host's DOI shape.
+
+    Derived from the DOI itself rather than by resolving it: no extra request,
+    deterministic, and testable offline. Returns [] for anything unrecognised.
+    """
+    if not doi:
+        return []
+    doi = doi.strip()
+    match = _RESEARCH_SQUARE_RE.match(doi)
+    if match:
+        return [f"https://www.researchsquare.com/article/{match.group(1)}/{match.group(2)}.pdf"]
+    if doi.lower().startswith(_BIORXIV_PREFIX):
+        # bioRxiv and medRxiv share this prefix and the DOI does not say which,
+        # so both are offered; the wrong one simply 404s and costs one request.
+        # The version is pinned to v1: the DOI carries no version and v1 is the
+        # only one guaranteed to exist. A preprint whose only posted version is
+        # v2+ 404s here and falls through -- acceptable for a last resort that
+        # is a guess either way.
+        return [f"https://www.{host}.org/content/{doi}v1.full.pdf"
+                for host in ("biorxiv", "medrxiv")]
+    return []
+
+
+async def fetch_paper_pdf(paper: "PaperResult") -> bytes:
+    """Download a paper's PDF, trying every known source before giving up.
+
+    Europe PMC's own links come first -- they are the ones /discover already
+    vetted and advertised. The resolvers are consulted ONLY once those are
+    exhausted, so the common path costs no extra requests.
+
+    PRECONDITION: do not call this with an empty ``paper.pdf_urls``. Empty means
+    Europe PMC advertised no free PDF at all, i.e. the picker showed the paper
+    as paywalled -- and "exhausted" would then silently mean "never had any",
+    making the resolvers the sole source and promoting a paywalled paper to
+    importable. ``import_discovered`` enforces this before calling.
+
+    Raises:
+        PdfFetchError: nothing worked. The message is the FIRST failure -- the
+            most-trusted candidate's -- not a count and not the last: 403 vs
+            wrong content-type vs exceeding the size cap is what tells the user
+            whether to retry or fetch it by hand.
+    """
+    last_error: Optional[PdfFetchError] = None
+
+    async def attempt(urls: list[str]) -> Optional[bytes]:
+        nonlocal last_error
+        for url in urls:
+            try:
+                return await fetch_pdf(url)
+            except PdfFetchError as exc:
+                logger.info("PDF candidate failed (%s): %s", exc, url[:120])
+                # FIRST error wins, not the last. Candidates are ordered by how
+                # much we trust them, and preprint_pdf_urls is speculative by
+                # construction -- it emits both biorxiv and medrxiv for a
+                # 10.1101 DOI knowing one will 404. Keeping the last error would
+                # report that guessed 404 to the user and throw away the real
+                # diagnosis ("over 100 MB", "not a PDF", an SSRF refusal) that
+                # tells them whether to retry or fetch it by hand.
+                if last_error is None:
+                    last_error = exc
+            except Exception as exc:
+                # Defence in depth. fetch_pdf's contract is "raises only
+                # PdfFetchError" and it now converts httpx errors to honour it,
+                # but ONE candidate must never be able to abort the chain --
+                # that is the whole failure mode this function exists to
+                # prevent, and it would come back the moment some new exception
+                # type slipped through.
+                logger.warning(
+                    "PDF candidate raised %s (not a PdfFetchError): %s",
+                    type(exc).__name__, url[:120], exc_info=True,
+                )
+                if last_error is None:
+                    last_error = PdfFetchError("Could not download this PDF")
+        return None
+
+    data = await attempt(paper.pdf_urls)
+    if data is not None:
+        return data
+    data = await attempt(await unpaywall_pdf_urls(paper.doi))
+    if data is not None:
+        return data
+    data = await attempt(preprint_pdf_urls(paper.doi))
+    if data is not None:
+        return data
+
+    raise last_error or PdfFetchError("No freely downloadable PDF for this paper")
 
 
 class DiscoveryError(Exception):
@@ -338,9 +498,11 @@ def _is_already_epmc_syntax(text: str) -> bool:
     an LLM translation of it -- skip the Gemini call entirely.
 
     The prefix must be followed immediately by a non-space character, as real
-    syntax is (`AUTH:"Janke C"`). A bare `DOI: ` mid-sentence ("papers with
-    DOI: 10.1234/x, plus anything on tubulin") is someone writing prose about
-    a field, not using it, and still deserves a rewrite.
+    syntax is (`AUTH:"Janke C"`). A field name mid-sentence ("papers where the
+    JOURNAL: matters less than the method") is someone writing prose about a
+    field, not using it, and still deserves a rewrite. Matching is
+    uppercase-only, like Europe PMC's own syntax, so a lowercase `auth:"..."`
+    counts as prose and is sent to Gemini.
     """
     return bool(_EPMC_FIELD_USE_RE.search(text))
 

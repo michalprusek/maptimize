@@ -514,11 +514,12 @@ async def test_rag_upload_success(mock_db):
     doc = SimpleNamespace(id=11)
     with patch.object(rag_r, "_check_upload_rate_limit", new=AsyncMock()), \
          patch.object(rag_r, "is_supported_file", return_value=True), \
-         patch.object(rag_r, "save_uploaded_document", new=AsyncMock(return_value=doc)), \
+         patch.object(rag_r, "save_uploaded_document", new=AsyncMock(return_value=(doc, True))), \
          patch.object(rag_r.RAGDocumentUploadResponse, "model_validate",
-                      side_effect=lambda d: {"id": d.id}):
+                      side_effect=lambda d: SimpleNamespace(id=d.id)):
         out = await rag_r.upload_document(bg, file=fobj, current_user=user(id=7), db=mock_db)
-    assert out == {"id": 11}
+    assert out.id == 11
+    assert out.is_duplicate is False
     bg.add_task.assert_called_once()
     mock_db.commit.assert_awaited()
 
@@ -548,12 +549,12 @@ async def test_rag_upload_owned_thread_passes_thread_id(mock_db):
     fobj.read = AsyncMock(return_value=b"data")
     mock_db.execute.return_value = make_result(scalar=42)  # thread owned
     doc = SimpleNamespace(id=12)
-    saved = AsyncMock(return_value=doc)
+    saved = AsyncMock(return_value=(doc, True))
     with patch.object(rag_r, "_check_upload_rate_limit", new=AsyncMock()), \
          patch.object(rag_r, "is_supported_file", return_value=True), \
          patch.object(rag_r, "save_uploaded_document", new=saved), \
          patch.object(rag_r.RAGDocumentUploadResponse, "model_validate",
-                      side_effect=lambda d: {"id": d.id}):
+                      side_effect=lambda d: SimpleNamespace(id=d.id)):
         await rag_r.upload_document(MagicMock(), file=fobj, thread_id=42,
                                     current_user=user(id=7), db=mock_db)
     assert saved.await_args.kwargs["thread_id"] == 42
@@ -566,12 +567,12 @@ async def test_rag_upload_defaults_to_library_when_no_thread(mock_db):
     fobj.filename = "doc.pdf"
     fobj.read = AsyncMock(return_value=b"data")
     doc = SimpleNamespace(id=13)
-    saved = AsyncMock(return_value=doc)
+    saved = AsyncMock(return_value=(doc, True))
     with patch.object(rag_r, "_check_upload_rate_limit", new=AsyncMock()), \
          patch.object(rag_r, "is_supported_file", return_value=True), \
          patch.object(rag_r, "save_uploaded_document", new=saved), \
          patch.object(rag_r.RAGDocumentUploadResponse, "model_validate",
-                      side_effect=lambda d: {"id": d.id}):
+                      side_effect=lambda d: SimpleNamespace(id=d.id)):
         await rag_r.upload_document(MagicMock(), file=fobj,
                                     current_user=user(id=7), db=mock_db)
     assert saved.await_args.kwargs["thread_id"] is None

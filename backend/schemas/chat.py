@@ -118,6 +118,11 @@ class RAGDocumentUploadResponse(BaseModel):
     status: str
     page_count: int
     created_at: datetime
+    # True when the upload was recognised as a copy of a document already
+    # visible to the uploader: nothing was stored, nothing was indexed, and the
+    # fields above describe the PRE-EXISTING document. The UI must say so
+    # rather than showing this as a fresh upload.
+    is_duplicate: bool = False
 
     class Config:
         from_attributes = True
@@ -273,3 +278,11 @@ class ImportFailure(BaseModel):
 class ImportResponse(BaseModel):
     imported: int
     failed: List[ImportFailure]
+    # DOIs already present, found either by the DOI pre-check (nothing was
+    # fetched) or by the content hash after downloading (the PDF WAS fetched --
+    # byte-identity cannot be known before the bytes exist). Either way nothing
+    # was stored or indexed. "Present" means visible to the caller, which for a
+    # library document includes a lab mate's copy. Neither a success nor a
+    # failure -- reported separately so the summary can't claim an import that
+    # never happened, nor call a duplicate an error.
+    already_in_library: List[str] = []

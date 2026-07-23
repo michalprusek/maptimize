@@ -85,6 +85,12 @@ interface ChatState {
 
   // Actions - Documents
   loadDocuments: () => Promise<void>;
+  // Returns the document either way; check `is_duplicate` on it to tell a
+  // fresh upload from one that was recognised as already present. Deliberately
+  // NOT tracked in the store: two different surfaces upload (the library
+  // dropzone and the chat composer) and a batch uploads many files, so a single
+  // global "last upload was a duplicate" slot reports one surface's result on
+  // another's UI and loses every file but the last.
   uploadDocument: (file: File, threadId?: number) => Promise<RAGDocument | null>;
   discoverResults: DiscoveredPaper[];
   discoverEffectiveQuery: string | null;
@@ -783,6 +789,14 @@ export const useChatStore = create<ChatState>()(
         set({ isUploadingDocument: true, error: null });
         try {
           const document = await api.uploadRAGDocument(file, threadId);
+          // A library duplicate is normally already in `documents`, so
+          // prepending would double the row and trip React's key warning; an
+          // attachment duplicate is never in that list at all (the endpoint
+          // excludes attachments). Either way there is nothing new to add.
+          if (document.is_duplicate) {
+            set({ isUploadingDocument: false });
+            return document;
+          }
           set((state) => ({
             documents: [document, ...state.documents],
             // Attachments belong to the open conversation; keep them listed

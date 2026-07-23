@@ -90,9 +90,10 @@ def test_document_read_scope_owner_only_without_group():
 
 
 async def test_library_upload_is_stamped_with_group(mock_db, tmp_path):
+    mock_db.execute.return_value = make_result(scalar=None)  # no dedupe hit
     with patch.object(dis, "get_user_group_id", AsyncMock(return_value=7)), \
          patch.object(dis.settings, "rag_document_dir", tmp_path):
-        doc = await dis.save_uploaded_document(
+        doc, _ = await dis.save_uploaded_document(
             user_id=1, filename="paper.pdf", content=b"%PDF-1.4",
             db=mock_db, thread_id=None,
         )
@@ -100,9 +101,10 @@ async def test_library_upload_is_stamped_with_group(mock_db, tmp_path):
 
 
 async def test_attachment_upload_is_not_stamped(mock_db, tmp_path):
+    mock_db.execute.return_value = make_result(scalar=None)  # no dedupe hit
     with patch.object(dis, "get_user_group_id", AsyncMock(return_value=7)), \
          patch.object(dis.settings, "rag_document_dir", tmp_path):
-        doc = await dis.save_uploaded_document(
+        doc, _ = await dis.save_uploaded_document(
             user_id=1, filename="paper.pdf", content=b"%PDF-1.4",
             db=mock_db, thread_id=99,
         )

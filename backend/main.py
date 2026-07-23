@@ -31,6 +31,18 @@ async def lifespan(app: FastAPI):
     settings.upload_dir.mkdir(parents=True, exist_ok=True)
     settings.rag_document_dir.mkdir(parents=True, exist_ok=True)
 
+    # Indexing background tasks do not survive a restart, so anything still
+    # PENDING/PROCESSING is orphaned. Ageing those rows to FAILED is what keeps
+    # a re-upload working as a remedy -- dedupe skips FAILED documents but would
+    # otherwise absorb the re-upload as a duplicate of the stuck one.
+    try:
+        from database import get_db_context
+        from services.document_indexing_service import fail_orphaned_indexing
+        async with get_db_context() as _db:
+            await fail_orphaned_indexing(_db)
+    except Exception:
+        logger.exception("Failed to reap orphaned document indexing jobs")
+
     # Cleanup old temp files and exports on startup (24 hours max age)
     try:
         temp_cleaned = cleanup_old_temp_files(max_age_hours=24)

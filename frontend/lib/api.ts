@@ -1980,6 +1980,10 @@ export interface RAGDocument {
   created_at: string;
   indexed_at?: string;
   is_owner?: boolean;
+  // Upload responses only: the file was already in the library (possibly a lab
+  // mate's copy), so nothing was stored or indexed and the fields above
+  // describe that PRE-EXISTING document.
+  is_duplicate?: boolean;
 }
 
 export interface RAGDocumentPage {
@@ -2053,6 +2057,10 @@ export interface DiscoverResponse {
 export interface ImportResult {
   imported: number;
   failed: { doi: string; reason: string }[];
+  // Papers already in the library: nothing was fetched, stored or indexed for
+  // them. Neither a success nor a failure, so they are counted separately --
+  // folding them into `imported` would claim an import that never happened.
+  already_in_library?: string[];
 }
 
 // ============================================================================

@@ -83,8 +83,13 @@ export function DiscoverSourcesModal({ isOpen, onClose }: DiscoverSourcesModalPr
     setFailedImports([]);
     try {
       const result = await importDiscovered(Array.from(selected));
+      const duplicates = result.already_in_library?.length ?? 0;
       setSummary(
         `${t("discoverImportedCount", { count: result.imported })}` +
+          // Duplicates are neither imported nor failed -- reported on their own
+          // so "0 imported" doesn't read as an error when everything selected
+          // was simply already here.
+          (duplicates ? ` · ${t("importAlreadyInLibrary", { count: duplicates })}` : "") +
           (result.failed.length
             ? ` · ${t("discoverFailedCount", { count: result.failed.length })}`
             : "")

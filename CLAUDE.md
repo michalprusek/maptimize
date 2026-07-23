@@ -587,6 +587,70 @@ následováním redirectů a revalidací každého hopu** — reálné EPMC PDF 
 takže tahle větev musí být otestovaná (jednou už tu byl bug, který spadl na každém
 skutečném stažení, protože žádný test redirect nevracel).
 
+### Deduplikace dokumentů (od 2026-07-22)
+
+Klíč je **`sha256` obsahu** v `rag_documents.content_hash`. Počítá se v
+`save_uploaded_document()` — jediném hrdle, kterým jde ruční upload **i** discovery
+import, takže obě cesty dedupují automaticky. Vrací `(document, created)`; při
+`created=False` se **nesmí** plánovat indexace ani nic zapisovat (dokument může patřit
+kolegovi — zápisy zůstávají na vlastníkovi).
+
+Rozsah hledání je `document_dedupe_scope()` v `models/rag_document.py`, **záměrně užší
+než `document_scope`**: knihovní upload dedupuje napříč skupinou, příloha chatu jen proti
+vlastním přílohám téhož threadu. Kdyby se hranice překročila, knihovní dokument by zmizel
+při smazání konverzace.
+
+⚠️ **Dokumenty ve stavu `FAILED` se nededuplikují.** Jinak by uživatel dostal rozbitý
+dokument a přišel by o jedinou možnost nápravy — re-upload by se tiše vyhodnotil jako
+duplicita.
+
+⚠️ **`PENDING`/`PROCESSING` se naopak dedupují** (jinak by dvojklik během indexace založil
+dva dokumenty). Aby to nebyla past, `fail_orphaned_indexing()` v `main.py` lifespanu při
+startu překlopí zaseknuté řádky na `FAILED` — indexace běží jako `BackgroundTask`, který
+restart kontejneru nepřežije, a CLAUDE.md restart předepisuje po každé změně kódu. Bez
+toho by zaseknutý dokument navždy polykal re-uploady a u sdílené knihovny by to nešlo
+opravit nikomu kromě vlastníka.
+
+⚠️ **Dedup NENÍ chráněný unique constraintem** — je to check-then-act. Dva současné
+uploady téhož nového souboru projdou oba (cena: jeden zbytečný běh indexace, sám se
+nezhorší). Vědomé rozhodnutí: správný klíč je `(content_hash, vlastník/skupina, thread_id)`
+a špatně napsaný constraint by odmítal legitimní uploady. Discovery import je bezpečný
+konstrukcí — `asyncio.gather` paralelizuje jen stahování, ukládací smyčka je sekvenční nad
+jednou session. **Kdyby někdo chtěl paralelizovat i ukládání, tahle vlastnost tiše zmizí.**
+
+⚠️ **Testy dedup dotazu asertuj na `stmt.whereclause`, NIKDY na `str(stmt)`.** `str()`
+vyrenderuje i seznam sloupců v `SELECT`, takže `assert "content_hash" in str(stmt)` projde
+i tehdy, když se filtruje podle úplně jiného sloupce. Reálně se to stalo: přepnutí dedupu
+na porovnávání podle názvu souboru nechalo všech 1626 testů zelených.
+
+### PDF fallback při importu
+
+`pdf_urls_from_result()` vrací **seznam** kandidátů (dřív jen první odkaz).
+`fetch_paper_pdf()` je zkouší v pořadí: všechny EPMC odkazy → Unpaywall → vzory preprint
+serverů (Research Square, bioRxiv/medRxiv, odvozené z DOI bez extra requestu). Resolvery
+se volají **až když všechny EPMC odkazy selžou**, takže běžná cesta nestojí nic navíc —
+testy to hlídají přes `assert_not_awaited()`.
+
+⚠️ **Když `pdf_urls` je prázdné, import se odmítne i s DOI.** Prázdný seznam znamená, že
+picker článek ukázal jako paywallovaný; fallback má zachránit mrtvý odkaz, ne rozšířit,
+co se považuje za volně dostupné. (Test `test_import_refuses_paywalled_paper` to hlídá —
+při implementaci tuhle hranici jednou zrušil a test to chytil.)
+
+Chyba se hlásí jako **PRVNÍ selhání** (kandidát, kterému věříme nejvíc), ne poslední a ne
+„3 kandidáti selhali": rozdíl mezi 403, špatným content-type a překročením 100 MB je to,
+co uživateli řekne, jestli zkusit znovu, nebo si PDF stáhnout ručně. Poslední selhání by
+bylo skoro vždy vymyšlená 404 z `preprint_pdf_urls`, který u DOI `10.1101/` schválně
+zkouší biorxiv i medrxiv s vědomím, že jeden neexistuje.
+
+⚠️ **`fetch_pdf` musí převádět transportní chyby httpx na `PdfFetchError`** a `attempt()`
+navíc chytá i `Exception`. Nespadlý connect / read timeout je nejčastější podoba mrtvého
+odkazu — když unikne, přeskočí celý zbytek řetězu, tedy přesně tu záchranu, kvůli které
+řetěz existuje.
+
+⚠️ **`PaperResult` nemá `pdf_url` (jednotné číslo).** Byla to past: `fetch_pdf(paper.pdf_url)`
+se čte přirozeně, přeloží se a tiše obejde celý fallback. Importovatelnost je
+`bool(pdf_urls)`, stahování `fetch_paper_pdf(paper)`.
+
 ## 🌐 Internacionalizace (i18n)
 
 **CRITICAL: Každý textový řetězec v UI musí používat i18n wrapper!**

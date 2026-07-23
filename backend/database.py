@@ -1,5 +1,8 @@
 """Database connection and session management."""
+import hashlib
+import logging
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import AsyncGenerator
 
 from sqlalchemy import text
@@ -8,6 +11,7 @@ from sqlalchemy.orm import DeclarativeBase
 
 from config import get_settings
 
+logger = logging.getLogger(__name__)
 settings = get_settings()
 
 # Convert postgresql:// to postgresql+asyncpg://
@@ -71,6 +75,44 @@ async def init_db():
     await seed_default_data()
 
 
+async def backfill_document_hashes(conn) -> int:
+    """Hash existing documents so they participate in deduplication.
+
+    Returns the number of rows that could NOT be hashed.
+
+    Best-effort by design: a document row can outlive its file on disk, and a
+    missing file must not stop the application from starting. But every failure
+    is logged at error and counted. An earlier backfill in this file logged at
+    debug under an INFO root logger AND forgot to append to `failed_updates`, so
+    a genuine failure printed "Schema updates applied successfully" and nobody
+    noticed -- hence both halves here, the error-level log and the count.
+    """
+    result = await conn.execute(text(
+        "SELECT id, original_path FROM rag_documents WHERE content_hash IS NULL"
+    ))
+    rows = result.fetchall()
+    if not rows:
+        return 0
+
+    failed = 0
+    hashed = 0
+    for doc_id, path in rows:
+        try:
+            digest = hashlib.sha256(Path(path).read_bytes()).hexdigest()
+        except Exception as e:
+            logger.error(f"Backfill: cannot hash document {doc_id} at {path}: {e}")
+            failed += 1
+            continue
+        await conn.execute(
+            text("UPDATE rag_documents SET content_hash = :h WHERE id = :i"),
+            {"h": digest, "i": doc_id},
+        )
+        hashed += 1
+
+    logger.info(f"content_hash backfill: hashed {hashed}, unreadable {failed}")
+    return failed
+
+
 async def ensure_schema_updates():
     """
     Apply incremental schema updates that SQLAlchemy create_all doesn't handle.
@@ -85,10 +127,8 @@ async def ensure_schema_updates():
     Note: All table/column names are hardcoded constants - do not parameterize
     with external input to avoid SQL injection risks.
     """
-    import logging
     from sqlalchemy.exc import ProgrammingError, OperationalError
 
-    logger = logging.getLogger(__name__)
     failed_updates = []
 
     async with engine.begin() as conn:
@@ -159,6 +199,8 @@ async def ensure_schema_updates():
             # Provenance for papers imported from Europe PMC
             ("rag_documents", "doi", "VARCHAR(255)"),
             ("rag_documents", "source_url", "VARCHAR(1000)"),
+            # sha256 of the file content: the deduplication key
+            ("rag_documents", "content_hash", "VARCHAR(64)"),
         ]
 
         for table, column, col_type in updates:
@@ -274,6 +316,36 @@ async def ensure_schema_updates():
             await conn.execute(text("ROLLBACK TO SAVEPOINT idx_doc_doi"))
             logger.error(f"Failed to create ix_rag_documents_doi: {e}")
             failed_updates.append("ix_rag_documents_doi")
+
+        # Index for content_hash lookups: read on EVERY upload, before the file
+        # is written. The model declares index=True, but create_all only builds
+        # indexes when it CREATES the table, so a column added by ALTER TABLE
+        # above needs its index stated explicitly here.
+        try:
+            await conn.execute(text("SAVEPOINT idx_doc_hash"))
+            await conn.execute(text(
+                "CREATE INDEX IF NOT EXISTS ix_rag_documents_content_hash "
+                "ON rag_documents (content_hash)"
+            ))
+            await conn.execute(text("RELEASE SAVEPOINT idx_doc_hash"))
+        except Exception as e:
+            await conn.execute(text("ROLLBACK TO SAVEPOINT idx_doc_hash"))
+            logger.error(f"Failed to create ix_rag_documents_content_hash: {e}")
+            failed_updates.append("ix_rag_documents_content_hash")
+
+        # Hash pre-existing documents so they participate in deduplication.
+        try:
+            await conn.execute(text("SAVEPOINT backfill_doc_hash"))
+            unhashed = await backfill_document_hashes(conn)
+            await conn.execute(text("RELEASE SAVEPOINT backfill_doc_hash"))
+            if unhashed:
+                # Not fatal -- those rows simply never dedupe -- but it must be
+                # visible, not inferred from documents mysteriously importing twice.
+                failed_updates.append(f"content_hash backfill ({unhashed} unreadable)")
+        except Exception as e:
+            await conn.execute(text("ROLLBACK TO SAVEPOINT backfill_doc_hash"))
+            logger.error(f"content_hash backfill failed: {e}")
+            failed_updates.append("rag_documents.backfill_content_hash")
 
         # Ensure enum values exist (must be outside transaction for PostgreSQL)
         # We run this in a separate autocommit connection

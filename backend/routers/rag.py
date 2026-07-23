@@ -55,7 +55,7 @@ from services.rag_service import (
 )
 from services.paper_discovery_service import (
     discover as discover_papers,
-    fetch_pdf,
+    fetch_paper_pdf,
     PdfFetchError,
     DiscoveryError,
     search_epmc,
@@ -265,7 +265,7 @@ async def upload_document(
 
     try:
         # Save document
-        document = await save_uploaded_document(
+        document, created = await save_uploaded_document(
             user_id=current_user.id,
             filename=file.filename,
             content=content,
@@ -274,12 +274,21 @@ async def upload_document(
         )
         await db.commit()
 
-        # Process document in background
-        background_tasks.add_task(process_document_async, document.id)
+        # A duplicate is already stored, and its indexing has either finished or
+        # is already queued -- re-running the pipeline would burn GPU time to
+        # produce pages that are already coming. (Documents left PENDING or
+        # PROCESSING by a killed process are aged to FAILED at startup, and
+        # FAILED is excluded from the dedupe, so a stuck row can't absorb the
+        # re-upload that would fix it.)
+        if created:
+            background_tasks.add_task(process_document_async, document.id)
+            logger.info(f"Queued document {document.id} for processing")
+        else:
+            logger.info(f"Upload of {file.filename} deduplicated to document {document.id}")
 
-        logger.info(f"Queued document {document.id} for processing")
-
-        return RAGDocumentUploadResponse.model_validate(document)
+        response = RAGDocumentUploadResponse.model_validate(document)
+        response.is_duplicate = not created
+        return response
 
     except ValueError as e:
         raise HTTPException(
@@ -556,7 +565,7 @@ async def discover_sources(
                 doi=p.doi, title=p.title, authors=p.authors, journal=p.journal,
                 year=p.year, abstract=(p.abstract or "")[:600] or None,
                 source_url=p.source_url,
-                importable=p.pdf_url is not None,
+                importable=bool(p.pdf_urls),
                 already_imported=bool(p.doi and p.doi.lower() in existing),
             )
             for p in papers
@@ -677,14 +686,17 @@ async def import_discovered(
         .where(func.lower(RAGDocument.doi).in_([d.lower() for d in dois]))
         .where(document_scope(current_user.id, None, group_id))
     )
-    already_in_library = {d.lower() for d in existing_rows.scalars().all() if d}
+    # Distinct name from the `already_in_library` RESULT list built below: these
+    # are lowercased for matching, that one holds the DOIs as the user sent them.
+    # They were briefly the same identifier, which worked only because this set's
+    # last read happened to precede the rebind.
+    existing_dois = {d.lower() for d in existing_rows.scalars().all() if d}
 
-    to_fetch = []
-    for doi in dois:
-        if doi.lower() in already_in_library:
-            failures.append(ImportFailure(doi=doi, reason="Already in your library"))
-        else:
-            to_fetch.append(doi)
+    # Papers already here are neither imported nor failed. Reporting them as
+    # failures made the summary read "0 imported - 3 failed" for the most common
+    # case there is: re-selecting papers you already imported.
+    already_in_library: list[str] = [d for d in dois if d.lower() in existing_dois]
+    to_fetch = [d for d in dois if d.lower() not in existing_dois]
 
     semaphore = asyncio.Semaphore(EPMC_MAX_CONCURRENCY)
 
@@ -693,9 +705,14 @@ async def import_discovered(
             paper = await _resolve_paper_by_doi(doi)
             if paper is None:
                 raise PdfFetchError("Not found in Europe PMC")
-            if not paper.pdf_url:
+            # Server-side re-verification, unchanged: no Europe PMC PDF entry
+            # means the picker showed this as paywalled, and the fallback chain
+            # must NOT quietly promote it to importable. The fallbacks exist to
+            # rescue a paper whose advertised PDF link is dead -- not to widen
+            # what counts as freely available.
+            if not paper.pdf_urls:
                 raise PdfFetchError("No freely downloadable PDF for this paper")
-            return paper, await fetch_pdf(paper.pdf_url)
+            return paper, await fetch_paper_pdf(paper)
 
     async def fetch_or_capture(doi: str):
         """Never let one paper's exception cancel the sibling gather()s --
@@ -708,6 +725,10 @@ async def import_discovered(
             logger.exception("Discovery fetch failed for %s", doi)
             return e
 
+    # gather() parallelises only the FETCH. The store loop below is sequential
+    # over one session, which is what makes dedupe correct inside a single batch
+    # (the same PDF under two DOIs is caught by the second iteration). Making
+    # these saves concurrent would silently reintroduce the duplicate.
     fetched = await asyncio.gather(*(fetch_or_capture(doi) for doi in to_fetch))
 
     imported = 0
@@ -730,33 +751,53 @@ async def import_discovered(
         paper, content = outcome
         filename = _paper_filename(paper)
         document = None
+        created = False
         try:
-            document = await save_uploaded_document(
+            document, created = await save_uploaded_document(
                 user_id=current_user.id, filename=filename, content=content,
                 db=db, thread_id=None,
             )
-            document.doi = paper.doi
-            document.source_url = paper.source_url
+            if created or (document.user_id == current_user.id and not document.doi):
+                # Stamped on a duplicate ONLY when we own it and it has no DOI
+                # yet -- typically a paper uploaded by hand before discovery
+                # existed. Without this the DOI is never recorded anywhere the
+                # pre-check can see, so every future import of this paper
+                # re-resolves it and re-downloads the whole PDF before the
+                # content hash discards it. A lab mate's document is never
+                # touched: group membership grants read, never modify.
+                document.doi = paper.doi
+                document.source_url = paper.source_url
             await db.commit()
         except Exception:
             await db.rollback()
             logger.exception("Failed to store discovered paper %s", doi)
-            if document is not None:
-                # save_uploaded_document returned successfully (the file is on
-                # disk) but the commit above failed -- delete it so it isn't
-                # orphaned. If save_uploaded_document itself raised, `document`
-                # is still None here and there is no path to clean up (that
-                # failure mode is documented on save_uploaded_document).
+            if document is not None and created:
+                # save_uploaded_document created and wrote a NEW file, but the
+                # commit above failed -- delete it so it isn't orphaned. A
+                # deduplicated document must never be unlinked here: its file
+                # backs a pre-existing row (possibly a lab mate's).
+                # If save_uploaded_document itself raised, `document` is still
+                # None and there is nothing to clean up (that failure mode is
+                # documented on save_uploaded_document).
                 orphan_path = Path(document.original_path)
                 orphan_path.unlink(missing_ok=True)
                 logger.info("Cleaned up orphaned PDF for %s: %s", doi, orphan_path)
             failures.append(ImportFailure(doi=doi, reason=_GENERIC_IMPORT_ERROR))
             continue
 
+        if not created:
+            # Neither a success nor a failure: the paper is already here and
+            # nothing was done. Counting it as "imported" would claim an import
+            # that never happened.
+            already_in_library.append(doi)
+            continue
+
         background_tasks.add_task(process_document_async, document.id)
         imported += 1
 
-    return ImportResponse(imported=imported, failed=failures)
+    return ImportResponse(
+        imported=imported, failed=failures, already_in_library=already_in_library,
+    )
 
 
 # ============== Indexing Status ==============

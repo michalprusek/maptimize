@@ -596,6 +596,8 @@
     "discoverSearch": "Rechercher",
     "discoverSearching": "Recherche…",
     "discoverSearchedAs": "Recherché comme :",
+    "documentDuplicate": "Déjà disponible pour vous, rien n'a été importé : {files}",
+    "importAlreadyInLibrary": "{count} déjà dans votre bibliothèque",
     "discoverRewriteFailed": "Impossible d'affiner la recherche — recherche effectuée avec votre texte tel quel.",
     "discoverNoResults": "Aucun article trouvé",
     "discoverFailed": "Échec de la recherche — réessayez",
