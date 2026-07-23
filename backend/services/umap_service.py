@@ -45,6 +45,17 @@ def _normalize_embeddings(embeddings: np.ndarray) -> np.ndarray:
     return embeddings / norms
 
 
+def _ring_layout(n_points: int) -> np.ndarray:
+    """Evenly spaced points on the unit circle (origin for a single point).
+
+    Used when there are too few distinct embeddings to fit UMAP at all.
+    """
+    if n_points <= 1:
+        return np.zeros((max(n_points, 1), 2))
+    angles = np.linspace(0, 2 * np.pi, n_points, endpoint=False)
+    return np.column_stack([np.cos(angles), np.sin(angles)])
+
+
 def _compute_umap_projection(
     embeddings_norm: np.ndarray,
     n_neighbors: int,
@@ -54,6 +65,14 @@ def _compute_umap_projection(
     """
     Core UMAP projection computation.
 
+    Rows that are exactly equal are fitted once and share the resulting
+    coordinates. UMAP's layout optimiser applies random negative sampling per
+    row, so passing duplicates straight through scatters them — on real data two
+    proteins with the same sequence landed ~7% of the plot diagonal apart, which
+    reads as "the same protein is in two places". Collapsing first is what makes
+    equal input give equal output; ``random_state`` alone does not, since it only
+    makes a whole run repeatable.
+
     Args:
         embeddings_norm: L2-normalized embedding vectors (N x D)
         n_neighbors: UMAP n_neighbors parameter
@@ -61,16 +80,27 @@ def _compute_umap_projection(
         use_random_init: Use random init (for small datasets < 10)
 
     Returns:
-        2D projection array (N x 2)
+        2D projection array (N x 2), in the order the rows were given
     """
     import umap
 
     np.random.seed(RANDOM_STATE)
 
-    n_samples = len(embeddings_norm)
+    unique_rows, inverse = np.unique(embeddings_norm, axis=0, return_inverse=True)
+    inverse = np.asarray(inverse).reshape(-1)
+    n_samples = len(unique_rows)
+
+    # UMAP needs at least 3 distinct points to build a neighbour graph. Fewer
+    # means every embedding is (nearly) the same one, so there is no structure
+    # to project — lay them out deterministically instead of raising.
+    if n_samples < 3:
+        logger.warning(
+            "UMAP skipped: %d embeddings collapse to %d distinct value(s)",
+            len(embeddings_norm), n_samples,
+        )
+        return _ring_layout(n_samples)[inverse]
+
     effective_n_neighbors = min(n_neighbors, n_samples - 1)
-    if effective_n_neighbors < 2:
-        effective_n_neighbors = 2
 
     # Use random init for small datasets (spectral fails with k >= N)
     init_method = "random" if use_random_init or n_samples < 10 else "spectral"
@@ -83,7 +113,7 @@ def _compute_umap_projection(
         random_state=RANDOM_STATE,
         init=init_method,
     )
-    return reducer.fit_transform(embeddings_norm)
+    return reducer.fit_transform(unique_rows)[inverse]
 
 
 def compute_silhouette(

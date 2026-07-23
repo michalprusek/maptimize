@@ -6,6 +6,7 @@ and stores results in the database.
 
 import logging
 from datetime import datetime, timezone
+from typing import Optional
 
 import numpy as np
 from sqlalchemy import select
@@ -25,7 +26,7 @@ def _update_protein_embedding(
     sequence_length: int,
 ) -> None:
     """Update protein record with embedding and invalidate UMAP coordinates."""
-    protein.embedding = embedding.tolist()
+    protein.embedding = np.asarray(embedding).tolist()
     protein.embedding_model = model_name
     protein.embedding_computed_at = datetime.now(timezone.utc)
     protein.sequence_length = sequence_length
@@ -33,6 +34,54 @@ def _update_protein_embedding(
     protein.umap_x = None
     protein.umap_y = None
     protein.umap_computed_at = None
+
+
+async def _load_sequence_index(
+    db: AsyncSession,
+    exclude_ids: frozenset[int] = frozenset(),
+) -> dict[str, MapProtein]:
+    """Map parsed amino-acid sequence -> a protein already holding its embedding.
+
+    ESM-C on GPU is not bit-reproducible: encoding one sequence twice returns
+    vectors that differ by ~1e-5 (measured across every protein/"3D sim" twin in
+    production). The difference is numerically meaningless, but it is enough that
+    the two no longer compare equal, and anything downstream relying on equality
+    — the UMAP duplicate collapse above all — then draws them as two different
+    proteins. Reusing the stored vector makes identical sequences identical by
+    construction, and skips a GPU load while doing so.
+
+    ``exclude_ids`` holds the proteins about to be (re)computed. Without it a
+    force-recompute would find each protein's own stale row and reuse it,
+    quietly turning "recompute everything" into a no-op.
+
+    The SQL filters are narrowing only; every candidate is re-checked here, so
+    the guarantee does not depend on a WHERE clause the caller cannot see.
+    """
+    from ml.features.esmc_encoder import ESMCEncoder, parse_fasta_sequence
+
+    result = await db.execute(
+        select(MapProtein).where(
+            MapProtein.embedding.isnot(None),
+            MapProtein.embedding_model == ESMCEncoder.MODEL_NAME,
+            MapProtein.fasta_sequence.isnot(None),
+        )
+    )
+
+    index: dict[str, MapProtein] = {}
+    for candidate in result.scalars().all():
+        if candidate.id in exclude_ids or not candidate.fasta_sequence:
+            continue
+        # A vector from another encoder is not interchangeable with this one.
+        if candidate.embedding is None or candidate.embedding_model != ESMCEncoder.MODEL_NAME:
+            continue
+        try:
+            sequence = parse_fasta_sequence(candidate.fasta_sequence)
+        except ValueError:
+            # A malformed sequence on some other protein is that protein's
+            # problem; it must not abort the lookup for everyone else.
+            continue
+        index.setdefault(sequence, candidate)
+    return index
 
 
 async def compute_protein_embedding(
@@ -52,7 +101,7 @@ async def compute_protein_embedding(
     Raises:
         ValueError: If protein not found or has no FASTA sequence.
     """
-    from ml.features.esmc_encoder import get_esmc_encoder, parse_fasta_sequence
+    from ml.features.esmc_encoder import parse_fasta_sequence
 
     # Get protein
     result = await db.execute(
@@ -73,22 +122,32 @@ async def compute_protein_embedding(
     # Parse and validate sequence
     clean_sequence = parse_fasta_sequence(protein.fasta_sequence)
 
-    logger.info(
-        f"Computing ESM-C embedding for protein '{protein.name}' "
-        f"(length: {len(clean_sequence)} aa)"
-    )
+    twin = (await _load_sequence_index(db, frozenset({protein_id}))).get(clean_sequence)
+    if twin is not None:
+        logger.info(
+            f"Protein '{protein.name}' has the same sequence as '{twin.name}' - "
+            f"reusing its embedding instead of re-encoding"
+        )
+        embedding = twin.embedding
+        model_name = twin.embedding_model
+    else:
+        from ml.features.esmc_encoder import get_esmc_encoder
 
-    # Compute embedding
-    encoder = get_esmc_encoder()
-    embedding = encoder.encode_sequence(protein.fasta_sequence)
+        logger.info(
+            f"Computing ESM-C embedding for protein '{protein.name}' "
+            f"(length: {len(clean_sequence)} aa)"
+        )
+        encoder = get_esmc_encoder()
+        embedding = encoder.encode_sequence(protein.fasta_sequence)
+        model_name = encoder.model_name
 
     # Update protein record
-    _update_protein_embedding(protein, embedding, encoder.model_name, len(clean_sequence))
+    _update_protein_embedding(protein, embedding, model_name, len(clean_sequence))
 
     await db.commit()
 
     logger.info(
-        f"Computed embedding for protein '{protein.name}': "
+        f"Stored embedding for protein '{protein.name}': "
         f"{len(embedding)}-dim vector"
     )
 
@@ -98,7 +157,8 @@ async def compute_protein_embedding(
         "protein_name": protein.name,
         "sequence_length": len(clean_sequence),
         "embedding_dim": len(embedding),
-        "embedding_model": encoder.model_name,
+        "embedding_model": model_name,
+        "reused_from": twin.name if twin is not None else None,
         "computed_at": protein.embedding_computed_at.isoformat(),
     }
 
@@ -136,16 +196,41 @@ async def batch_compute_protein_embeddings(
         }
 
     computed = 0
+    reused = 0
     failed = 0
     errors: list[dict] = []
 
-    encoder = get_esmc_encoder()
+    # Proteins in this batch are excluded: on force_recompute they still carry
+    # their old vector, and matching against it would skip the recompute.
+    sequence_index = await _load_sequence_index(
+        db, frozenset(p.id for p in proteins)
+    )
+    # Loaded on first real encode — a batch that is entirely duplicates needs no GPU.
+    encoder = None
 
     for protein in proteins:
         try:
             clean_sequence = parse_fasta_sequence(protein.fasta_sequence)
+
+            twin = sequence_index.get(clean_sequence)
+            if twin is not None:
+                _update_protein_embedding(
+                    protein, twin.embedding, twin.embedding_model, len(clean_sequence)
+                )
+                reused += 1
+                logger.info(
+                    f"Reused '{twin.name}' embedding for '{protein.name}' "
+                    f"(identical sequence)"
+                )
+                continue
+
+            if encoder is None:
+                encoder = get_esmc_encoder()
             embedding = encoder.encode_sequence(protein.fasta_sequence)
             _update_protein_embedding(protein, embedding, encoder.model_name, len(clean_sequence))
+            # Later proteins with this sequence copy the vector instead of
+            # re-encoding it, so twins inside one batch end up identical.
+            sequence_index[clean_sequence] = protein
             computed += 1
             logger.info(f"Computed embedding for '{protein.name}'")
 
@@ -198,7 +283,10 @@ async def batch_compute_protein_embeddings(
 
     return {
         "computed": computed,
+        "reused": reused,
         "failed": failed,
         "errors": errors or None,
-        "message": f"Computed {computed} embeddings, {failed} failed",
+        "message": (
+            f"Computed {computed} embeddings, reused {reused}, {failed} failed"
+        ),
     }

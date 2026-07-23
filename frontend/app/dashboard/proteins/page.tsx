@@ -35,12 +35,16 @@ import {
   Download,
 } from "lucide-react";
 
-const DEFAULT_COLOR = "#3b82f6";
+// Shown in the picker while no colour has been chosen. It is never submitted —
+// an empty colour is left to the backend, which assigns one that no other
+// protein is using. Sending a form default instead is what made every uploaded
+// protein the same blue and indistinguishable on the UMAP.
+const COLOR_PLACEHOLDER = "#64748b";
 
 const DEFAULT_FORM_DATA: MapProteinCreate = {
   name: "",
   full_name: "",
-  color: DEFAULT_COLOR,
+  color: "",
   uniprot_id: "",
   fasta_sequence: "",
   gene_name: "",
@@ -235,7 +239,7 @@ export default function ProteinsPage(): JSX.Element {
     setFormData({
       name: protein.name,
       full_name: protein.full_name || "",
-      color: protein.color || DEFAULT_COLOR,
+      color: protein.color || "",
       uniprot_id: protein.uniprot_id || "",
       fasta_sequence: protein.fasta_sequence || "",
       gene_name: protein.gene_name || "",
@@ -255,10 +259,14 @@ export default function ProteinsPage(): JSX.Element {
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
+    // Drop an unset colour rather than sending "": the backend picks an unused
+    // one only when the field is absent, and "" fails its hex validation.
+    const { color, ...rest } = formData;
+    const payload: MapProteinCreate = color ? { ...rest, color } : rest;
     if (editingProtein) {
-      updateMutation.mutate({ id: editingProtein.id, data: formData });
+      updateMutation.mutate({ id: editingProtein.id, data: payload });
     } else {
-      createMutation.mutate(formData);
+      createMutation.mutate(payload);
     }
   };
 
@@ -535,18 +543,31 @@ export default function ProteinsPage(): JSX.Element {
             <div className="flex items-center gap-3">
               <input
                 type="color"
-                value={formData.color}
+                value={formData.color || COLOR_PLACEHOLDER}
                 onChange={(e) => setFormData({ ...formData, color: e.target.value })}
                 className="w-10 h-10 rounded-lg cursor-pointer border-0 bg-transparent"
+                aria-label={t("color")}
               />
               <input
                 type="text"
                 value={formData.color}
                 onChange={(e) => setFormData({ ...formData, color: e.target.value })}
                 className="input-field flex-1 font-mono"
-                placeholder={DEFAULT_COLOR}
+                placeholder={t("colorAutoPlaceholder")}
               />
+              {formData.color && (
+                <button
+                  type="button"
+                  onClick={() => setFormData({ ...formData, color: "" })}
+                  className="px-3 py-2 text-sm text-text-secondary hover:text-text-primary transition-colors"
+                >
+                  {t("colorAuto")}
+                </button>
+              )}
             </div>
+            {!formData.color && (
+              <p className="text-xs text-text-muted mt-1.5">{t("colorAutoHint")}</p>
+            )}
           </div>
 
           <div className="flex gap-3 pt-4">

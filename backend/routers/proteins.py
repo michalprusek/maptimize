@@ -1,4 +1,5 @@
 """MAP Protein routes."""
+import colorsys
 import logging
 from typing import Dict, List, Optional
 
@@ -74,6 +75,65 @@ async def check_protein_name_unique(
             detail="Protein with this name already exists"
         )
 
+# Distinct hues for protein markers, in assignment order. A protein created
+# without an explicit colour takes the first one nobody is using yet — the UI
+# used to send its form default for every upload, so a whole batch came out in
+# the same blue and was indistinguishable on the UMAP.
+PROTEIN_COLOR_PALETTE = [
+    "#3b82f6",  # blue
+    "#ef4444",  # red
+    "#00d4aa",  # teal
+    "#f59e0b",  # amber
+    "#8b5cf6",  # violet
+    "#ec4899",  # pink
+    "#22c55e",  # green
+    "#06b6d4",  # cyan
+    "#f97316",  # orange
+    "#a855f7",  # purple
+    "#84cc16",  # lime
+    "#e11d48",  # rose
+    "#6366f1",  # indigo
+    "#eab308",  # yellow
+    "#10b981",  # emerald
+    "#d946ef",  # fuchsia
+    "#0ea5e9",  # sky
+    "#14b8a6",  # turquoise
+    "#f43f5e",  # crimson
+    "#65a30d",  # olive
+]
+
+# Turns of a full circle between generated hues. The golden angle spreads any
+# number of extra colours about as far apart as they can get, so proteins added
+# past the palette still look distinct instead of drifting into near-duplicates.
+_HUE_STEP = 0.381966
+
+
+def _generated_color(index: int) -> str:
+    """Hue-rotated fallback colour for when the palette runs out."""
+    r, g, b = colorsys.hls_to_rgb((index * _HUE_STEP) % 1.0, 0.58, 0.65)
+    return "#{:02x}{:02x}{:02x}".format(round(r * 255), round(g * 255), round(b * 255))
+
+
+async def pick_protein_color(db: AsyncSession) -> str:
+    """Pick a colour no existing protein is using."""
+    result = await db.execute(
+        select(MapProtein.color).where(MapProtein.color.isnot(None))
+    )
+    used = {row[0].lower() for row in result.all() if row[0]}
+
+    for color in PROTEIN_COLOR_PALETTE:
+        if color.lower() not in used:
+            return color
+
+    # Palette exhausted. Bounded so a pathological colour set can't spin here;
+    # past that a repeat is preferable to failing the create.
+    for offset in range(len(used) + 1):
+        candidate = _generated_color(len(PROTEIN_COLOR_PALETTE) + offset)
+        if candidate.lower() not in used:
+            return candidate
+    return _generated_color(len(used))
+
+
 # Default MAP proteins with colors for visualization
 DEFAULT_PROTEINS = [
     {"name": "PRC1", "full_name": "Protein Regulator of Cytokinesis 1", "color": "#00d4aa"},
@@ -124,7 +184,11 @@ async def create_protein(
     """Create a new MAP protein."""
     await check_protein_name_unique(data.name, db)
 
-    protein = MapProtein(**data.model_dump())
+    values = data.model_dump()
+    if not values.get("color"):
+        values["color"] = await pick_protein_color(db)
+
+    protein = MapProtein(**values)
     db.add(protein)
     await db.commit()
     await db.refresh(protein)
