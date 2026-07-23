@@ -90,6 +90,10 @@ class ESMCEncoder:
 
     EMBEDDING_DIM = ESMC_EMBEDDING_DIM
     MODEL_ID = "esmc_600m"
+    # Readable name stored in rag/protein rows. Exposed on the class so callers
+    # can match stored embeddings against the current model without paying for
+    # a GPU load just to read an attribute off an instance.
+    MODEL_NAME = "esmc-600m"
 
     def __init__(self, device: Optional[str] = None):
         """
@@ -104,7 +108,7 @@ class ESMCEncoder:
             self.device = torch.device(device)
 
         self.model = None
-        self.model_name = "esmc-600m"
+        self.model_name = self.MODEL_NAME
         self.embedding_dim = self.EMBEDDING_DIM
         self.is_loaded = False
 

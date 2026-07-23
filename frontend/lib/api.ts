@@ -337,7 +337,7 @@ class ApiClient {
     });
   }
 
-  async computeProteinEmbedding(id: number) {
+  async computeProteinEmbedding(id: number, force = false) {
     return this.request<{
       success: boolean;
       protein_id: number;
@@ -345,8 +345,10 @@ class ApiClient {
       sequence_length: number;
       embedding_dim: number;
       embedding_model: string;
+      /** Name of the same-sequence protein whose vector was copied, if any. */
+      reused_from: string | null;
       computed_at: string;
-    }>(`/api/proteins/${id}/compute-embedding`, {
+    }>(`/api/proteins/${id}/compute-embedding${force ? "?force=true" : ""}`, {
       method: "POST",
     });
   }
@@ -1336,7 +1338,8 @@ export interface MapProteinUpdate {
   name?: string;
   full_name?: string;
   description?: string;
-  color?: string;
+  /** null asks the backend to assign an unused colour; omit to leave unchanged. */
+  color?: string | null;
   uniprot_id?: string;
   fasta_sequence?: string;
   gene_name?: string;

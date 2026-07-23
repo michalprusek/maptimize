@@ -35,12 +35,14 @@ import {
   Download,
 } from "lucide-react";
 
-const DEFAULT_COLOR = "#3b82f6";
+// Display-only value for the swatch while formData.color is empty. It is not
+// written into formData unless the user actively picks it in the native picker.
+const COLOR_PLACEHOLDER = "#64748b";
 
 const DEFAULT_FORM_DATA: MapProteinCreate = {
   name: "",
   full_name: "",
-  color: DEFAULT_COLOR,
+  color: "",
   uniprot_id: "",
   fasta_sequence: "",
   gene_name: "",
@@ -215,9 +217,16 @@ export default function ProteinsPage(): JSX.Element {
 
   const computeEmbeddingMutation = useMutation({
     mutationFn: (id: number) => api.computeProteinEmbedding(id),
-    onSuccess: () => {
+    onSuccess: (result) => {
       invalidateProteinQueries();
-      showSuccess(t("embeddingSuccess"));
+      // Say when the vector was copied from an identical sequence rather than
+      // encoded. Reporting "computed" either way is how a bad shared vector
+      // stays invisible — the user has no reason to suspect the other protein.
+      showSuccess(
+        result.reused_from
+          ? t("embeddingReused", { from: result.reused_from })
+          : t("embeddingSuccess"),
+      );
     },
     onError: (err: Error) => setError(err.message || t("embeddingError")),
   });
@@ -235,7 +244,7 @@ export default function ProteinsPage(): JSX.Element {
     setFormData({
       name: protein.name,
       full_name: protein.full_name || "",
-      color: protein.color || DEFAULT_COLOR,
+      color: protein.color || "",
       uniprot_id: protein.uniprot_id || "",
       fasta_sequence: protein.fasta_sequence || "",
       gene_name: protein.gene_name || "",
@@ -255,10 +264,18 @@ export default function ProteinsPage(): JSX.Element {
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
+    // "" would fail the backend's hex pattern, so it never goes on the wire.
+    // The two endpoints read its absence differently: POST assigns an unused
+    // colour for a missing field, while PATCH treats a missing field as "leave
+    // unchanged" — so an edit has to send an explicit null to mean "re-pick".
+    const { color, ...rest } = formData;
     if (editingProtein) {
-      updateMutation.mutate({ id: editingProtein.id, data: formData });
+      updateMutation.mutate({
+        id: editingProtein.id,
+        data: { ...rest, color: color || null },
+      });
     } else {
-      createMutation.mutate(formData);
+      createMutation.mutate(color ? { ...rest, color } : rest);
     }
   };
 
@@ -535,18 +552,31 @@ export default function ProteinsPage(): JSX.Element {
             <div className="flex items-center gap-3">
               <input
                 type="color"
-                value={formData.color}
+                value={formData.color || COLOR_PLACEHOLDER}
                 onChange={(e) => setFormData({ ...formData, color: e.target.value })}
                 className="w-10 h-10 rounded-lg cursor-pointer border-0 bg-transparent"
+                aria-label={t("color")}
               />
               <input
                 type="text"
                 value={formData.color}
                 onChange={(e) => setFormData({ ...formData, color: e.target.value })}
                 className="input-field flex-1 font-mono"
-                placeholder={DEFAULT_COLOR}
+                placeholder={t("colorAutoPlaceholder")}
               />
+              {formData.color && (
+                <button
+                  type="button"
+                  onClick={() => setFormData({ ...formData, color: "" })}
+                  className="px-3 py-2 text-sm text-text-secondary hover:text-text-primary transition-colors"
+                >
+                  {t("colorAuto")}
+                </button>
+              )}
             </div>
+            {!formData.color && (
+              <p className="text-xs text-text-muted mt-1.5">{t("colorAutoHint")}</p>
+            )}
           </div>
 
           <div className="flex gap-3 pt-4">

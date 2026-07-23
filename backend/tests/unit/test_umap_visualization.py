@@ -76,6 +76,24 @@ def _fake_umap_module():
     return module
 
 
+def _content_umap_module(scale=10.0):
+    """Fake ``umap`` whose coordinates derive from row CONTENT, not row index.
+
+    The index-based fake above cannot detect a mis-mapping: any permutation
+    that preserves groups still satisfies "twins match" and "distinct rows
+    differ". Only content-derived output pins row i to its own embedding.
+    """
+    module = MagicMock(name="umap")
+
+    def _make_reducer(*args, **kwargs):
+        reducer = MagicMock(name="UMAP")
+        reducer.fit_transform.side_effect = lambda d: np.asarray(d)[:, :2] * scale
+        return reducer
+
+    module.UMAP.side_effect = _make_reducer
+    return module
+
+
 # =============================================================================
 # _normalize_embeddings
 # =============================================================================
@@ -124,12 +142,113 @@ def test_compute_projection_clamps_neighbors_and_random_init_small():
     assert kwargs["init"] == "random"
 
 
-def test_compute_projection_neighbors_floor_two():
+def test_compute_projection_clamps_neighbors_at_smallest_fittable_size():
     fake = _fake_umap_module()
-    data = np.random.rand(2, 8)  # min(15, 1)=1 → floored to 2
+    data = np.random.rand(3, 8)  # min(15, 3-1)=2 — the smallest fittable case
     with patch.dict("sys.modules", {"umap": fake}):
         umap_service._compute_umap_projection(data, n_neighbors=15, min_dist=0.1)
     assert fake.UMAP.call_args.kwargs["n_neighbors"] == 2
+
+
+# =============================================================================
+# Duplicate collapsing
+#
+# Two proteins with the same amino-acid sequence must land on the same point.
+# UMAP's layout optimiser applies random negative sampling per row, so feeding
+# it duplicate rows scatters them (measured on real data: bit-identical protein
+# embeddings ended up ~7% of the plot diagonal apart). The fit therefore runs
+# over unique rows and each group's coordinates are copied back to its members.
+# =============================================================================
+def test_identical_embeddings_get_identical_coordinates():
+    fake = _fake_umap_module()
+    base = np.array([[1.0, 0.0], [0.0, 1.0], [0.5, 0.5], [0.25, 0.75]])
+    data = np.repeat(base, 2, axis=0)  # 8 rows, 4 distinct
+
+    with patch.dict("sys.modules", {"umap": fake}):
+        proj = umap_service._compute_umap_projection(data, n_neighbors=15, min_dist=0.1)
+
+    assert proj.shape == (8, 2)
+    for i in range(4):
+        assert np.array_equal(proj[2 * i], proj[2 * i + 1]), f"twin {i} was split"
+
+
+def test_duplicate_rows_are_fitted_only_once():
+    fake = _fake_umap_module()
+    base = np.array([[1.0, 0.0], [0.0, 1.0], [0.5, 0.5], [0.25, 0.75]])
+    data = np.repeat(base, 2, axis=0)
+
+    with patch.dict("sys.modules", {"umap": fake}):
+        umap_service._compute_umap_projection(data, n_neighbors=15, min_dist=0.1)
+
+    # The fake reducer echoes the row index, so the row count it saw is what
+    # n_neighbors was clamped against: 4 unique rows → min(15, 4-1) = 3.
+    assert fake.UMAP.call_args.kwargs["n_neighbors"] == 3
+
+
+def test_distinct_embeddings_keep_distinct_coordinates():
+    fake = _fake_umap_module()
+    data = np.array([[1.0, 0.0], [0.0, 1.0], [0.5, 0.5], [0.25, 0.75]])
+
+    with patch.dict("sys.modules", {"umap": fake}):
+        proj = umap_service._compute_umap_projection(data, n_neighbors=15, min_dist=0.1)
+
+    assert len({tuple(row) for row in proj}) == 4
+
+
+def test_each_row_gets_the_coordinates_of_its_own_embedding():
+    """Row i must get the coordinates of the unique row whose CONTENT matches.
+
+    ``np.unique`` returns rows in lexicographic order, so the inverse map is the
+    only thing keeping each protein attached to its own point. A permutation
+    here draws a plot that looks entirely plausible — right number of points,
+    twins still coincident — while every label sits on someone else's dot.
+    """
+    fake = _content_umap_module()
+    data = np.array([
+        [0.9, 0.1, 0.0],
+        [0.2, 0.8, 0.0],
+        [0.9, 0.1, 0.0],   # duplicate of row 0
+        [0.5, 0.5, 0.0],
+        [0.2, 0.8, 0.0],   # duplicate of row 1
+    ])
+
+    with patch.dict("sys.modules", {"umap": fake}):
+        proj = umap_service._compute_umap_projection(data, n_neighbors=15, min_dist=0.1)
+
+    assert np.allclose(proj, data[:, :2] * 10.0)
+
+
+def test_fewer_than_three_distinct_rows_raises_instead_of_inventing_a_layout():
+    """All-identical input cannot be projected — and must say so.
+
+    Returning a placeholder layout would be stored in umap_x/umap_y and served
+    as a real projection, so nobody would ever learn the plot is fiction.
+    """
+    fake = _fake_umap_module()
+    data = np.ones((5, 4))
+
+    with patch.dict("sys.modules", {"umap": fake}):
+        with pytest.raises(umap_service.DegenerateEmbeddingsError, match="distinct"):
+            umap_service._compute_umap_projection(data, n_neighbors=15, min_dist=0.1)
+
+    fake.UMAP.assert_not_called()
+
+
+def test_two_distinct_rows_also_raise():
+    fake = _fake_umap_module()
+    data = np.array([[1.0, 0.0], [1.0, 0.0], [0.0, 1.0], [1.0, 0.0]])
+
+    with patch.dict("sys.modules", {"umap": fake}):
+        with pytest.raises(umap_service.DegenerateEmbeddingsError):
+            umap_service._compute_umap_projection(data, n_neighbors=15, min_dist=0.1)
+
+    fake.UMAP.assert_not_called()
+
+
+def test_degenerate_error_is_a_valueerror():
+    """Callers that already handle the 'not enough samples' ValueError keep
+    working without a new except clause."""
+    assert issubclass(umap_service.DegenerateEmbeddingsError, ValueError)
 
 
 def test_compute_projection_use_random_init_flag_large():

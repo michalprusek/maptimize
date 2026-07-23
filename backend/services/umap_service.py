@@ -45,6 +45,14 @@ def _normalize_embeddings(embeddings: np.ndarray) -> np.ndarray:
     return embeddings / norms
 
 
+class DegenerateEmbeddingsError(ValueError):
+    """Too few *distinct* embeddings to project.
+
+    A ValueError subclass so callers that already handle the "not enough
+    samples" case keep working.
+    """
+
+
 def _compute_umap_projection(
     embeddings_norm: np.ndarray,
     n_neighbors: int,
@@ -54,6 +62,18 @@ def _compute_umap_projection(
     """
     Core UMAP projection computation.
 
+    Rows that compare *exactly* equal are fitted once and share the resulting
+    coordinates. UMAP does not guarantee equal coordinates for equal rows — its
+    layout is stochastic — so passing duplicates straight through puts the same
+    protein in two places. ``random_state`` does not help: it makes a whole run
+    repeatable, which is a different property from equal input giving equal
+    output.
+
+    Note the equality is exact. Near-identical rows are NOT collapsed, which is
+    why protein_embedding_service reuses stored vectors verbatim instead of
+    re-encoding: if that reuse is ever removed, twins drift apart by ~1e-5, this
+    collapse silently stops matching them, and the bug returns.
+
     Args:
         embeddings_norm: L2-normalized embedding vectors (N x D)
         n_neighbors: UMAP n_neighbors parameter
@@ -61,16 +81,34 @@ def _compute_umap_projection(
         use_random_init: Use random init (for small datasets < 10)
 
     Returns:
-        2D projection array (N x 2)
+        2D projection array (N x 2), in the order the rows were given
+
+    Raises:
+        DegenerateEmbeddingsError: If fewer than 3 distinct rows are given.
     """
     import umap
 
     np.random.seed(RANDOM_STATE)
 
-    n_samples = len(embeddings_norm)
+    unique_rows, inverse = np.unique(embeddings_norm, axis=0, return_inverse=True)
+    # Flattened because NumPy 2.0 returned this index as a column vector; used
+    # as-is it would index the projection into an (N, 1, 2) array.
+    inverse = np.asarray(inverse).reshape(-1)
+    n_samples = len(unique_rows)
+
+    # Fewer than 3 *distinct* rows leaves no neighbour graph to build. Returning
+    # a made-up layout here would be worse than failing: the caller stores it in
+    # umap_x/umap_y and serves it as a real projection, so nobody ever learns the
+    # plot is fiction.
+    if n_samples < 3:
+        raise DegenerateEmbeddingsError(
+            f"{len(embeddings_norm)} embeddings collapse to {n_samples} distinct "
+            f"value(s); need at least 3 to compute a projection"
+        )
+
+    # Safe without the old floor-to-2 only because of the early return above,
+    # which guarantees n_samples - 1 >= 2.
     effective_n_neighbors = min(n_neighbors, n_samples - 1)
-    if effective_n_neighbors < 2:
-        effective_n_neighbors = 2
 
     # Use random init for small datasets (spectral fails with k >= N)
     init_method = "random" if use_random_init or n_samples < 10 else "spectral"
@@ -83,7 +121,7 @@ def _compute_umap_projection(
         random_state=RANDOM_STATE,
         init=init_method,
     )
-    return reducer.fit_transform(embeddings_norm)
+    return reducer.fit_transform(unique_rows)[inverse]
 
 
 def compute_silhouette(
@@ -539,7 +577,13 @@ async def compute_protein_umap(db: AsyncSession) -> dict:
         }
 
     embeddings = np.array([p.embedding for p in proteins])
-    projection, _ = compute_protein_umap_online(embeddings)
+    try:
+        projection, _ = compute_protein_umap_online(embeddings)
+    except DegenerateEmbeddingsError as exc:
+        # Storing a placeholder layout would leave umap_x/umap_y looking like a
+        # real projection forever. Report it and write nothing.
+        logger.warning(f"Protein UMAP skipped: {exc}")
+        return {"error": str(exc), "count": len(proteins)}
 
     now = datetime.now(timezone.utc)
     for i, protein in enumerate(proteins):
