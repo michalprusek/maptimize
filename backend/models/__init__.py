@@ -9,10 +9,10 @@ from .metric import Metric, MetricImage, MetricRating, MetricComparison
 from .bug_report import BugReport, BugReportStatus, BugReportCategory
 from .sam_embedding import SAMEmbedding
 from .segmentation import SegmentationMask, UserSegmentationPrompt, FOVSegmentationMask
-from .chat import ChatThread, ChatMessage, ChatRole
 from .rag_document import RAGDocument, RAGDocumentPage, DocumentStatus, DocumentType
-from .agent_memory import AgentMemory, MemoryType
 from .group import Group, GroupMember
+from .oauth_client import OAuthClient
+from .document_folder import DocumentFolder
 
 __all__ = [
     "User",
@@ -38,15 +38,12 @@ __all__ = [
     "SegmentationMask",
     "UserSegmentationPrompt",
     "FOVSegmentationMask",
-    "ChatThread",
-    "ChatMessage",
-    "ChatRole",
     "RAGDocument",
     "RAGDocumentPage",
     "DocumentStatus",
     "DocumentType",
-    "AgentMemory",
-    "MemoryType",
     "Group",
     "GroupMember",
+    "OAuthClient",
+    "DocumentFolder",
 ]

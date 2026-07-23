@@ -468,14 +468,14 @@ async def test_get_current_user_success(mock_db):
     user = MagicMock(name="User", id=7)
     mock_db.execute.return_value = _scalar_result(user)
     with patch.object(security, "decode_token", return_value=_valid_payload()):
-        got = await security.get_current_user(token="tok", db=mock_db)
+        got = await security.get_current_user(MagicMock(), token="tok", db=mock_db)
     assert got is user
 
 
 async def test_get_current_user_bad_token_raises_401(mock_db):
     with patch.object(security, "decode_token", return_value=None):
         with pytest.raises(HTTPException) as exc:
-            await security.get_current_user(token="bad", db=mock_db)
+            await security.get_current_user(MagicMock(), token="bad", db=mock_db)
     assert exc.value.status_code == 401
 
 
@@ -483,7 +483,7 @@ async def test_get_current_user_expired_payload_raises_401(mock_db):
     expired = _valid_payload(exp_delta=timedelta(hours=-1))
     with patch.object(security, "decode_token", return_value=expired):
         with pytest.raises(HTTPException) as exc:
-            await security.get_current_user(token="tok", db=mock_db)
+            await security.get_current_user(MagicMock(), token="tok", db=mock_db)
     assert exc.value.status_code == 401
 
 
@@ -491,7 +491,7 @@ async def test_get_current_user_unknown_user_raises_401(mock_db):
     mock_db.execute.return_value = _scalar_result(None)
     with patch.object(security, "decode_token", return_value=_valid_payload()):
         with pytest.raises(HTTPException) as exc:
-            await security.get_current_user(token="tok", db=mock_db)
+            await security.get_current_user(MagicMock(), token="tok", db=mock_db)
     assert exc.value.status_code == 401
 
 
@@ -499,20 +499,20 @@ async def test_get_current_user_from_query_success(mock_db):
     user = MagicMock(name="User", id=7)
     mock_db.execute.return_value = _scalar_result(user)
     with patch.object(security, "decode_token", return_value=_valid_payload()):
-        got = await security.get_current_user_from_query(token="tok", db=mock_db)
+        got = await security.get_current_user_from_query(MagicMock(), token="tok", db=mock_db)
     assert got is user
 
 
 async def test_get_current_user_from_query_empty_token_raises_401(mock_db):
     with pytest.raises(HTTPException) as exc:
-        await security.get_current_user_from_query(token="", db=mock_db)
+        await security.get_current_user_from_query(MagicMock(), token="", db=mock_db)
     assert exc.value.status_code == 401
 
 
 async def test_get_current_user_from_query_bad_token_raises_401(mock_db):
     with patch.object(security, "decode_token", return_value=None):
         with pytest.raises(HTTPException) as exc:
-            await security.get_current_user_from_query(token="bad", db=mock_db)
+            await security.get_current_user_from_query(MagicMock(), token="bad", db=mock_db)
     assert exc.value.status_code == 401
 
 
@@ -520,7 +520,7 @@ async def test_get_current_user_from_query_expired_raises_401(mock_db):
     expired = _valid_payload(exp_delta=timedelta(hours=-1))
     with patch.object(security, "decode_token", return_value=expired):
         with pytest.raises(HTTPException) as exc:
-            await security.get_current_user_from_query(token="tok", db=mock_db)
+            await security.get_current_user_from_query(MagicMock(), token="tok", db=mock_db)
     assert exc.value.status_code == 401
 
 
@@ -528,8 +528,36 @@ async def test_get_current_user_from_query_unknown_user_raises_401(mock_db):
     mock_db.execute.return_value = _scalar_result(None)
     with patch.object(security, "decode_token", return_value=_valid_payload()):
         with pytest.raises(HTTPException) as exc:
-            await security.get_current_user_from_query(token="tok", db=mock_db)
+            await security.get_current_user_from_query(MagicMock(), token="tok", db=mock_db)
     assert exc.value.status_code == 401
+
+
+async def test_get_current_user_oauth_marks_principal(mock_db):
+    """An OAuth connector token (kind='oauth') authenticates and is marked 'oauth'."""
+    user = MagicMock(name="User", id=7)
+    mock_db.execute.return_value = _scalar_result(user)
+    payload = _valid_payload()
+    payload.kind = "oauth"
+    req = MagicMock()
+    with patch.object(security, "decode_token", return_value=payload):
+        got = await security.get_current_user(req, token="oauth-jwt", db=mock_db)
+    assert got is user
+    assert req.state.principal_kind == "oauth"
+
+
+async def test_require_interactive_user_rejects_oauth():
+    req = MagicMock()
+    req.state.principal_kind = "oauth"
+    with pytest.raises(HTTPException) as exc:
+        await security.require_interactive_user(req, user=MagicMock())
+    assert exc.value.status_code == 403
+
+
+async def test_require_interactive_user_allows_jwt():
+    req = MagicMock()
+    req.state.principal_kind = "jwt"
+    user = MagicMock()
+    assert await security.require_interactive_user(req, user=user) is user
 
 
 async def test_get_current_admin_allows_admin():

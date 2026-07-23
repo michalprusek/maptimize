@@ -524,60 +524,6 @@ async def test_rag_upload_success(mock_db):
     mock_db.commit.assert_awaited()
 
 
-async def test_rag_upload_foreign_thread_rejected(mock_db):
-    # Security: you may not attach a document to someone else's conversation.
-    # The check must run BEFORE anything is written to disk.
-    fobj = AsyncMock()
-    fobj.filename = "doc.pdf"
-    fobj.read = AsyncMock(return_value=b"data")
-    mock_db.execute.return_value = make_result(scalar=None)  # thread not owned
-    saved = AsyncMock()
-    with patch.object(rag_r, "_check_upload_rate_limit", new=AsyncMock()), \
-         patch.object(rag_r, "is_supported_file", return_value=True), \
-         patch.object(rag_r, "save_uploaded_document", new=saved):
-        with pytest.raises(HTTPException) as exc:
-            await rag_r.upload_document(MagicMock(), file=fobj, thread_id=99,
-                                        current_user=user(id=7), db=mock_db)
-    # 404 (not 403) so a foreign thread id cannot be enumerated.
-    assert exc.value.status_code == 404
-    saved.assert_not_awaited()
-
-
-async def test_rag_upload_owned_thread_passes_thread_id(mock_db):
-    fobj = AsyncMock()
-    fobj.filename = "doc.pdf"
-    fobj.read = AsyncMock(return_value=b"data")
-    mock_db.execute.return_value = make_result(scalar=42)  # thread owned
-    doc = SimpleNamespace(id=12)
-    saved = AsyncMock(return_value=(doc, True))
-    with patch.object(rag_r, "_check_upload_rate_limit", new=AsyncMock()), \
-         patch.object(rag_r, "is_supported_file", return_value=True), \
-         patch.object(rag_r, "save_uploaded_document", new=saved), \
-         patch.object(rag_r.RAGDocumentUploadResponse, "model_validate",
-                      side_effect=lambda d: SimpleNamespace(id=d.id)):
-        await rag_r.upload_document(MagicMock(), file=fobj, thread_id=42,
-                                    current_user=user(id=7), db=mock_db)
-    assert saved.await_args.kwargs["thread_id"] == 42
-
-
-async def test_rag_upload_defaults_to_library_when_no_thread(mock_db):
-    # Regression: the Form default must be a real None on a direct call, or the
-    # ownership branch fires with a sentinel object.
-    fobj = AsyncMock()
-    fobj.filename = "doc.pdf"
-    fobj.read = AsyncMock(return_value=b"data")
-    doc = SimpleNamespace(id=13)
-    saved = AsyncMock(return_value=(doc, True))
-    with patch.object(rag_r, "_check_upload_rate_limit", new=AsyncMock()), \
-         patch.object(rag_r, "is_supported_file", return_value=True), \
-         patch.object(rag_r, "save_uploaded_document", new=saved), \
-         patch.object(rag_r.RAGDocumentUploadResponse, "model_validate",
-                      side_effect=lambda d: SimpleNamespace(id=d.id)):
-        await rag_r.upload_document(MagicMock(), file=fobj,
-                                    current_user=user(id=7), db=mock_db)
-    assert saved.await_args.kwargs["thread_id"] is None
-
-
 async def test_rag_upload_value_error(mock_db):
     fobj = AsyncMock()
     fobj.filename = "doc.pdf"

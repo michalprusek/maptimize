@@ -26,15 +26,6 @@ def export_root(tmp_path, monkeypatch):
     return root
 
 
-@pytest.fixture
-def chat_root(tmp_path, monkeypatch):
-    monkeypatch.setattr(uf.settings, "chat_image_dir", tmp_path / "chat", raising=False)
-    root = tmp_path / "chat" / "7"
-    root.mkdir(parents=True)
-    (root / "plot_20260719_120000_abcdef01.webp").write_bytes(b"RIFF____WEBPVP8 ")
-    return root
-
-
 # --- exports --------------------------------------------------------------- #
 async def test_serve_export_owner_gets_file(export_root):
     resp = await uf.serve_export(7, "report_20260719_120000_abcdef0123456789.csv", _user(7))
@@ -80,22 +71,3 @@ async def test_serve_export_symlink_escape_blocked(export_root, tmp_path):
     with pytest.raises(HTTPException) as exc:
         await uf.serve_export(7, "link_20260719_120000_abcdef0123456789.csv", _user(7))
     assert exc.value.status_code == 404
-
-
-# --- chat images ----------------------------------------------------------- #
-async def test_serve_chat_image_owner_gets_webp_mime(chat_root):
-    resp = await uf.serve_chat_image(7, "plot_20260719_120000_abcdef01.webp", _user(7))
-    # Wrong MIME here makes browsers refuse to render the plot.
-    assert resp.media_type == "image/webp"
-
-
-async def test_serve_chat_image_other_user_denied(chat_root):
-    with pytest.raises(HTTPException) as exc:
-        await uf.serve_chat_image(7, "plot_20260719_120000_abcdef01.webp", _user(999))
-    assert exc.value.status_code == 404
-
-
-async def test_serve_chat_image_traversal_blocked(chat_root):
-    with pytest.raises(HTTPException) as exc:
-        await uf.serve_chat_image(7, "../../etc/passwd", _user(7))
-    assert exc.value.status_code in (400, 404)

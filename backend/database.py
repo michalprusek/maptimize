@@ -178,6 +178,8 @@ async def ensure_schema_updates():
             # RAG embedding for FOV images (2048-dim for Qwen VL)
             ("images", "rag_embedding", "vector(2048)"),
             ("images", "rag_indexed_at", "TIMESTAMP WITH TIME ZONE"),
+            # File-explorer folder for library documents (NULL = root)
+            ("rag_documents", "folder_id", "INTEGER"),
             # Group support for shared experiments and metrics
             ("experiments", "group_id", "INTEGER REFERENCES groups(id) ON DELETE SET NULL"),
             ("metrics", "group_id", "INTEGER REFERENCES groups(id) ON DELETE SET NULL"),
@@ -190,8 +192,10 @@ async def ensure_schema_updates():
             ("metric_comparisons", "prev_winner_sigma", "FLOAT"),
             ("metric_comparisons", "prev_loser_mu", "FLOAT"),
             ("metric_comparisons", "prev_loser_sigma", "FLOAT"),
-            # Chat attachments: a document uploaded into a thread (NULL = library)
-            ("rag_documents", "thread_id", "INTEGER REFERENCES chat_threads(id) ON DELETE CASCADE"),
+            # Attachment scoping column (NULL = library). Formerly referenced the
+            # chat_threads table, which was removed with the chat agent; kept as a
+            # plain column so existing rows and thread-scoped queries still work.
+            ("rag_documents", "thread_id", "INTEGER"),
             # True page count when an attachment was capped (NULL = not truncated)
             ("rag_documents", "truncated_from_pages", "INTEGER"),
             # Group support for shared library documents (thread_id IS NULL only)

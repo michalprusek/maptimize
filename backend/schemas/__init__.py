@@ -34,13 +34,7 @@ from .export_import import (
     ImportExecuteRequest,
     ImportStatusResponse,
 )
-from .chat import (
-    ChatThreadCreate,
-    ChatThreadUpdate,
-    ChatThreadResponse,
-    ChatThreadDetailResponse,
-    ChatMessageCreate,
-    ChatMessageResponse,
+from .rag import (
     RAGDocumentUploadResponse,
     RAGDocumentResponse,
     RAGDocumentPageResponse,
@@ -75,13 +69,7 @@ __all__ = [
     "ImportValidationResult",
     "ImportExecuteRequest",
     "ImportStatusResponse",
-    # Chat/RAG
-    "ChatThreadCreate",
-    "ChatThreadUpdate",
-    "ChatThreadResponse",
-    "ChatThreadDetailResponse",
-    "ChatMessageCreate",
-    "ChatMessageResponse",
+    # RAG
     "RAGDocumentUploadResponse",
     "RAGDocumentResponse",
     "RAGDocumentPageResponse",

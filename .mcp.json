@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "maptalk": {
+      "command": "${MAPTALK_MCP_PYTHON:-python3}",
+      "args": ["-m", "maptalk_mcp"],
+      "env": {
+        "MAPTALK_BASE_URL": "${MAPTALK_BASE_URL:-http://localhost:7001}",
+        "MAPTALK_EMAIL": "${MAPTALK_EMAIL}",
+        "MAPTALK_PASSWORD": "${MAPTALK_PASSWORD}"
+      }
+    }
+  }
+}

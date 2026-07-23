@@ -54,6 +54,118 @@ class RAGServiceError(Exception):
     pass
 
 
+def _owner_clause(group_id: Optional[int]) -> str:
+    """Raw-SQL page ACL. SSOT mirror of models.rag_document.document_read_scope:
+    library docs are group-shared; attachments (group_id NULL) match only the owner."""
+    if group_id is not None:
+        return "(rd.user_id = :user_id OR (rd.thread_id IS NULL AND rd.group_id = :group_id))"
+    return "rd.user_id = :user_id"
+
+
+async def _has_indexed_pages(user_id: int, db: AsyncSession, group_id: Optional[int] = None) -> bool:
+    """Cheap precheck so we skip the (expensive) encoder load when there is
+    nothing in the caller's scope to search."""
+    owner_clause = _owner_clause(group_id)
+    params = {"user_id": user_id}
+    if group_id is not None:
+        params["group_id"] = group_id
+    result = await db.execute(
+        text(
+            "SELECT 1 FROM rag_document_pages rdp "
+            "JOIN rag_documents rd ON rd.id = rdp.document_id "
+            f"WHERE {owner_clause} AND rd.status = 'completed' "
+            "AND rdp.embedding IS NOT NULL LIMIT 1"
+        ),
+        params,
+    )
+    return result.first() is not None
+
+
+async def _search_pages_by_embedding(
+    embedding_list,
+    user_id: int,
+    db: AsyncSession,
+    *,
+    limit: int,
+    group_id: Optional[int] = None,
+    thread_id: Optional[int] = None,
+    document_ids: Optional[List[int]] = None,
+    exclude_page_id: Optional[int] = None,
+    include_text: bool = True,
+) -> List[dict]:
+    """The one pgvector cosine-search path, shared by text-query, image-example,
+    page-example and text-example search. ``embedding_list`` may be a Python list
+    or a pgvector ``::text`` string (an existing page's stored vector)."""
+    owner_clause = _owner_clause(group_id)
+    params = {"embedding": str(embedding_list), "user_id": user_id, "limit": limit}
+    if group_id is not None:
+        params["group_id"] = group_id
+
+    # Optional filter: restrict to specific documents. Bound as a parameter
+    # (never string-interpolated) and still scoped by owner_clause.
+    doc_filter = ""
+    if document_ids:
+        doc_filter = "AND rdp.document_id = ANY(:document_ids)"
+        params["document_ids"] = [int(d) for d in document_ids]
+
+    exclude_filter = ""
+    if exclude_page_id is not None:
+        exclude_filter = "AND rdp.id <> :exclude_page_id"
+        params["exclude_page_id"] = int(exclude_page_id)
+
+    # Thread scoping (SSOT mirror of models.rag_document.document_scope): a
+    # conversation sees the library plus its OWN attachments, never another thread's.
+    if thread_id is None:
+        scope_filter = "AND rd.thread_id IS NULL"
+    else:
+        scope_filter = "AND (rd.thread_id IS NULL OR rd.thread_id = :thread_id)"
+        params["thread_id"] = thread_id
+
+    query_sql = text(f"""
+        SELECT
+            rdp.id,
+            rdp.document_id,
+            rdp.page_number,
+            rdp.image_path,
+            rdp.extracted_text,
+            rd.name as document_name,
+            rd.file_type,
+            rd.page_count as total_pages,
+            rdp.embedding <=> :embedding as distance
+        FROM rag_document_pages rdp
+        JOIN rag_documents rd ON rd.id = rdp.document_id
+        WHERE {owner_clause}
+          AND rd.status = 'completed'
+          AND rdp.embedding IS NOT NULL
+          {scope_filter}
+          {doc_filter}
+          {exclude_filter}
+        ORDER BY rdp.embedding <=> :embedding
+        LIMIT :limit
+    """)
+
+    result = await db.execute(query_sql, params)
+    results = []
+    for row in result.fetchall():
+        item = {
+            "page_id": row.id,
+            "document_id": row.document_id,
+            "document_name": row.document_name,
+            "file_type": row.file_type,
+            "page_number": row.page_number,
+            "total_pages": row.total_pages,
+            "page_image_url": f"/api/rag/documents/{row.document_id}/pages/{row.page_number}/image",
+            "similarity_score": round(1 - row.distance, 4),
+        }
+        if include_text and row.extracted_text:
+            text_content = row.extracted_text
+            if len(text_content) > 2000:
+                text_content = text_content[:2000] + "... [truncated]"
+            item["extracted_text"] = text_content
+        results.append(item)
+    return results
+
+
 async def search_documents(
     query: str,
     user_id: int,
@@ -64,137 +176,130 @@ async def search_documents(
     thread_id: Optional[int] = None,
     group_id: Optional[int] = None,
 ) -> List[dict]:
-    """
-    Search uploaded documents using vector similarity with Qwen VL embeddings.
-
-    Args:
-        query: User's search query text
-        user_id: User ID for filtering documents
-        db: Database session
-        limit: Maximum number of result pages to return
-        include_text: Whether to include extracted text content
-        document_ids: Optional list of document IDs to restrict the search to
-        thread_id: Current chat thread, for attachment scoping
-        group_id: Caller's group, for widening library docs to the group
-
-    Returns:
-        List of search results with document info, extracted text, and similarity scores
-    """
+    """Search uploaded documents by a text query (Qwen VL embeddings, pgvector cosine)."""
     from ml.rag import get_qwen_vl_encoder
 
     if limit is None:
         limit = settings.rag_max_document_results
-
-    # Library docs are group-shared; attachments (group_id NULL) match only the
-    # owner. SSOT mirror of models.rag_document.document_read_scope, expressed in
-    # raw SQL for the pgvector query.
-    if group_id is not None:
-        owner_clause = "(rd.user_id = :user_id OR (rd.thread_id IS NULL AND rd.group_id = :group_id))"
-    else:
-        owner_clause = "rd.user_id = :user_id"
-
-    # Skip the (expensive) embedding-model load when the caller has nothing to search.
-    precheck_params = {"user_id": user_id}
-    if group_id is not None:
-        precheck_params["group_id"] = group_id
-    has_indexed = await db.execute(
-        text(
-            "SELECT 1 FROM rag_document_pages rdp "
-            "JOIN rag_documents rd ON rd.id = rdp.document_id "
-            f"WHERE {owner_clause} AND rd.status = 'completed' "
-            "AND rdp.embedding IS NOT NULL LIMIT 1"
-        ),
-        precheck_params,
-    )
-    if has_indexed.first() is None:
+    if not await _has_indexed_pages(user_id, db, group_id):
         return []
-
     try:
-        # Generate query embedding using Qwen VL encoder
         encoder = get_qwen_vl_encoder()
-        query_embedding = encoder.encode_query(query)
-        embedding_list = query_embedding.tolist()
-
-        # Optional filter: restrict the search to specific documents. Bound as a
-        # parameter (never string-interpolated) and still scoped by owner_clause
-        # (owner OR group library), so it cannot widen access beyond that scope.
-        doc_filter = ""
-        params = {
-            "embedding": str(embedding_list),
-            "user_id": user_id,
-            "limit": limit,
-        }
-        if group_id is not None:
-            params["group_id"] = group_id
-        if document_ids:
-            doc_filter = "AND rdp.document_id = ANY(:document_ids)"
-            # Coerce: the ids come from model output, and a stray "7" would hit
-            # asyncpg as a type error rather than a clean empty result.
-            params["document_ids"] = [int(d) for d in document_ids]
-
-        # Thread scoping (SSOT mirror of models.rag_document.document_scope):
-        # a conversation sees the library plus its OWN attachments, never
-        # another thread's. Without this an attachment leaks across threads.
-        if thread_id is None:
-            scope_filter = "AND rd.thread_id IS NULL"
-        else:
-            scope_filter = "AND (rd.thread_id IS NULL OR rd.thread_id = :thread_id)"
-            params["thread_id"] = thread_id
-
-        # Vector similarity search using pgvector cosine distance
-        # Lower distance = more similar
-        query_sql = text(f"""
-            SELECT
-                rdp.id,
-                rdp.document_id,
-                rdp.page_number,
-                rdp.image_path,
-                rdp.extracted_text,
-                rd.name as document_name,
-                rd.file_type,
-                rd.page_count as total_pages,
-                rdp.embedding <=> :embedding as distance
-            FROM rag_document_pages rdp
-            JOIN rag_documents rd ON rd.id = rdp.document_id
-            WHERE {owner_clause}
-              AND rd.status = 'completed'
-              AND rdp.embedding IS NOT NULL
-              {scope_filter}
-              {doc_filter}
-            ORDER BY rdp.embedding <=> :embedding
-            LIMIT :limit
-        """)
-
-        result = await db.execute(query_sql, params)
-        rows = result.fetchall()
-
-        results = []
-        for row in rows:
-            item = {
-                "page_id": row.id,
-                "document_id": row.document_id,
-                "document_name": row.document_name,
-                "file_type": row.file_type,
-                "page_number": row.page_number,
-                "total_pages": row.total_pages,
-                "page_image_url": f"/api/rag/documents/{row.document_id}/pages/{row.page_number}/image",
-                "similarity_score": round(1 - row.distance, 4),
-            }
-            if include_text and row.extracted_text:
-                # Include text content (truncate if very long for API response)
-                text_content = row.extracted_text
-                if len(text_content) > 2000:
-                    text_content = text_content[:2000] + "... [truncated]"
-                item["extracted_text"] = text_content
-            results.append(item)
-
-        return results
-
+        embedding_list = encoder.encode_query(query).tolist()
+        return await _search_pages_by_embedding(
+            embedding_list,
+            user_id,
+            db,
+            limit=limit,
+            group_id=group_id,
+            thread_id=thread_id,
+            document_ids=document_ids,
+            include_text=include_text,
+        )
     except Exception as e:
         logger.exception(f"Error searching documents for query: {query[:50]}...")
-        # Raise the error instead of silently returning empty results
-        # This allows callers to distinguish "no results" from "search failed"
+        # Raise so callers can distinguish "no results" from "search failed".
         raise RAGServiceError(f"Document search failed: {e}") from e
+
+
+async def search_similar_pages(
+    user_id: int,
+    db: AsyncSession,
+    *,
+    page_id: Optional[int] = None,
+    document_id: Optional[int] = None,
+    image_id: Optional[int] = None,
+    limit: int = 10,
+    group_id: Optional[int] = None,
+    thread_id: Optional[int] = None,
+) -> List[dict]:
+    """Query-by-example: find pages similar to an EXISTING indexed page /
+    document / FOV image, reusing its stored embedding (no encoder call)."""
+    owner_clause = _owner_clause(group_id)
+    params = {"user_id": user_id}
+    if group_id is not None:
+        params["group_id"] = group_id
+
+    exclude_page_id = None
+    if page_id is not None:
+        params["pid"] = int(page_id)
+        row = (await db.execute(text(
+            f"SELECT rdp.embedding::text AS emb FROM rag_document_pages rdp "
+            f"JOIN rag_documents rd ON rd.id = rdp.document_id "
+            f"WHERE rdp.id = :pid AND {owner_clause} AND rdp.embedding IS NOT NULL"
+        ), params)).first()
+        exclude_page_id = int(page_id)
+    elif document_id is not None:
+        params["did"] = int(document_id)
+        row = (await db.execute(text(
+            f"SELECT rdp.embedding::text AS emb FROM rag_document_pages rdp "
+            f"JOIN rag_documents rd ON rd.id = rdp.document_id "
+            f"WHERE rd.id = :did AND {owner_clause} AND rdp.embedding IS NOT NULL "
+            f"ORDER BY rdp.page_number LIMIT 1"
+        ), params)).first()
+    elif image_id is not None:
+        # FOV images are owner-scoped via their experiment (fail-closed).
+        row = (await db.execute(text(
+            "SELECT i.rag_embedding::text AS emb FROM images i "
+            "JOIN experiments e ON e.id = i.experiment_id "
+            "WHERE i.id = :iid AND e.user_id = :user_id AND i.rag_embedding IS NOT NULL"
+        ), {"iid": int(image_id), "user_id": user_id})).first()
+    else:
+        raise RAGServiceError("search_similar_pages requires page_id, document_id or image_id")
+
+    if row is None or row.emb is None:
+        return []
+    return await _search_pages_by_embedding(
+        row.emb, user_id, db, limit=limit, group_id=group_id,
+        thread_id=thread_id, exclude_page_id=exclude_page_id, include_text=True,
+    )
+
+
+async def search_documents_metadata(
+    user_id: int,
+    db: AsyncSession,
+    *,
+    name: Optional[str] = None,
+    doi: Optional[str] = None,
+    file_type: Optional[str] = None,
+    status: Optional[str] = None,
+    created_after=None,
+    created_before=None,
+    min_pages: Optional[int] = None,
+    max_pages: Optional[int] = None,
+    folder_id: Optional[int] = None,
+    in_folder: bool = False,
+    group_id: Optional[int] = None,
+    thread_id: Optional[int] = None,
+    skip: int = 0,
+    limit: int = 50,
+) -> List:
+    """Filter documents by metadata (name/doi/type/status/date/page-range).
+    Returns RAGDocument ORM rows. (Vision-RAG: no OCR text to full-text search.)"""
+    stmt = select(RAGDocument).where(document_scope(user_id, thread_id, group_id))
+    if name:
+        stmt = stmt.where(RAGDocument.name.ilike(f"%{name}%"))
+    if doi:
+        stmt = stmt.where(RAGDocument.doi.ilike(f"%{doi}%"))
+    if file_type:
+        stmt = stmt.where(RAGDocument.file_type == file_type)
+    if status:
+        stmt = stmt.where(RAGDocument.status == status)
+    if created_after is not None:
+        stmt = stmt.where(RAGDocument.created_at >= created_after)
+    if created_before is not None:
+        stmt = stmt.where(RAGDocument.created_at <= created_before)
+    if min_pages is not None:
+        stmt = stmt.where(RAGDocument.page_count >= min_pages)
+    if max_pages is not None:
+        stmt = stmt.where(RAGDocument.page_count <= max_pages)
+    if in_folder:  # scope to one folder (folder_id=None -> root)
+        stmt = stmt.where(
+            RAGDocument.folder_id.is_(None) if folder_id is None
+            else RAGDocument.folder_id == folder_id
+        )
+    stmt = stmt.order_by(RAGDocument.created_at.desc()).offset(skip).limit(limit)
+    return list((await db.execute(stmt)).scalars().all())
 
 
 async def search_fov_images(

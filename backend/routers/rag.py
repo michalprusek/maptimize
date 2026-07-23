@@ -6,7 +6,7 @@ import asyncio
 import logging
 import time
 from pathlib import Path
-from typing import Annotated, List, Optional
+from typing import List, Optional
 
 import redis.asyncio as redis
 from fastapi import APIRouter, Depends, HTTPException, status, Query, UploadFile, File, Form, BackgroundTasks
@@ -21,8 +21,7 @@ from models.user import User
 from models.rag_document import (
     RAGDocument, RAGDocumentPage, DocumentStatus, document_scope, document_read_scope,
 )
-from models.chat import ChatThread
-from schemas.chat import (
+from schemas.rag import (
     RAGDocumentUploadResponse,
     RAGDocumentResponse,
     RAGDocumentPageResponse,
@@ -44,6 +43,8 @@ from services.document_indexing_service import (
     get_indexing_status,
     is_supported_file,
     reindex_document,
+    index_text_snippet,
+    process_text_document,
 )
 from services.rag_service import (
     search_documents,
@@ -52,6 +53,9 @@ from services.rag_service import (
     batch_index_fov_images,
     get_cached_passage,
     image_mime_type,
+    search_similar_pages,
+    search_documents_metadata,
+    _search_pages_by_embedding,
 )
 from services.paper_discovery_service import (
     discover as discover_papers,
@@ -187,26 +191,39 @@ async def list_documents(
     skip: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=100),
     status_filter: Optional[str] = Query(None, alias="status"),
+    name: Optional[str] = Query(None, description="Substring match on document name"),
+    doi: Optional[str] = Query(None, description="Substring match on DOI"),
+    file_type: Optional[str] = Query(None, description="Exact file type"),
+    min_pages: Optional[int] = Query(None, ge=0),
+    max_pages: Optional[int] = Query(None, ge=0),
+    folder_id: Optional[int] = Query(None, description="Folder to scope to (with in_folder=true)"),
+    in_folder: bool = Query(False, description="Scope to folder_id; folder_id omitted = root"),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
-    """List the user's document library.
+    """List / filter the user's document library.
 
     Chat attachments are excluded: they belong to their thread, not the library.
     Group-shared library documents from other members are included, marked
-    ``is_owner=False``.
+    ``is_owner=False``. With ``in_folder=true`` the list is scoped to one folder.
     """
     group_id = await get_user_group_id(current_user.id, db)
-    query = select(RAGDocument).where(document_scope(current_user.id, None, group_id))
-
-    if status_filter:
-        query = query.where(RAGDocument.status == status_filter)
-
-    query = query.order_by(RAGDocument.created_at.desc()).offset(skip).limit(limit)
-
-    result = await db.execute(query)
-    documents = result.scalars().all()
-
+    documents = await search_documents_metadata(
+        current_user.id,
+        db,
+        name=name,
+        doi=doi,
+        folder_id=folder_id,
+        in_folder=in_folder,
+        file_type=file_type,
+        status=status_filter,
+        min_pages=min_pages,
+        max_pages=max_pages,
+        group_id=group_id,
+        thread_id=None,
+        skip=skip,
+        limit=limit,
+    )
     return [RAGDocumentResponse.for_user(doc, current_user.id) for doc in documents]
 
 
@@ -214,7 +231,7 @@ async def list_documents(
 async def upload_document(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
-    thread_id: Annotated[Optional[int], Form()] = None,
+    folder_id: Optional[int] = Form(None),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
@@ -224,24 +241,10 @@ async def upload_document(
     Supported formats: PDF, DOCX, PPTX, XLSX, images.
     Documents are processed asynchronously in the background.
 
-    If ``thread_id`` is provided the document is a chat attachment scoped to
-    that thread (the agent treats it as context for the conversation); otherwise
-    it is a document-library upload.
-
     Rate limited: max 10 uploads per hour per user.
     """
     # Check rate limit before processing upload
     await _check_upload_rate_limit(current_user.id)
-
-    # If this is a chat attachment, verify the thread belongs to the caller so a
-    # document cannot be attached to someone else's conversation.
-    if thread_id is not None:
-        owns = await db.execute(
-            select(ChatThread.id).where(
-                ChatThread.id == thread_id, ChatThread.user_id == current_user.id)
-        )
-        if owns.scalar_one_or_none() is None:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Thread not found")
 
     if not file.filename:
         raise HTTPException(
@@ -263,6 +266,19 @@ async def upload_document(
             detail="File too large. Maximum size is 100MB"
         )
 
+    # Validate the target folder is one the caller can see (mirrors move_document),
+    # so a document can't be filed under a foreign/nonexistent folder id. (isinstance
+    # int, not `is not None`, so an omitted form field is skipped cleanly.)
+    if isinstance(folder_id, int):
+        from models.document_folder import DocumentFolder as _Folder
+        from routers.folders import _visible as _folder_visible
+        _gid = await get_user_group_id(current_user.id, db)
+        _folder = (await db.execute(
+            select(_Folder).where(_Folder.id == folder_id, _folder_visible(current_user.id, _gid))
+        )).scalar_one_or_none()
+        if _folder is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Folder not found")
+
     try:
         # Save document
         document, created = await save_uploaded_document(
@@ -270,8 +286,9 @@ async def upload_document(
             filename=file.filename,
             content=content,
             db=db,
-            thread_id=thread_id,
         )
+        if created and isinstance(folder_id, int):
+            document.folder_id = folder_id
         await db.commit()
 
         # A duplicate is already stored, and its indexing has either finished or
@@ -307,6 +324,38 @@ async def get_document(
     group_id = await get_user_group_id(current_user.id, db)
     document = await get_document_for_user(db, document_id, current_user.id, group_id)
     return RAGDocumentResponse.for_user(document, current_user.id)
+
+
+@router.patch("/documents/{document_id}")
+async def move_document(
+    document_id: int,
+    payload: dict,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Move a document into a folder (folder_id=null -> root). Any group member
+    who can see the shared document may organize it."""
+    from models.document_folder import DocumentFolder
+    from routers.folders import _visible
+
+    group_id = await get_user_group_id(current_user.id, db)
+    document = await get_document_for_user(db, document_id, current_user.id, group_id)
+    folder_id = payload.get("folder_id")
+    if folder_id is not None:
+        try:
+            folder_id = int(folder_id)
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                                detail="folder_id must be an integer or null")
+        folder = (await db.execute(
+            select(DocumentFolder).where(
+                DocumentFolder.id == folder_id, _visible(current_user.id, group_id)
+            )
+        )).scalar_one_or_none()
+        if folder is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Folder not found")
+    document.folder_id = folder_id
+    return {"id": document.id, "folder_id": document.folder_id}
 
 
 @router.delete("/documents/{document_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -895,6 +944,98 @@ async def search_documents_only(
     group_id = await get_user_group_id(current_user.id, db)
     results = await search_documents(q, current_user.id, db, limit=limit, group_id=group_id)
     return {"query": q, "results": results}
+
+
+@router.get("/search/similar")
+async def search_similar(
+    page_id: Optional[int] = Query(None),
+    document_id: Optional[int] = Query(None),
+    image_id: Optional[int] = Query(None),
+    limit: int = Query(10, ge=1, le=50),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Query-by-example: pages similar to an EXISTING page/document/FOV image."""
+    if page_id is None and document_id is None and image_id is None:
+        raise HTTPException(status_code=400, detail="Provide page_id, document_id or image_id")
+    group_id = await get_user_group_id(current_user.id, db)
+    results = await search_similar_pages(
+        current_user.id, db, page_id=page_id, document_id=document_id,
+        image_id=image_id, limit=limit, group_id=group_id,
+    )
+    return {"results": results}
+
+
+@router.post("/search/by-text")
+async def search_by_text(
+    payload: dict,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Query-by-example with a pasted description (mode=query) or passage (mode=passage)."""
+    text_value = (payload.get("text") or "").strip()
+    if not text_value:
+        raise HTTPException(status_code=400, detail="text is required")
+    mode = payload.get("mode", "query")
+    limit = max(1, min(int(payload.get("limit", 10)), 50))
+    group_id = await get_user_group_id(current_user.id, db)
+    from ml.rag import get_qwen_vl_encoder
+    encoder = get_qwen_vl_encoder()
+    emb = encoder.encode_text(text_value) if mode == "passage" else encoder.encode_query(text_value)
+    results = await _search_pages_by_embedding(
+        emb.tolist(), current_user.id, db, limit=limit, group_id=group_id,
+    )
+    return {"results": results}
+
+
+@router.post("/search/by-image")
+async def search_by_image(
+    file: UploadFile = File(...),
+    limit: int = Form(10),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Query-by-example with an uploaded image."""
+    from io import BytesIO
+    from PIL import Image as PILImage
+    from ml.rag import get_qwen_vl_encoder
+    content = await file.read()
+    try:
+        image = PILImage.open(BytesIO(content)).convert("RGB")
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid image file")
+    limit = max(1, min(int(limit), 50))
+    group_id = await get_user_group_id(current_user.id, db)
+    encoder = get_qwen_vl_encoder()
+    emb = encoder.encode_document(image)
+    results = await _search_pages_by_embedding(
+        emb.tolist(), current_user.id, db, limit=limit, group_id=group_id,
+    )
+    return {"results": results}
+
+
+@router.post("/documents/text")
+async def index_text_endpoint(
+    payload: dict,
+    background_tasks: BackgroundTasks,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Index a raw text snippet as a new library document."""
+    await _check_upload_rate_limit(current_user.id)
+    title = (payload.get("title") or "").strip()
+    text_value = (payload.get("text") or "").strip()
+    if not text_value:
+        raise HTTPException(status_code=400, detail="text is required")
+    document, created = await index_text_snippet(current_user.id, title, text_value, db)
+    if created:
+        background_tasks.add_task(process_text_document, document.id)
+    return {
+        "document_id": document.id,
+        "name": document.name,
+        "status": document.status,
+        "is_duplicate": not created,
+    }
 
 
 @router.get("/search/fov")

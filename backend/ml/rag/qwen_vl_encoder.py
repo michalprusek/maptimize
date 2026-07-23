@@ -8,7 +8,7 @@ IMPORTANT: This model has asymmetric encoding modes:
 - encode_query(text): For user search queries
 
 References:
-- HuggingFace: https://huggingface.co/Qwen/Qwen3-Embedding-VL
+- HuggingFace: https://huggingface.co/Qwen/Qwen3-VL-Embedding-2B
 """
 
 import logging
@@ -148,35 +148,37 @@ class QwenVLEncoder:
             self.load_model()
 
     def _pool_and_normalize(self, inputs: dict) -> np.ndarray:
-        """Run model inference, mean-pool hidden states, L2-normalize, and truncate/zero-pad to EMBEDDING_DIM (2048).
+        """Run inference, take the LAST non-padding token's hidden state, L2-normalize.
 
-        Shared logic for both document and query encoding.
+        This is the official Qwen3-VL-Embedding pooling (last-token, include_prompt),
+        NOT mean pooling. The same method pools both documents and queries, so both
+        land in one comparable space. The model's hidden size equals EMBEDDING_DIM
+        (2048), so no truncation/padding is needed.
+
         Returns a float32 numpy array of shape (EMBEDDING_DIM,).
         """
         outputs = self.model(**inputs, output_hidden_states=True)
-        hidden_states = outputs.hidden_states[-1]
+        hidden_states = outputs.hidden_states[-1]  # (batch, seq, hidden)
 
-        # Mean pool over sequence (masked to exclude padding)
-        if "attention_mask" in inputs:
-            mask = inputs["attention_mask"].unsqueeze(-1)
-            embedding = (hidden_states * mask).sum(dim=1) / mask.sum(dim=1)
+        mask = inputs.get("attention_mask")
+        if mask is None or bool(mask[:, -1].all()):
+            # No padding, or left-padded: the true last token is at position -1.
+            pooled = hidden_states[:, -1]
         else:
-            embedding = hidden_states.mean(dim=1)
+            # Right-padded (or mixed): gather the last non-pad position per row.
+            last_idx = mask.sum(dim=1) - 1
+            rows = torch.arange(hidden_states.size(0), device=hidden_states.device)
+            pooled = hidden_states[rows, last_idx]
 
-        embedding = embedding.squeeze(0)
+        embedding = pooled.squeeze(0)
         embedding = embedding / (embedding.norm() + 1e-8)
 
-        # Fit to target dimension (truncate or pad)
-        hidden_dim = embedding.shape[0]
-        if hidden_dim == self.EMBEDDING_DIM:
-            result = embedding
-        elif hidden_dim > self.EMBEDDING_DIM:
-            result = embedding[:self.EMBEDDING_DIM]
-        else:
-            result = torch.zeros(self.EMBEDDING_DIM, device=self.device, dtype=embedding.dtype)
-            result[:hidden_dim] = embedding
+        if embedding.shape[-1] != self.EMBEDDING_DIM:
+            raise RuntimeError(
+                f"Qwen VL produced dim {embedding.shape[-1]}, expected {self.EMBEDDING_DIM}"
+            )
 
-        return result.cpu().float().numpy()
+        return embedding.cpu().float().numpy()
 
     @torch.no_grad()
     def encode_document(
@@ -289,6 +291,18 @@ class QwenVLEncoder:
             raise RuntimeError(
                 f"Failed to encode query: {type(e).__name__}: {e}"
             ) from e
+
+    @torch.no_grad()
+    def encode_text(self, text: str) -> np.ndarray:
+        """Embed a raw text passage for INDEXING into the document space.
+
+        Qwen3-VL-Embedding maps text and images into one shared space, so a text
+        passage is embedded the same way as a text query and stays comparable
+        with page-image embeddings. This named entry point keeps indexing call
+        sites readable and lets it diverge from ``encode_query`` later (e.g. if
+        queries gain a retrieval instruction that corpus passages must not).
+        """
+        return self.encode_query(text)
 
     @torch.no_grad()
     def encode_documents_batch(

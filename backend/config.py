@@ -50,15 +50,15 @@ class Settings(BaseSettings):
     # bypass. Used solely as a fallback when Europe PMC's own PDF link fails.
     unpaywall_email: str = "maptimize@utia.cas.cz"
 
-    # Single source of truth for Gemini model IDs. These were previously
-    # hardcoded in three places across two files; two of them still named
-    # gemini-2.0-flash, which Google shut down on 2026-06-01, silently
-    # breaking web search and document region extraction.
+    # Single source of truth for Gemini model IDs. Must never name a model
+    # Google has retired: gemini-2.0-flash was shut down on 2026-06-01, which
+    # silently broke every caller still pinned to it.
+    # - gemini_model: paper-discovery free-text query rewrite
+    #   (services/paper_discovery_service.py:rewrite_topic_query).
+    # - gemini_vision_model: document region extraction
+    #   (services/rag_service.py).
     gemini_model: str = "gemini-3.6-flash"
     gemini_vision_model: str = "gemini-3.6-flash"
-    # Closed set: a typo (e.g. "med") otherwise passes settings load and only
-    # fails at request time as a Gemini API error.
-    gemini_thinking_level: Literal["minimal", "low", "medium", "high"] = "medium"
 
     rag_document_dir: Path = Path("data/rag_documents")
     rag_max_document_results: int = 20

@@ -5,7 +5,7 @@ live server, no real DB, no GPU). The DB is an AsyncMock whose ``execute`` is
 fed per-test mock Result objects. The two routers exercise distinct surfaces:
 
   * admin.py   - system stats, timeline, user list (filter/sort/paginate),
-                 user detail/update/delete, password reset, conversations,
+                 user detail/update/delete, password reset,
                  experiments, and GPU model management endpoints.
   * settings.py - get/update settings, profile update, password change,
                   avatar upload/get/delete.
@@ -71,13 +71,12 @@ def _db_user(**kw):
 
 
 def _detail_results():
-    """The four execute() results consumed by get_user_detail after the
-    get_user_or_404 lookup: experiments count, image row, doc row, chat count."""
+    """The three execute() results consumed by get_user_detail after the
+    get_user_or_404 lookup: experiments count, image row, doc row."""
     return [
         make_result(scalar=3),                       # experiment_count
         _iterable_result([], one=(5, 1024)),         # image_count, storage
         _iterable_result([], one=(2, 2048)),         # document_count, storage
-        make_result(scalar=7),                       # chat_thread_count
     ]
 
 
@@ -250,7 +249,6 @@ async def test_get_user_detail_success(mock_db):
     assert res.experiment_count == 3
     assert res.image_count == 5
     assert res.document_count == 2
-    assert res.chat_thread_count == 7
     assert res.images_storage_bytes == 1024
     assert res.documents_storage_bytes == 2048
     assert res.total_storage_bytes == 3072
@@ -436,96 +434,6 @@ async def test_reset_user_password_commit_failure_returns_500(mock_db):
         )
     assert exc.value.status_code == 500
     mock_db.rollback.assert_awaited()
-
-
-# =============================================================================
-# admin.py  -  get_user_conversations
-# =============================================================================
-
-async def test_get_user_conversations_success(mock_db):
-    user = _db_user(id=2)
-    dt = __import__("datetime").datetime(2026, 1, 1)
-    thread = SimpleNamespace(
-        id=11, name="Chat", created_at=dt, updated_at=dt
-    )
-    mock_db.execute.side_effect = [
-        make_result(scalar=user),         # get_user_or_404
-        _iterable_result([(thread, 5)]),  # (ChatThread, message_count) rows
-    ]
-    res = await admin_router.get_user_conversations(
-        user_id=2, current_admin=_admin(), db=mock_db
-    )
-    assert res.total == 1
-    assert res.threads[0].id == 11
-    assert res.threads[0].message_count == 5
-
-
-async def test_get_user_conversations_not_found_404(mock_db):
-    mock_db.execute.return_value = make_result(scalar=None)
-    with pytest.raises(HTTPException) as exc:
-        await admin_router.get_user_conversations(
-            user_id=99, current_admin=_admin(), db=mock_db
-        )
-    assert exc.value.status_code == 404
-
-
-async def test_get_user_conversations_db_error_returns_500(mock_db):
-    user = _db_user(id=2)
-    mock_db.execute.side_effect = [
-        make_result(scalar=user),
-        RuntimeError("query fail"),
-    ]
-    with pytest.raises(HTTPException) as exc:
-        await admin_router.get_user_conversations(
-            user_id=2, current_admin=_admin(), db=mock_db
-        )
-    assert exc.value.status_code == 500
-
-
-# =============================================================================
-# admin.py  -  get_conversation_messages
-# =============================================================================
-
-async def test_get_conversation_messages_success(mock_db):
-    dt = __import__("datetime").datetime(2026, 1, 1)
-    thread = SimpleNamespace(id=11, name="Chat")
-    msg = SimpleNamespace(
-        id=1, role="user", content="hi", created_at=dt,
-        citations=["c"], image_refs=None,
-    )
-    mock_db.execute.side_effect = [
-        make_result(scalar=thread),                   # thread lookup
-        _iterable_result([], scalars_all=[msg]),      # messages
-    ]
-    res = await admin_router.get_conversation_messages(
-        user_id=2, thread_id=11, current_admin=_admin(), db=mock_db
-    )
-    assert res.total == 1
-    assert res.thread_name == "Chat"
-    assert res.messages[0].has_citations is True
-    assert res.messages[0].has_images is False
-
-
-async def test_get_conversation_messages_not_found_404(mock_db):
-    mock_db.execute.return_value = make_result(scalar=None)  # no thread
-    with pytest.raises(HTTPException) as exc:
-        await admin_router.get_conversation_messages(
-            user_id=2, thread_id=99, current_admin=_admin(), db=mock_db
-        )
-    assert exc.value.status_code == 404
-
-
-async def test_get_conversation_messages_db_error_returns_500(mock_db):
-    thread = SimpleNamespace(id=11, name="Chat")
-    mock_db.execute.side_effect = [
-        make_result(scalar=thread),
-        RuntimeError("msg fail"),
-    ]
-    with pytest.raises(HTTPException) as exc:
-        await admin_router.get_conversation_messages(
-            user_id=2, thread_id=11, current_admin=_admin(), db=mock_db
-        )
-    assert exc.value.status_code == 500
 
 
 # =============================================================================

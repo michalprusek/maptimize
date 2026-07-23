@@ -14,9 +14,7 @@ if TYPE_CHECKING:
     from .metric import Metric
     from .user_settings import UserSettings
     from .bug_report import BugReport
-    from .chat import ChatThread
     from .rag_document import RAGDocument
-    from .agent_memory import AgentMemory
     from .group import GroupMember
 
 
@@ -76,15 +74,7 @@ class User(Base):
         back_populates="user",
         cascade="all, delete-orphan"
     )
-    chat_threads: Mapped[List["ChatThread"]] = relationship(
-        back_populates="user",
-        cascade="all, delete-orphan"
-    )
     rag_documents: Mapped[List["RAGDocument"]] = relationship(
-        back_populates="user",
-        cascade="all, delete-orphan"
-    )
-    agent_memories: Mapped[List["AgentMemory"]] = relationship(
         back_populates="user",
         cascade="all, delete-orphan"
     )

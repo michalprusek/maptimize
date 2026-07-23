@@ -67,16 +67,3 @@ async def serve_export(
         # Never render an export inline; it is user-controlled tabular data.
         content_disposition_type="attachment",
     )
-
-
-@router.get("/chat-images/{user_id}/{filename}")
-async def serve_chat_image(
-    user_id: int,
-    filename: str,
-    current_user: User = Depends(get_current_user_from_query),
-) -> FileResponse:
-    """Serve an agent-generated plot or segmentation overlay to its owner."""
-    path = _resolve_owned_file(Path(settings.chat_image_dir), user_id, filename, current_user)
-    from services.rag_service import image_mime_type
-
-    return FileResponse(path=path, media_type=image_mime_type(path))

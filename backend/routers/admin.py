@@ -5,14 +5,13 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import func, select, and_, or_
+from sqlalchemy import func, select, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import get_db
 from models.user import User, UserRole
 from models.experiment import Experiment
 from models.image import Image
-from models.chat import ChatThread, ChatMessage
 from models.rag_document import RAGDocument
 from schemas.admin import (
     AdminSystemStats,
@@ -23,10 +22,6 @@ from schemas.admin import (
     AdminUserDetail,
     AdminUserUpdate,
     AdminPasswordResetResponse,
-    AdminChatThreadListResponse,
-    AdminChatThread,
-    AdminChatMessagesResponse,
-    AdminChatMessage,
     AdminExperimentsResponse,
     AdminExperiment,
 )
@@ -352,13 +347,6 @@ async def get_user_detail(
         document_count = doc_row[0] or 0
         documents_storage = doc_row[1] or 0
 
-        # Count chat threads
-        chat_result = await db.execute(
-            select(func.count(ChatThread.id))
-            .where(ChatThread.user_id == user_id)
-        )
-        chat_thread_count = chat_result.scalar() or 0
-
         logger.info(f"Admin {current_admin.email} viewed user detail for {user.email} (id={user_id})")
 
         return AdminUserDetail(
@@ -372,7 +360,6 @@ async def get_user_detail(
             experiment_count=experiment_count,
             image_count=image_count,
             document_count=document_count,
-            chat_thread_count=chat_thread_count,
             images_storage_bytes=images_storage,
             documents_storage_bytes=documents_storage,
             total_storage_bytes=images_storage + documents_storage,
@@ -531,118 +518,6 @@ async def reset_user_password(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to reset password. Please try again."
-        )
-
-
-@router.get("/users/{user_id}/conversations", response_model=AdminChatThreadListResponse)
-async def get_user_conversations(
-    user_id: int,
-    current_admin: User = Depends(get_current_admin),
-    db: AsyncSession = Depends(get_db),
-):
-    """Get all chat threads for a user."""
-    try:
-        await get_user_or_404(db, user_id, current_admin.email)
-
-        # Get threads with message count
-        result = await db.execute(
-            select(
-                ChatThread,
-                func.count(ChatMessage.id).label("message_count")
-            )
-            .outerjoin(ChatMessage, ChatMessage.thread_id == ChatThread.id)
-            .where(ChatThread.user_id == user_id)
-            .group_by(ChatThread.id)
-            .order_by(ChatThread.updated_at.desc())
-        )
-
-        threads = []
-        for row in result:
-            thread = row[0]
-            message_count = row[1]
-            threads.append(AdminChatThread(
-                id=thread.id,
-                name=thread.name,
-                message_count=message_count,
-                created_at=thread.created_at,
-                updated_at=thread.updated_at,
-            ))
-
-        logger.info(f"Admin {current_admin.email} viewed conversations for user_id={user_id} ({len(threads)} threads)")
-
-        return AdminChatThreadListResponse(
-            threads=threads,
-            total=len(threads),
-        )
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Failed to get conversations for user {user_id} by admin {current_admin.email}: {e}", exc_info=True)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to load conversations. Please try again."
-        )
-
-
-@router.get("/users/{user_id}/conversations/{thread_id}", response_model=AdminChatMessagesResponse)
-async def get_conversation_messages(
-    user_id: int,
-    thread_id: int,
-    current_admin: User = Depends(get_current_admin),
-    db: AsyncSession = Depends(get_db),
-):
-    """Get messages in a chat thread."""
-    try:
-        # Verify thread exists and belongs to user
-        result = await db.execute(
-            select(ChatThread)
-            .where(and_(ChatThread.id == thread_id, ChatThread.user_id == user_id))
-        )
-        thread = result.scalar_one_or_none()
-
-        if not thread:
-            logger.warning(f"Admin {current_admin.email} attempted to access non-existent conversation (user_id={user_id}, thread_id={thread_id})")
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Conversation not found"
-            )
-
-        # Get messages
-        msg_result = await db.execute(
-            select(ChatMessage)
-            .where(ChatMessage.thread_id == thread_id)
-            .order_by(ChatMessage.created_at.asc())
-        )
-        messages = msg_result.scalars().all()
-
-        msg_items = [
-            AdminChatMessage(
-                id=msg.id,
-                role=msg.role,
-                content=msg.content,
-                created_at=msg.created_at,
-                has_citations=bool(msg.citations),
-                has_images=bool(msg.image_refs),
-            )
-            for msg in messages
-        ]
-
-        logger.info(f"Admin {current_admin.email} viewed conversation messages (user_id={user_id}, thread_id={thread_id}, {len(msg_items)} messages)")
-
-        return AdminChatMessagesResponse(
-            messages=msg_items,
-            thread_name=thread.name,
-            total=len(msg_items),
-        )
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Failed to get conversation messages for admin {current_admin.email}: {e}", exc_info=True)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to load messages. Please try again."
         )
 
 

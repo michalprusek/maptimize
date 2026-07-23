@@ -59,6 +59,42 @@ def is_supported_file(filename: str) -> bool:
     return ext in ALL_SUPPORTED
 
 
+async def _resolve_upload_group(
+    user_id: int, thread_id: Optional[int], db: AsyncSession
+) -> Optional[int]:
+    """Group to stamp on / scope by for a new document. Library uploads
+    (thread_id IS NULL) belong to the owner's lab group; chat attachments stay
+    owner-private (None). Fail-closed to owner-only if the group can't be
+    resolved. Mirrors experiment group stamping in routers/experiments.py."""
+    if thread_id is not None:
+        return None
+    try:
+        return await get_user_group_id(user_id, db)
+    except Exception:
+        logger.exception("Failed to resolve group for user %s; uploading as owner-only", user_id)
+        return None
+
+
+async def _find_duplicate_document(
+    user_id: int,
+    thread_id: Optional[int],
+    group_id: Optional[int],
+    content_hash: str,
+    db: AsyncSession,
+) -> Optional[RAGDocument]:
+    """SSOT for the dedupe lookup shared by file and text uploads: the existing
+    non-FAILED document with this content hash within the dedupe scope, or None.
+    FAILED is excluded so a broken document never absorbs the re-upload that is
+    the user's only way to fix it."""
+    return (await db.execute(
+        select(RAGDocument).where(
+            RAGDocument.content_hash == content_hash,
+            RAGDocument.status != DocumentStatus.FAILED.value,
+            document_dedupe_scope(user_id, thread_id, group_id),
+        ).limit(1)
+    )).scalar_one_or_none()
+
+
 async def save_uploaded_document(
     user_id: int,
     filename: str,
@@ -101,27 +137,12 @@ async def save_uploaded_document(
         raise ValueError(f"Unsupported file type: {filename}")
 
     # Resolve the group BEFORE touching the filesystem: the dedupe scope needs
-    # it, and so does the row we may be about to create. Fail-closed to
-    # owner-only, mirroring experiment group stamping.
-    group_id = None
-    if thread_id is None:
-        try:
-            group_id = await get_user_group_id(user_id, db)
-        except Exception:
-            logger.exception(f"Failed to resolve group for user {user_id}; uploading as owner-only")
+    # it, and so does the row we may be about to create.
+    group_id = await _resolve_upload_group(user_id, thread_id, db)
 
     # Deduplicate before anything is written, so a duplicate leaves no trace.
-    # FAILED documents are excluded: deduplicating to one would hand the user a
-    # broken document AND silently consume the re-upload that was their only
-    # way to fix it.
     content_hash = hashlib.sha256(content).hexdigest()
-    existing = (await db.execute(
-        select(RAGDocument).where(
-            RAGDocument.content_hash == content_hash,
-            RAGDocument.status != DocumentStatus.FAILED.value,
-            document_dedupe_scope(user_id, thread_id, group_id),
-        ).limit(1)
-    )).scalar_one_or_none()
+    existing = await _find_duplicate_document(user_id, thread_id, group_id, content_hash, db)
     if existing is not None:
         logger.info(
             "Duplicate upload of %s (sha256 %s...) -> existing document %s",
@@ -157,12 +178,8 @@ async def save_uploaded_document(
     # Save file
     original_path.write_bytes(content)
 
-    # group_id was resolved above, before the dedupe lookup that needed it.
-    # Library uploads (thread_id IS NULL) are shared with the owner's lab group;
-    # chat attachments stay private (group_id stays None). Mirrors experiment
-    # group stamping in routers/experiments.py::create_experiment.
-
-    # Create DB record
+    # Create DB record (group_id resolved above stamps library uploads for the
+    # lab group; chat attachments keep it None).
     document = RAGDocument(
         user_id=user_id,
         thread_id=thread_id,
@@ -465,26 +482,17 @@ async def process_pdf_pages(
                 method=4,
             )
 
-            # Extract text using OCR (pytesseract)
-            extracted_text = None
-            try:
-                import pytesseract
-                extracted_text = pytesseract.image_to_string(image, lang='eng+ces')
-                if extracted_text:
-                    extracted_text = extracted_text.strip()
-            except Exception as ocr_err:
-                logger.warning(f"OCR failed for page {page_num}: {ocr_err}")
-
-            # Generate embedding
+            # Vision-RAG: pages are indexed as images (visual embeddings), NOT
+            # OCR'd to text. extracted_text stays NULL; search is semantic over
+            # the page-image embeddings and the agent reads the page images.
             embedding = encoder.encode_document(image)
 
-            # Create page record with extracted text
             page = RAGDocumentPage(
                 document_id=document.id,
                 page_number=page_num,
                 image_path=str(image_path),
                 embedding=embedding.tolist(),
-                extracted_text=extracted_text,
+                extracted_text=None,
             )
             db.add(page)
 
@@ -565,6 +573,136 @@ async def process_single_image(
         document.status = DocumentStatus.FAILED.value
         document.error_message = str(e)[:500]
         await db.commit()
+
+
+async def index_text_snippet(
+    user_id: int,
+    title: str,
+    text_content: str,
+    db: AsyncSession,
+    thread_id: Optional[int] = None,
+) -> Tuple[RAGDocument, bool]:
+    """Save a raw text snippet as a new document (dedup by sha256 of the text),
+    mirroring save_uploaded_document's dedup/scoping. Returns (document, created);
+    on created=False nothing was written. Schedule process_text_document only
+    when created is True."""
+    content = text_content.encode("utf-8")
+    content_hash = hashlib.sha256(content).hexdigest()
+
+    group_id = await _resolve_upload_group(user_id, thread_id, db)
+    existing = await _find_duplicate_document(user_id, thread_id, group_id, content_hash, db)
+    if existing is not None:
+        return existing, False
+
+    user_rag_dir = settings.rag_document_dir / str(user_id)
+    user_rag_dir.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    original_path = user_rag_dir / f"{timestamp}_text_{content_hash[:8]}.txt"
+    original_path.write_bytes(content)
+
+    document = RAGDocument(
+        user_id=user_id,
+        thread_id=thread_id,
+        group_id=group_id,
+        name=(title or "Text snippet")[:255],
+        file_type="text",
+        original_path=str(original_path),
+        status=DocumentStatus.PENDING.value,
+        file_size=len(content),
+        content_hash=content_hash,
+    )
+    db.add(document)
+    await db.flush()
+    logger.info("Saved text document %s: %s", document.id, document.name)
+    return document, True
+
+
+def _render_text_card(text_content: str) -> Image.Image:
+    """Render a text snippet to a page-card image, so a text document satisfies
+    the same invariants as any other page (viewable, vision-readable) — every
+    RAGDocumentPage needs an image_path."""
+    from PIL import ImageDraw, ImageFont
+
+    width, margin, line_h, max_chars = 1024, 48, 18, 100
+    try:
+        font = ImageFont.load_default()
+    except Exception:
+        font = None
+
+    lines: list[str] = []
+    for para in (text_content.splitlines() or [""]):
+        while len(para) > max_chars:
+            cut = para.rfind(" ", 0, max_chars)
+            cut = cut if cut > 0 else max_chars
+            lines.append(para[:cut])
+            para = para[cut:].lstrip()
+        lines.append(para)
+
+    height = min(max(256, margin * 2 + line_h * len(lines)), 4000)
+    img = Image.new("RGB", (width, height), "white")
+    draw = ImageDraw.Draw(img)
+    y = margin
+    for line in lines:
+        if y > height - margin:
+            break
+        draw.text((margin, y), line, fill="black", font=font)
+        y += line_h
+    return img
+
+
+async def process_text_document(document_id: int) -> None:
+    """Background task: render the stored text to a page card, embed it via
+    encode_text, and write a single completed page."""
+    from ml.rag import get_qwen_vl_encoder
+
+    async with get_db_context() as db:
+        document = (await db.execute(
+            select(RAGDocument).where(RAGDocument.id == document_id)
+        )).scalar_one_or_none()
+        if document is None:
+            return
+        document.status = DocumentStatus.PROCESSING.value
+        await db.commit()
+        try:
+            text_content = Path(document.original_path).read_text(encoding="utf-8")
+            pages_dir = settings.rag_document_dir / str(document.user_id) / f"doc_{document.id}_pages"
+            pages_dir.mkdir(parents=True, exist_ok=True)
+            ext = settings.rag_page_format.lower()
+            image_path = pages_dir / f"page_0001.{ext}"
+            card = _render_text_card(text_content)
+            card.save(
+                str(image_path), settings.rag_page_format,
+                quality=settings.rag_page_quality, method=4,
+            )
+
+            encoder = get_qwen_vl_encoder()
+            embedding = encoder.encode_text(text_content)
+            db.add(RAGDocumentPage(
+                document_id=document.id,
+                page_number=1,
+                image_path=str(image_path),
+                embedding=embedding.tolist(),
+                extracted_text=text_content,
+            ))
+            document.page_count = 1
+            document.status = DocumentStatus.COMPLETED.value
+            document.progress = 1.0
+            document.indexed_at = func.now()
+            await db.commit()
+            logger.info("Text document %s processing completed", document.id)
+        except Exception as e:
+            logger.exception("Error processing text document %s", document_id)
+            # Mark FAILED via a FRESH session -- if the failure came from a DB op
+            # the current session is poisoned and its commit would throw too,
+            # leaving the row stuck PROCESSING (mirrors process_document_async).
+            async with get_db_context() as db2:
+                doc2 = (await db2.execute(
+                    select(RAGDocument).where(RAGDocument.id == document_id)
+                )).scalar_one_or_none()
+                if doc2 is not None:
+                    doc2.status = DocumentStatus.FAILED.value
+                    doc2.error_message = str(e)[:500]
+                    await db2.commit()
 
 
 async def delete_document(document_id: int, user_id: int, db: AsyncSession) -> bool:

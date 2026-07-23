@@ -119,32 +119,6 @@ class AdminTimelineStats(BaseModel):
     period_days: int = Field(ge=7, le=90, default=30)
 
 
-class AdminChatThread(BaseModel):
-    """Chat thread info for admin view."""
-    id: int = Field(gt=0)
-    name: str
-    message_count: int = Field(ge=0, default=0)
-    created_at: datetime
-    updated_at: datetime
-
-    class Config:
-        from_attributes = True
-
-
-class AdminChatMessage(BaseModel):
-    """Chat message for admin view."""
-    id: int = Field(gt=0)
-    role: str
-    content: str
-    created_at: datetime
-    # Exclude sensitive tool_calls to prevent data leakage
-    has_citations: bool = False
-    has_images: bool = False
-
-    class Config:
-        from_attributes = True
-
-
 class AdminExperiment(BaseModel):
     """Experiment info for admin view."""
     id: int = Field(gt=0)
@@ -188,19 +162,6 @@ class AdminUserListResponse(BaseModel):
             )
 
         return self
-
-
-class AdminChatThreadListResponse(BaseModel):
-    """Chat threads response."""
-    threads: List[AdminChatThread]
-    total: int = Field(ge=0)
-
-
-class AdminChatMessagesResponse(BaseModel):
-    """Chat messages response."""
-    messages: List[AdminChatMessage]
-    thread_name: str
-    total: int = Field(ge=0)
 
 
 class AdminExperimentsResponse(BaseModel):
