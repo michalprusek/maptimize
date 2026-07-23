@@ -31,7 +31,7 @@ import {
   Settings,
   Bug,
   Dna,
-  MessageSquare,
+  FileText,
   Shield,
 } from "lucide-react";
 import { Logo, BugReportModal } from "@/components/ui";
@@ -76,7 +76,7 @@ export function AppSidebar({
     { name: t("experiments"), href: "/dashboard/experiments", icon: FolderOpen },
     { name: t("proteins"), href: "/dashboard/proteins", icon: Dna },
     { name: t("metrics"), href: "/dashboard/ranking", icon: Scale },
-    { name: t("chat"), href: "/chat", icon: MessageSquare },
+    { name: t("documents"), href: "/documents", icon: FileText },
     // Admin panel - only visible to admins
     ...(user?.role === "admin"
       ? [{ name: t("admin"), href: "/admin", icon: Shield }]

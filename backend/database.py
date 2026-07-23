@@ -190,8 +190,10 @@ async def ensure_schema_updates():
             ("metric_comparisons", "prev_winner_sigma", "FLOAT"),
             ("metric_comparisons", "prev_loser_mu", "FLOAT"),
             ("metric_comparisons", "prev_loser_sigma", "FLOAT"),
-            # Chat attachments: a document uploaded into a thread (NULL = library)
-            ("rag_documents", "thread_id", "INTEGER REFERENCES chat_threads(id) ON DELETE CASCADE"),
+            # Attachment scoping column (NULL = library). Formerly referenced the
+            # chat_threads table, which was removed with the chat agent; kept as a
+            # plain column so existing rows and thread-scoped queries still work.
+            ("rag_documents", "thread_id", "INTEGER"),
             # True page count when an attachment was capped (NULL = not truncated)
             ("rag_documents", "truncated_from_pages", "INTEGER"),
             # Group support for shared library documents (thread_id IS NULL only)
@@ -332,6 +334,23 @@ async def ensure_schema_updates():
             await conn.execute(text("ROLLBACK TO SAVEPOINT idx_doc_hash"))
             logger.error(f"Failed to create ix_rag_documents_content_hash: {e}")
             failed_updates.append("ix_rag_documents_content_hash")
+
+        # Full-text index over page OCR text (powers metadata/full-text document
+        # search). 'simple' config because OCR is mixed eng+ces; pg_trgm backs the
+        # ILIKE name/doi substring filters.
+        try:
+            await conn.execute(text("SAVEPOINT idx_pages_fts"))
+            await conn.execute(text("CREATE EXTENSION IF NOT EXISTS pg_trgm"))
+            await conn.execute(text(
+                "CREATE INDEX IF NOT EXISTS ix_rag_pages_fts ON rag_document_pages "
+                "USING gin (to_tsvector('simple', coalesce(extracted_text, '')))"
+            ))
+            await conn.execute(text("RELEASE SAVEPOINT idx_pages_fts"))
+            logger.debug("Ensured index exists: ix_rag_pages_fts")
+        except Exception as e:
+            await conn.execute(text("ROLLBACK TO SAVEPOINT idx_pages_fts"))
+            logger.error(f"Failed to create ix_rag_pages_fts: {e}")
+            failed_updates.append("ix_rag_pages_fts")
 
         # Hash pre-existing documents so they participate in deduplication.
         try:

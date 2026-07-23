@@ -181,9 +181,9 @@ SSRF_REFUSAL_MESSAGE = "Refused to fetch this URL for security reasons"
 
 
 def _is_safe_url(url: str) -> tuple[bool, str]:
-    """Delegate to the agent service's SSRF guard (imported lazily to avoid a
-    heavy import at module load; monkeypatchable in tests)."""
-    from services.gemini_agent_service import _is_safe_url as guard
+    """Delegate to the shared SSRF guard (imported lazily to keep it
+    monkeypatchable at this module level in tests)."""
+    from utils.url_safety import _is_safe_url as guard
     return guard(url)
 
 

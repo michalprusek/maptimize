@@ -150,6 +150,38 @@ services:
       timeout: 10s
       retries: 3
 
+  # Remote MCP connector (Streamable HTTP) for Claude Desktop / Cowork / Claude Code.
+  # Thin REST client over the backend; no GPU. Public access is via nginx /mcp/.
+  # Each caller presents their own personal access token (PAT), validated per
+  # request against the backend, so the server acts AS the calling user — no
+  # shared token / service account.
+  maptimize-mcp:
+    build:
+      context: ./mcp-server
+      dockerfile: Dockerfile
+    container_name: maptimize-mcp
+    environment:
+      - MAPTALK_BASE_URL=http://maptimize-backend:8000
+      - MAPTALK_TOOLS_FILE=/app/tools.yaml
+      - MCP_HTTP_HOST=0.0.0.0
+      - MCP_HTTP_PORT=8080
+    volumes:
+      # Bind the tool registry so tools/descriptions can be edited without a rebuild
+      # (hot-reload picks up the change on the next call).
+      - ./mcp-server/maptalk_mcp/tools.yaml:/app/tools.yaml:ro
+    ports:
+      - "127.0.0.1:7002:8080"  # local debug only; public access is via nginx /mcp/
+    depends_on:
+      - maptimize-backend
+    networks:
+      - maptimize-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8080/healthz',timeout=3).getcode()==200 else 1)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
 networks:
   maptimize-network:
     driver: bridge

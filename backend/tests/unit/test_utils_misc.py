@@ -468,14 +468,14 @@ async def test_get_current_user_success(mock_db):
     user = MagicMock(name="User", id=7)
     mock_db.execute.return_value = _scalar_result(user)
     with patch.object(security, "decode_token", return_value=_valid_payload()):
-        got = await security.get_current_user(token="tok", db=mock_db)
+        got = await security.get_current_user(MagicMock(), token="tok", db=mock_db)
     assert got is user
 
 
 async def test_get_current_user_bad_token_raises_401(mock_db):
     with patch.object(security, "decode_token", return_value=None):
         with pytest.raises(HTTPException) as exc:
-            await security.get_current_user(token="bad", db=mock_db)
+            await security.get_current_user(MagicMock(), token="bad", db=mock_db)
     assert exc.value.status_code == 401
 
 
@@ -483,7 +483,7 @@ async def test_get_current_user_expired_payload_raises_401(mock_db):
     expired = _valid_payload(exp_delta=timedelta(hours=-1))
     with patch.object(security, "decode_token", return_value=expired):
         with pytest.raises(HTTPException) as exc:
-            await security.get_current_user(token="tok", db=mock_db)
+            await security.get_current_user(MagicMock(), token="tok", db=mock_db)
     assert exc.value.status_code == 401
 
 
@@ -491,7 +491,7 @@ async def test_get_current_user_unknown_user_raises_401(mock_db):
     mock_db.execute.return_value = _scalar_result(None)
     with patch.object(security, "decode_token", return_value=_valid_payload()):
         with pytest.raises(HTTPException) as exc:
-            await security.get_current_user(token="tok", db=mock_db)
+            await security.get_current_user(MagicMock(), token="tok", db=mock_db)
     assert exc.value.status_code == 401
 
 
@@ -499,20 +499,20 @@ async def test_get_current_user_from_query_success(mock_db):
     user = MagicMock(name="User", id=7)
     mock_db.execute.return_value = _scalar_result(user)
     with patch.object(security, "decode_token", return_value=_valid_payload()):
-        got = await security.get_current_user_from_query(token="tok", db=mock_db)
+        got = await security.get_current_user_from_query(MagicMock(), token="tok", db=mock_db)
     assert got is user
 
 
 async def test_get_current_user_from_query_empty_token_raises_401(mock_db):
     with pytest.raises(HTTPException) as exc:
-        await security.get_current_user_from_query(token="", db=mock_db)
+        await security.get_current_user_from_query(MagicMock(), token="", db=mock_db)
     assert exc.value.status_code == 401
 
 
 async def test_get_current_user_from_query_bad_token_raises_401(mock_db):
     with patch.object(security, "decode_token", return_value=None):
         with pytest.raises(HTTPException) as exc:
-            await security.get_current_user_from_query(token="bad", db=mock_db)
+            await security.get_current_user_from_query(MagicMock(), token="bad", db=mock_db)
     assert exc.value.status_code == 401
 
 
@@ -520,7 +520,7 @@ async def test_get_current_user_from_query_expired_raises_401(mock_db):
     expired = _valid_payload(exp_delta=timedelta(hours=-1))
     with patch.object(security, "decode_token", return_value=expired):
         with pytest.raises(HTTPException) as exc:
-            await security.get_current_user_from_query(token="tok", db=mock_db)
+            await security.get_current_user_from_query(MagicMock(), token="tok", db=mock_db)
     assert exc.value.status_code == 401
 
 
@@ -528,8 +528,41 @@ async def test_get_current_user_from_query_unknown_user_raises_401(mock_db):
     mock_db.execute.return_value = _scalar_result(None)
     with patch.object(security, "decode_token", return_value=_valid_payload()):
         with pytest.raises(HTTPException) as exc:
-            await security.get_current_user_from_query(token="tok", db=mock_db)
+            await security.get_current_user_from_query(MagicMock(), token="tok", db=mock_db)
     assert exc.value.status_code == 401
+
+
+async def test_get_current_user_pat_success(mock_db):
+    """A valid personal access token authenticates and marks the principal 'pat'."""
+    mtok = MagicMock(user_id=7, last_used_at=None)
+    mock_db.execute.return_value = _scalar_result(mtok)
+    mock_db.get.return_value = MagicMock(id=7)
+    req = MagicMock()
+    got = await security.get_current_user(req, token="mtk_pat_valid", db=mock_db)
+    assert got.id == 7
+    assert req.state.principal_kind == "pat"
+
+
+async def test_get_current_user_pat_unknown_or_revoked_raises_401(mock_db):
+    mock_db.execute.return_value = _scalar_result(None)  # no active token matches
+    with pytest.raises(HTTPException) as exc:
+        await security.get_current_user(MagicMock(), token="mtk_pat_bad", db=mock_db)
+    assert exc.value.status_code == 401
+
+
+async def test_require_interactive_user_rejects_pat():
+    req = MagicMock()
+    req.state.principal_kind = "pat"
+    with pytest.raises(HTTPException) as exc:
+        await security.require_interactive_user(req, user=MagicMock())
+    assert exc.value.status_code == 403
+
+
+async def test_require_interactive_user_allows_jwt():
+    req = MagicMock()
+    req.state.principal_kind = "jwt"
+    user = MagicMock()
+    assert await security.require_interactive_user(req, user=user) is user
 
 
 async def test_get_current_admin_allows_admin():

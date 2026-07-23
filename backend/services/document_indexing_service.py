@@ -567,6 +567,140 @@ async def process_single_image(
         await db.commit()
 
 
+async def index_text_snippet(
+    user_id: int,
+    title: str,
+    text_content: str,
+    db: AsyncSession,
+    thread_id: Optional[int] = None,
+) -> Tuple[RAGDocument, bool]:
+    """Save a raw text snippet as a new document (dedup by sha256 of the text),
+    mirroring save_uploaded_document's dedup/scoping. Returns (document, created);
+    on created=False nothing was written. Schedule process_text_document only
+    when created is True."""
+    content = text_content.encode("utf-8")
+    content_hash = hashlib.sha256(content).hexdigest()
+
+    group_id = None
+    if thread_id is None:
+        try:
+            group_id = await get_user_group_id(user_id, db)
+        except Exception:
+            logger.exception("Failed to resolve group for user %s; text as owner-only", user_id)
+
+    existing = (await db.execute(
+        select(RAGDocument).where(
+            RAGDocument.content_hash == content_hash,
+            RAGDocument.status != DocumentStatus.FAILED.value,
+            document_dedupe_scope(user_id, thread_id, group_id),
+        ).limit(1)
+    )).scalar_one_or_none()
+    if existing is not None:
+        return existing, False
+
+    user_rag_dir = settings.rag_document_dir / str(user_id)
+    user_rag_dir.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    original_path = user_rag_dir / f"{timestamp}_text_{content_hash[:8]}.txt"
+    original_path.write_bytes(content)
+
+    document = RAGDocument(
+        user_id=user_id,
+        thread_id=thread_id,
+        group_id=group_id,
+        name=(title or "Text snippet")[:255],
+        file_type="text",
+        original_path=str(original_path),
+        status=DocumentStatus.PENDING.value,
+        file_size=len(content),
+        content_hash=content_hash,
+    )
+    db.add(document)
+    await db.flush()
+    logger.info("Saved text document %s: %s", document.id, document.name)
+    return document, True
+
+
+def _render_text_card(text_content: str) -> Image.Image:
+    """Render a text snippet to a page-card image, so a text document satisfies
+    the same invariants as any other page (viewable, vision-readable) — every
+    RAGDocumentPage needs an image_path."""
+    from PIL import ImageDraw, ImageFont
+
+    width, margin, line_h, max_chars = 1024, 48, 18, 100
+    try:
+        font = ImageFont.load_default()
+    except Exception:
+        font = None
+
+    lines: list[str] = []
+    for para in (text_content.splitlines() or [""]):
+        while len(para) > max_chars:
+            cut = para.rfind(" ", 0, max_chars)
+            cut = cut if cut > 0 else max_chars
+            lines.append(para[:cut])
+            para = para[cut:].lstrip()
+        lines.append(para)
+
+    height = min(max(256, margin * 2 + line_h * len(lines)), 4000)
+    img = Image.new("RGB", (width, height), "white")
+    draw = ImageDraw.Draw(img)
+    y = margin
+    for line in lines:
+        if y > height - margin:
+            break
+        draw.text((margin, y), line, fill="black", font=font)
+        y += line_h
+    return img
+
+
+async def process_text_document(document_id: int) -> None:
+    """Background task: render the stored text to a page card, embed it via
+    encode_text, and write a single completed page."""
+    from ml.rag import get_qwen_vl_encoder
+
+    async with get_db_context() as db:
+        document = (await db.execute(
+            select(RAGDocument).where(RAGDocument.id == document_id)
+        )).scalar_one_or_none()
+        if document is None:
+            return
+        document.status = DocumentStatus.PROCESSING.value
+        await db.commit()
+        try:
+            text_content = Path(document.original_path).read_text(encoding="utf-8")
+            pages_dir = settings.rag_document_dir / str(document.user_id) / f"doc_{document.id}_pages"
+            pages_dir.mkdir(parents=True, exist_ok=True)
+            ext = settings.rag_page_format.lower()
+            image_path = pages_dir / f"page_0001.{ext}"
+            card = _render_text_card(text_content)
+            card.save(
+                str(image_path), settings.rag_page_format,
+                quality=settings.rag_page_quality, method=4,
+            )
+
+            encoder = get_qwen_vl_encoder()
+            embedding = encoder.encode_text(text_content)
+            db.add(RAGDocumentPage(
+                document_id=document.id,
+                page_number=1,
+                image_path=str(image_path),
+                embedding=embedding.tolist(),
+                extracted_text=text_content,
+            ))
+            document.page_count = 1
+            document.status = DocumentStatus.COMPLETED.value
+            document.progress = 1.0
+            document.indexed_at = func.now()
+            await db.commit()
+            logger.info("Text document %s processing completed", document.id)
+        except Exception as e:
+            logger.exception("Error processing text document %s", document_id)
+            document.status = DocumentStatus.FAILED.value
+            document.error_message = str(e)[:500]
+            await db.commit()
+
+
 async def delete_document(document_id: int, user_id: int, db: AsyncSession) -> bool:
     """
     Delete a RAG document and all associated files.

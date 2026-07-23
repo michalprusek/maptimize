@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "maptalk": {
+      "command": "/home/cvat/maptimize/mcp-server/.venv/bin/python",
+      "args": ["-m", "maptalk_mcp"],
+      "env": {
+        "MAPTALK_BASE_URL": "https://maptimize.utia.cas.cz",
+        "MAPTALK_EMAIL": "you@example.com",
+        "MAPTALK_PASSWORD": "your-password"
+      }
+    }
+  }
+}

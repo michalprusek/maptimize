@@ -10,7 +10,6 @@ import services.document_indexing_service as dis
 import services.rag_service as rag_service
 import utils.groups as groups_util
 from models.rag_document import RAGDocument, document_read_scope, document_scope
-from services.gemini_agent_service import _inject_user_id_filter
 from tests.unit.conftest import make_result
 
 
@@ -264,23 +263,6 @@ async def test_get_document_for_user_widens_to_group(mock_db):
     mock_db.execute = fake_execute
     await rag_router.get_document_for_user(mock_db, document_id=5, user_id=1, group_id=7)
     assert "rag_documents.group_id" in captured["sql"]
-
-
-def test_inject_filter_widens_rag_documents_to_group():
-    out = _inject_user_id_filter(
-        "SELECT * FROM rag_documents", "rag_documents", group_id=7
-    )
-    assert "rag_documents.user_id = :user_id" in out
-    assert "rag_documents.group_id = :group_id" in out
-    # SSOT mirror: the group term must be gated by thread_id IS NULL, same as
-    # document_scope/document_read_scope and the pgvector owner_clause, so
-    # attachments never widen to the group.
-    assert "rag_documents.thread_id IS NULL AND rag_documents.group_id = :group_id" in out
-
-
-def test_inject_filter_rag_documents_owner_only_without_group():
-    out = _inject_user_id_filter("SELECT * FROM rag_documents", "rag_documents")
-    assert "group_id" not in out
 
 
 async def test_serve_passage_image_resolves_and_forwards_group_id(mock_db):

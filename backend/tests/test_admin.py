@@ -8,7 +8,6 @@ Integration tests that verify:
 - PATCH /api/admin/users/{id} - update user
 - POST /api/admin/users/{id}/reset-password - reset password
 - DELETE /api/admin/users/{id} - delete user
-- GET /api/admin/users/{id}/conversations - user chat threads
 - GET /api/admin/users/{id}/experiments - user experiments
 - GET /api/admin/gpu/status - GPU model info
 
@@ -204,27 +203,6 @@ class TestAdminUserData:
         if response.status_code != 200 or len(response.json()["users"]) == 0:
             pytest.skip("No users available")
         return response.json()["users"][0]["id"]
-
-    def test_get_user_conversations(self, client, admin_headers):
-        """GET /api/admin/users/{id}/conversations returns thread list."""
-        user_id = self._get_first_user_id(client, admin_headers)
-        response = client.get(
-            f"/api/admin/users/{user_id}/conversations",
-            headers=admin_headers,
-        )
-        assert response.status_code == 200
-        data = response.json()
-        assert "threads" in data
-        assert "total" in data
-        assert isinstance(data["threads"], list)
-
-    def test_get_user_conversations_nonexistent(self, client, admin_headers):
-        """Conversations for nonexistent user returns 404."""
-        response = client.get(
-            "/api/admin/users/999999/conversations",
-            headers=admin_headers,
-        )
-        assert response.status_code == 404
 
     def test_get_user_experiments(self, client, admin_headers):
         """GET /api/admin/users/{id}/experiments returns experiment list."""

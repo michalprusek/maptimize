@@ -130,12 +130,14 @@ class RAGDocument(Base):
         ForeignKey("users.id", ondelete="CASCADE"),
         index=True
     )
-    # NULL = document library upload; set = attachment scoped to a chat thread.
-    # Read scope goes through document_scope() above -- never a bare user_id filter.
-    # ON DELETE CASCADE removes the attachment ROWS with the thread; the rendered
-    # page images on disk are reaped separately by delete_document().
+    # NULL = document library upload; set = attachment scoped to a (now removed)
+    # chat thread. Read scope goes through document_scope() above -- never a bare
+    # user_id filter. The chat agent and its chat_threads table were removed, so
+    # this is a plain nullable column now: no live FK is declared (the referenced
+    # table is gone from the ORM metadata, which would break create_all). Any
+    # ON DELETE CASCADE still enforced by the real database is left to deployment.
     thread_id: Mapped[Optional[int]] = mapped_column(
-        ForeignKey("chat_threads.id", ondelete="CASCADE"),
+        Integer,
         nullable=True, index=True,
     )
     # NULL = not shared; set = readable by every member of this group (library

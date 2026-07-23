@@ -1038,6 +1038,17 @@ class ApiClient {
     });
   }
 
+  /**
+   * Re-index an existing document (e.g. to recover a failed one or refresh
+   * embeddings after a model change). Runs in the background on the server.
+   */
+  async reindexRAGDocument(documentId: number) {
+    return this.request<{ status: string; document_id: number; message: string }>(
+      `/api/rag/documents/${documentId}/reindex`,
+      { method: "POST" }
+    );
+  }
+
   getRAGDocumentPdfUrl(documentId: number): string {
     return this.buildAuthenticatedUrl(`/api/rag/documents/${documentId}/pdf`);
   }
@@ -1087,6 +1098,15 @@ class ApiClient {
     return this.request<RAGSearchResponse>(`/api/rag/search?${params}`);
   }
 
+  /**
+   * Semantic search across the user's (and group-shared) document library.
+   * Returns page-level hits; open one in the PDF viewer via openPDFViewer.
+   */
+  async searchDocuments(query: string, limit = 20): Promise<DocumentSearchResponse> {
+    const params = new URLSearchParams({ q: query, limit: limit.toString() });
+    return this.request<DocumentSearchResponse>(`/api/rag/search/documents?${params}`);
+  }
+
   async discoverSources(query: string): Promise<DiscoverResponse> {
     return this.request<DiscoverResponse>("/api/rag/discover", {
       method: "POST",
@@ -1103,6 +1123,33 @@ class ApiClient {
 
   async getMyBugReports() {
     return this.request<BugReportListResponse>("/api/bug-reports");
+  }
+
+  // ============================================================================
+  // MCP Access Tokens ("Connect to Claude")
+  // ============================================================================
+
+  /** List the user's personal MCP access tokens (prefixes only, never the secret). */
+  async listAccessTokens() {
+    return this.request<AccessToken[]>("/api/mcp-tokens");
+  }
+
+  /**
+   * Create a new MCP access token. The plaintext `token` is returned exactly
+   * once in this response and never again — surface it to the user immediately.
+   */
+  async createAccessToken(label: string) {
+    return this.request<AccessTokenCreated>("/api/mcp-tokens", {
+      method: "POST",
+      body: JSON.stringify({ label }),
+    });
+  }
+
+  /** Revoke (delete) an MCP access token. */
+  async revokeAccessToken(id: number) {
+    return this.request<void>(`/api/mcp-tokens/${id}`, {
+      method: "DELETE",
+    });
   }
 
   // ============================================================================
@@ -2023,6 +2070,23 @@ export interface RAGSearchResponse {
   fov_images: RAGFOVSearchResult[];
 }
 
+/** A single page-level hit from GET /api/rag/search/documents. */
+export interface DocumentSearchHit {
+  page_id: number;
+  document_id: number;
+  document_name: string;
+  file_type: string;
+  page_number: number;
+  total_pages: number;
+  page_image_url: string;
+  similarity_score: number;
+}
+
+export interface DocumentSearchResponse {
+  query: string;
+  results: DocumentSearchHit[];
+}
+
 export interface DiscoveredPaper {
   doi?: string;
   title: string;
@@ -2058,6 +2122,29 @@ export interface ImportResult {
   // them. Neither a success nor a failure, so they are counted separately --
   // folding them into `imported` would claim an import that never happened.
   already_in_library?: string[];
+}
+
+// ============================================================================
+// MCP Access Token types
+// ============================================================================
+
+export interface AccessToken {
+  id: number;
+  label: string;
+  token_prefix: string;
+  created_at: string;
+  last_used_at: string | null;
+  revoked_at: string | null;
+}
+
+// Returned once by createAccessToken: same as AccessToken minus the lifecycle
+// timestamps, plus the plaintext `token` shown to the user a single time.
+export interface AccessTokenCreated {
+  id: number;
+  label: string;
+  token_prefix: string;
+  created_at: string;
+  token: string;
 }
 
 // ============================================================================
