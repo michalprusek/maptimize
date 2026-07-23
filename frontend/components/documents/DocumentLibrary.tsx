@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState, useCallback } from "react";
+import { useMemo, useState, useCallback, useRef, useEffect } from "react";
 import { useTranslations } from "next-intl";
 import { useDocumentStore } from "@/stores/documentStore";
 import { ConfirmModal } from "@/components/ui/ConfirmModal";
@@ -93,6 +93,7 @@ export function DocumentLibrary() {
     moveDocument,
     deleteDocument,
     reindexDocument,
+    loadDocuments,
     isDeletingDocument,
     openPDFViewer,
   } = useDocumentStore();
@@ -108,6 +109,31 @@ export function DocumentLibrary() {
   // Drag-and-drop state
   const [dragItem, setDragItem] = useState<ExplorerItem | null>(null);
   const [dropTarget, setDropTarget] = useState<DropTarget | null>(null);
+  // True when the active document drag represents the whole selection (vs. a
+  // single unselected card). Decides whether a drop moves one doc or all.
+  const [dragIsSelection, setDragIsSelection] = useState(false);
+
+  // Multi-select state (documents only). `selectedIds` = highlighted cards,
+  // `selectAnchorId` = the pivot for Shift-range selection.
+  const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
+  const [selectAnchorId, setSelectAnchorId] = useState<number | null>(null);
+  // Live marquee rectangle in grid-relative coords (null = not drawing).
+  const [marquee, setMarquee] = useState<{ x: number; y: number; w: number; h: number } | null>(
+    null
+  );
+  const gridRef = useRef<HTMLDivElement>(null);
+  // DOM nodes of the document cards, keyed by id, for marquee hit-testing.
+  const cardNodes = useRef<Map<number, HTMLElement>>(new Map());
+
+  const clearSelection = useCallback(() => {
+    setSelectedIds(new Set());
+    setSelectAnchorId(null);
+  }, []);
+
+  // Selection is folder-scoped: leaving a folder drops ids that no longer show.
+  useEffect(() => {
+    clearSelection();
+  }, [currentFolderId, clearSelection]);
 
   // Surface move/create/rename failures inline (not wiped by the 5s poll that
   // resets the store's own `error`).
@@ -163,6 +189,28 @@ export function DocumentLibrary() {
     [folders, currentFolderId, invalidTargets, moveFolder, moveDocument, showError, t]
   );
 
+  /**
+   * Move one or many documents into `target` (null = root). Used by the
+   * selection drag (all `selectedIds`) and single-card drags. Reloads the
+   * listing afterwards so a partial failure reconciles, and optionally clears
+   * the selection.
+   */
+  const performDocumentMove = useCallback(
+    async (ids: number[], target: number | null, clearAfter: boolean) => {
+      if (ids.length === 0 || target === currentFolderId) return;
+      setActionError(null);
+      try {
+        await Promise.all(ids.map((id) => moveDocument(id, target)));
+      } catch (e) {
+        showError(e, t("moveFailed"));
+      } finally {
+        await loadDocuments();
+        if (clearAfter) clearSelection();
+      }
+    },
+    [currentFolderId, moveDocument, loadDocuments, clearSelection, showError, t]
+  );
+
   // --- Drag-and-drop handlers ----------------------------------------------
 
   const canDropOn = useCallback(
@@ -178,12 +226,23 @@ export function DocumentLibrary() {
   const handleDropOn = useCallback(
     (target: DropTarget) => {
       const item = dragItem;
+      const wasSelection = dragIsSelection;
       setDropTarget(null);
       setDragItem(null);
+      setDragIsSelection(false);
       if (!item || !canDropOn(target)) return;
-      void performMove(item, target === "root" ? null : target);
+      const folderId = target === "root" ? null : target;
+      if (item.type === "document") {
+        // A selection drag moves every selected doc (and clears the selection);
+        // an unselected card moves just itself and leaves the selection intact.
+        const ids =
+          wasSelection && selectedIds.size > 0 ? Array.from(selectedIds) : [item.id];
+        void performDocumentMove(ids, folderId, wasSelection);
+      } else {
+        void performMove(item, folderId);
+      }
     },
-    [dragItem, canDropOn, performMove]
+    [dragItem, dragIsSelection, selectedIds, canDropOn, performMove, performDocumentMove]
   );
 
   const dragProps = (item: ExplorerItem) => ({
@@ -195,6 +254,23 @@ export function DocumentLibrary() {
     onDragEnd: () => {
       setDragItem(null);
       setDropTarget(null);
+      setDragIsSelection(false);
+    },
+  });
+
+  // Selection-aware drag for document cards: dragging a selected card carries
+  // the whole selection; dragging an unselected one carries only itself.
+  const docDragProps = (doc: RAGDocument) => ({
+    draggable: true,
+    onDragStart: (e: React.DragEvent) => {
+      e.dataTransfer.effectAllowed = "move";
+      setDragItem({ type: "document", id: doc.id, name: doc.name });
+      setDragIsSelection(selectedIds.has(doc.id) && selectedIds.size > 0);
+    },
+    onDragEnd: () => {
+      setDragItem(null);
+      setDropTarget(null);
+      setDragIsSelection(false);
     },
   });
 
@@ -211,6 +287,102 @@ export function DocumentLibrary() {
       handleDropOn(target);
     },
   });
+
+  // --- Multi-select (click + marquee) --------------------------------------
+
+  // Callback ref: keep a live map of card DOM nodes for marquee hit-testing.
+  const registerCardNode = useCallback(
+    (id: number) => (node: HTMLElement | null) => {
+      if (node) cardNodes.current.set(id, node);
+      else cardNodes.current.delete(id);
+    },
+    []
+  );
+
+  /** Plain click = select one; Ctrl/Cmd = toggle; Shift = range from anchor. */
+  const handleSelectDocument = useCallback(
+    (e: React.MouseEvent, doc: RAGDocument) => {
+      if (e.shiftKey && selectAnchorId != null) {
+        const ids = documents.map((d) => d.id);
+        const a = ids.indexOf(selectAnchorId);
+        const b = ids.indexOf(doc.id);
+        if (a !== -1 && b !== -1) {
+          const [lo, hi] = a < b ? [a, b] : [b, a];
+          setSelectedIds(new Set(ids.slice(lo, hi + 1)));
+          return;
+        }
+        setSelectedIds(new Set([doc.id]));
+        setSelectAnchorId(doc.id);
+      } else if (e.ctrlKey || e.metaKey) {
+        setSelectedIds((prev) => {
+          const next = new Set(prev);
+          if (next.has(doc.id)) next.delete(doc.id);
+          else next.add(doc.id);
+          return next;
+        });
+        setSelectAnchorId(doc.id);
+      } else {
+        setSelectedIds(new Set([doc.id]));
+        setSelectAnchorId(doc.id);
+      }
+    },
+    [documents, selectAnchorId]
+  );
+
+  /**
+   * Rubber-band selection. A press on empty grid space (not a card/button/link)
+   * starts it; dragging draws a rectangle and selects every card whose bounding
+   * rect intersects it; a press with no drag clears the selection.
+   */
+  const handleGridMouseDown = useCallback(
+    (e: React.MouseEvent) => {
+      if (e.button !== 0) return;
+      const el = e.target as HTMLElement;
+      if (el.closest("[data-doc-card],button,a,input,label")) return;
+      const container = gridRef.current;
+      if (!container) return;
+      e.preventDefault();
+      const containerRect = container.getBoundingClientRect();
+      const start = { x: e.clientX, y: e.clientY };
+      let moved = false;
+
+      const onMove = (ev: MouseEvent) => {
+        if (!moved && Math.hypot(ev.clientX - start.x, ev.clientY - start.y) < 4) return;
+        moved = true;
+        const left = Math.min(start.x, ev.clientX);
+        const top = Math.min(start.y, ev.clientY);
+        const right = Math.max(start.x, ev.clientX);
+        const bottom = Math.max(start.y, ev.clientY);
+        setMarquee({
+          x: left - containerRect.left,
+          y: top - containerRect.top,
+          w: right - left,
+          h: bottom - top,
+        });
+        const hit = new Set<number>();
+        cardNodes.current.forEach((node, id) => {
+          const r = node.getBoundingClientRect();
+          if (r.left < right && r.right > left && r.top < bottom && r.bottom > top) {
+            hit.add(id);
+          }
+        });
+        setSelectedIds(hit);
+      };
+
+      const onUp = () => {
+        window.removeEventListener("mousemove", onMove);
+        window.removeEventListener("mouseup", onUp);
+        setMarquee(null);
+        // A press that never moved is a click on empty space → clear selection.
+        if (!moved) clearSelection();
+        else setSelectAnchorId(null);
+      };
+
+      window.addEventListener("mousemove", onMove);
+      window.addEventListener("mouseup", onUp);
+    },
+    [clearSelection]
+  );
 
   // --- Create / rename / delete --------------------------------------------
 
@@ -254,9 +426,26 @@ export function DocumentLibrary() {
 
   const confirmDeleteDocument = useCallback(async () => {
     if (!documentToDelete) return;
-    await deleteDocument(documentToDelete.id);
-    setDocumentToDelete(null);
-  }, [documentToDelete, deleteDocument]);
+    try {
+      await deleteDocument(documentToDelete.id);
+      setDocumentToDelete(null);
+    } catch (e) {
+      // Close the modal so the inline banner (which sits behind it) is visible.
+      setDocumentToDelete(null);
+      showError(e, tDoc("deleteDocumentFailed"));
+    }
+  }, [documentToDelete, deleteDocument, showError, tDoc]);
+
+  const handleReindexDocument = useCallback(
+    async (documentId: number) => {
+      try {
+        await reindexDocument(documentId);
+      } catch (e) {
+        showError(e, tDoc("reindexFailed"));
+      }
+    },
+    [reindexDocument, showError, tDoc]
+  );
 
   const isEmpty = subfolders.length === 0 && documents.length === 0;
 
@@ -282,6 +471,24 @@ export function DocumentLibrary() {
       </div>
 
       <IndexStatusLegend />
+
+      {/* Selection toolbar (multi-select) */}
+      {selectedIds.size > 0 && (
+        <div className="flex items-center gap-3 px-3 py-2 rounded-lg bg-primary-500/10 border border-primary-500/20 text-sm">
+          <span className="font-medium text-primary-300">
+            {tDoc("selectedCount", { count: selectedIds.size })}
+          </span>
+          <span className="hidden sm:inline text-xs text-text-muted">
+            {tDoc("dragToMoveHint")}
+          </span>
+          <button
+            onClick={clearSelection}
+            className="ml-auto px-2.5 py-1 rounded-lg text-primary-300 hover:text-primary-200 hover:bg-primary-500/15 transition-colors text-xs font-medium"
+          >
+            {tCommon("clear")}
+          </button>
+        </div>
+      )}
 
       {/* Inline action error */}
       {actionError && (
@@ -331,16 +538,33 @@ export function DocumentLibrary() {
           <div className="text-xs font-medium text-text-muted uppercase tracking-wider">
             {t("documentsLabel")}
           </div>
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
+          <div
+            ref={gridRef}
+            onMouseDown={handleGridMouseDown}
+            className={clsx(
+              "relative grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2",
+              marquee && "select-none"
+            )}
+          >
+            {/* Rubber-band selection rectangle */}
+            {marquee && (
+              <div
+                className="pointer-events-none absolute z-20 rounded-sm border border-primary-400/70 bg-primary-500/15"
+                style={{ left: marquee.x, top: marquee.y, width: marquee.w, height: marquee.h }}
+              />
+            )}
             {documents.map((doc) => (
               <DocumentCard
                 key={doc.id}
                 doc={doc}
+                isSelected={selectedIds.has(doc.id)}
+                cardRef={registerCardNode(doc.id)}
+                onSelect={(e) => handleSelectDocument(e, doc)}
                 onView={() => doc.status === "completed" && openPDFViewer(doc.id, 1)}
-                onReindex={() => reindexDocument(doc.id)}
+                onReindex={() => void handleReindexDocument(doc.id)}
                 onDelete={() => setDocumentToDelete(doc)}
                 onMove={() => setMovingItem({ type: "document", id: doc.id, name: doc.name })}
-                dragProps={dragProps({ type: "document", id: doc.id, name: doc.name })}
+                dragProps={docDragProps(doc)}
               />
             ))}
           </div>
@@ -579,6 +803,9 @@ function FolderCard({
 
 function DocumentCard({
   doc,
+  isSelected,
+  cardRef,
+  onSelect,
   onView,
   onReindex,
   onDelete,
@@ -586,6 +813,9 @@ function DocumentCard({
   dragProps,
 }: {
   doc: RAGDocument;
+  isSelected: boolean;
+  cardRef: (node: HTMLElement | null) => void;
+  onSelect: (e: React.MouseEvent) => void;
   onView: () => void;
   onReindex: () => void;
   onDelete: () => void;
@@ -601,12 +831,22 @@ function DocumentCard({
 
   return (
     <div
+      ref={cardRef}
+      data-doc-card
+      onClick={(e) => {
+        // Ignore clicks that land on an action button (view/move/reindex/delete).
+        if ((e.target as HTMLElement).closest("button")) return;
+        onSelect(e);
+      }}
       onDoubleClick={onView}
       className={clsx(
         "group relative flex flex-col gap-2 px-3 py-3 rounded-xl border bg-white/[0.03] transition-all duration-200",
-        isCompleted
-          ? "border-white/10 hover:border-primary-500/30 hover:bg-white/[0.05] cursor-pointer"
-          : "border-white/10"
+        isSelected
+          ? "border-primary-500/50 bg-primary-500/10 ring-2 ring-primary-500/60"
+          : isCompleted
+            ? "border-white/10 hover:border-primary-500/30 hover:bg-white/[0.05]"
+            : "border-white/10",
+        isCompleted && "cursor-pointer"
       )}
       {...dragProps}
     >

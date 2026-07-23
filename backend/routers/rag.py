@@ -266,6 +266,19 @@ async def upload_document(
             detail="File too large. Maximum size is 100MB"
         )
 
+    # Validate the target folder is one the caller can see (mirrors move_document),
+    # so a document can't be filed under a foreign/nonexistent folder id. (isinstance
+    # int, not `is not None`, so an omitted form field is skipped cleanly.)
+    if isinstance(folder_id, int):
+        from models.document_folder import DocumentFolder as _Folder
+        from routers.folders import _visible as _folder_visible
+        _gid = await get_user_group_id(current_user.id, db)
+        _folder = (await db.execute(
+            select(_Folder).where(_Folder.id == folder_id, _folder_visible(current_user.id, _gid))
+        )).scalar_one_or_none()
+        if _folder is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Folder not found")
+
     try:
         # Save document
         document, created = await save_uploaded_document(
@@ -274,7 +287,7 @@ async def upload_document(
             content=content,
             db=db,
         )
-        if created and folder_id is not None:
+        if created and isinstance(folder_id, int):
             document.folder_id = folder_id
         await db.commit()
 
@@ -329,14 +342,19 @@ async def move_document(
     document = await get_document_for_user(db, document_id, current_user.id, group_id)
     folder_id = payload.get("folder_id")
     if folder_id is not None:
+        try:
+            folder_id = int(folder_id)
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                                detail="folder_id must be an integer or null")
         folder = (await db.execute(
             select(DocumentFolder).where(
-                DocumentFolder.id == int(folder_id), _visible(current_user.id, group_id)
+                DocumentFolder.id == folder_id, _visible(current_user.id, group_id)
             )
         )).scalar_one_or_none()
         if folder is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Folder not found")
-    document.folder_id = int(folder_id) if folder_id is not None else None
+    document.folder_id = folder_id
     return {"id": document.id, "folder_id": document.folder_id}
 
 

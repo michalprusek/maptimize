@@ -16,6 +16,7 @@ from utils.security import (
     verify_password,
     create_access_token,
     get_current_user,
+    require_interactive_user,
 )
 
 logger = logging.getLogger(__name__)
@@ -104,8 +105,10 @@ async def get_me(current_user: User = Depends(get_current_user)):
 
 
 @router.post("/refresh", response_model=Token)
-async def refresh_token(current_user: User = Depends(get_current_user)):
-    """Refresh access token."""
+async def refresh_token(current_user: User = Depends(require_interactive_user)):
+    """Refresh access token. Interactive login only — an OAuth connector token
+    must NOT be exchangeable for an unrestricted token (it refreshes via
+    /oauth/token instead)."""
     access_token = create_access_token(current_user.id, current_user.role.value)
     return Token(
         access_token=access_token,

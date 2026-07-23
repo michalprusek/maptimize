@@ -23,27 +23,40 @@ export function DocumentUpload() {
   // both new and duplicate ones, and each needs naming. Mirrors how
   // DiscoverSourcesModal reports per-paper failures.
   const [duplicates, setDuplicates] = useState<string[]>([]);
+  // Files that failed to upload (e.g. the 10/hour 429 rate limit). Without this
+  // a partial batch would flip to the green tick while the failures vanished.
+  const [failures, setFailures] = useState<Array<{ name: string; reason: string }>>([]);
 
   const onDrop = useCallback(
     async (acceptedFiles: File[]) => {
       setDuplicates([]);
+      setFailures([]);
       const skipped: string[] = [];
+      const failed: Array<{ name: string; reason: string }> = [];
       let stored = 0;
       for (const file of acceptedFiles) {
         const doc = await uploadDocument(file);
         if (doc?.is_duplicate) skipped.push(file.name);
         else if (doc) stored += 1;
+        else {
+          // uploadDocument returns null on failure and stashes the reason in the
+          // store's `error`; reads are safe here because uploads run one at a
+          // time (no yield between the await resolving and this line).
+          const reason = useDocumentStore.getState().error;
+          failed.push({ name: file.name, reason: reason || t("uploadFailedReason") });
+        }
       }
       setDuplicates(skipped);
-      // Only claim success when something was actually stored. Showing the
-      // green tick for a batch that stored nothing is the exact false success
-      // the duplicate notice exists to prevent.
-      if (stored > 0) {
+      setFailures(failed);
+      // Only claim success when something was stored AND nothing failed. Showing
+      // the green tick for a partial batch is the exact false success this notice
+      // exists to prevent.
+      if (stored > 0 && failed.length === 0) {
         setUploadSuccess(true);
         setTimeout(() => setUploadSuccess(false), 2000);
       }
     },
-    [uploadDocument]
+    [uploadDocument, t]
   );
 
   const { getRootProps, getInputProps, isDragActive } = useDropzone({
@@ -105,6 +118,18 @@ export function DocumentUpload() {
             <span className="text-xs text-amber-400/90 text-center">
               {t("documentDuplicate", { files: duplicates.join(", ") })}
             </span>
+          )}
+          {/* Failed uploads (e.g. rate limit) — list the file + reason so a
+              partial batch doesn't look like a clean success. */}
+          {failures.length > 0 && (
+            <div className="flex flex-col items-center gap-0.5 text-xs text-rose-400/90 text-center">
+              <span className="font-medium">{t("uploadFailed")}</span>
+              {failures.map((f) => (
+                <span key={f.name}>
+                  <span className="font-medium">{f.name}</span>: {f.reason}
+                </span>
+              ))}
+            </div>
           )}
         </div>
       )}

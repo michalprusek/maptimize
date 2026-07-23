@@ -692,9 +692,17 @@ async def process_text_document(document_id: int) -> None:
             logger.info("Text document %s processing completed", document.id)
         except Exception as e:
             logger.exception("Error processing text document %s", document_id)
-            document.status = DocumentStatus.FAILED.value
-            document.error_message = str(e)[:500]
-            await db.commit()
+            # Mark FAILED via a FRESH session -- if the failure came from a DB op
+            # the current session is poisoned and its commit would throw too,
+            # leaving the row stuck PROCESSING (mirrors process_document_async).
+            async with get_db_context() as db2:
+                doc2 = (await db2.execute(
+                    select(RAGDocument).where(RAGDocument.id == document_id)
+                )).scalar_one_or_none()
+                if doc2 is not None:
+                    doc2.status = DocumentStatus.FAILED.value
+                    doc2.error_message = str(e)[:500]
+                    await db2.commit()
 
 
 async def delete_document(document_id: int, user_id: int, db: AsyncSession) -> bool:

@@ -16,7 +16,7 @@ import logging
 import os
 import secrets
 from datetime import datetime, timedelta, timezone
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlparse
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
@@ -39,9 +39,29 @@ RESOURCE = f"{ISSUER}/mcp/"
 CODE_TTL_SECONDS = 300
 REFRESH_TTL_DAYS = 30
 
+# Only Claude's own callbacks (and loopback for native apps) may be registered as
+# redirect targets. Open DCR + arbitrary redirect_uris would turn /authorize into
+# a phishing oracle: an attacker registers redirect_uri=attacker.example, phishes
+# a victim to the REAL /authorize, and the issued code is redirected to them.
+ALLOWED_REDIRECT_PREFIXES = [
+    p.strip() for p in os.environ.get(
+        "OAUTH_ALLOWED_REDIRECT_PREFIXES",
+        "https://claude.ai/,https://claude.com/,http://localhost,http://127.0.0.1",
+    ).split(",") if p.strip()
+]
+
+
+def _redirect_allowed(uri: str) -> bool:
+    return isinstance(uri, str) and any(uri.startswith(p) for p in ALLOWED_REDIRECT_PREFIXES)
+
 
 def _b64url(data: bytes) -> str:
     return base64.urlsafe_b64encode(data).decode().rstrip("=")
+
+
+def _token_error(description: str, error: str = "invalid_grant", status_code: int = 400):
+    """RFC 6749 §5.2 token-endpoint error body ({"error": ...}), not FastAPI's {"detail": ...}."""
+    return JSONResponse(status_code=status_code, content={"error": error, "error_description": description})
 
 
 # ---- discovery metadata ----------------------------------------------------
@@ -80,6 +100,9 @@ async def register_client(request: Request, db: AsyncSession = Depends(get_db)):
     redirect_uris = body.get("redirect_uris") or []
     if not isinstance(redirect_uris, list) or not redirect_uris:
         raise HTTPException(status_code=400, detail="redirect_uris is required")
+    if not all(_redirect_allowed(u) for u in redirect_uris):
+        # Anti-phishing: only Claude's callbacks may be registered.
+        raise HTTPException(status_code=400, detail="redirect_uri is not permitted")
     client_id = "mcp-" + secrets.token_urlsafe(16)
     db.add(OAuthClient(
         client_id=client_id,
@@ -131,7 +154,10 @@ _LOGIN_TEMPLATE = """<!doctype html><html lang="en"><head>
  .brand img{width:40px;height:40px;filter:drop-shadow(0 0 9px rgba(0,212,170,.55))}
  .brand .name{font-weight:700;font-size:1.05rem;letter-spacing:.2px}
  h1{font-size:1.2rem;margin:0 0 .4rem}
- p.sub{color:var(--muted);font-size:.86rem;line-height:1.45;margin:0 0 1.4rem}
+ p.sub{color:var(--muted);font-size:.86rem;line-height:1.45;margin:0 0 1rem}
+ .consent{font-size:.78rem;color:var(--muted);background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.08);
+   border-radius:10px;padding:.55rem .7rem;margin:0 0 1.4rem;word-break:break-all}
+ .consent b{color:var(--text)}
  label{display:block;font-size:.76rem;color:var(--muted);margin:.9rem 0 .35rem;letter-spacing:.3px;text-transform:uppercase}
  input{width:100%;padding:.72rem .85rem;border-radius:12px;border:1px solid rgba(255,255,255,.08);
    background:rgba(255,255,255,.03);color:var(--text);font-size:.95rem;outline:none;transition:border .15s,box-shadow .15s}
@@ -149,6 +175,7 @@ _LOGIN_TEMPLATE = """<!doctype html><html lang="en"><head>
   <div class="brand"><img src="/logo.svg" alt=""><span class="name">maptimize</span></div>
   <h1>Connect Claude</h1>
   <p class="sub">Sign in with your maptimize account to let the Claude connector search and read your documents.</p>
+  <div class="consent">Authorizing <b>__CLIENT__</b> — you will be returned to <b>__RHOST__</b>. Only continue if this is your Claude app.</div>
   __ERR__
   <form method="post" action="/oauth/authorize">
    <input type="hidden" name="client_id" value="__CID__">
@@ -167,18 +194,28 @@ _LOGIN_TEMPLATE = """<!doctype html><html lang="en"><head>
 </body></html>"""
 
 
-def _login_page(client_id, redirect_uri, code_challenge, state, scope, error="") -> str:
+def _login_page(client_id, redirect_uri, code_challenge, state, scope, error="", client_name="") -> str:
     f = html.escape
     err_html = f'<div class="err">{f(error)}</div>' if error else ""
+    rhost = urlparse(redirect_uri).netloc or redirect_uri
     return (
         _LOGIN_TEMPLATE
         .replace("__ERR__", err_html)
+        .replace("__CLIENT__", f(client_name or "an application"))
+        .replace("__RHOST__", f(rhost))
         .replace("__CID__", f(client_id))
         .replace("__RURI__", f(redirect_uri))
         .replace("__CC__", f(code_challenge))
         .replace("__STATE__", f(state))
         .replace("__SCOPE__", f(scope))
     )
+
+
+async def _client_name(db: AsyncSession, client_id: str) -> str:
+    row = (await db.execute(
+        select(OAuthClient).where(OAuthClient.client_id == client_id)
+    )).scalar_one_or_none()
+    return row.client_name if row else ""
 
 
 @router.get("/oauth/authorize", response_class=HTMLResponse)
@@ -196,9 +233,12 @@ async def authorize(
         raise HTTPException(status_code=400, detail="unsupported_response_type")
     if code_challenge_method != "S256" or not code_challenge:
         raise HTTPException(status_code=400, detail="PKCE (S256) required")
-    if not await _client_allows(db, client_id, redirect_uri):
+    if not _redirect_allowed(redirect_uri) or not await _client_allows(db, client_id, redirect_uri):
         raise HTTPException(status_code=400, detail="invalid client_id or redirect_uri")
-    return HTMLResponse(_login_page(client_id, redirect_uri, code_challenge, state, scope))
+    return HTMLResponse(_login_page(
+        client_id, redirect_uri, code_challenge, state, scope,
+        client_name=await _client_name(db, client_id),
+    ))
 
 
 @router.post("/oauth/authorize", response_class=HTMLResponse)
@@ -212,13 +252,14 @@ async def authorize_submit(
     state: str = Form(""),
     scope: str = Form(""),
 ):
-    if not await _client_allows(db, client_id, redirect_uri):
+    if not _redirect_allowed(redirect_uri) or not await _client_allows(db, client_id, redirect_uri):
         raise HTTPException(status_code=400, detail="invalid client")
     user = (await db.execute(select(User).where(User.email == email))).scalar_one_or_none()
     if user is None or not verify_password(password, user.password_hash):
         return HTMLResponse(
             _login_page(client_id, redirect_uri, code_challenge, state, scope,
-                        error="Incorrect email or password"),
+                        error="Incorrect email or password",
+                        client_name=await _client_name(db, client_id)),
             status_code=401,
         )
     code = jwt.encode(
@@ -246,8 +287,11 @@ async def authorize_submit(
 async def _consume_code_jti(jti: str) -> bool:
     """Single-use enforcement for authorization codes. Returns True the first
     time a jti is seen, False on replay. Fail-open if Redis is unavailable."""
-    url = os.environ.get("REDIS_URL")
+    url = getattr(settings, "redis_url", None) or os.environ.get("REDIS_URL")
     if not url:
+        logger.warning(
+            "OAuth authorization-code single-use check DISABLED (no Redis) — replay protection inactive"
+        )
         return True
     try:
         import redis.asyncio as redis
@@ -282,11 +326,11 @@ def _token_response(user: User, client_id) -> JSONResponse:
     })
 
 
-def _decode(token: str) -> dict:
+def _decode(token: str) -> dict | None:
     try:
         return jwt.decode(token, settings.jwt_secret, algorithms=[settings.jwt_algorithm])
     except JWTError:
-        raise HTTPException(status_code=400, detail="invalid_grant")
+        return None
 
 
 @router.post("/oauth/token")
@@ -301,29 +345,29 @@ async def token(
 ):
     if grant_type == "authorization_code":
         payload = _decode(code or "")
-        if payload.get("typ") != "code":
-            raise HTTPException(status_code=400, detail="invalid_grant")
+        if not payload or payload.get("typ") != "code":
+            return _token_error("invalid or expired authorization code")
         if payload.get("ruri") != redirect_uri:
-            raise HTTPException(status_code=400, detail="invalid_grant (redirect_uri)")
+            return _token_error("redirect_uri mismatch")
         if client_id and payload.get("cid") != client_id:
-            raise HTTPException(status_code=400, detail="invalid_grant (client_id)")
+            return _token_error("client_id mismatch")
         expected = _b64url(hashlib.sha256((code_verifier or "").encode()).digest())
         if not code_verifier or expected != payload.get("cc"):
-            raise HTTPException(status_code=400, detail="invalid_grant (PKCE)")
+            return _token_error("PKCE verification failed")
         if not await _consume_code_jti(payload.get("jti", "")):
-            raise HTTPException(status_code=400, detail="invalid_grant (code already used)")
+            return _token_error("authorization code already used")
         user = await db.get(User, int(payload["sub"]))
         if user is None:
-            raise HTTPException(status_code=400, detail="invalid_grant")
+            return _token_error("unknown user")
         return _token_response(user, payload.get("cid"))
 
     if grant_type == "refresh_token":
         payload = _decode(refresh_token or "")
-        if payload.get("typ") != "refresh":
-            raise HTTPException(status_code=400, detail="invalid_grant")
+        if not payload or payload.get("typ") != "refresh":
+            return _token_error("invalid refresh token")
         user = await db.get(User, int(payload["sub"]))
         if user is None:
-            raise HTTPException(status_code=400, detail="invalid_grant")
+            return _token_error("unknown user")
         return _token_response(user, payload.get("cid"))
 
-    raise HTTPException(status_code=400, detail="unsupported_grant_type")
+    return _token_error("unsupported grant_type", error="unsupported_grant_type")

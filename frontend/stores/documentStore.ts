@@ -186,10 +186,14 @@ export const useDocumentStore = create<DocumentState>()((set, get) => ({
         isDeletingDocument: false,
       }));
     } catch (error) {
+      // Re-throw (like the folder ops) so the caller can surface the message —
+      // the store's own `error` field is not rendered by any component, so a
+      // swallowed failure would leave the doc in place with no explanation.
       set({
         error: error instanceof Error ? error.message : "Failed to delete document",
         isDeletingDocument: false,
       });
+      throw error;
     }
   },
 
@@ -208,9 +212,11 @@ export const useDocumentStore = create<DocumentState>()((set, get) => ({
       }));
       await get().loadDocuments();
     } catch (error) {
+      // Re-throw so the caller can surface it (see deleteDocument above).
       set({
         error: error instanceof Error ? error.message : "Failed to reindex document",
       });
+      throw error;
     }
   },
 

@@ -111,7 +111,12 @@ async def main() -> None:
     if args.fov:
         fdone, ffailed = await _reembed_fov_images(args.limit)
         logger.info("FOV images: %d re-embedded, %d failed/skipped.", fdone, ffailed)
+        done += fdone
+        failed += ffailed
     logger.info("Done.")
+    # Non-zero exit so wrapping automation notices a run that failed everything.
+    if failed and not done:
+        sys.exit(1)
 
 
 if __name__ == "__main__":

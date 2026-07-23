@@ -22,7 +22,7 @@ from schemas.settings import (
     UserSettingsUpdate,
 )
 from schemas.user import UserResponse
-from utils.security import get_current_user, hash_password, verify_password
+from utils.security import get_current_user, require_interactive_user, hash_password, verify_password
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -109,7 +109,7 @@ async def update_settings(
 @router.patch("/profile", response_model=UserResponse)
 async def update_profile(
     updates: ProfileUpdate,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_interactive_user),
     db: AsyncSession = Depends(get_db)
 ):
     """Update user profile (name, email)."""
@@ -136,7 +136,7 @@ async def update_profile(
 @router.post("/password")
 async def change_password(
     password_data: PasswordChange,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_interactive_user),
     db: AsyncSession = Depends(get_db)
 ):
     """Change user password. Requires current password verification."""
