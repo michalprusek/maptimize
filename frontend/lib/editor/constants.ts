@@ -20,6 +20,16 @@ export const HANDLE_HIT_PADDING = 4;
 export const MIN_BBOX_SIZE = 10;
 
 /**
+ * Distance (screen px) of the rotation handle above the box's top edge.
+ */
+export const ROTATION_HANDLE_DISTANCE = 24;
+
+/**
+ * Angle snap increment (degrees) used while rotating with Shift held.
+ */
+export const ROTATION_SNAP_DEGREES = 15;
+
+/**
  * Maximum bbox dimension in pixels.
  */
 export const MAX_BBOX_SIZE = 2048;

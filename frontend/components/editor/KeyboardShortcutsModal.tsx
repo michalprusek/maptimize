@@ -123,6 +123,10 @@ export function KeyboardShortcutsModal({ isOpen, onClose }: KeyboardShortcutsMod
             action={t("deleteCell")}
           />
           <ShortcutRow
+            keys={<><span className="text-xs text-text-muted">↻ drag</span><span className="text-text-muted text-xs mx-1">+</span><KeyCap>Shift</KeyCap></>}
+            action={t("rotateCell")}
+          />
+          <ShortcutRow
             keys={<><KeyCap>Z</KeyCap><span className="text-text-muted text-xs mx-1">/</span><KeyCap>Ctrl</KeyCap><span className="text-text-muted text-xs mx-0.5">+</span><KeyCap>Z</KeyCap></>}
             action={t("undo")}
           />

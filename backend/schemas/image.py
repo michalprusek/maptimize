@@ -117,6 +117,7 @@ class CellCropSummary(BaseModel):
     bbox_y: int
     bbox_w: int
     bbox_h: int
+    bbox_angle: Optional[float] = None
     bundleness_score: Optional[float] = None
     sum_crop_path: Optional[str] = None  # SUM projection crop path
     excluded: bool = False
@@ -134,6 +135,7 @@ class CellCropGalleryResponse(BaseModel):
     bbox_y: int
     bbox_w: int
     bbox_h: int
+    bbox_angle: Optional[float] = None
     bundleness_score: Optional[float] = None
     detection_confidence: Optional[float] = None
     excluded: bool = False
@@ -160,6 +162,7 @@ class CellCropGalleryResponse(BaseModel):
             bbox_y=crop.bbox_y,
             bbox_w=crop.bbox_w,
             bbox_h=crop.bbox_h,
+            bbox_angle=crop.bbox_angle,
             bundleness_score=crop.bundleness_score,
             detection_confidence=crop.detection_confidence,
             excluded=crop.excluded,
@@ -254,6 +257,7 @@ class CropBboxUpdateRequest(BaseModel):
     bbox_y: int = Field(..., ge=0)
     bbox_w: int = Field(..., gt=0, le=2048)
     bbox_h: int = Field(..., gt=0, le=2048)
+    bbox_angle: Optional[float] = Field(None, ge=-180.0, le=180.0)
 
     @field_validator("bbox_w", "bbox_h")
     @classmethod
@@ -271,6 +275,7 @@ class CropBboxUpdateResponse(BaseModel):
     bbox_y: int
     bbox_w: int
     bbox_h: int
+    bbox_angle: Optional[float] = None
     needs_regeneration: bool = True
 
     class Config:
@@ -283,6 +288,7 @@ class ManualCropCreateRequest(BaseModel):
     bbox_y: int = Field(..., ge=0)
     bbox_w: int = Field(..., gt=0, le=2048)
     bbox_h: int = Field(..., gt=0, le=2048)
+    bbox_angle: Optional[float] = Field(None, ge=-180.0, le=180.0)
     map_protein_id: Optional[int] = None
 
     @field_validator("bbox_w", "bbox_h")
@@ -302,6 +308,7 @@ class ManualCropCreateResponse(BaseModel):
     bbox_y: int
     bbox_w: int
     bbox_h: int
+    bbox_angle: Optional[float] = None
     detection_confidence: Optional[float] = None
     needs_processing: bool = True
 
@@ -324,6 +331,7 @@ class CropRegenerateResponse(BaseModel):
     bbox_y: int
     bbox_w: int
     bbox_h: int
+    bbox_angle: Optional[float] = None
     mip_path: Optional[str] = None
     sum_crop_path: Optional[str] = None
     mean_intensity: Optional[float] = None
@@ -344,6 +352,7 @@ class CropBatchUpdateItem(BaseModel):
     bbox_y: Optional[int] = Field(None, ge=0)
     bbox_w: Optional[int] = Field(None, gt=0, le=2048)
     bbox_h: Optional[int] = Field(None, gt=0, le=2048)
+    bbox_angle: Optional[float] = Field(None, ge=-180.0, le=180.0)
     map_protein_id: Optional[int] = None
 
     @model_validator(mode="after")

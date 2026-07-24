@@ -31,6 +31,23 @@ logger = logging.getLogger(__name__)
 # =============================================================================
 
 
+def _rotated_corners(
+    bbox_x: int, bbox_y: int, bbox_w: int, bbox_h: int, bbox_angle: float
+) -> list[Tuple[float, float]]:
+    """Corners of the axis-aligned box rotated by ``bbox_angle`` degrees about its
+    centre, as (x, y) pixel coordinates. Shared by validation and (conceptually) the
+    de-rotated extraction so the two agree on what the rotated box covers."""
+    cx = bbox_x + bbox_w / 2.0
+    cy = bbox_y + bbox_h / 2.0
+    theta = np.deg2rad(bbox_angle)
+    cos_t, sin_t = np.cos(theta), np.sin(theta)
+    corners = []
+    for u in (-bbox_w / 2.0, bbox_w / 2.0):
+        for v in (-bbox_h / 2.0, bbox_h / 2.0):
+            corners.append((cx + u * cos_t - v * sin_t, cy + u * sin_t + v * cos_t))
+    return corners
+
+
 def validate_bbox_within_image(
     bbox_x: int,
     bbox_y: int,
@@ -38,6 +55,7 @@ def validate_bbox_within_image(
     bbox_h: int,
     image_width: int,
     image_height: int,
+    bbox_angle: float = 0.0,
 ) -> Tuple[bool, Optional[str]]:
     """
     Validate that bbox is within image bounds.
@@ -49,10 +67,22 @@ def validate_bbox_within_image(
         bbox_h: Bounding box height
         image_width: Parent image width
         image_height: Parent image height
+        bbox_angle: Rotation in degrees about the box centre (0 = axis-aligned)
 
     Returns:
         Tuple of (is_valid, error_message)
     """
+    if bbox_angle:
+        # A rotated box's CORNERS (not its top-left) must stay in bounds — the
+        # centre being inside is not enough.
+        if bbox_w < 10 or bbox_h < 10:
+            return False, "Bbox dimensions must be at least 10 pixels"
+        for px, py in _rotated_corners(bbox_x, bbox_y, bbox_w, bbox_h, bbox_angle):
+            if px < 0 or py < 0 or px > image_width or py > image_height:
+                return False, "Rotated bbox exceeds image bounds"
+        return True, None
+
+    # Axis-aligned: keep the original checks (order + messages) unchanged.
     if bbox_x < 0 or bbox_y < 0:
         return False, "Bbox coordinates cannot be negative"
     if bbox_x + bbox_w > image_width:
@@ -75,21 +105,54 @@ def extract_crop_from_projection(
     bbox_y: int,
     bbox_w: int,
     bbox_h: int,
+    bbox_angle: float = 0.0,
 ) -> np.ndarray:
     """
-    Extract crop pixels from projection array.
+    Extract crop pixels from a projection array.
+
+    With ``bbox_angle == 0`` this is a plain axis-aligned slice (fast path,
+    unchanged). With a non-zero angle the crop is extracted **de-rotated**: the box,
+    rotated ``bbox_angle`` degrees about its centre, is resampled so the cell appears
+    upright in the returned ``bbox_h × bbox_w`` array. ``affine_transform`` samples
+    only the crop-sized output from the source (it does not rotate the whole FOV) and
+    handles an arbitrary rotation centre — unlike ``ndimage.rotate``.
 
     Args:
-        projection: 2D numpy array of the projection image
-        bbox_x: Bounding box X coordinate
-        bbox_y: Bounding box Y coordinate
-        bbox_w: Bounding box width
-        bbox_h: Bounding box height
+        projection: 2D (H, W) or 3D (H, W, C) numpy array of the projection image
+        bbox_x/bbox_y: top-left of the axis-aligned box (before rotation)
+        bbox_w/bbox_h: box size
+        bbox_angle: rotation in degrees about the box centre
 
     Returns:
-        Cropped numpy array
+        Cropped numpy array of shape (bbox_h, bbox_w[, C])
     """
-    return projection[bbox_y:bbox_y + bbox_h, bbox_x:bbox_x + bbox_w]
+    if not bbox_angle:
+        return projection[bbox_y:bbox_y + bbox_h, bbox_x:bbox_x + bbox_w]
+
+    from scipy import ndimage
+
+    cx = bbox_x + bbox_w / 2.0
+    cy = bbox_y + bbox_h / 2.0
+    theta = np.deg2rad(bbox_angle)
+    cos_t, sin_t = np.cos(theta), np.sin(theta)
+    # For output pixel (i, j): input = centre + rotate(j - w/2, i - h/2). Expressed as
+    # affine_transform's out->in map (row, col): matrix @ (i, j) + offset.
+    matrix = np.array([[cos_t, sin_t], [-sin_t, cos_t]])
+    row_off = cy - (bbox_h / 2.0) * cos_t - (bbox_w / 2.0) * sin_t
+    col_off = cx + (bbox_h / 2.0) * sin_t - (bbox_w / 2.0) * cos_t
+    if projection.ndim == 3:  # (H, W, C): identity on the channel axis, don't mix colours
+        full = np.eye(3)
+        full[:2, :2] = matrix
+        matrix = full
+        offset = (row_off, col_off, 0.0)
+        output_shape = (bbox_h, bbox_w, projection.shape[2])
+    else:
+        offset = (row_off, col_off)
+        output_shape = (bbox_h, bbox_w)
+    return ndimage.affine_transform(
+        projection, matrix, offset=offset, output_shape=output_shape,
+        order=1, mode="constant", cval=0.0,
+    )
 
 
 def save_crop_image(
@@ -212,7 +275,7 @@ async def regenerate_crop_features(
     except Exception as e:
         return {"success": False, "error": f"Failed to load MIP: {e}"}
 
-    # Validate bbox within image bounds
+    # Validate bbox within image bounds (angle-aware: rotated corners must fit)
     is_valid, error = validate_bbox_within_image(
         crop.bbox_x,
         crop.bbox_y,
@@ -220,6 +283,7 @@ async def regenerate_crop_features(
         crop.bbox_h,
         image.width,
         image.height,
+        crop.bbox_angle or 0.0,
     )
     if not is_valid:
         return {"success": False, "error": error}
@@ -231,9 +295,9 @@ async def regenerate_crop_features(
     upload_dir = Path(image.file_path).parent
     crops_dir = upload_dir / "crops"
 
-    # Extract and save new MIP crop
+    # Extract and save new MIP crop (de-rotated when bbox_angle is set)
     mip_crop = extract_crop_from_projection(
-        mip, crop.bbox_x, crop.bbox_y, crop.bbox_w, crop.bbox_h
+        mip, crop.bbox_x, crop.bbox_y, crop.bbox_w, crop.bbox_h, crop.bbox_angle or 0.0
     )
     crop.mip_path = str(
         save_crop_image(mip_crop, crops_dir, crop.bbox_x, crop.bbox_y, "mip")
@@ -244,7 +308,8 @@ async def regenerate_crop_features(
         try:
             sum_proj = np.array(PILImage.open(image.sum_path))
             sum_crop = extract_crop_from_projection(
-                sum_proj, crop.bbox_x, crop.bbox_y, crop.bbox_w, crop.bbox_h
+                sum_proj, crop.bbox_x, crop.bbox_y, crop.bbox_w, crop.bbox_h,
+                crop.bbox_angle or 0.0,
             )
             crop.sum_crop_path = str(
                 save_crop_image(sum_crop, crops_dir, crop.bbox_x, crop.bbox_y, "sum")
@@ -296,6 +361,7 @@ async def create_manual_crop(
     bbox_h: int,
     db: AsyncSession,
     map_protein_id: Optional[int] = None,
+    bbox_angle: float = 0.0,
 ) -> Tuple[Optional[CellCrop], Optional[str]]:
     """
     Create a new manual crop on an FOV image.
@@ -312,9 +378,9 @@ async def create_manual_crop(
     Returns:
         Tuple of (CellCrop or None, error message or None)
     """
-    # Validate bbox
+    # Validate bbox (angle-aware: rotated corners must fit)
     is_valid, error = validate_bbox_within_image(
-        bbox_x, bbox_y, bbox_w, bbox_h, image.width, image.height
+        bbox_x, bbox_y, bbox_w, bbox_h, image.width, image.height, bbox_angle
     )
     if not is_valid:
         return None, error
@@ -330,8 +396,8 @@ async def create_manual_crop(
     except Exception as e:
         return None, f"Failed to load MIP: {e}"
 
-    # Extract crop
-    mip_crop = extract_crop_from_projection(mip, bbox_x, bbox_y, bbox_w, bbox_h)
+    # Extract crop (de-rotated when bbox_angle is set)
+    mip_crop = extract_crop_from_projection(mip, bbox_x, bbox_y, bbox_w, bbox_h, bbox_angle)
 
     # Determine crops directory and save
     upload_dir = Path(image.file_path).parent
@@ -344,7 +410,7 @@ async def create_manual_crop(
         try:
             sum_proj = np.array(PILImage.open(image.sum_path))
             sum_crop = extract_crop_from_projection(
-                sum_proj, bbox_x, bbox_y, bbox_w, bbox_h
+                sum_proj, bbox_x, bbox_y, bbox_w, bbox_h, bbox_angle
             )
             sum_crop_path = save_crop_image(sum_crop, crops_dir, bbox_x, bbox_y, "sum")
         except Exception as e:
@@ -358,6 +424,7 @@ async def create_manual_crop(
         bbox_y=bbox_y,
         bbox_w=bbox_w,
         bbox_h=bbox_h,
+        bbox_angle=bbox_angle or None,
         detection_confidence=None,  # Manual crops have no detection confidence
         mip_path=str(mip_path),
         sum_crop_path=str(sum_crop_path) if sum_crop_path else None,

@@ -12,14 +12,16 @@ import type { CellCropGallery, FOVImage } from "@/lib/api";
 export interface EditorBbox {
   /** Unique ID - number for existing crops, string (temp-id) for new */
   id: number | string;
-  /** Bbox X coordinate (left) */
+  /** Bbox X coordinate (left) of the axis-aligned rectangle (before rotation) */
   x: number;
-  /** Bbox Y coordinate (top) */
+  /** Bbox Y coordinate (top) of the axis-aligned rectangle (before rotation) */
   y: number;
   /** Bbox width */
   width: number;
   /** Bbox height */
   height: number;
+  /** Rotation in degrees about the box centre (0 = axis-aligned) */
+  angle: number;
   /** Reference to CellCrop.id if existing */
   cropId?: number;
   /** True for newly created bboxes (not yet saved) */
@@ -32,6 +34,7 @@ export interface EditorBbox {
     y: number;
     width: number;
     height: number;
+    angle: number;
   };
 }
 
@@ -394,6 +397,8 @@ export interface Rect {
   y: number;
   width: number;
   height: number;
+  /** Rotation in degrees about the rect centre (0 = axis-aligned) */
+  angle?: number;
 }
 
 /**
@@ -409,12 +414,14 @@ export interface ContextMenuState {
  * Convert CellCropGallery to EditorBbox.
  */
 export function cropToEditorBbox(crop: CellCropGallery): EditorBbox {
+  const angle = crop.bbox_angle ?? 0;
   return {
     id: crop.id,
     x: crop.bbox_x,
     y: crop.bbox_y,
     width: crop.bbox_w,
     height: crop.bbox_h,
+    angle,
     cropId: crop.id,
     isNew: false,
     isModified: false,
@@ -423,6 +430,7 @@ export function cropToEditorBbox(crop: CellCropGallery): EditorBbox {
       y: crop.bbox_y,
       width: crop.bbox_w,
       height: crop.bbox_h,
+      angle,
     },
   };
 }

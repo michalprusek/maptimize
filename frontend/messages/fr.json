@@ -466,6 +466,7 @@
       "pan": "Deplacer",
       "toggleAddMode": "Basculer mode ajout",
       "deleteCell": "Supprimer cellule",
+      "rotateCell": "Pivoter cellule (Maj = pas de 15°)",
       "undo": "Annuler",
       "toggleSegmentMode": "Basculer mode segment",
       "toggleAddPoints": "Basculer mode ajout points",
