@@ -84,3 +84,44 @@ def test_bad_reload_keeps_previous_registry(tmp_path):
     os.utime(yaml_file, (future, future))
     # invalid edit is ignored, last good registry survives
     assert [t.name for t in reg.list_tools()] == ["list_documents"]
+
+
+def test_enum_and_annotations_surface_in_tool(tmp_path):
+    yaml_file = tmp_path / "tools.yaml"
+    yaml_file.write_text(
+        "tools:\n"
+        "  - name: find_documents\n"
+        "    description: filter\n"
+        "    handler: http_json\n"
+        "    method: GET\n"
+        "    path: /api/rag/documents\n"
+        "    annotations:\n"
+        "      readOnlyHint: true\n"
+        "      openWorldHint: false\n"
+        "    params:\n"
+        "      - name: status\n"
+        "        in: query\n"
+        "        enum: [pending, completed]\n"
+    )
+    tool = ToolRegistry(str(yaml_file), _client_on(str(yaml_file))).list_tools()[0]
+    # enum reaches the model-facing input schema
+    assert tool.inputSchema["properties"]["status"]["enum"] == ["pending", "completed"]
+    # annotations become a typed ToolAnnotations the client can read
+    assert tool.annotations is not None
+    assert tool.annotations.readOnlyHint is True
+    assert tool.annotations.openWorldHint is False
+
+
+def test_tool_without_annotations_has_none(tmp_path):
+    yaml_file = tmp_path / "tools.yaml"
+    yaml_file.write_text(
+        "tools:\n"
+        "  - name: list_documents\n"
+        "    description: plain\n"
+        "    handler: http_json\n"
+        "    method: GET\n"
+        "    path: /api/rag/documents\n"
+        "    params: []\n"
+    )
+    tool = ToolRegistry(str(yaml_file), _client_on(str(yaml_file))).list_tools()[0]
+    assert tool.annotations is None  # unannotated tools stay unset (SDK worst-case defaults)
