@@ -17,10 +17,15 @@ def _noop(request: httpx.Request) -> httpx.Response:
 
 def test_list_tools_builds_schema_from_yaml(make_registry):
     tools = {t.name: t for t in make_registry(_noop).list_tools()}
-    # consolidated set: the three overlapping search/list tools are gone
-    assert {"search_documents", "find_documents", "get_document_metadata",
-            "read_document_pages", "web_search"} <= set(tools)
-    assert not ({"semantic_search", "semantic_image_search", "list_documents"} & set(tools))
+    # Pin the EXACT public tool contract: a dropped or accidentally-added tool
+    # fails here (the three overlapping search/list tools are gone).
+    assert set(tools) == {
+        "search_documents", "read_document_pages", "read_page_region", "web_search",
+        "find_documents", "get_document_metadata", "find_similar_pages",
+        "search_by_image", "search_by_text_example", "index_text", "index_document",
+        "reindex_document", "delete_document", "get_indexing_status",
+        "list_folders", "create_folder", "move_document",
+    }
 
     schema = tools["search_documents"].inputSchema
     assert schema["properties"]["query"]["type"] == "string"

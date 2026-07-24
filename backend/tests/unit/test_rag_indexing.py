@@ -660,6 +660,19 @@ async def test_render_single_pdf_page_error_returns_none(tmp_path):
         assert await dind.render_single_pdf_page(tmp_path / "d.pdf", 1, 300) is None
 
 
+async def test_render_region_corrupt_raster_returns_none(mock_db, tmp_path):
+    # The stored raster exists on disk but is not a decodable image. That must
+    # degrade to None (-> 404), never bubble up as a 500.
+    raster = tmp_path / "p.png"
+    raster.write_bytes(b"not-a-real-image")
+    doc = document(file_type="image", original_path=str(tmp_path / "x.png"),
+                   pages=[page(page_number=1, image_path=str(raster))])
+    mock_db.execute.return_value = make_result(scalar=doc)
+    with patch.object(rag, "settings", _REGION_SETTINGS):
+        out = await rag.render_page_region(1, 1, [10, 10, 500, 500], 7, mock_db)
+    assert out is None
+
+
 async def test_render_region_non_pdf_falls_back_to_raster(mock_db, tmp_path):
     raster = make_png(tmp_path / "p.png", size=(800, 1000))
     doc = document(file_type="image", original_path=str(tmp_path / "img.png"),

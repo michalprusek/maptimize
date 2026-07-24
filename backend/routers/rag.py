@@ -524,7 +524,10 @@ async def serve_page_region(
         if len(coords) != 4:
             raise ValueError
     except ValueError:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="bbox must be four integers ymin,xmin,ymax,xmax")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="bbox must be four integers ymin,xmin,ymax,xmax",
+        ) from None
 
     group_id = await get_user_group_id(current_user.id, db)
     # Scope check (raises 404 if not visible to this user / group).

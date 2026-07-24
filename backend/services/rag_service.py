@@ -7,6 +7,7 @@ This service provides:
 - Passage extraction from document pages
 """
 
+import asyncio
 import base64
 import hashlib
 import json
@@ -930,9 +931,31 @@ async def render_page_region(
     if document.file_type == "pdf" and pdf_path and pdf_path.exists():
         source = await render_single_pdf_page(pdf_path, page_number, settings.rag_region_dpi)
     if source is None:  # non-PDF document, or the hi-res render failed
-        source = PILImage.open(image_path).convert("RGB")
+        try:
+            source = PILImage.open(image_path).convert("RGB")
+        except Exception as e:  # a corrupt/unreadable raster must not 500
+            logger.exception(f"Error opening raster for doc {document_id} p.{page_number}: {e}")
+            return None
 
     try:
+        # Crop/resize/PNG-encode is CPU-bound (crops up to rag_region_max_edge) —
+        # run it off the event loop so a large zoom doesn't stall other requests.
+        return await asyncio.get_event_loop().run_in_executor(
+            None, _crop_region_png, source, bbox, settings.rag_region_max_edge
+        )
+    except Exception as e:
+        logger.exception(f"Error rendering region of doc {document_id} p.{page_number}: {e}")
+        return None
+
+
+def _crop_region_png(source: "PILImage.Image", bbox: List[int], max_edge: int) -> bytes:
+    """CPU-bound crop of ``bbox`` (0-1000) from ``source``, capped at ``max_edge``
+    on the longest edge, encoded as PNG. Always closes ``source``. Runs in an
+    executor (never touch the event loop from here)."""
+    from PIL import Image as PILImage
+
+    try:
+        ymin, xmin, ymax, xmax = bbox
         width, height = source.size
         pad = int(min(width, height) * 0.015)  # ~1.5% breathing room around the crop
         px_xmin = max(0, int(xmin * width / 1000) - pad)
@@ -942,8 +965,8 @@ async def render_page_region(
         crop = source.crop((px_xmin, px_ymin, px_xmax, px_ymax))
 
         longest = max(crop.size)
-        if longest > settings.rag_region_max_edge:
-            scale = settings.rag_region_max_edge / longest
+        if longest > max_edge:
+            scale = max_edge / longest
             crop = crop.resize(
                 (max(1, int(crop.width * scale)), max(1, int(crop.height * scale))),
                 PILImage.LANCZOS,
@@ -952,9 +975,6 @@ async def render_page_region(
         buffer = BytesIO()
         crop.save(buffer, "PNG", optimize=True)
         return buffer.getvalue()
-    except Exception as e:
-        logger.exception(f"Error rendering region of doc {document_id} p.{page_number}: {e}")
-        return None
     finally:
         source.close()
 
