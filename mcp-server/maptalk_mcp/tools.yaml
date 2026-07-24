@@ -9,12 +9,18 @@
 # Each tool entry:
 #   name        tool name shown to the model
 #   description what the model reads to decide when to use it (keep it concrete)
-#   handler     http_json | document_pages | web_search
-#   method/path backend REST endpoint (http_json only)
+#   handler     one of: http_json, http_post_json, document_pages, search_documents,
+#               search_by_image, read_page_region, index_document, web_search
+#               (composite handlers live in handlers.py; the rest proxy a REST call)
+#   method/path backend REST endpoint (http_json / http_post_json)
+#   annotations optional MCP hints: readOnlyHint / destructiveHint / idempotentHint
+#               / openWorldHint (shape consent UX in the client; not a security gate)
 #   params      inputs. `in:` is one of:
 #                 query -> sent as a querystring param (maps_to overrides the key)
 #                 path  -> substituted into {placeholder} in `path`
+#                 body  -> JSON body field (http_post_json)
 #                 arg   -> consumed by a composite handler, not sent verbatim
+#               a param may carry `enum:` to constrain its allowed values.
 # ============================================================================
 
 tools:
@@ -193,9 +199,12 @@ tools:
 
   - name: find_documents
     description: >
-      Filter/search documents by metadata — name, DOI, file type, status, page
-      count — and by full text over the pages' OCR text. Returns document
-      metadata (not page images).
+      Filter the document library by METADATA only — name, DOI, file type,
+      indexing status, page-count range. Returns document metadata (id, name,
+      type, status, pages, dates), NOT page content. There is no full-text search
+      (pages are stored as images, not OCR text) — to search content by meaning,
+      use search_documents. Also use this to browse the library and get a
+      document_id.
     handler: http_json
     method: GET
     path: /api/rag/documents
@@ -231,7 +240,11 @@ tools:
         description: Max documents to return.
 
   - name: get_document_metadata
-    description: Get one document's metadata and indexing status.
+    description: >
+      Get one document's metadata by id: name, file type, page count, indexing
+      status/progress, size, and dates. Use it to check whether a document is
+      fully indexed before reading it, or to confirm a document_id. Returns
+      metadata only — use read_document_pages to read the content.
     handler: http_json
     method: GET
     path: /api/rag/documents/{document_id}
@@ -348,7 +361,11 @@ tools:
         description: Base64-encoded file bytes.
 
   - name: reindex_document
-    description: Re-index an existing document (owner only). Fixes a failed/stale document.
+    description: >
+      Re-run indexing (page rendering + embeddings) for an existing document.
+      Use this to recover a document whose status is `failed`, or to refresh one
+      after an encoder change. Owner-only: you can only reindex your own
+      documents, not group-shared ones. Safe to repeat.
     handler: http_post_json
     method: POST
     path: /api/rag/documents/{document_id}/reindex
@@ -359,7 +376,11 @@ tools:
         required: true
 
   - name: delete_document
-    description: Delete a document from the library (owner only).
+    description: >
+      Permanently delete a document and all its indexed pages from the library.
+      This is IRREVERSIBLE — there is no undo. Owner-only: you cannot delete a
+      group-shared document owned by someone else. Confirm the document_id (e.g.
+      via find_documents) before calling.
     handler: http_json
     method: DELETE
     path: /api/rag/documents/{document_id}
@@ -370,7 +391,10 @@ tools:
         required: true
 
   - name: get_indexing_status
-    description: Show pending/processing/completed/failed indexing counts for the user.
+    description: >
+      Show how many of your documents (and FOV images) are pending, processing,
+      completed, or failed. Use it to check whether recently uploaded/indexed
+      documents are ready to search or read yet, or to spot failures to reindex.
     handler: http_json
     method: GET
     path: /api/rag/indexing/status
