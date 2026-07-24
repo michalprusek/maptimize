@@ -63,6 +63,47 @@ async def test_read_document_pages_returns_page_images(make_registry):
     assert images[0].mimeType == "image/webp"
 
 
+async def test_read_page_region_returns_high_res_crop(make_registry):
+    png = b"\x89PNG\r\n\x1a\n-crop-bytes"
+
+    def routes(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path == "/api/rag/documents/4/pages/4/region":
+            assert request.url.params["bbox"] == "100,200,400,600"  # ymin,xmin,ymax,xmax
+            assert request.url.params["token"] == "T"  # query-token auth
+            return httpx.Response(200, content=png, headers={"content-type": "image/png"})
+        return httpx.Response(404)
+
+    reg = make_registry(_with_login(routes))
+    blocks = await reg.dispatch(
+        "read_page_region",
+        {"document_id": 4, "page_number": 4, "ymin": 100, "xmin": 200, "ymax": 400, "xmax": 600},
+    )
+    images = [b for b in blocks if b.type == "image"]
+    assert len(images) == 1
+    assert base64.b64decode(images[0].data) == png
+    assert images[0].mimeType == "image/png"
+
+
+async def test_read_page_region_rejects_bad_bbox_without_calling_backend(make_registry):
+    called = {"n": 0}
+
+    def routes(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/region"):
+            called["n"] += 1
+        return httpx.Response(404)
+
+    reg = make_registry(_with_login(routes))
+    # xmin >= xmax is invalid -> a text error, and the region endpoint is never hit.
+    blocks = await reg.dispatch(
+        "read_page_region",
+        {"document_id": 4, "page_number": 4, "ymin": 100, "xmin": 600, "ymax": 400, "xmax": 200},
+    )
+    assert len(blocks) == 1 and blocks[0].type == "text"
+    assert "bbox" in blocks[0].text.lower()
+    assert called["n"] == 0
+
+
 async def test_web_search_parses_ddg_results(make_registry):
     html = """
     <div class="result">

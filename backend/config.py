@@ -70,6 +70,14 @@ class Settings(BaseSettings):
     # content, the worst case for PNG's lossless compression.
     rag_page_format: Literal["WEBP", "PNG", "JPEG"] = "WEBP"
     rag_page_quality: int = Field(default=85, ge=1, le=100)
+    # On-demand "zoom": a region crop is re-rendered from the source PDF at this
+    # DPI, NOT cropped from the 150-DPI page raster. A small figure/table then
+    # fills the vision model's pixel budget legibly. Full pages stay at 150 DPI
+    # because the model downsamples any image to ~1568px anyway -- only a crop
+    # benefits from more pixels. Longest edge is capped so the crop doesn't waste
+    # tokens once it already exceeds that budget.
+    rag_region_dpi: int = Field(default=300, ge=72, le=600)
+    rag_region_max_edge: int = Field(default=1600, ge=512, le=4096)
 
     # Agent-generated images (plots, overlays) live here. Deliberately NOT
     # under uploads/temp, which a startup job reaps at 24h -- that reaper is

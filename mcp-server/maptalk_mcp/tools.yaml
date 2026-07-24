@@ -91,7 +91,9 @@ tools:
       Read the actual CONTENT of a document. maptalk is a Vision-RAG system, so
       page content is returned as rendered page IMAGES (which you can read
       directly), not plain text. Returns up to `count` pages starting at
-      `start_page`. Requires a document_id.
+      `start_page`. Requires a document_id. If a figure, table, or small label
+      on a page is too small to read reliably, call read_page_region to zoom into
+      that area at high resolution instead of guessing.
     handler: document_pages
     params:
       - name: document_id
@@ -109,6 +111,49 @@ tools:
         type: integer
         default: 5
         description: How many pages to return (hard-capped at 10 per call).
+
+  - name: read_page_region
+    description: >
+      ZOOM into one rectangular region of a document page and return it as a
+      high-resolution image. Use this whenever a figure, sub-panel, table cell,
+      colored marker, or small label is illegible on the full page (the full
+      page is downsampled, so fine detail is lost). The region is re-rendered
+      from the source PDF at high DPI, so the crop is crisp. Coordinates are
+      normalized 0-1000 with the origin at the TOP-LEFT: ymin/xmin is the
+      top-left corner, ymax/xmax the bottom-right. Estimate the box from the
+      full page you already saw, then read the returned crop.
+    handler: read_page_region
+    params:
+      - name: document_id
+        in: arg
+        type: integer
+        required: true
+        description: Id of the document.
+      - name: page_number
+        in: arg
+        type: integer
+        required: true
+        description: 1-based page number.
+      - name: ymin
+        in: arg
+        type: integer
+        required: true
+        description: Top edge, 0-1000 (0 = top of page).
+      - name: xmin
+        in: arg
+        type: integer
+        required: true
+        description: Left edge, 0-1000 (0 = left of page).
+      - name: ymax
+        in: arg
+        type: integer
+        required: true
+        description: Bottom edge, 0-1000 (> ymin).
+      - name: xmax
+        in: arg
+        type: integer
+        required: true
+        description: Right edge, 0-1000 (> xmin).
 
   - name: web_search
     description: >

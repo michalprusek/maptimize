@@ -173,6 +173,27 @@ async def index_document(
     return [_text(result)]
 
 
+async def read_page_region(
+    reg: "ToolRegistry", spec: "ToolSpec", args: dict, token: str | None = None
+) -> list[ContentBlock]:
+    """Zoom: return a high-resolution crop of one page region as an image, so
+    small figures / tables / text illegible at full-page zoom become readable."""
+    ymin, xmin, ymax, xmax = (int(args[k]) for k in ("ymin", "xmin", "ymax", "xmax"))
+    if not (0 <= xmin < xmax <= 1000 and 0 <= ymin < ymax <= 1000):
+        return [_text("bbox out of range: need 0 <= xmin < xmax <= 1000 and 0 <= ymin < ymax <= 1000.")]
+    content, mime = await reg.client.get_bytes(
+        f"/api/rag/documents/{args['document_id']}/pages/{args['page_number']}/region",
+        params={"bbox": f"{ymin},{xmin},{ymax},{xmax}"},
+        auth="query",
+        token=token,
+    )
+    return [
+        types.ImageContent(
+            type="image", data=base64.b64encode(content).decode("ascii"), mimeType=mime
+        )
+    ]
+
+
 # -- document_pages: read a document as page images (Vision RAG) -------------
 
 
@@ -283,4 +304,5 @@ HANDLERS = {
     "semantic_image_search": semantic_image_search,
     "search_by_image": search_by_image,
     "index_document": index_document,
+    "read_page_region": read_page_region,
 }

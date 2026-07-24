@@ -442,6 +442,32 @@ async def render_pdf_to_images(
         return None  # None indicates failure, not empty PDF
 
 
+async def render_single_pdf_page(
+    pdf_path: Path, page_number: int, dpi: int
+) -> Optional[Image.Image]:
+    """Render ONE PDF page at ``dpi`` (1-indexed). Used for on-demand region
+    zoom, where we want a high-DPI raster of a single page without re-rendering
+    the whole document. Returns None on failure or an out-of-range page."""
+    try:
+        from pdf2image import convert_from_path
+
+        loop = asyncio.get_event_loop()
+        images = await loop.run_in_executor(
+            None,
+            lambda: convert_from_path(
+                str(pdf_path),
+                dpi=dpi,
+                fmt="png",
+                first_page=page_number,
+                last_page=page_number,
+            ),
+        )
+        return images[0] if images else None
+    except Exception as e:
+        logger.exception(f"Error rendering page {page_number} of {pdf_path}: {e}")
+        return None
+
+
 async def process_pdf_pages(
     document: RAGDocument,
     page_images: List[Tuple[int, Image.Image]],

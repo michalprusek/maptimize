@@ -5,6 +5,8 @@ from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
+
 import routers.rag as rag_router
 import services.document_indexing_service as dis
 import services.rag_service as rag_service
@@ -295,6 +297,51 @@ async def test_serve_passage_image_resolves_and_forwards_group_id(mock_db):
         group_id=7,
     )
     assert result == "fake-response"
+
+
+async def test_serve_page_region_resolves_group_and_returns_png(mock_db):
+    # The zoom endpoint must resolve the caller's group (so shared library docs
+    # are reachable) and forward it to render_page_region, then return the crop.
+    with patch.object(rag_router, "get_user_group_id",
+                      AsyncMock(return_value=7)) as mock_group, \
+         patch.object(rag_router, "get_document_for_user",
+                      AsyncMock(return_value=SimpleNamespace(id=5))), \
+         patch.object(rag_router, "render_page_region",
+                      AsyncMock(return_value=b"PNGBYTES")) as mock_render:
+        resp = await rag_router.serve_page_region(
+            document_id=5,
+            page_number=4,
+            bbox="100,200,400,600",
+            current_user=SimpleNamespace(id=1),
+            db=mock_db,
+        )
+    mock_group.assert_awaited_once_with(1, mock_db)
+    mock_render.assert_awaited_once_with(5, 4, [100, 200, 400, 600], 1, mock_db, group_id=7)
+    assert resp.body == b"PNGBYTES"
+    assert resp.media_type == "image/png"
+
+
+async def test_serve_page_region_bad_bbox_is_400(mock_db):
+    for bad in ("1,2,3", "a,b,c,d"):
+        with pytest.raises(rag_router.HTTPException) as ei:
+            await rag_router.serve_page_region(
+                document_id=5, page_number=1, bbox=bad,
+                current_user=SimpleNamespace(id=1), db=mock_db,
+            )
+        assert ei.value.status_code == 400
+
+
+async def test_serve_page_region_unrenderable_is_404(mock_db):
+    with patch.object(rag_router, "get_user_group_id", AsyncMock(return_value=None)), \
+         patch.object(rag_router, "get_document_for_user",
+                      AsyncMock(return_value=SimpleNamespace(id=5))), \
+         patch.object(rag_router, "render_page_region", AsyncMock(return_value=None)):
+        with pytest.raises(rag_router.HTTPException) as ei:
+            await rag_router.serve_page_region(
+                document_id=5, page_number=99, bbox="0,0,1000,1000",
+                current_user=SimpleNamespace(id=1), db=mock_db,
+            )
+    assert ei.value.status_code == 404
 
 
 # --------------------------------------------------------------------------- #

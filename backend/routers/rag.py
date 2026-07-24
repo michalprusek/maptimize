@@ -10,7 +10,7 @@ from typing import List, Optional
 
 import redis.asyncio as redis
 from fastapi import APIRouter, Depends, HTTPException, status, Query, UploadFile, File, Form, BackgroundTasks
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -52,6 +52,7 @@ from services.rag_service import (
     combined_search,
     batch_index_fov_images,
     get_cached_passage,
+    render_page_region,
     image_mime_type,
     search_similar_pages,
     search_documents_metadata,
@@ -503,6 +504,39 @@ async def serve_page_image(
         path=image_path,
         media_type=image_mime_type(image_path),
     )
+
+
+@router.get("/documents/{document_id}/pages/{page_number}/region")
+async def serve_page_region(
+    document_id: int,
+    page_number: int,
+    bbox: str = Query(..., description="ymin,xmin,ymax,xmax normalized to 0-1000"),
+    current_user: User = Depends(get_current_user_from_query),
+    db: AsyncSession = Depends(get_db),
+):
+    """Serve a high-resolution PNG crop of a page region ("zoom").
+
+    The region is re-rendered from the source PDF at a high DPI, so small
+    figures / tables / text that are illegible on the downsampled full page are
+    readable. Query-parameter token auth, mirroring serve_page_image.
+    """
+    try:
+        coords = [int(v) for v in bbox.split(",")]
+        if len(coords) != 4:
+            raise ValueError
+    except ValueError:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="bbox must be four integers ymin,xmin,ymax,xmax")
+
+    group_id = await get_user_group_id(current_user.id, db)
+    # Scope check (raises 404 if not visible to this user / group).
+    await get_document_for_user(db, document_id, current_user.id, group_id)
+
+    png = await render_page_region(
+        document_id, page_number, coords, current_user.id, db, group_id=group_id
+    )
+    if png is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Region could not be rendered (bad page or bbox)")
+    return Response(content=png, media_type="image/png")
 
 
 @router.get("/documents/{document_id}/passages/{passage_hash}")
