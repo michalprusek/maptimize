@@ -242,8 +242,23 @@ async def get_protein_umap(
     )
 
 
+@router.get("/suggested-color")
+async def get_suggested_protein_color(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Suggest an unused colour to pre-fill the create form.
+
+    Uses the same picker create relies on (SSOT), so the swatch shown up front is
+    the colour the protein would actually get. It is only a suggestion — the user
+    may change it — and it is NOT reserved, so two concurrent creates can still
+    land on the same colour (accepted, exactly like the create path).
+    """
+    return {"color": await pick_protein_color(db)}
+
+
 # =============================================================================
-# Protein CRUD by ID (must come after /umap to avoid route conflict)
+# Protein CRUD by ID (must come after /umap + /suggested-color to avoid route conflict)
 # =============================================================================
 
 

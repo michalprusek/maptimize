@@ -358,6 +358,11 @@ class ApiClient {
     return this.request<UmapProteinDataResponse>("/api/proteins/umap");
   }
 
+  /** An unused colour to pre-fill the create form (same picker create uses). */
+  async getSuggestedProteinColor() {
+    return this.request<{ color: string }>("/api/proteins/suggested-color");
+  }
+
   // Microscopes
   async getMicroscopes() {
     return this.request<MicroscopeDetailed[]>("/api/microscopes");

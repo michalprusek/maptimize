@@ -231,12 +231,27 @@ export default function ProteinsPage(): JSX.Element {
     onError: (err: Error) => setError(err.message || t("embeddingError")),
   });
 
-  const openCreateModal = () => {
+  const openCreateModal = async () => {
     setEditingProtein(null);
     setFormData(DEFAULT_FORM_DATA);
     prevUniprotIdRef.current = ""; // Reset to allow auto-fetch
     setShowModal(true);
     setError(null);
+    // Pre-fill a suggested unused colour so the swatch shows the colour the
+    // protein will get (still editable, and the "Auto" button clears it). If the
+    // request fails, leave it blank — the backend auto-assigns on save anyway.
+    try {
+      const { color } = await api.getSuggestedProteinColor();
+      // Only fill a still-blank colour: a slow request must not clobber a colour
+      // the user typed meanwhile, nor bleed into an edit modal they switched to
+      // (which would silently change an existing protein's colour on save).
+      setFormData((prev) => (prev.color ? prev : { ...prev, color }));
+    } catch (err) {
+      // Convenience pre-fill only — blank colour still auto-assigns server-side.
+      // Logged (not surfaced) so a broken endpoint / route-order regression is
+      // debuggable instead of silently degrading to "always blank".
+      console.warn("[proteins] color suggestion failed; leaving blank", err);
+    }
   };
 
   const openEditModal = (protein: MapProteinDetailed) => {

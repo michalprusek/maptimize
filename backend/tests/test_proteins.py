@@ -9,6 +9,8 @@ Make sure the backend is running: docker-compose up -d
 IMPORTANT: Proteins are SHARED across all users. Tests must clean up
 any proteins they create to avoid polluting production data.
 """
+import re
+
 import pytest
 
 from conftest import unique_name
@@ -375,3 +377,30 @@ class TestProteinEmbedding:
             headers=auth_headers
         )
         assert response.status_code == 404
+
+
+class TestProteinStaticRoutes:
+    """Route-reachability for the static protein sub-routes.
+
+    Both /suggested-color and /umap MUST stay declared before GET /{protein_id}
+    (protein_id: int). If either is reordered below it, the literal path is
+    matched as a protein id, int-coercion fails, and the endpoint 422s while
+    every handler-level unit test stays green. These lock that ordering.
+    """
+
+    def test_suggested_color_returns_hex(self, client, auth_headers):
+        """GET /api/proteins/suggested-color routes correctly and returns a hex."""
+        response = client.get("/api/proteins/suggested-color", headers=auth_headers)
+        assert response.status_code == 200
+        assert re.fullmatch(r"#[0-9a-fA-F]{6}", response.json()["color"])
+
+    def test_suggested_color_requires_auth(self, client):
+        """GET /api/proteins/suggested-color without auth returns 401 (not 422)."""
+        response = client.get("/api/proteins/suggested-color")
+        assert response.status_code == 401
+
+    def test_umap_route_reachable(self, client, auth_headers):
+        """GET /api/proteins/umap routes to the umap handler (not /{protein_id})."""
+        response = client.get("/api/proteins/umap", headers=auth_headers)
+        assert response.status_code == 200
+        assert "points" in response.json()
