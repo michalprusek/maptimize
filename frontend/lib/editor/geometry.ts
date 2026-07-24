@@ -5,10 +5,40 @@
  */
 
 import type { EditorBbox, HandlePosition, Point, Rect, PolygonWithHoles } from "./types";
-import { HANDLE_SIZE, HANDLE_HIT_PADDING, MIN_BBOX_SIZE } from "./constants";
+import {
+  HANDLE_SIZE,
+  HANDLE_HIT_PADDING,
+  MIN_BBOX_SIZE,
+  ROTATION_HANDLE_DISTANCE,
+} from "./constants";
+
+// ============================================================================
+// Rotation helpers (SSOT). Positive angle matches ctx.rotate(angleRad): clockwise
+// in the y-down canvas. Geometry rotates by +angle; hit-testing un-rotates by -angle.
+// ============================================================================
+
+/** Rotate a vector by `angleDeg` (about the origin). */
+export function rotateVec(vx: number, vy: number, angleDeg: number): Point {
+  const r = (angleDeg * Math.PI) / 180;
+  const c = Math.cos(r);
+  const s = Math.sin(r);
+  return { x: vx * c - vy * s, y: vx * s + vy * c };
+}
+
+/** Rotate a point about `center` by `angleDeg`. */
+export function rotatePointAbout(p: Point, center: Point, angleDeg: number): Point {
+  const v = rotateVec(p.x - center.x, p.y - center.y, angleDeg);
+  return { x: center.x + v.x, y: center.y + v.y };
+}
+
+/** Scaled (screen-space) centre of a bbox. */
+export function bboxCenter(bbox: Rect, scale: number = 1): Point {
+  return { x: (bbox.x + bbox.width / 2) * scale, y: (bbox.y + bbox.height / 2) * scale };
+}
 
 /**
- * Get the positions of all 8 resize handles for a bbox.
+ * Get the positions of all 8 resize handles for a bbox, rotated about its centre
+ * when the bbox has an angle.
  */
 export function getHandlePositions(
   bbox: Rect,
@@ -20,7 +50,7 @@ export function getHandlePositions(
   const sw = width * scale;
   const sh = height * scale;
 
-  return {
+  const raw: Record<HandlePosition, Point> = {
     nw: { x: sx, y: sy },
     n: { x: sx + sw / 2, y: sy },
     ne: { x: sx + sw, y: sy },
@@ -30,6 +60,36 @@ export function getHandlePositions(
     s: { x: sx + sw / 2, y: sy + sh },
     se: { x: sx + sw, y: sy + sh },
   };
+
+  const angle = bbox.angle ?? 0;
+  if (!angle) return raw;
+
+  const center = bboxCenter(bbox, scale);
+  const out = {} as Record<HandlePosition, Point>;
+  (Object.keys(raw) as HandlePosition[]).forEach((k) => {
+    out[k] = rotatePointAbout(raw[k], center, angle);
+  });
+  return out;
+}
+
+/**
+ * Screen-space position of the rotation handle (above the box's top edge,
+ * following the box rotation).
+ */
+export function getRotationHandlePosition(bbox: Rect, scale: number = 1): Point {
+  const center = bboxCenter(bbox, scale);
+  const dist = (bbox.height * scale) / 2 + ROTATION_HANDLE_DISTANCE;
+  const v = rotateVec(0, -dist, bbox.angle ?? 0);
+  return { x: center.x + v.x, y: center.y + v.y };
+}
+
+/** Whether a point hits the rotation handle. */
+export function isPointInRotationHandle(
+  point: Point,
+  bbox: Rect,
+  scale: number = 1
+): boolean {
+  return isPointInHandle(point, getRotationHandlePosition(bbox, scale));
 }
 
 /**
@@ -75,19 +135,25 @@ export function getHandleAtPosition(
 }
 
 /**
- * Check if a point is inside a bbox.
+ * Check if a point is inside a bbox. For a rotated bbox the point is first
+ * un-rotated into the box's local (axis-aligned) frame about its centre.
  */
 export function isPointInBbox(point: Point, bbox: Rect, scale: number = 1): boolean {
+  const angle = bbox.angle ?? 0;
+  const local = angle
+    ? rotatePointAbout(point, bboxCenter(bbox, scale), -angle)
+    : point;
+
   const sx = bbox.x * scale;
   const sy = bbox.y * scale;
   const sw = bbox.width * scale;
   const sh = bbox.height * scale;
 
   return (
-    point.x >= sx &&
-    point.x <= sx + sw &&
-    point.y >= sy &&
-    point.y <= sy + sh
+    local.x >= sx &&
+    local.x <= sx + sw &&
+    local.y >= sy &&
+    local.y <= sy + sh
   );
 }
 
@@ -121,6 +187,38 @@ export function resizeBbox(
   imageWidth: number,
   imageHeight: number
 ): Rect {
+  const angle = original.angle ?? 0;
+
+  // Rotated: resize in the box's LOCAL frame (anchor = opposite corner/edge), then
+  // map the resulting centre shift back to image space. Reduces to the axis path at
+  // angle 0. Bounds-clamping only clamps the centre (the axis clamp below doesn't
+  // apply to a tilted rect); the backend validates the rotated corners on save.
+  if (angle) {
+    const localDelta = rotateVec(delta.x, delta.y, -angle);
+    const dlx = localDelta.x / scale;
+    const dly = localDelta.y / scale;
+    const hx = handle.includes("e") ? 1 : handle.includes("w") ? -1 : 0;
+    const hy = handle.includes("s") ? 1 : handle.includes("n") ? -1 : 0;
+
+    const newW = Math.max(MIN_BBOX_SIZE, original.width + hx * dlx);
+    const newH = Math.max(MIN_BBOX_SIZE, original.height + hy * dly);
+    // Centre moves toward the dragged edge by half the (clamped) size change.
+    const shift = rotateVec(
+      (hx * (newW - original.width)) / 2,
+      (hy * (newH - original.height)) / 2,
+      angle
+    );
+    const cx = Math.max(0, Math.min(imageWidth, original.x + original.width / 2 + shift.x));
+    const cy = Math.max(0, Math.min(imageHeight, original.y + original.height / 2 + shift.y));
+    return {
+      x: Math.round(cx - newW / 2),
+      y: Math.round(cy - newH / 2),
+      width: Math.round(newW),
+      height: Math.round(newH),
+      angle,
+    };
+  }
+
   // Convert delta from screen to image coordinates
   const dx = delta.x / scale;
   const dy = delta.y / scale;
@@ -212,6 +310,7 @@ export function moveBbox(
     y: Math.round(y),
     width: original.width,
     height: original.height,
+    angle: original.angle,
   };
 }
 

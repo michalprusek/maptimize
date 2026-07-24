@@ -107,6 +107,7 @@ def fake_crop(
         bbox_y=10,
         bbox_w=50,
         bbox_h=50,
+        bbox_angle=None,
         bundleness_score=0.5,
         detection_confidence=0.9,
         excluded=excluded,
@@ -711,6 +712,43 @@ async def test_update_crop_bbox_success(mock_db):
     assert out.bbox_x == 5
     assert out.needs_regeneration is True
     assert crop.embedding is None
+
+
+async def test_update_crop_bbox_persists_angle(mock_db):
+    req = CropBboxUpdateRequest(bbox_x=5, bbox_y=6, bbox_w=20, bbox_h=22, bbox_angle=30.0)
+    crop = fake_crop()
+    img = fake_image()
+    captured = {}
+
+    def _record_validate(*args):
+        captured["angle"] = args[6]  # the angle-aware 7th positional arg
+        return (True, None)
+
+    with patch(
+        "services.crop_editor_service.get_crop_with_ownership_check",
+        new=AsyncMock(return_value=(crop, img, None)),
+    ), patch(
+        "services.crop_editor_service.validate_bbox_within_image",
+        side_effect=_record_validate,
+    ):
+        out = await r.update_crop_bbox(200, req, current_user=fake_user(), db=mock_db)
+    assert crop.bbox_angle == 30.0          # persisted on the model
+    assert out.bbox_angle == 30.0           # echoed in the response
+    assert captured["angle"] == 30.0        # angle reached the (angle-aware) validator
+
+
+async def test_update_crop_bbox_zero_angle_stored_as_none(mock_db):
+    req = CropBboxUpdateRequest(bbox_x=5, bbox_y=6, bbox_w=20, bbox_h=22, bbox_angle=0.0)
+    crop = fake_crop()
+    with patch(
+        "services.crop_editor_service.get_crop_with_ownership_check",
+        new=AsyncMock(return_value=(crop, fake_image(), None)),
+    ), patch(
+        "services.crop_editor_service.validate_bbox_within_image",
+        return_value=(True, None),
+    ):
+        await r.update_crop_bbox(200, req, current_user=fake_user(), db=mock_db)
+    assert crop.bbox_angle is None  # 0 collapses to NULL (axis-aligned)
 
 
 # ============================================================================

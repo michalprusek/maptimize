@@ -16,16 +16,32 @@ import {
   moveBbox,
   createBboxFromCorners,
   getCursorForHandle,
+  isPointInRotationHandle,
+  bboxCenter,
 } from "@/lib/editor/geometry";
-import { MIN_BBOX_SIZE } from "@/lib/editor/constants";
+import { MIN_BBOX_SIZE, ROTATION_SNAP_DEGREES } from "@/lib/editor/constants";
 
 type InteractionState =
   | { type: "idle" }
   | { type: "hovering"; bboxId: string | number; handle: HandlePosition | null }
   | { type: "dragging"; bboxId: string | number; startPos: Point; originalBbox: Rect }
   | { type: "resizing"; bboxId: string | number; handle: HandlePosition; startPos: Point; originalBbox: Rect }
+  | { type: "rotating"; bboxId: string | number; center: Point; originalBbox: Rect }
   | { type: "drawing"; startPos: Point; currentPos: Point }
   | { type: "panning"; startPos: Point; originalPan: Point };
+
+/** Box angle (deg) whose "up" edge points toward `pointer` relative to `center`. */
+function angleFromPointer(pointer: Point, center: Point, snap: boolean): number {
+  const raw = (Math.atan2(pointer.y - center.y, pointer.x - center.x) * 180) / Math.PI + 90;
+  const snapped = snap ? Math.round(raw / ROTATION_SNAP_DEGREES) * ROTATION_SNAP_DEGREES : raw;
+  // normalise to (-180, 180]
+  return (((snapped + 180) % 360) + 360) % 360 - 180;
+}
+
+/** Snapshot a bbox as a plain Rect (angle defaults to 0). */
+function toRect(b: EditorBbox): Rect {
+  return { x: b.x, y: b.y, width: b.width, height: b.height, angle: b.angle ?? 0 };
+}
 
 export interface UseBboxInteractionOptions {
   bboxes: EditorBbox[];
@@ -130,23 +146,29 @@ export function useBboxInteraction(
       if (editorState.selectedBboxId !== null) {
         const selectedBbox = bboxes.find((b) => b.id === editorState.selectedBboxId);
         if (selectedBbox) {
-          const handle = getHandleAtPosition(
-            { x: pos.x - panOffset.x, y: pos.y - panOffset.y },
-            selectedBbox,
-            zoom
-          );
+          const scaledPos = { x: pos.x - panOffset.x, y: pos.y - panOffset.y };
+          const originalBbox = toRect(selectedBbox);
+
+          // Rotation handle takes priority over the corner resize handles.
+          if (isPointInRotationHandle(scaledPos, selectedBbox, zoom)) {
+            setInteractionState({
+              type: "rotating",
+              bboxId: selectedBbox.id,
+              center: bboxCenter(selectedBbox, zoom),
+              originalBbox,
+            });
+            setCursor("grabbing");
+            return;
+          }
+
+          const handle = getHandleAtPosition(scaledPos, selectedBbox, zoom);
           if (handle) {
             setInteractionState({
               type: "resizing",
               bboxId: selectedBbox.id,
               handle,
               startPos: pos,
-              originalBbox: {
-                x: selectedBbox.x,
-                y: selectedBbox.y,
-                width: selectedBbox.width,
-                height: selectedBbox.height,
-              },
+              originalBbox,
             });
             return;
           }
@@ -179,12 +201,7 @@ export function useBboxInteraction(
           type: "dragging",
           bboxId: clickedBbox.id,
           startPos: pos,
-          originalBbox: {
-            x: clickedBbox.x,
-            y: clickedBbox.y,
-            width: clickedBbox.width,
-            height: clickedBbox.height,
-          },
+          originalBbox: toRect(clickedBbox),
         });
         setCursor("move");
         return;
@@ -251,6 +268,15 @@ export function useBboxInteraction(
         return;
       }
 
+      // Handle rotating: the box "up" edge follows the pointer; Shift snaps to 15°.
+      if (interaction.type === "rotating") {
+        const pointer = { x: pos.x - panOffset.x, y: pos.y - panOffset.y };
+        const angle = angleFromPointer(pointer, interaction.center, e.shiftKey);
+        setLiveBboxRect({ ...interaction.originalBbox, angle });
+        onBboxChange(interaction.bboxId, { angle, isModified: true });
+        return;
+      }
+
       // Handle dragging
       if (interaction.type === "dragging") {
         const delta = {
@@ -311,6 +337,12 @@ export function useBboxInteraction(
       if (selectedBboxId !== null) {
         const selectedBbox = bboxes.find((b) => b.id === selectedBboxId);
         if (selectedBbox) {
+          // Rotation handle first (drawn above the box)
+          if (isPointInRotationHandle(adjustedPos, selectedBbox, zoom)) {
+            setCursor("grab");
+            setEditorState((prev) => ({ ...prev, hoveredBboxId: selectedBboxId }));
+            return;
+          }
           const handle = getHandleAtPosition(adjustedPos, selectedBbox, zoom);
           if (handle) {
             setCursor(getCursorForHandle(handle));
@@ -358,26 +390,26 @@ export function useBboxInteraction(
         setDrawingBbox(null);
       }
 
-      // Finish dragging or resizing - notify completion with original and final positions
-      if (interaction.type === "dragging" || interaction.type === "resizing") {
+      // Finish dragging, resizing or rotating - notify completion with original/final
+      if (
+        interaction.type === "dragging" ||
+        interaction.type === "resizing" ||
+        interaction.type === "rotating"
+      ) {
         const bboxId = interaction.bboxId;
         const originalBbox = interaction.originalBbox;
         const currentBbox = bboxes.find((b) => b.id === bboxId);
 
         if (currentBbox) {
-          const finalBbox: Rect = {
-            x: currentBbox.x,
-            y: currentBbox.y,
-            width: currentBbox.width,
-            height: currentBbox.height,
-          };
+          const finalBbox = toRect(currentBbox);
 
-          // Only call complete if position actually changed
+          // Only call complete if position or angle actually changed
           if (
             originalBbox.x !== finalBbox.x ||
             originalBbox.y !== finalBbox.y ||
             originalBbox.width !== finalBbox.width ||
-            originalBbox.height !== finalBbox.height
+            originalBbox.height !== finalBbox.height ||
+            (originalBbox.angle ?? 0) !== (finalBbox.angle ?? 0)
           ) {
             onBboxChangeComplete(bboxId, originalBbox, finalBbox);
           }
@@ -440,7 +472,11 @@ export function useBboxInteraction(
   // Compute modification state - extract bboxId when dragging/resizing, null otherwise
   // Using discriminated union pattern for type-safe access
   const { isModifyingBbox, modifyingBboxId } = (() => {
-    if (interactionState.type === "dragging" || interactionState.type === "resizing") {
+    if (
+      interactionState.type === "dragging" ||
+      interactionState.type === "resizing" ||
+      interactionState.type === "rotating"
+    ) {
       return { isModifyingBbox: true, modifyingBboxId: interactionState.bboxId };
     }
     return { isModifyingBbox: false, modifyingBboxId: null };

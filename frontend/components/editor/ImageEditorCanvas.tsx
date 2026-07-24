@@ -16,6 +16,7 @@ import {
   STROKE_WIDTHS,
   HANDLE_SIZE,
   CANVAS_SETTINGS,
+  ROTATION_HANDLE_DISTANCE,
 } from "@/lib/editor/constants";
 import { getDisplayModeFilter } from "@/lib/editor/display";
 import type { DisplayMode } from "@/lib/api";
@@ -230,12 +231,25 @@ export function ImageEditorCanvas({
         fillColor = COLORS.bboxModifiedFill;
       }
 
+      // Rotate about the box centre so a tilted box (bbox.angle) renders rotated.
+      // Handles are drawn afterwards in un-rotated space (getHandlePositions already
+      // returns rotated positions), so they must stay outside this save/restore.
+      const angleRad = ((bbox.angle ?? 0) * Math.PI) / 180;
+      const cx = bbox.x + bbox.width / 2;
+      const cy = bbox.y + bbox.height / 2;
+      const hw = bbox.width / 2;
+      const hh = bbox.height / 2;
+
+      ctx.save();
+      ctx.translate(cx, cy);
+      ctx.rotate(angleRad);
+
       // Draw glow effect for hovered/selected
       if (isHovered || isSelected) {
         ctx.save();
         ctx.shadowColor = isSelected ? COLORS.selectionGlow : COLORS.glowColor;
         ctx.shadowBlur = isSelected ? 15 : 10;
-        roundedRect(ctx, bbox.x, bbox.y, bbox.width, bbox.height, bboxRadius);
+        roundedRect(ctx, -hw, -hh, bbox.width, bbox.height, bboxRadius);
         ctx.strokeStyle = strokeColor;
         ctx.lineWidth = lineWidth / zoom;
         ctx.stroke();
@@ -243,16 +257,19 @@ export function ImageEditorCanvas({
       }
 
       // Draw filled rounded bbox
-      roundedRect(ctx, bbox.x, bbox.y, bbox.width, bbox.height, bboxRadius);
+      roundedRect(ctx, -hw, -hh, bbox.width, bbox.height, bboxRadius);
       ctx.fillStyle = fillColor;
       ctx.fill();
       ctx.strokeStyle = strokeColor;
       ctx.lineWidth = lineWidth / zoom;
       ctx.stroke();
 
-      // Draw circular handles for hovered or selected bbox
+      ctx.restore();
+
+      // Draw circular resize handles + rotation handle for hovered or selected bbox
       if (isHovered || isSelected) {
         drawHandles(ctx, bbox, zoom);
+        drawRotationHandle(ctx, bbox, zoom);
       }
     });
 
@@ -291,6 +308,36 @@ export function ImageEditorCanvas({
       ctx.stroke();
     });
   };
+
+  // Draw the rotation handle (a stalk above the box top edge, following the angle).
+  // Positions are in image space; the fixed screen offset is divided by scale so the
+  // handle sits a constant distance above the box regardless of zoom (matches the
+  // hit-test in geometry.getRotationHandlePosition).
+  function drawRotationHandle(ctx: CanvasRenderingContext2D, bbox: EditorBbox, scale: number): void {
+    const angleRad = ((bbox.angle ?? 0) * Math.PI) / 180;
+    const sin = Math.sin(angleRad);
+    const cos = Math.cos(angleRad);
+    const cx = bbox.x + bbox.width / 2;
+    const cy = bbox.y + bbox.height / 2;
+    const distImg = bbox.height / 2 + ROTATION_HANDLE_DISTANCE / scale;
+    const topX = cx + sin * (bbox.height / 2);
+    const topY = cy - cos * (bbox.height / 2);
+    const handleX = cx + sin * distImg;
+    const handleY = cy - cos * distImg;
+
+    ctx.strokeStyle = COLORS.handleStroke;
+    ctx.lineWidth = 2 / scale;
+    ctx.beginPath();
+    ctx.moveTo(topX, topY);
+    ctx.lineTo(handleX, handleY);
+    ctx.stroke();
+
+    ctx.fillStyle = COLORS.handleFill;
+    ctx.beginPath();
+    ctx.arc(handleX, handleY, (HANDLE_SIZE / 2) / scale, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+  }
 
   // Update canvas size when container resizes (with HiDPI support)
   useEffect(() => {

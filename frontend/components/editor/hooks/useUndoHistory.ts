@@ -82,6 +82,7 @@ export function useUndoHistory(
               y: action.previousState.y,
               width: action.previousState.width,
               height: action.previousState.height,
+              angle: action.previousState.angle ?? 0,
             });
           }
           break;
@@ -94,6 +95,7 @@ export function useUndoHistory(
               y: action.previousState.y,
               width: action.previousState.width,
               height: action.previousState.height,
+              angle: action.previousState.angle ?? 0,
             });
           }
           break;

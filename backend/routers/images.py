@@ -761,7 +761,7 @@ async def update_crop_bbox(
             detail=error
         )
 
-    # Validate bbox within image bounds
+    # Validate bbox within image bounds (angle-aware: rotated corners must fit)
     is_valid, validation_error = validate_bbox_within_image(
         request.bbox_x,
         request.bbox_y,
@@ -769,6 +769,7 @@ async def update_crop_bbox(
         request.bbox_h,
         image.width,
         image.height,
+        request.bbox_angle or 0.0,
     )
     if not is_valid:
         raise HTTPException(
@@ -776,11 +777,12 @@ async def update_crop_bbox(
             detail=validation_error
         )
 
-    # Update bbox coordinates
+    # Update bbox coordinates (angle: store None for axis-aligned)
     crop.bbox_x = request.bbox_x
     crop.bbox_y = request.bbox_y
     crop.bbox_w = request.bbox_w
     crop.bbox_h = request.bbox_h
+    crop.bbox_angle = request.bbox_angle or None
 
     # Mark features as stale
     crop.embedding = None
@@ -798,6 +800,7 @@ async def update_crop_bbox(
         bbox_y=crop.bbox_y,
         bbox_w=crop.bbox_w,
         bbox_h=crop.bbox_h,
+        bbox_angle=crop.bbox_angle,
         needs_regeneration=True,
     )
 
@@ -862,6 +865,7 @@ async def regenerate_crop_features(
         bbox_y=crop.bbox_y,
         bbox_w=crop.bbox_w,
         bbox_h=crop.bbox_h,
+        bbox_angle=crop.bbox_angle,
         mip_path=crop.mip_path,
         sum_crop_path=crop.sum_crop_path,
         mean_intensity=crop.mean_intensity,
@@ -916,6 +920,7 @@ async def create_manual_crop(
         request.bbox_h,
         db,
         request.map_protein_id,
+        bbox_angle=request.bbox_angle or 0.0,
     )
 
     if error:
@@ -940,6 +945,7 @@ async def create_manual_crop(
         bbox_y=crop.bbox_y,
         bbox_w=crop.bbox_w,
         bbox_h=crop.bbox_h,
+        bbox_angle=crop.bbox_angle,
         detection_confidence=crop.detection_confidence,
         needs_processing=True,
     )
@@ -998,6 +1004,7 @@ async def batch_update_crops(
                     change.bbox_h,
                     db,
                     change.map_protein_id,
+                    bbox_angle=change.bbox_angle or 0.0,
                 )
                 if err:
                     failed.append({"action": "create", "error": err})
@@ -1023,14 +1030,16 @@ async def batch_update_crops(
                     failed.append({"action": "update", "id": change.id, "error": "Crop not found"})
                     continue
 
-                # Validate bbox if provided
+                # Validate bbox if provided (angle-aware); keep current angle if omitted
                 bbox_x = change.bbox_x if change.bbox_x is not None else crop.bbox_x
                 bbox_y = change.bbox_y if change.bbox_y is not None else crop.bbox_y
                 bbox_w = change.bbox_w if change.bbox_w is not None else crop.bbox_w
                 bbox_h = change.bbox_h if change.bbox_h is not None else crop.bbox_h
+                bbox_angle = change.bbox_angle if change.bbox_angle is not None else crop.bbox_angle
 
                 is_valid, err = validate_bbox_within_image(
-                    bbox_x, bbox_y, bbox_w, bbox_h, image.width, image.height
+                    bbox_x, bbox_y, bbox_w, bbox_h, image.width, image.height,
+                    bbox_angle or 0.0,
                 )
                 if not is_valid:
                     failed.append({"action": "update", "id": change.id, "error": err})
@@ -1041,6 +1050,7 @@ async def batch_update_crops(
                 crop.bbox_y = bbox_y
                 crop.bbox_w = bbox_w
                 crop.bbox_h = bbox_h
+                crop.bbox_angle = bbox_angle or None
                 if change.map_protein_id is not None:
                     crop.map_protein_id = change.map_protein_id
 

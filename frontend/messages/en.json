@@ -466,6 +466,7 @@
       "pan": "Pan",
       "toggleAddMode": "Toggle add mode",
       "deleteCell": "Delete cell",
+      "rotateCell": "Rotate cell (Shift = snap 15°)",
       "undo": "Undo",
       "toggleSegmentMode": "Toggle segment mode",
       "toggleAddPoints": "Toggle add points mode",

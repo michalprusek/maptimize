@@ -30,11 +30,14 @@ class CellCrop(Base):
         index=True
     )
 
-    # Bounding box
+    # Bounding box. bbox_x/y/w/h describe the AXIS-ALIGNED rectangle; bbox_angle is
+    # its rotation in degrees about the box centre (NULL/0 = axis-aligned). The crop
+    # is extracted de-rotated (the cell appears upright) — see crop_editor_service.
     bbox_x: Mapped[int] = mapped_column(Integer)
     bbox_y: Mapped[int] = mapped_column(Integer)
     bbox_w: Mapped[int] = mapped_column(Integer)
     bbox_h: Mapped[int] = mapped_column(Integer)
+    bbox_angle: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     detection_confidence: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
 
     # Stored crop files
