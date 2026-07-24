@@ -45,8 +45,12 @@ connector projde. Endpoint chráněný `require_interactive_user` do MCP nepatř
 
 **ACL se propisuje samo.** MCP je čistý HTTP klient; token protéká do backendu, kde
 platí stejná pravidla jako pro člověka: **čtení skupinově sdílené**
-(`experiment_owner_filter`, SSOT `utils/groups.py`), **zápisy owner-only** (re-check
-`obj.user_id == current_user.id` → 403). Maže se kaskádově (experiment → obrázky →
+(`experiment_owner_filter`, SSOT `utils/groups.py`), **zápisy do experimentů/obrázků
+owner-only** (re-check `obj.user_id == current_user.id` → 403). ⚠️ **Proteiny jsou
+sdílená referenční data** — `MapProtein` nemá `user_id`, takže je smí měnit/mazat
+kdokoliv přihlášený (není to bug). Když přidáš write endpoint, zkontroluj, že re-check
+vlastníka SKUTEČNĚ je v handleru — `update_experiment_protein` ho omylem neměl a šel
+přes něj group-write (opraveno v PR #43). Maže se kaskádově (experiment → obrázky →
 cropy) a nevratně — proto destruktivní tooly nesou `destructiveHint`.
 
 ### query_database — read-only SQL (SSOT `services/sql_query_service.py`)
@@ -64,9 +68,15 @@ Zákeřné třídy chyb (zamčené v `tests/unit/test_sql_query_service.py`):
 - ⚠️ **Self-join = jeden predikát na KAŽDÝ alias** — proto `_table_references()` vrací
   **seznam**, ne set; kolaps na set nechá druhý alias nescopovaný a protečou přes něj
   cizí řádky.
-- ⚠️ **Nekorelované joiny jsou zakázané** (comma / CROSS / NATURAL) — kartézský součin
-  by protáhl `images`/`cell_crops` kolem user filtru jejich kotvy. Vyžaduje se explicitní
-  `JOIN ... ON`; `images`/`cell_crops` musí JOINovat `experiments` (nemají vlastní `user_id`).
+- ⚠️ **Nekorelované joiny jsou zakázané** (comma / CROSS / NATURAL) a `LIMIT`/`OFFSET`
+  v dotazu taky (LIMIT přidává `run_query` sám naclampovaný, aby `LIMIT 100000` neobešel
+  strop). Vyžaduje se explicitní `JOIN ... ON`.
+- ⚠️ **Nepřímé tabulky NEVĚŘÍ modelovu `ON`.** `images`/`cell_crops`/`rag_document_pages`
+  nemají `user_id`; scopují se přes rodiče, ale `ON c.map_protein_id = e.map_protein_id`
+  (nebo `ON true`) by protáhl cizí řádky. Proto `_scoping_plan` **sám injektuje FK
+  korelaci** (`child.fk = parent.pk`) nezávisle na modelově ON, a vyžaduje **celý řetěz**
+  (`cell_crops → images → experiments`; chybějící/dvojznačný rodič = odmítnuto). Toto byla
+  reálná díra nalezená v PR #43 review.
 - ⚠️ **Schema hint** (`SQL_SCHEMA_HINT`) je zrcadlený v popisu toolu `query_database`
   v `tools.yaml` — **při změně sloupců aktualizuj obojí** (model bez názvů sloupců SQL
   neuhodne).

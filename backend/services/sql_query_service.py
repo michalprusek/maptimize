@@ -2,8 +2,9 @@
 
 A single public entry point, :func:`run_query`, lets an authenticated caller run
 **SELECT-only** queries against a whitelist of tables. A per-user ACL predicate is
-injected **after** validation, so the caller only ever sees its own (and
-group-shared) rows — exactly what the same user sees in the UI.
+injected **after** validation, so the caller only ever sees its own rows,
+group-shared experiments/documents, and shared reference data (map_proteins) —
+the same scope the user has in the UI.
 
 This module is the SSOT for agent DB access. It was recovered from the pre-2ba9181
 Gemini agent (``git show 2ba9181~1:backend/services/gemini_agent_service.py``) and
@@ -19,7 +20,7 @@ from __future__ import annotations
 
 import logging
 import re
-from typing import Any, Optional
+from typing import Any, NamedTuple, Optional
 
 import sqlparse
 from sqlalchemy import text
@@ -45,16 +46,34 @@ ALLOWED_SQL_TABLES = {
     "rag_documents", "rag_document_pages", "comparisons", "user_ratings",
 }
 
+class TableRef(NamedTuple):
+    """A table as it appears in a FROM/JOIN clause: its real ``table`` name and the
+    ``ref`` used to qualify its columns (its alias, or the name if unaliased).
+
+    The two are kept distinct on purpose: the ACL predicate MUST be qualified with
+    ``ref`` (Postgres drops the base name once aliased), while the scoping rule is
+    chosen by ``table``. A plain ``(str, str)`` tuple let those two be swapped
+    silently — the whole ACL correctness argument rests on never confusing them.
+    """
+    table: str
+    ref: str
+
+
 # Tables that carry their own ``user_id`` column and get the ACL predicate directly.
 DIRECT_SCOPED = {"experiments", "rag_documents", "user_ratings", "comparisons"}
 
-# Tables with no ``user_id`` of their own: they are reachable only by JOINing the
-# named anchor table, and the predicate lands on that anchor (which transitively
-# scopes the join). A query touching one of these MUST include its anchor.
+# Tables with no ``user_id`` of their own. They are reachable ONLY by JOINing their
+# parent, and we INJECT the FK correlation ourselves (child.<fk> = parent.<pk>) so
+# the parent's ACL predicate provably scopes the child. We never trust the model's
+# ``ON`` clause: a bogus ``ON true`` or a join on shared reference data
+# (``ON c.map_protein_id = e.map_protein_id``) would otherwise cartesian-product the
+# child past its parent's filter and leak every user's rows. Chains are followed to
+# a directly-scoped root (cell_crops -> images -> experiments).
+#   child_table: (parent_table, child_fk_column, parent_pk_column)
 INDIRECT_SCOPED = {
-    "images": "experiments",
-    "cell_crops": "experiments",
-    "rag_document_pages": "rag_documents",
+    "images": ("experiments", "experiment_id", "id"),
+    "cell_crops": ("images", "image_id", "id"),
+    "rag_document_pages": ("rag_documents", "document_id", "id"),
 }
 
 # Compact schema handed to the model in the query_database tool description. Without
@@ -75,8 +94,11 @@ SQL_SCHEMA_HINT = (
 )
 
 # Result-size guardrail. Default modest so a broad SELECT doesn't flood context;
-# cap so a hallucinated limit=100000 can't. A missing/negative model limit falls
-# back to the default (a negative one would reach Postgres as ``LIMIT -1``).
+# cap so a hallucinated limit=100000 can't. A missing or unparseable limit falls
+# back to the default; a zero/negative value is floored to 1 (a raw negative would
+# otherwise reach Postgres as ``LIMIT -1``). The model may NOT supply its own LIMIT
+# (rejected in _validate) — run_query always appends this clamped one, so the cap
+# can't be bypassed by writing ``LIMIT 100000`` in the query.
 DEFAULT_ROW_LIMIT = 100
 MAX_ROW_LIMIT = 1000
 
@@ -101,14 +123,34 @@ def _clamp_limit(value: Any) -> int:
         return DEFAULT_ROW_LIMIT
 
 
+def _inject_where_predicate(query_str: str, predicate: str) -> str:
+    """AND ``predicate`` into ``query_str``'s WHERE clause (wrapping the original
+    conditions in parentheses to prevent operator-precedence bypasses), or add a new
+    WHERE before the first trailing clause (GROUP BY / ORDER BY / HAVING / ...) if
+    there is none. Shared by the ACL and FK-correlation injectors."""
+    where_match = re.search(r'\bWHERE\b', query_str, re.IGNORECASE)
+    if where_match:
+        pos = where_match.end()
+        rest_of_query = query_str[pos:]
+        # Reuse the shared clause terminators (plus end-of-string) so the WHERE
+        # branch and the FROM parser agree; otherwise `WHERE x=1 OFFSET 5` folds
+        # OFFSET into the injected predicate and produces invalid SQL.
+        end_match = re.search(rf'{_FROM_CLAUSE_END}|$', rest_of_query, re.IGNORECASE)
+        where_conditions = rest_of_query[:end_match.start()].strip()
+        after_where = rest_of_query[end_match.start():]
+        return query_str[:pos] + f" {predicate} AND ({where_conditions}) {after_where}"
+
+    term = re.search(_FROM_CLAUSE_END, query_str, re.IGNORECASE)
+    if term:
+        pos = term.start()
+        return f"{query_str[:pos]}WHERE {predicate} {query_str[pos:]}"
+    return f"{query_str.rstrip()} WHERE {predicate}"
+
+
 def _inject_user_id_filter(
     query_str: str, table: str, ref: str, group_id: Optional[int] = None
 ) -> str:
-    """Inject an ownership filter into ``query_str`` for one table reference.
-
-    Safely adds the predicate either into an existing WHERE clause (wrapping the
-    original conditions in parentheses to prevent operator-precedence bypasses) or
-    by inserting a new WHERE clause after the FROM/JOIN block.
+    """Inject the per-user ownership filter into ``query_str`` for one table reference.
 
     ``table`` is the real table name (selects the scoping rule); ``ref`` is how the
     query refers to it — its alias if it has one, else the table name.
@@ -135,33 +177,14 @@ def _inject_user_id_filter(
         predicate = f"({ref}.user_id = :user_id OR {ref}.group_id = :group_id)"
     else:
         predicate = f"{ref}.user_id = :user_id"
-
-    where_match = re.search(r'\bWHERE\b', query_str, re.IGNORECASE)
-    if where_match:
-        pos = where_match.end()
-        rest_of_query = query_str[pos:]
-        # Reuse the shared clause terminators (plus end-of-string) so the WHERE
-        # branch and the FROM parser agree; otherwise `WHERE x=1 OFFSET 5` folds
-        # OFFSET into the injected predicate and produces invalid SQL.
-        end_match = re.search(rf'{_FROM_CLAUSE_END}|$', rest_of_query, re.IGNORECASE)
-        where_conditions = rest_of_query[:end_match.start()].strip()
-        after_where = rest_of_query[end_match.start():]
-        return query_str[:pos] + f" {predicate} AND ({where_conditions}) {after_where}"
-
-    # No WHERE: insert the predicate just before the first trailing clause
-    # (GROUP BY / ORDER BY / LIMIT / OFFSET / ...), or at the end if there is none.
-    term = re.search(_FROM_CLAUSE_END, query_str, re.IGNORECASE)
-    if term:
-        pos = term.start()
-        return f"{query_str[:pos]}WHERE {predicate} {query_str[pos:]}"
-    return f"{query_str.rstrip()} WHERE {predicate}"
+    return _inject_where_predicate(query_str, predicate)
 
 
-def _table_references(query_str: str) -> list[tuple[str, str]]:
-    """Return ``(table_name, reference)`` for every table in a FROM/JOIN clause.
+def _table_references(query_str: str) -> list[TableRef]:
+    """Return a :class:`TableRef` for every table in a FROM/JOIN clause.
 
-    ``reference`` is the table's alias when it has one, else the table name — it is
-    what the ACL predicate must be qualified with (see _inject_user_id_filter).
+    ``ref`` is the table's alias when it has one, else the table name — it is what
+    the ACL/correlation predicates must be qualified with.
 
     Returned as a LIST, not a set, so a self-join (``comparisons c1 JOIN
     comparisons c2``) surfaces BOTH references and each is scoped independently;
@@ -170,11 +193,11 @@ def _table_references(query_str: str) -> list[tuple[str, str]]:
 
     A ``FROM\\s+(\\w+)`` scan would see only the first table, so a comma-join
     (``FROM experiments, images``) would hide the second table from the whitelist
-    check and the ACL injector. Splitting the whole FROM clause on JOIN boundaries
-    and commas exposes every table; ON/USING predicates are stripped first so their
+    check and the injectors. Splitting the whole FROM clause on JOIN boundaries and
+    commas exposes every table; ON/USING predicates are stripped first so their
     identifiers and commas are never mistaken for tables.
     """
-    refs: list[tuple[str, str]] = []
+    refs: list[TableRef] = []
     for from_match in re.finditer(r'\bFROM\b', query_str, re.IGNORECASE):
         rest = query_str[from_match.end():]
         end = re.search(_FROM_CLAUSE_END, rest, re.IGNORECASE)
@@ -188,11 +211,11 @@ def _table_references(query_str: str) -> list[tuple[str, str]]:
                     part, re.IGNORECASE,
                 )
                 if m:
-                    refs.append((m.group(1).lower(), m.group(2) or m.group(1)))
+                    refs.append(TableRef(m.group(1).lower(), m.group(2) or m.group(1)))
     return refs
 
 
-def _validate(query_str: str) -> list[tuple[str, str]]:
+def _validate(query_str: str) -> list[TableRef]:
     """Enforce the SELECT-only, whitelist-only, correlated-join contract. Returns
     the table references on success; raises :class:`SqlQueryError` with a fixable
     message on any violation."""
@@ -235,6 +258,12 @@ def _validate(query_str: str) -> list[tuple[str, str]]:
         raise SqlQueryError("CROSS JOIN is not allowed; use explicit JOIN ... ON.")
     if re.search(r'\bNATURAL\b', query_upper):
         raise SqlQueryError("NATURAL JOIN is not allowed; use explicit JOIN ... ON.")
+    # The model may not set its own LIMIT/OFFSET: run_query appends a clamped LIMIT,
+    # and honoring the model's would let ``LIMIT 100000`` bypass MAX_ROW_LIMIT.
+    if re.search(r'\bLIMIT\b', query_upper):
+        raise SqlQueryError("Do not add your own LIMIT — use the limit parameter instead.")
+    if re.search(r'\bOFFSET\b', query_upper):
+        raise SqlQueryError("OFFSET is not supported — use the limit parameter.")
 
     refs = _table_references(query_str)
     if not refs:
@@ -243,25 +272,52 @@ def _validate(query_str: str) -> list[tuple[str, str]]:
     # references than (joins + 1) means a comma-join smuggled a table in.
     if len(refs) != len(re.findall(_JOIN_SPLIT, query_upper)) + 1:
         raise SqlQueryError("Comma joins are not allowed; use explicit JOIN ... ON.")
-    names = {n for n, _ in refs}
-    denied = names - ALLOWED_SQL_TABLES
+    denied = {r.table for r in refs} - ALLOWED_SQL_TABLES
     if denied:
         raise SqlQueryError(f"Access denied to table(s): {', '.join(sorted(denied))}")
     return refs
 
 
-def _references_to_scope(refs: list[tuple[str, str]]) -> list[tuple[str, str]]:
-    """Which references get the ACL predicate: every reference to a directly-scoped
-    table (covers anchors and self-joins). Raises if an indirectly-scoped table
-    (images/cell_crops/rag_document_pages) is queried without its anchor JOINed in —
-    without the anchor there is nothing to scope it by."""
-    names = {n for n, _ in refs}
-    for tbl, anchor in INDIRECT_SCOPED.items():
-        if tbl in names and anchor not in names:
+def _scoping_plan(refs: list[TableRef]) -> tuple[list[TableRef], list[str]]:
+    """Plan how to scope a validated query, returning ``(acl_targets, correlations)``.
+
+    ``acl_targets`` are the references to directly-scoped tables (they carry a
+    ``user_id``) that get the per-user ACL predicate — this covers self-joins, since
+    every alias is a separate reference.
+
+    ``correlations`` are FK-equality predicate strings (``child.fk = parent.pk``)
+    that we inject for every indirectly-scoped table so it is provably tied to a
+    scoped parent, **regardless of what the model wrote in its ON clause**. Without
+    this, ``experiments e JOIN cell_crops c ON true`` (or a join on shared
+    reference data) would return every user's crops. Each indirect table therefore
+    REQUIRES its direct FK parent to be present (cell_crops needs images, which needs
+    experiments); a missing parent, or an ambiguous one (referenced more than once),
+    is rejected rather than left unscoped.
+    """
+    by_table: dict[str, list[TableRef]] = {}
+    for r in refs:
+        by_table.setdefault(r.table, []).append(r)
+
+    acl_targets = [r for r in refs if r.table in DIRECT_SCOPED]
+
+    correlations: list[str] = []
+    for r in refs:
+        spec = INDIRECT_SCOPED.get(r.table)
+        if spec is None:
+            continue
+        parent_table, child_fk, parent_pk = spec
+        parents = by_table.get(parent_table, [])
+        if not parents:
             raise SqlQueryError(
-                f"Queries on {tbl} must JOIN {anchor} (per-user access control)."
+                f"Queries on {r.table} must JOIN {parent_table} (per-user access control)."
             )
-    return [(name, ref) for name, ref in refs if name in DIRECT_SCOPED]
+        if len(parents) > 1:
+            raise SqlQueryError(
+                f"Cannot scope {r.table}: {parent_table} is referenced more than "
+                f"once (ambiguous per-user access control)."
+            )
+        correlations.append(f"{r.ref}.{child_fk} = {parents[0].ref}.{parent_pk}")
+    return acl_targets, correlations
 
 
 async def run_query(
@@ -283,15 +339,20 @@ async def run_query(
         raise SqlQueryError("Query is empty.")
 
     refs = _validate(query_str)
-    to_scope = _references_to_scope(refs)
+    acl_targets, correlations = _scoping_plan(refs)
 
     scoped = query_str
-    for name, ref in to_scope:
-        scoped = _inject_user_id_filter(scoped, name, ref, group_id)
+    # Inject FK correlations first so every indirect table is tied to a parent, then
+    # the ACL predicates on the (directly-scoped) parents. Both AND into the WHERE.
+    for predicate in correlations:
+        scoped = _inject_where_predicate(scoped, predicate)
+    for target in acl_targets:
+        scoped = _inject_user_id_filter(scoped, target.table, target.ref, group_id)
 
+    # The model can't supply its own LIMIT (rejected in _validate), so always append
+    # the clamped one — the cap can't be bypassed by a large literal in the query.
     limit_val = _clamp_limit(limit)
-    # Only append LIMIT when the query has none of its own (respect an explicit one).
-    final_q = scoped if "LIMIT" in query_str.upper() else f"{scoped} LIMIT :limit_val"
+    final_q = f"{scoped} LIMIT :limit_val"
 
     params: dict[str, Any] = {"user_id": user_id, "limit_val": limit_val}
     if group_id is not None:

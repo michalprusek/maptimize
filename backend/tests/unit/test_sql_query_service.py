@@ -15,7 +15,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from services.sql_query_service import (
     SqlQueryError,
     _inject_user_id_filter,
-    _references_to_scope,
+    _scoping_plan,
     _table_references,
     _validate,
     run_query,
@@ -194,24 +194,69 @@ def test_validate_allows_selected_like_column():
 
 def test_indirect_table_requires_anchor():
     refs = _validate("SELECT * FROM images i JOIN map_proteins p ON i.map_protein_id = p.id")
-    with pytest.raises(SqlQueryError):
-        _references_to_scope(refs)
+    with pytest.raises(SqlQueryError, match="must JOIN experiments"):
+        _scoping_plan(refs)
 
 
 def test_indirect_table_scoped_via_anchor():
     refs = _validate("SELECT COUNT(*) FROM images i JOIN experiments e ON i.experiment_id = e.id")
-    # only the experiments anchor gets a predicate (images has no user_id)
-    assert _references_to_scope(refs) == [("experiments", "e")]
+    acl_targets, correlations = _scoping_plan(refs)
+    # only the experiments anchor gets the ACL predicate (images has no user_id),
+    # and we inject the FK correlation ourselves (not trusting the model's ON)
+    assert acl_targets == [("experiments", "e")]
+    assert correlations == ["i.experiment_id = e.id"]
+
+
+def test_cell_crops_requires_full_chain_not_just_experiments():
+    # cell_crops joined straight to experiments (skipping images) has no valid FK
+    # path -> rejected; its parent is images, not experiments.
+    refs = _validate("SELECT * FROM cell_crops c JOIN experiments e "
+                     "ON c.map_protein_id = e.map_protein_id")
+    with pytest.raises(SqlQueryError, match="must JOIN images"):
+        _scoping_plan(refs)
+
+
+def test_cell_crops_full_chain_injects_both_correlations():
+    refs = _validate(
+        "SELECT c.bundleness_score FROM cell_crops c JOIN images i ON c.image_id = i.id "
+        "JOIN experiments e ON i.experiment_id = e.id"
+    )
+    acl_targets, correlations = _scoping_plan(refs)
+    assert acl_targets == [("experiments", "e")]
+    assert correlations == ["c.image_id = i.id", "i.experiment_id = e.id"]
+
+
+def test_rag_document_pages_require_and_scope_via_rag_documents():
+    with pytest.raises(SqlQueryError, match="must JOIN rag_documents"):
+        _scoping_plan(_validate(
+            "SELECT * FROM rag_document_pages p JOIN map_proteins m ON p.id = m.id"))
+    acl_targets, correlations = _scoping_plan(_validate(
+        "SELECT p.page_number FROM rag_document_pages p "
+        "JOIN rag_documents d ON p.document_id = d.id"))
+    assert acl_targets == [("rag_documents", "d")]
+    assert correlations == ["p.document_id = d.id"]
+
+
+def test_ambiguous_parent_is_rejected():
+    # two experiments references -> which one scopes images? ambiguous, reject.
+    refs = _validate(
+        "SELECT * FROM images i JOIN experiments e1 ON i.experiment_id = e1.id "
+        "JOIN experiments e2 ON i.map_protein_id = e2.map_protein_id"
+    )
+    with pytest.raises(SqlQueryError, match="ambiguous"):
+        _scoping_plan(refs)
 
 
 def test_self_join_scopes_every_alias():
     refs = _validate("SELECT * FROM comparisons c1 JOIN comparisons c2 ON c1.id = c2.id")
-    assert _references_to_scope(refs) == [("comparisons", "c1"), ("comparisons", "c2")]
+    acl_targets, correlations = _scoping_plan(refs)
+    assert acl_targets == [("comparisons", "c1"), ("comparisons", "c2")]
+    assert correlations == []
 
 
 def test_map_proteins_only_is_unscoped_shared_data():
     refs = _validate("SELECT id, name FROM map_proteins")
-    assert _references_to_scope(refs) == []
+    assert _scoping_plan(refs) == ([], [])
 
 
 # ---------------------------------------------------------------------------
@@ -272,3 +317,79 @@ async def test_run_query_still_raises_when_rollback_also_fails():
     db.rollback = AsyncMock(side_effect=SQLAlchemyError("rollback boom"))
     with pytest.raises(SqlQueryError):
         await run_query("SELECT id FROM experiments", user_id=1, group_id=None, db=db)
+
+
+# ---------------------------------------------------------------------------
+# Injected FK correlation — closes the "trust the model's ON" leak
+# ---------------------------------------------------------------------------
+
+async def test_run_query_injects_correlation_even_when_model_on_is_bogus():
+    # The exploit: a JOIN whose ON does NOT correlate images to experiments (here a
+    # tautology). Without the injected correlation, the experiments-only ACL predicate
+    # would return EVERY user's images. We inject i.experiment_id = e.id regardless.
+    db, cap = _capture_db(rows=[], cols=[])
+    await run_query(
+        "SELECT i.id FROM experiments e JOIN images i ON e.id = e.id",
+        user_id=1, group_id=None, db=db,
+    )
+    assert "i.experiment_id = e.id" in cap["sql"]      # injected FK correlation
+    assert "experiments.user_id = :user_id" not in cap["sql"]  # aliased, not bare name
+    assert "e.user_id = :user_id" in cap["sql"]        # anchor ACL predicate
+
+
+async def test_run_query_join_group_by_scopes_before_group_and_appends_limit():
+    db, cap = _capture_db(rows=[], cols=[])
+    await run_query(
+        "SELECT status, COUNT(*) FROM images i JOIN experiments e "
+        "ON i.experiment_id = e.id GROUP BY status",
+        user_id=7, group_id=3, db=db,
+    )
+    sql = cap["sql"]
+    assert "i.experiment_id = e.id" in sql
+    assert "(e.user_id = :user_id OR e.group_id = :group_id)" in sql
+    # ACL/correlation land in a WHERE BEFORE the GROUP BY, LIMIT is appended last
+    assert sql.index(":user_id") < sql.index("GROUP BY")
+    assert sql.rstrip().endswith("LIMIT :limit_val")
+
+
+async def test_run_query_owner_only_omits_group_term_and_param():
+    db, cap = _capture_db(rows=[], cols=[])
+    await run_query("SELECT id FROM experiments", user_id=1, group_id=None, db=db)
+    assert "experiments.user_id = :user_id" in cap["sql"]
+    assert "group_id" not in cap["sql"]
+    assert "group_id" not in cap["params"]
+
+
+# ---------------------------------------------------------------------------
+# Misc parsing/validation edge cases
+# ---------------------------------------------------------------------------
+
+def test_table_references_returns_named_tableref():
+    ref = _table_references("SELECT * FROM experiments e")[0]
+    assert ref.table == "experiments" and ref.ref == "e"
+
+
+@pytest.mark.parametrize("sql", [
+    "SELECT id FROM experiments LIMIT 5",
+    "SELECT id FROM experiments OFFSET 10",
+])
+def test_validate_rejects_model_limit_offset(sql):
+    with pytest.raises(SqlQueryError):
+        _validate(sql)
+
+
+def test_inject_preserves_where_and_trailing_order_by():
+    out = _inject_user_id_filter(
+        "SELECT * FROM experiments e WHERE e.status = 'active' ORDER BY e.created_at",
+        "experiments", "e", None,
+    )
+    assert "WHERE e.user_id = :user_id AND (e.status = 'active') ORDER BY e.created_at" in out
+
+
+def test_comma_inside_on_clause_is_not_a_comma_join():
+    # a comma inside the ON predicate (IN (...)) must not be counted as a table sep
+    refs = _validate(
+        "SELECT * FROM experiments e JOIN images i "
+        "ON e.id = i.experiment_id AND i.status IN ('a','b')"
+    )
+    assert {r.table for r in refs} == {"experiments", "images"}

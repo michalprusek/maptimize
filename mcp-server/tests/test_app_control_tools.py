@@ -117,6 +117,53 @@ async def test_process_images_posts_int_array_and_default_detect(make_registry):
     _blocks(await reg.dispatch("process_images", {"image_ids": [1, 2, 3]}))
 
 
+async def test_process_images_forwards_explicit_detect_false(make_registry):
+    def routes(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/images/batch-process" and request.method == "POST":
+            # explicit False must be preserved, not dropped back to the default True
+            assert json.loads(request.content)["detect_cells"] is False
+            return httpx.Response(200, json={"processed_count": 1})
+        return httpx.Response(404)
+
+    reg = make_registry(_with_login(routes))
+    _blocks(await reg.dispatch("process_images", {"image_ids": [1], "detect_cells": False}))
+
+
+async def test_process_images_non_list_rejected(make_registry):
+    reg = make_registry(_with_login(lambda r: httpx.Response(404)))
+    blocks = _blocks(await reg.dispatch("process_images", {"image_ids": "1,2,3"}))
+    assert "must be an array" in blocks[0].text
+
+
+async def test_process_images_bad_element_rejected(make_registry):
+    reg = make_registry(_with_login(lambda r: httpx.Response(404)))
+    blocks = _blocks(await reg.dispatch("process_images", {"image_ids": [1, "x", 3]}))
+    assert "must be an array of integer" in blocks[0].text
+
+
+async def test_reprocess_image_path_and_query(make_registry):
+    def routes(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/images/9/reprocess" and request.method == "POST":
+            assert request.url.params["detect_cells"] == "false"
+            return httpx.Response(200, json={"id": 9})
+        return httpx.Response(404)
+
+    reg = make_registry(_with_login(routes))
+    _blocks(await reg.dispatch("reprocess_image", {"image_id": 9, "detect_cells": False}))
+
+
+async def test_assign_protein_unassign_omits_param(make_registry):
+    def routes(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/experiments/3/protein" and request.method == "PATCH":
+            # omitting map_protein_id clears the assignment -> no query param sent
+            assert "map_protein_id" not in request.url.params
+            return httpx.Response(200, json={"ok": True})
+        return httpx.Response(404)
+
+    reg = make_registry(_with_login(routes))
+    _blocks(await reg.dispatch("assign_experiment_protein", {"experiment_id": 3}))
+
+
 async def test_redetect_cells_posts_array(make_registry):
     def routes(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/api/images/batch-redetect" and request.method == "POST":
@@ -203,4 +250,11 @@ async def test_new_tools_are_registered_with_correct_schema(make_registry):
     for name in ["delete_experiment", "delete_image", "delete_protein"]:
         assert tools[name].annotations.destructiveHint is True
     # reads are marked read-only
-    assert tools["list_experiments"].annotations.readOnlyHint is True
+    for name in ["list_experiments", "get_image", "list_cell_crops", "list_proteins"]:
+        assert tools[name].annotations.readOnlyHint is True
+    # mutating (non-destructive) writes must NOT be readOnly, or the client would
+    # skip consent for a mutation
+    for name in ["create_experiment", "update_experiment", "assign_experiment_protein",
+                 "upload_image", "process_images", "reprocess_image", "redetect_cells",
+                 "create_protein", "update_protein", "compute_protein_embedding"]:
+        assert tools[name].annotations.readOnlyHint is False

@@ -142,9 +142,13 @@ async def _page_hit_blocks(reg, data, count, token, empty_message: str) -> list[
 
 
 def _decode_base64_arg(args: dict, field: str) -> tuple[bytes | None, ContentBlock | None]:
-    """Decode ``args[field]``; on failure return an error block instead of bytes."""
+    """Decode ``args[field]``; on failure return an error block instead of bytes.
+
+    ``validate=True`` so malformed input (stray chars, a ``data:`` URI prefix,
+    unicode) is rejected here with a precise message, rather than silently decoding
+    to corrupt bytes that only fail later inside the backend's image/file parser."""
     try:
-        return base64.b64decode(args[field]), None
+        return base64.b64decode(args[field], validate=True), None
     except (binascii.Error, ValueError):
         return None, _text(f"{field} is not valid base64.")
 

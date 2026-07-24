@@ -475,9 +475,10 @@ tools:
   # ==========================================================================
   # APPLICATION CONTROL — experiments, images + cell detection, proteins, DB.
   # These let the agent operate Maptimize like a human user. ACL is enforced
-  # server-side by the SAME rules as the UI: reads are group-shared, writes are
-  # OWNER-ONLY (you can only change/delete your own data). destructiveHint marks
-  # irreversible tools so the client asks for confirmation.
+  # server-side by the SAME rules as the UI: reads are group-shared; writes to
+  # experiments and images are OWNER-ONLY (you can only change/delete your own).
+  # Proteins are SHARED reference data — any user can create/update/delete them.
+  # destructiveHint marks irreversible tools so the client asks for confirmation.
   # ==========================================================================
 
   # -- Experiments -----------------------------------------------------------
@@ -894,10 +895,13 @@ tools:
       plus group-shared experiments — you cannot read other users' private data.
       Only a single SELECT is allowed: NO INSERT/UPDATE/DELETE, no subqueries, no
       CTEs (WITH), no UNION/INTERSECT/EXCEPT, no SQL comments, no multiple
-      statements. Joins must be explicit `JOIN ... ON` (no comma joins). Because
-      images and cell_crops have no owner column, a query on them MUST JOIN
-      experiments (images.experiment_id = experiments.id, and cell_crops.image_id
-      = images.id). Allowed tables and columns:
+      statements. Do NOT add your own LIMIT/OFFSET — use the limit parameter.
+      Joins must be explicit `JOIN ... ON` (no comma/CROSS/NATURAL joins). Because
+      images and cell_crops have no owner column, they must be JOINed up to
+      experiments so the access filter applies: images MUST JOIN experiments
+      (images.experiment_id = experiments.id), and cell_crops MUST JOIN images
+      which MUST JOIN experiments (cell_crops.image_id = images.id, then
+      images.experiment_id = experiments.id). Allowed tables and columns:
       experiments(id, name, description, status, map_protein_id, group_id,
       fasta_sequence, created_at, updated_at);
       images(id, experiment_id, map_protein_id, original_filename, width, height,

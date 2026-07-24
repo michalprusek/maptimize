@@ -174,3 +174,41 @@ def test_tool_without_annotations_has_none(tmp_path):
     )
     tool = ToolRegistry(str(yaml_file), _client_on(str(yaml_file))).list_tools()[0]
     assert tool.annotations is None  # unannotated tools stay unset (SDK worst-case defaults)
+
+
+def test_registry_rejects_unknown_param_type(tmp_path):
+    # a typo'd type must fail loudly at load, not silently default to "string"
+    yaml_file = tmp_path / "tools.yaml"
+    yaml_file.write_text(
+        "tools:\n"
+        "  - name: bad\n"
+        "    description: bad\n"
+        "    handler: http_json\n"
+        "    method: GET\n"
+        "    path: /x\n"
+        "    params:\n"
+        "      - name: n\n"
+        "        in: query\n"
+        "        type: interger\n"
+    )
+    with pytest.raises(ValueError, match="unknown type"):
+        ToolRegistry(str(yaml_file), _client_on(str(yaml_file)))
+
+
+def test_registry_rejects_unknown_array_items_type(tmp_path):
+    yaml_file = tmp_path / "tools.yaml"
+    yaml_file.write_text(
+        "tools:\n"
+        "  - name: bad\n"
+        "    description: bad\n"
+        "    handler: http_post_json\n"
+        "    method: POST\n"
+        "    path: /x\n"
+        "    params:\n"
+        "      - name: ids\n"
+        "        in: body\n"
+        "        type: array\n"
+        "        items: intt\n"
+    )
+    with pytest.raises(ValueError, match="items type"):
+        ToolRegistry(str(yaml_file), _client_on(str(yaml_file)))

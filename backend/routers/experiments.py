@@ -224,11 +224,16 @@ async def update_experiment_protein(
     db: AsyncSession = Depends(get_db)
 ):
     """
-    Update the MAP protein assignment for an experiment.
+    Update the MAP protein assignment for an experiment (owner only).
 
     This cascades the protein assignment to all images and cell crops in the experiment.
     """
     experiment = await get_experiment_for_user(db, experiment_id, current_user.id)
+    if experiment.user_id != current_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only the experiment owner can change its protein",
+        )
 
     # Verify protein exists if provided
     protein = None

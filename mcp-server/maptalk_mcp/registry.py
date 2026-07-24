@@ -29,6 +29,8 @@ _JSON_TYPES = {
     "number": "number",
     "boolean": "boolean",
 }
+# A param's `type` may be any scalar above, or "array" (with a scalar `items`).
+_VALID_PARAM_TYPES = set(_JSON_TYPES) | {"array"}
 
 
 @dataclass(frozen=True)
@@ -57,7 +59,9 @@ class ParamSpec:
                 element = ParamSpec(name=self.name, type=self.items)
                 return [element.coerce(v) for v in value]
         except (TypeError, ValueError):
-            raise ValueError(f"Argument '{self.name}' must be a {self.type}.")
+            kind = f"array of {self.items}" if self.type == "array" else self.type
+            article = "an" if kind[0] in "aeiou" else "a"
+            raise ValueError(f"Argument '{self.name}' must be {article} {kind}.")
         return value
 
 
@@ -112,13 +116,24 @@ class ToolSpec:
 
 
 def _parse_param(raw: dict[str, Any]) -> ParamSpec:
+    # Reject an unknown `type`/`items` at load time (like the annotation-key check in
+    # _parse_tool). Otherwise a YAML typo (`type: interger`) silently defaults to
+    # "string" in both the emitted schema and coerce(), shipping a wrong tool.
+    ptype = raw.get("type", "string")
+    if ptype not in _VALID_PARAM_TYPES:
+        raise ValueError(f"Param '{raw.get('name')}' has unknown type '{ptype}'.")
+    items = raw.get("items", "string")
+    if ptype == "array" and items not in _JSON_TYPES:
+        raise ValueError(
+            f"Param '{raw.get('name')}' has unknown array items type '{items}'."
+        )
     enum = raw.get("enum")
     return ParamSpec(
         name=raw["name"],
         location=raw.get("in", "query"),
         maps_to=raw.get("maps_to"),
-        type=raw.get("type", "string"),
-        items=raw.get("items", "string"),
+        type=ptype,
+        items=items,
         required=bool(raw.get("required", False)),
         default=raw.get("default"),
         description=raw.get("description", ""),
