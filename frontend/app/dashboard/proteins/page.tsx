@@ -231,12 +231,21 @@ export default function ProteinsPage(): JSX.Element {
     onError: (err: Error) => setError(err.message || t("embeddingError")),
   });
 
-  const openCreateModal = () => {
+  const openCreateModal = async () => {
     setEditingProtein(null);
     setFormData(DEFAULT_FORM_DATA);
     prevUniprotIdRef.current = ""; // Reset to allow auto-fetch
     setShowModal(true);
     setError(null);
+    // Pre-fill a suggested unused colour so the swatch shows the colour the
+    // protein will get (still editable, and the "Auto" button clears it). If the
+    // request fails, leave it blank — the backend auto-assigns on save anyway.
+    try {
+      const { color } = await api.getSuggestedProteinColor();
+      setFormData((prev) => ({ ...prev, color }));
+    } catch {
+      // no-op: blank color still auto-assigns server-side
+    }
   };
 
   const openEditModal = (protein: MapProteinDetailed) => {

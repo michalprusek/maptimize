@@ -986,6 +986,13 @@ def test_palette_entries_are_unique_valid_hex():
     assert len({c.lower() for c in palette}) == len(palette)
 
 
+async def test_suggested_protein_colour_returns_unused(mock_db):
+    """The create-form pre-fill suggests the same unused colour create would pick."""
+    mock_db.execute.return_value = make_result(fetchall=[(COLOR_PALETTE[0],)])
+    out = await prot_r.get_suggested_protein_color(current_user=user(), db=mock_db)
+    assert out == {"color": COLOR_PALETTE[1]}
+
+
 async def test_prot_umap_too_few(mock_db):
     mock_db.execute.return_value = make_result(scalars_all=[protein(embedding=[0.1])])
     out = await prot_r.get_protein_umap(current_user=user(), db=mock_db)
