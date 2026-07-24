@@ -5,10 +5,11 @@ import os
 import time
 
 import httpx
+import pytest
 
 from maptalk_mcp.client import MaptalkClient
 from maptalk_mcp.config import Config, DEFAULT_TOOLS_FILE
-from maptalk_mcp.registry import ToolRegistry
+from maptalk_mcp.registry import ToolRegistry, _parse_tool
 
 
 def _noop(request: httpx.Request) -> httpx.Response:
@@ -134,6 +135,18 @@ def test_enum_and_annotations_surface_in_tool(tmp_path):
     assert tool.annotations is not None
     assert tool.annotations.readOnlyHint is True
     assert tool.annotations.openWorldHint is False
+
+
+def test_unknown_annotation_key_is_rejected():
+    # A typo'd hint (destructive vs destructiveHint) would silently ship an unset
+    # consent hint (ToolAnnotations has extra="allow") — reject it at load time.
+    with pytest.raises(ValueError, match="unknown annotation"):
+        _parse_tool({"name": "x", "handler": "http_json",
+                     "annotations": {"destructive": True}})
+    # a correct key still parses
+    spec = _parse_tool({"name": "x", "handler": "http_json",
+                        "annotations": {"destructiveHint": True}})
+    assert spec.annotations == {"destructiveHint": True}
 
 
 def test_tool_without_annotations_has_none(tmp_path):

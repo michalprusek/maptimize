@@ -1,18 +1,21 @@
 """Tool handlers.
 
-A handler turns a resolved ``{arg: value}`` dict into a list of MCP content
-blocks. Which handler a tool uses is declared by its ``handler:`` key in
-``tools.yaml``, so simple REST tools need no code at all — only the two
-composite handlers (page reading, web search) live here.
+A handler turns a resolved ``{arg: value}`` dict into MCP content. Which handler
+a tool uses is declared by its ``handler:`` key in ``tools.yaml``; simple REST
+tools reuse the generic ``http_json`` / ``http_post_json`` proxies, while the
+composite handlers (search, page/region reading, image search, folder move,
+indexing, web search) live here.
 
-Handler signature: ``async def handler(reg, spec, args) -> list[ContentBlock]``
-where ``reg`` is the ToolRegistry (exposes ``.client`` and ``.web_client``).
+Handler signature: ``async def handler(reg, spec, args, token=None) -> HandlerResult``
+where ``reg`` is the ToolRegistry (exposes ``.client`` and ``.web_client``) and a
+``HandlerResult`` is content blocks, optionally paired with structuredContent.
 """
 from __future__ import annotations
 
 import base64
 import binascii
 import json
+import logging
 import re
 import urllib.parse
 from typing import TYPE_CHECKING, Any
@@ -22,6 +25,8 @@ import mcp.types as types
 
 if TYPE_CHECKING:  # avoid an import cycle; only needed for type hints
     from .registry import ToolRegistry, ToolSpec
+
+logger = logging.getLogger(__name__)
 
 ContentBlock = types.TextContent | types.ImageContent
 # A handler returns either content blocks, or (blocks, structuredContent). The
@@ -102,14 +107,19 @@ def _image_block(content: bytes, mime: str) -> types.ImageContent:
 
 
 async def _pages_as_images(reg, hits, token) -> list[ContentBlock]:
+    """Fetch each hit's page image. A single missing/corrupt page must not sink
+    the whole result: on failure, emit a text placeholder and keep the rest."""
     blocks: list[ContentBlock] = []
     for h in hits:
-        content, mime = await reg.client.get_bytes(
-            f"/api/rag/documents/{h['document_id']}/pages/{h['page_number']}/image",
-            auth="query",
-            token=token,
-        )
-        blocks.append(_image_block(content, mime))
+        doc_id, page = h["document_id"], h["page_number"]
+        try:
+            content, mime = await reg.client.get_bytes(
+                f"/api/rag/documents/{doc_id}/pages/{page}/image", auth="query", token=token
+            )
+            blocks.append(_image_block(content, mime))
+        except Exception as exc:  # one bad page shouldn't discard the others
+            logger.warning("page image doc %s p.%s unavailable: %s", doc_id, page, exc)
+            blocks.append(_text(f"[doc {doc_id} p.{page} image unavailable: {exc}]"))
     return blocks
 
 
@@ -153,7 +163,7 @@ async def search_documents(
     query = args["query"]
     return_images = args.get("return", "images") != "refs"
     cap = _MAX_SEARCH_IMAGES if return_images else _MAX_REF_HITS
-    limit = min(int(args.get("limit", 10 if return_images else 20)), cap)
+    limit = min(int(args.get("limit", 10)), cap)  # tools.yaml injects default 10
 
     data = await reg.client.get_json(
         "/api/rag/search/documents", params={"q": query, "limit": limit}, token=token
@@ -168,15 +178,21 @@ async def search_documents(
 
     structured: dict[str, Any] = {"query": query, "results": hits}
     if args.get("include_fov"):
-        fov = await reg.client.get_json(
-            "/api/rag/search/fov", params={"q": query, "limit": limit}, token=token
-        )
-        fov_hits = fov.get("results") or []
-        structured["fov_matches"] = fov_hits
-        blocks.append(
-            _text({"fov_image_matches": fov_hits}) if fov_hits
-            else _text("No FOV microscopy images matched.")
-        )
+        # Optional augmentation: a FOV-search failure must NOT discard the
+        # already-computed document results.
+        try:
+            fov = await reg.client.get_json(
+                "/api/rag/search/fov", params={"q": query, "limit": limit}, token=token
+            )
+            fov_hits = fov.get("results") or []
+            structured["fov_matches"] = fov_hits
+            blocks.append(
+                _text({"fov_image_matches": fov_hits}) if fov_hits
+                else _text("No FOV microscopy images matched.")
+            )
+        except Exception as exc:
+            logger.warning("FOV search failed for %r: %s", query, exc)
+            blocks.append(_text(f"(FOV image search failed: {exc})"))
     return blocks, structured
 
 
@@ -329,13 +345,19 @@ async def find_documents(
     docs = resp.json()
     blocks: list[ContentBlock] = [_text(docs)]
     structured: dict[str, Any] = {"documents": docs}
-    total = resp.headers.get("X-Total-Count")
+    # The pagination total is a hint — a missing/malformed header degrades to
+    # "no pagination note", it must never discard the already-fetched listing.
+    total_raw = resp.headers.get("X-Total-Count")
+    try:
+        total = int(total_raw) if total_raw is not None else None
+    except (TypeError, ValueError):
+        total = None
     if total is not None:
         skip = int(args.get("skip", 0) or 0)
         shown = len(docs) if isinstance(docs, list) else 0
-        structured.update(total=int(total), skip=skip)
+        structured.update(total=total, skip=skip)
         note = f"Showing {shown} of {total} matching document(s) (skip={skip})."
-        if shown and skip + shown < int(total):
+        if shown and skip + shown < total:
             note += f" Call again with skip={skip + shown} for the next page."
         blocks.append(_text(note))
     return blocks, structured

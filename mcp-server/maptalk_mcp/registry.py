@@ -8,6 +8,7 @@ visible list; a call always uses the latest file.
 """
 from __future__ import annotations
 
+import logging
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -19,6 +20,8 @@ import yaml
 
 from .client import MaptalkClient
 from .handlers import HANDLERS, ContentBlock, HandlerResult
+
+logger = logging.getLogger(__name__)
 
 _JSON_TYPES = {
     "string": "string",
@@ -114,6 +117,16 @@ def _parse_tool(raw: dict[str, Any]) -> ToolSpec:
     handler = raw["handler"]
     if handler not in HANDLERS:
         raise ValueError(f"Tool '{raw.get('name')}' uses unknown handler '{handler}'.")
+    annotations = raw.get("annotations")
+    if annotations:
+        # ToolAnnotations has extra="allow", so a typo'd key (e.g. `destructive`
+        # instead of `destructiveHint`) would silently ship an unset consent hint.
+        # Reject unknown keys at load time. Allowed set is the SDK model (SSOT).
+        unknown = set(annotations) - set(types.ToolAnnotations.model_fields)
+        if unknown:
+            raise ValueError(
+                f"Tool '{raw.get('name')}' has unknown annotation(s): {sorted(unknown)}"
+            )
     return ToolSpec(
         name=raw["name"],
         description=" ".join(raw.get("description", "").split()),
@@ -182,5 +195,8 @@ class ToolRegistry:
         try:
             resolved = spec.resolve_args(arguments)
             return await HANDLERS[spec.handler](self, spec, resolved, token)
-        except Exception as exc:  # surface a readable error to the model
+        except Exception as exc:  # surface a readable, model-recoverable error
+            # Log it too: without this the failure vanishes into a string handed
+            # to the model, invisible to operators (the package logs nothing else).
+            logger.exception("tool %s failed: %s", name, exc)
             return [types.TextContent(type="text", text=f"Error calling {name}: {exc}")]

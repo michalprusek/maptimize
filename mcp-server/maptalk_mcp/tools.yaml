@@ -164,11 +164,11 @@ tools:
       openWorldHint: false
     description: >
       Filter the document library by METADATA only — name, DOI, file type,
-      indexing status, page-count range. Returns document metadata (id, name,
-      type, status, pages, dates), NOT page content. There is no full-text search
-      (pages are stored as images, not OCR text) — to search content by meaning,
-      use search_documents. Also use this to browse the library and get a
-      document_id.
+      indexing status, page-count range, and folder. Returns document metadata
+      (id, name, type, status, pages, dates), NOT page content. There is no
+      full-text search (pages are stored as images, not OCR text) — to search
+      content by meaning, use search_documents. Also use this to browse the
+      library (optionally scoped to a folder) and get a document_id.
     handler: find_documents
     method: GET
     path: /api/rag/documents
@@ -211,6 +211,18 @@ tools:
         description: >
           Offset for pagination. The response reports the total match count and
           the next skip value when more pages exist.
+      - name: folder_id
+        in: query
+        type: integer
+        description: >
+          Scope to one folder (with in_folder=true). Get folder ids from
+          list_folders.
+      - name: in_folder
+        in: query
+        type: boolean
+        description: >
+          Set true to scope to folder_id; if folder_id is omitted, scopes to the
+          top-level (root) folder.
 
   - name: get_document_metadata
     annotations:

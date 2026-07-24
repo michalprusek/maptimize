@@ -502,24 +502,26 @@ def test_document_metadata_conditions_always_scopes():
     assert len(conds) == 5  # scope + name + status + min_pages + folder
 
 
-def test_search_and_count_share_the_same_conditions():
-    # drift guard: the listing and the count must build identical WHERE clauses.
-    # Both delegate to _document_metadata_conditions, so compare the rendered SQL.
-    import services.rag_service as rs
-    calls = {}
-    real = rs._document_metadata_conditions
+async def test_search_and_count_forward_identical_conditions(mock_db):
+    # Real drift guard: drive BOTH public functions and assert they forward the
+    # SAME kwargs to the shared condition-builder. If someone adds a filter to
+    # the listing but forgets the count, the captured kwargs diverge and this
+    # fails — which the old direct-call version could never catch.
+    captured = []
+    real = rag._document_metadata_conditions
 
     def spy(user_id, **kw):
-        calls.setdefault("kw", []).append(kw)
+        captured.append(kw)
         return real(user_id, **kw)
 
-    with patch.object(rs, "_document_metadata_conditions", spy):
-        # invoke the condition-building of both via their kwargs (no DB needed):
-        real_kw = dict(name="a", status="failed", file_type="pdf", min_pages=2)
-        c1 = rs._document_metadata_conditions(7, **real_kw)
-        c2 = rs._document_metadata_conditions(7, **real_kw)
-    # identical inputs -> identical number/kind of conditions
-    assert len(c1) == len(c2) == 5
+    mock_db.execute.return_value = make_result(scalars_all=[], scalar=0)
+    filters = dict(name="a", status="failed", file_type="pdf", min_pages=2,
+                   in_folder=True, folder_id=3)
+    with patch.object(rag, "_document_metadata_conditions", spy):
+        await rag.search_documents_metadata(7, mock_db, skip=0, limit=10, **filters)
+        await rag.count_documents_metadata(7, mock_db, **filters)
+    assert len(captured) == 2
+    assert captured[0] == captured[1]  # listing and count build identical WHERE
 
 
 async def test_count_documents_metadata_returns_scalar(mock_db):
@@ -686,6 +688,26 @@ async def test_render_region_non_pdf_falls_back_to_raster(mock_db, tmp_path):
     render.assert_not_awaited()  # non-PDF never triggers a PDF render
     got = PILImage.open(BytesIO(out))
     assert max(got.size) <= 800  # cropped from the 800px raster, not upscaled
+
+
+async def test_render_region_pdf_render_fail_falls_back_to_raster(mock_db, tmp_path):
+    # A PDF whose hi-res render fails (poppler error / source moved) degrades to a
+    # crop of the stored raster rather than 404 — a region crop of the 150-DPI page
+    # is still more legible than the downsampled full page.
+    raster = make_png(tmp_path / "p.webp", size=(400, 500))
+    pdf = tmp_path / "doc.pdf"
+    pdf.write_bytes(b"%PDF-1.4 fake")
+    doc = document(file_type="pdf", original_path=str(pdf),
+                   pages=[page(page_number=2, image_path=str(raster))])
+    mock_db.execute.return_value = make_result(scalar=doc)
+    render = AsyncMock(return_value=None)  # hi-res render fails
+    with patch.object(rag, "settings", _REGION_SETTINGS), \
+         patch("services.document_indexing_service.render_single_pdf_page", render):
+        out = await rag.render_page_region(2, 2, [100, 100, 500, 500], 7, mock_db)
+    render.assert_awaited_once()
+    assert out is not None  # degraded to the stored raster, not a 404
+    got = PILImage.open(BytesIO(out))
+    assert max(got.size) <= 400  # from the 400px raster, not a hi-res render
 
 
 # ============================================================================ #

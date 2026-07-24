@@ -962,6 +962,10 @@ def _crop_region_png(source: "PILImage.Image", bbox: List[int], max_edge: int) -
         px_xmax = min(width, int(xmax * width / 1000) + pad)
         px_ymin = max(0, int(ymin * height / 1000) - pad)
         px_ymax = min(height, int(ymax * height / 1000) + pad)
+        # Guard against a zero-size crop (a sub-pixel region on a tiny raster
+        # with pad rounding to 0) — PIL would encode an empty but valid PNG.
+        px_xmax = min(width, max(px_xmax, px_xmin + 1))
+        px_ymax = min(height, max(px_ymax, px_ymin + 1))
         crop = source.crop((px_xmin, px_ymin, px_xmax, px_ymax))
 
         longest = max(crop.size)
