@@ -7,6 +7,7 @@ This service provides:
 - Passage extraction from document pages
 """
 
+import asyncio
 import base64
 import hashlib
 import json
@@ -15,7 +16,7 @@ from io import BytesIO
 from pathlib import Path
 from typing import List, Optional, Dict, Any
 
-from sqlalchemy import select, text
+from sqlalchemy import select, text, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -255,6 +256,49 @@ async def search_similar_pages(
     )
 
 
+def _document_metadata_conditions(
+    user_id: int,
+    *,
+    name: Optional[str] = None,
+    doi: Optional[str] = None,
+    file_type: Optional[str] = None,
+    status: Optional[str] = None,
+    created_after=None,
+    created_before=None,
+    min_pages: Optional[int] = None,
+    max_pages: Optional[int] = None,
+    folder_id: Optional[int] = None,
+    in_folder: bool = False,
+    group_id: Optional[int] = None,
+    thread_id: Optional[int] = None,
+) -> list:
+    """The WHERE clauses for a metadata query. SSOT shared by the listing and the
+    count so a paginated total can never drift from the rows it counts."""
+    conds = [document_scope(user_id, thread_id, group_id)]
+    if name:
+        conds.append(RAGDocument.name.ilike(f"%{name}%"))
+    if doi:
+        conds.append(RAGDocument.doi.ilike(f"%{doi}%"))
+    if file_type:
+        conds.append(RAGDocument.file_type == file_type)
+    if status:
+        conds.append(RAGDocument.status == status)
+    if created_after is not None:
+        conds.append(RAGDocument.created_at >= created_after)
+    if created_before is not None:
+        conds.append(RAGDocument.created_at <= created_before)
+    if min_pages is not None:
+        conds.append(RAGDocument.page_count >= min_pages)
+    if max_pages is not None:
+        conds.append(RAGDocument.page_count <= max_pages)
+    if in_folder:  # scope to one folder (folder_id=None -> root)
+        conds.append(
+            RAGDocument.folder_id.is_(None) if folder_id is None
+            else RAGDocument.folder_id == folder_id
+        )
+    return conds
+
+
 async def search_documents_metadata(
     user_id: int,
     db: AsyncSession,
@@ -276,30 +320,46 @@ async def search_documents_metadata(
 ) -> List:
     """Filter documents by metadata (name/doi/type/status/date/page-range).
     Returns RAGDocument ORM rows. (Vision-RAG: no OCR text to full-text search.)"""
-    stmt = select(RAGDocument).where(document_scope(user_id, thread_id, group_id))
-    if name:
-        stmt = stmt.where(RAGDocument.name.ilike(f"%{name}%"))
-    if doi:
-        stmt = stmt.where(RAGDocument.doi.ilike(f"%{doi}%"))
-    if file_type:
-        stmt = stmt.where(RAGDocument.file_type == file_type)
-    if status:
-        stmt = stmt.where(RAGDocument.status == status)
-    if created_after is not None:
-        stmt = stmt.where(RAGDocument.created_at >= created_after)
-    if created_before is not None:
-        stmt = stmt.where(RAGDocument.created_at <= created_before)
-    if min_pages is not None:
-        stmt = stmt.where(RAGDocument.page_count >= min_pages)
-    if max_pages is not None:
-        stmt = stmt.where(RAGDocument.page_count <= max_pages)
-    if in_folder:  # scope to one folder (folder_id=None -> root)
-        stmt = stmt.where(
-            RAGDocument.folder_id.is_(None) if folder_id is None
-            else RAGDocument.folder_id == folder_id
-        )
-    stmt = stmt.order_by(RAGDocument.created_at.desc()).offset(skip).limit(limit)
+    conds = _document_metadata_conditions(
+        user_id, name=name, doi=doi, file_type=file_type, status=status,
+        created_after=created_after, created_before=created_before,
+        min_pages=min_pages, max_pages=max_pages, folder_id=folder_id,
+        in_folder=in_folder, group_id=group_id, thread_id=thread_id,
+    )
+    stmt = (
+        select(RAGDocument).where(*conds)
+        .order_by(RAGDocument.created_at.desc()).offset(skip).limit(limit)
+    )
     return list((await db.execute(stmt)).scalars().all())
+
+
+async def count_documents_metadata(
+    user_id: int,
+    db: AsyncSession,
+    *,
+    name: Optional[str] = None,
+    doi: Optional[str] = None,
+    file_type: Optional[str] = None,
+    status: Optional[str] = None,
+    created_after=None,
+    created_before=None,
+    min_pages: Optional[int] = None,
+    max_pages: Optional[int] = None,
+    folder_id: Optional[int] = None,
+    in_folder: bool = False,
+    group_id: Optional[int] = None,
+    thread_id: Optional[int] = None,
+) -> int:
+    """Total documents matching the same filters as search_documents_metadata
+    (ignoring skip/limit) — for the X-Total-Count pagination header."""
+    conds = _document_metadata_conditions(
+        user_id, name=name, doi=doi, file_type=file_type, status=status,
+        created_after=created_after, created_before=created_before,
+        min_pages=min_pages, max_pages=max_pages, folder_id=folder_id,
+        in_folder=in_folder, group_id=group_id, thread_id=thread_id,
+    )
+    stmt = select(func.count()).select_from(RAGDocument).where(*conds)
+    return int((await db.execute(stmt)).scalar() or 0)
 
 
 async def search_fov_images(
@@ -832,6 +892,91 @@ async def _get_document_page_image_path(
         return None, None
 
     return document, image_path
+
+
+async def render_page_region(
+    document_id: int,
+    page_number: int,
+    bbox: List[int],
+    user_id: int,
+    db: AsyncSession,
+    group_id: Optional[int] = None,
+) -> Optional[bytes]:
+    """Return a high-resolution PNG crop of a page region, for reading fine
+    detail (small figures / tables / text) that is illegible at full-page zoom.
+
+    ``bbox`` is ``[ymin, xmin, ymax, xmax]`` normalized to 0-1000. For PDFs the
+    target page is re-rendered from the source at ``settings.rag_region_dpi`` so
+    the crop is crisp; for image / text documents we crop the stored page raster.
+    The longest edge is capped at ``settings.rag_region_max_edge`` -- past the
+    vision model's pixel budget, more pixels only cost tokens.
+    """
+    from PIL import Image as PILImage
+    from services.document_indexing_service import render_single_pdf_page
+
+    if len(bbox) != 4 or not all(0 <= v <= 1000 for v in bbox):
+        return None
+    ymin, xmin, ymax, xmax = bbox
+    if ymin >= ymax or xmin >= xmax:
+        return None
+
+    document, image_path = await _get_document_page_image_path(
+        document_id, page_number, user_id, db, group_id=group_id
+    )
+    if not document or not image_path:
+        return None
+
+    source: Optional["PILImage.Image"] = None
+    pdf_path = Path(document.original_path) if document.original_path else None
+    if document.file_type == "pdf" and pdf_path and pdf_path.exists():
+        source = await render_single_pdf_page(pdf_path, page_number, settings.rag_region_dpi)
+    if source is None:  # non-PDF document, or the hi-res render failed
+        try:
+            source = PILImage.open(image_path).convert("RGB")
+        except Exception as e:  # a corrupt/unreadable raster must not 500
+            logger.exception(f"Error opening raster for doc {document_id} p.{page_number}: {e}")
+            return None
+
+    try:
+        # Crop/resize/PNG-encode is CPU-bound (crops up to rag_region_max_edge) —
+        # run it off the event loop so a large zoom doesn't stall other requests.
+        return await asyncio.get_event_loop().run_in_executor(
+            None, _crop_region_png, source, bbox, settings.rag_region_max_edge
+        )
+    except Exception as e:
+        logger.exception(f"Error rendering region of doc {document_id} p.{page_number}: {e}")
+        return None
+
+
+def _crop_region_png(source: "PILImage.Image", bbox: List[int], max_edge: int) -> bytes:
+    """CPU-bound crop of ``bbox`` (0-1000) from ``source``, capped at ``max_edge``
+    on the longest edge, encoded as PNG. Always closes ``source``. Runs in an
+    executor (never touch the event loop from here)."""
+    from PIL import Image as PILImage
+
+    try:
+        ymin, xmin, ymax, xmax = bbox
+        width, height = source.size
+        pad = int(min(width, height) * 0.015)  # ~1.5% breathing room around the crop
+        px_xmin = max(0, int(xmin * width / 1000) - pad)
+        px_xmax = min(width, int(xmax * width / 1000) + pad)
+        px_ymin = max(0, int(ymin * height / 1000) - pad)
+        px_ymax = min(height, int(ymax * height / 1000) + pad)
+        crop = source.crop((px_xmin, px_ymin, px_xmax, px_ymax))
+
+        longest = max(crop.size)
+        if longest > max_edge:
+            scale = max_edge / longest
+            crop = crop.resize(
+                (max(1, int(crop.width * scale)), max(1, int(crop.height * scale))),
+                PILImage.LANCZOS,
+            )
+
+        buffer = BytesIO()
+        crop.save(buffer, "PNG", optimize=True)
+        return buffer.getvalue()
+    finally:
+        source.close()
 
 
 async def extract_passage_image(

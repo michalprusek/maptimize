@@ -9,89 +9,70 @@
 # Each tool entry:
 #   name        tool name shown to the model
 #   description what the model reads to decide when to use it (keep it concrete)
-#   handler     http_json | document_pages | web_search
-#   method/path backend REST endpoint (http_json only)
+#   handler     one of: http_json, http_post_json, document_pages, search_documents,
+#               search_by_image, find_documents, move_document, read_page_region,
+#               index_document, web_search
+#               (composite handlers live in handlers.py; the rest proxy a REST call)
+#   method/path backend REST endpoint (http_json / http_post_json)
+#   annotations optional MCP hints: readOnlyHint / destructiveHint / idempotentHint
+#               / openWorldHint (shape consent UX in the client; not a security gate)
 #   params      inputs. `in:` is one of:
 #                 query -> sent as a querystring param (maps_to overrides the key)
 #                 path  -> substituted into {placeholder} in `path`
+#                 body  -> JSON body field (http_post_json)
 #                 arg   -> consumed by a composite handler, not sent verbatim
+#               a param may carry `enum:` to constrain its allowed values.
 # ============================================================================
 
 tools:
   - name: search_documents
     description: >
-      Semantically search the user's indexed maptalk library documents
-      (scientific PDFs, lab protocols, papers). Returns the most relevant PAGES
-      with a similarity score, document id, document name, page number, and —
-      when available — a short text excerpt. Use this to find WHERE information
-      lives, then call read_document_pages to actually read those pages.
-    handler: http_json
-    method: GET
-    path: /api/rag/search/documents
+      Semantic search over the library (scientific PDFs, lab protocols, papers).
+      RETRIEVAL IS BUILT IN: by default it returns the matching page IMAGES so you
+      can read and answer in one call. Set return=refs for a lightweight text list
+      of page references (document, page, score) without the images — use that when
+      you only need to locate pages. Set include_fov=true to also search microscopy
+      field-of-view images. To read more pages of a specific hit, call
+      read_document_pages; to zoom a small figure, read_page_region.
+    handler: search_documents
+    annotations:
+      readOnlyHint: true
+      openWorldHint: false
     params:
       - name: query
-        in: query
-        maps_to: q
+        in: arg
         type: string
         required: true
         description: Natural-language search query.
-      - name: limit
-        in: query
-        type: integer
-        default: 20
-        description: Maximum number of page hits to return (1-100).
-
-  - name: semantic_search
-    description: >
-      Combined semantic search over BOTH indexed documents and microscopy
-      field-of-view (FOV) images. Returns ranked document-page hits and image
-      hits. Prefer search_documents when you only care about documents.
-    handler: http_json
-    method: GET
-    path: /api/rag/search
-    params:
-      - name: query
-        in: query
-        maps_to: q
+      - name: return
+        in: arg
         type: string
-        required: true
-        description: Natural-language search query.
-      - name: doc_limit
-        in: query
+        default: images
+        enum: [images, refs]
+        description: >
+          images = return the matching page images (default, retrieval built in);
+          refs = a text list of page references only.
+      - name: include_fov
+        in: arg
+        type: boolean
+        default: false
+        description: Also search microscopy field-of-view (FOV) images.
+      - name: limit
+        in: arg
         type: integer
         default: 10
-        description: Max document-page hits (1-50).
-      - name: fov_limit
-        in: query
-        type: integer
-        default: 10
-        description: Max microscopy-image hits (1-50).
-
-  - name: list_documents
-    description: >
-      List the user's indexed library documents with metadata (id, name, file
-      type, page count, indexing status, size, dates). Use this to see what is
-      available before searching or reading, or to get a document_id.
-    handler: http_json
-    method: GET
-    path: /api/rag/documents
-    params:
-      - name: status
-        in: query
-        type: string
-        description: Optional filter — pending, processing, completed or failed.
-      - name: limit
-        in: query
-        type: integer
-        default: 100
-        description: Maximum number of documents to return (1-100).
+        description: Max hits (page images are capped at 10; refs up to 50).
 
   - name: read_document_pages
+    annotations:
+      readOnlyHint: true
+      openWorldHint: false
     description: >
-      Read the actual CONTENT of a document. maptalk is a Vision-RAG system, so
-      page content is returned as rendered page IMAGES (which you can read
-      directly), not plain text. Returns up to `count` pages starting at
-      `start_page`. Requires a document_id.
+      Read the actual CONTENT of specific pages of a known document, returned as
+      rendered page IMAGES. Returns up to `count` pages starting at `start_page`.
+      Requires a document_id (from search_documents or find_documents). If a figure,
+      table, or small label on a page is too small to read reliably, call
+      read_page_region to zoom into that area at high resolution instead of guessing.
     handler: document_pages
     params:
       - name: document_id
@@ -110,7 +91,56 @@ tools:
         default: 5
         description: How many pages to return (hard-capped at 10 per call).
 
+  - name: read_page_region
+    annotations:
+      readOnlyHint: true
+      openWorldHint: false
+    description: >
+      ZOOM into one rectangular region of a document page and return it as a
+      high-resolution image. Use this whenever a figure, sub-panel, table cell,
+      colored marker, or small label is illegible on the full page (the full
+      page is downsampled, so fine detail is lost). The region is re-rendered
+      from the source PDF at high DPI, so the crop is crisp. Coordinates are
+      normalized 0-1000 with the origin at the TOP-LEFT: ymin/xmin is the
+      top-left corner, ymax/xmax the bottom-right. Estimate the box from the
+      full page you already saw, then read the returned crop.
+    handler: read_page_region
+    params:
+      - name: document_id
+        in: arg
+        type: integer
+        required: true
+        description: Id of the document.
+      - name: page_number
+        in: arg
+        type: integer
+        required: true
+        description: 1-based page number.
+      - name: ymin
+        in: arg
+        type: integer
+        required: true
+        description: Top edge, 0-1000 (0 = top of page).
+      - name: xmin
+        in: arg
+        type: integer
+        required: true
+        description: Left edge, 0-1000 (0 = left of page).
+      - name: ymax
+        in: arg
+        type: integer
+        required: true
+        description: Bottom edge, 0-1000 (> ymin).
+      - name: xmax
+        in: arg
+        type: integer
+        required: true
+        description: Right edge, 0-1000 (> xmin).
+
   - name: web_search
+    annotations:
+      readOnlyHint: true
+      openWorldHint: true
     description: >
       Search the public web and return a ranked list of result titles, URLs and
       snippets. Independent of the maptalk backend and its Gemini quota — safe
@@ -128,30 +158,18 @@ tools:
         default: 8
         description: How many results to return.
 
-  - name: semantic_image_search
-    description: >
-      Semantic search over the library that returns the top matching pages as
-      rendered IMAGES you can read directly (maptalk is Vision-RAG). Best default
-      for "find and show me the relevant pages".
-    handler: semantic_image_search
-    params:
-      - name: query
-        in: arg
-        type: string
-        required: true
-        description: Natural-language search query.
-      - name: count
-        in: arg
-        type: integer
-        default: 10
-        description: How many page images to return (max 10).
-
   - name: find_documents
+    annotations:
+      readOnlyHint: true
+      openWorldHint: false
     description: >
-      Filter/search documents by metadata — name, DOI, file type, status, page
-      count — and by full text over the pages' OCR text. Returns document
-      metadata (not page images).
-    handler: http_json
+      Filter the document library by METADATA only — name, DOI, file type,
+      indexing status, page-count range. Returns document metadata (id, name,
+      type, status, pages, dates), NOT page content. There is no full-text search
+      (pages are stored as images, not OCR text) — to search content by meaning,
+      use search_documents. Also use this to browse the library and get a
+      document_id.
+    handler: find_documents
     method: GET
     path: /api/rag/documents
     params:
@@ -166,11 +184,13 @@ tools:
       - name: file_type
         in: query
         type: string
-        description: Exact file type (e.g. pdf, image, text).
+        enum: [pdf, docx, pptx, xlsx, office, image, video, text]
+        description: Exact file type.
       - name: status
         in: query
         type: string
-        description: pending | processing | completed | failed.
+        enum: [pending, processing, completed, failed]
+        description: Indexing status.
       - name: min_pages
         in: query
         type: integer
@@ -183,10 +203,24 @@ tools:
         in: query
         type: integer
         default: 50
-        description: Max documents to return.
+        description: Max documents per page.
+      - name: skip
+        in: query
+        type: integer
+        default: 0
+        description: >
+          Offset for pagination. The response reports the total match count and
+          the next skip value when more pages exist.
 
   - name: get_document_metadata
-    description: Get one document's metadata and indexing status.
+    annotations:
+      readOnlyHint: true
+      openWorldHint: false
+    description: >
+      Get one document's metadata by id: name, file type, page count, indexing
+      status/progress, size, and dates. Use it to check whether a document is
+      fully indexed before reading it, or to confirm a document_id. Returns
+      metadata only — use read_document_pages to read the content.
     handler: http_json
     method: GET
     path: /api/rag/documents/{document_id}
@@ -197,6 +231,9 @@ tools:
         required: true
 
   - name: find_similar_pages
+    annotations:
+      readOnlyHint: true
+      openWorldHint: false
     description: >
       Query-by-example: find pages similar to an EXISTING indexed page,
       document, or FOV image (by id). Returns page hits (use read_document_pages
@@ -223,6 +260,9 @@ tools:
         default: 10
 
   - name: search_by_image
+    annotations:
+      readOnlyHint: true
+      openWorldHint: false
     description: >
       Query-by-example with an AD-HOC image: find library pages similar to the
       given image (base64) and return them as image pages.
@@ -244,6 +284,9 @@ tools:
         description: How many page images to return (max 10).
 
   - name: search_by_text_example
+    annotations:
+      readOnlyHint: true
+      openWorldHint: false
     description: >
       Find pages matching a pasted passage or description. mode=query for a short
       natural-language description, mode=passage for a long verbatim excerpt.
@@ -260,13 +303,19 @@ tools:
         in: body
         type: string
         default: query
-        description: query | passage.
+        enum: [query, passage]
+        description: >
+          query = a short natural-language description; passage = a long verbatim
+          excerpt to match.
       - name: limit
         in: body
         type: integer
         default: 10
 
   - name: index_text
+    annotations:
+      readOnlyHint: false
+      destructiveHint: false
     description: >
       Index a raw text snippet as a new searchable document in the user's
       library.
@@ -286,6 +335,9 @@ tools:
         description: The text content to index.
 
   - name: index_document
+    annotations:
+      readOnlyHint: false
+      destructiveHint: false
     description: >
       Index a new PDF / Office / image document into the library. Provide the
       file bytes as base64 plus a filename.
@@ -303,7 +355,15 @@ tools:
         description: Base64-encoded file bytes.
 
   - name: reindex_document
-    description: Re-index an existing document (owner only). Fixes a failed/stale document.
+    annotations:
+      readOnlyHint: false
+      destructiveHint: false
+      idempotentHint: true
+    description: >
+      Re-run indexing (page rendering + embeddings) for an existing document.
+      Use this to recover a document whose status is `failed`, or to refresh one
+      after an encoder change. Owner-only: you can only reindex your own
+      documents, not group-shared ones. Safe to repeat.
     handler: http_post_json
     method: POST
     path: /api/rag/documents/{document_id}/reindex
@@ -314,7 +374,15 @@ tools:
         required: true
 
   - name: delete_document
-    description: Delete a document from the library (owner only).
+    annotations:
+      readOnlyHint: false
+      destructiveHint: true
+      idempotentHint: false
+    description: >
+      Permanently delete a document and all its indexed pages from the library.
+      This is IRREVERSIBLE — there is no undo. Owner-only: you cannot delete a
+      group-shared document owned by someone else. Confirm the document_id (e.g.
+      via find_documents) before calling.
     handler: http_json
     method: DELETE
     path: /api/rag/documents/{document_id}
@@ -325,8 +393,69 @@ tools:
         required: true
 
   - name: get_indexing_status
-    description: Show pending/processing/completed/failed indexing counts for the user.
+    annotations:
+      readOnlyHint: true
+      openWorldHint: false
+    description: >
+      Show how many of your documents (and FOV images) are pending, processing,
+      completed, or failed. Use it to check whether recently uploaded/indexed
+      documents are ready to search or read yet, or to spot failures to reindex.
     handler: http_json
     method: GET
     path: /api/rag/indexing/status
     params: []
+
+  - name: list_folders
+    annotations:
+      readOnlyHint: true
+      openWorldHint: false
+    description: >
+      List the folders in the document library (id, name, parent_id). The tree is
+      flat — reconstruct nesting from parent_id (parent_id null = a top-level
+      folder). Use a folder's id with find_documents (folder_id + in_folder=true)
+      or move_document.
+    handler: http_json
+    method: GET
+    path: /api/rag/folders
+    params: []
+
+  - name: create_folder
+    annotations:
+      readOnlyHint: false
+      destructiveHint: false
+    description: >
+      Create a new library folder. Optionally nest it under an existing folder by
+      passing that folder's id as parent_id (omit for a top-level folder).
+    handler: http_post_json
+    method: POST
+    path: /api/rag/folders
+    params:
+      - name: name
+        in: body
+        type: string
+        required: true
+        description: Folder name.
+      - name: parent_id
+        in: body
+        type: integer
+        description: Parent folder id; omit to create at the top level.
+
+  - name: move_document
+    annotations:
+      readOnlyHint: false
+      destructiveHint: false
+    description: >
+      Move a document into a folder. Pass the target folder's id as folder_id, or
+      OMIT folder_id to move the document to the library root. Owner/group access
+      applies (you can only move documents you can access).
+    handler: move_document
+    params:
+      - name: document_id
+        in: arg
+        type: integer
+        required: true
+        description: Id of the document to move.
+      - name: folder_id
+        in: arg
+        type: integer
+        description: Target folder id; omit to move to the library root.

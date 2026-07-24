@@ -24,6 +24,12 @@ if TYPE_CHECKING:  # avoid an import cycle; only needed for type hints
     from .registry import ToolRegistry, ToolSpec
 
 ContentBlock = types.TextContent | types.ImageContent
+# A handler returns either content blocks, or (blocks, structuredContent). The
+# structured dict gives the model reliable machine-readable fields (ids, pages,
+# scores) alongside the human-readable/image blocks. We deliberately do NOT set
+# an outputSchema on any tool, so structuredContent is never enforced — error and
+# empty paths can safely return a plain list.
+HandlerResult = list[ContentBlock] | tuple[list[ContentBlock], dict[str, Any]]
 
 _MAX_PAGES_PER_CALL = 10
 _WEB_UA = (
@@ -89,6 +95,12 @@ async def http_post_json(
 _MAX_SEARCH_IMAGES = 10
 
 
+def _image_block(content: bytes, mime: str) -> types.ImageContent:
+    return types.ImageContent(
+        type="image", data=base64.b64encode(content).decode("ascii"), mimeType=mime
+    )
+
+
 async def _pages_as_images(reg, hits, token) -> list[ContentBlock]:
     blocks: list[ContentBlock] = []
     for h in hits:
@@ -97,11 +109,7 @@ async def _pages_as_images(reg, hits, token) -> list[ContentBlock]:
             auth="query",
             token=token,
         )
-        blocks.append(
-            types.ImageContent(
-                type="image", data=base64.b64encode(content).decode("ascii"), mimeType=mime
-            )
-        )
+        blocks.append(_image_block(content, mime))
     return blocks
 
 
@@ -131,15 +139,45 @@ def _decode_base64_arg(args: dict, field: str) -> tuple[bytes | None, ContentBlo
         return None, _text(f"{field} is not valid base64.")
 
 
-async def semantic_image_search(
+_MAX_REF_HITS = 50
+
+
+async def search_documents(
     reg: "ToolRegistry", spec: "ToolSpec", args: dict, token: str | None = None
-) -> list[ContentBlock]:
+) -> HandlerResult:
+    """Semantic search over the library. Retrieval is PART of search: by default
+    it returns the matching page IMAGES (so you can answer straight away).
+    return='refs' gives a lightweight text list of page references instead;
+    include_fov=true also searches microscopy field-of-view images. Also returns
+    the ranked hits as structuredContent for reliable chaining into a page read."""
     query = args["query"]
-    count = min(int(args.get("count", 10)), _MAX_SEARCH_IMAGES)
+    return_images = args.get("return", "images") != "refs"
+    cap = _MAX_SEARCH_IMAGES if return_images else _MAX_REF_HITS
+    limit = min(int(args.get("limit", 10 if return_images else 20)), cap)
+
     data = await reg.client.get_json(
-        "/api/rag/search/documents", params={"q": query, "limit": count}, token=token
+        "/api/rag/search/documents", params={"q": query, "limit": limit}, token=token
     )
-    return await _page_hit_blocks(reg, data, count, token, f"No document pages matched: {query}")
+    hits = (data.get("results") or [])[:limit]
+    if not hits:
+        blocks: list[ContentBlock] = [_text(f"No document pages matched: {query}")]
+    elif return_images:
+        blocks = [_hit_summary(hits), *await _pages_as_images(reg, hits, token)]
+    else:
+        blocks = [_hit_summary(hits)]
+
+    structured: dict[str, Any] = {"query": query, "results": hits}
+    if args.get("include_fov"):
+        fov = await reg.client.get_json(
+            "/api/rag/search/fov", params={"q": query, "limit": limit}, token=token
+        )
+        fov_hits = fov.get("results") or []
+        structured["fov_matches"] = fov_hits
+        blocks.append(
+            _text({"fov_image_matches": fov_hits}) if fov_hits
+            else _text("No FOV microscopy images matched.")
+        )
+    return blocks, structured
 
 
 async def search_by_image(
@@ -173,6 +211,23 @@ async def index_document(
     return [_text(result)]
 
 
+async def read_page_region(
+    reg: "ToolRegistry", spec: "ToolSpec", args: dict, token: str | None = None
+) -> list[ContentBlock]:
+    """Zoom: return a high-resolution crop of one page region as an image, so
+    small figures / tables / text illegible at full-page zoom become readable."""
+    ymin, xmin, ymax, xmax = (int(args[k]) for k in ("ymin", "xmin", "ymax", "xmax"))
+    if not (0 <= xmin < xmax <= 1000 and 0 <= ymin < ymax <= 1000):
+        return [_text("bbox out of range: need 0 <= xmin < xmax <= 1000 and 0 <= ymin < ymax <= 1000.")]
+    content, mime = await reg.client.get_bytes(
+        f"/api/rag/documents/{args['document_id']}/pages/{args['page_number']}/region",
+        params={"bbox": f"{ymin},{xmin},{ymax},{xmax}"},
+        auth="query",
+        token=token,
+    )
+    return [_image_block(content, mime)]
+
+
 # -- document_pages: read a document as page images (Vision RAG) -------------
 
 
@@ -189,24 +244,12 @@ async def document_pages(
     if not window:
         return [_text(f"Document {doc_id} has no pages at or after page {start}.")]
 
-    blocks: list[ContentBlock] = [
-        _text(
-            f"Document {doc_id}: returning page images {window} "
-            f"(document has {len(numbers)} indexed page(s))."
-        )
-    ]
-    for number in window:
-        content, mime = await reg.client.get_bytes(
-            f"/api/rag/documents/{doc_id}/pages/{number}/image", auth="query", token=token
-        )
-        blocks.append(
-            types.ImageContent(
-                type="image",
-                data=base64.b64encode(content).decode("ascii"),
-                mimeType=mime,
-            )
-        )
-    return blocks
+    summary = _text(
+        f"Document {doc_id}: returning page images {window} "
+        f"(document has {len(numbers)} indexed page(s))."
+    )
+    hits = [{"document_id": doc_id, "page_number": n} for n in window]
+    return [summary, *await _pages_as_images(reg, hits, token)]
 
 
 # -- web_search: independent of the (Gemini-quota-limited) backend -----------
@@ -275,12 +318,54 @@ async def web_search(
     return [_text(formatted)]
 
 
+async def find_documents(
+    reg: "ToolRegistry", spec: "ToolSpec", args: dict, token: str | None = None
+) -> HandlerResult:
+    """Metadata listing that also surfaces the total match count (from the
+    X-Total-Count header) so the model can page with `skip`. Returns the document
+    list + total as structuredContent."""
+    path, query, _ = _route(spec, args)
+    resp = await reg.client.request("GET", path, params=query, token=token)
+    docs = resp.json()
+    blocks: list[ContentBlock] = [_text(docs)]
+    structured: dict[str, Any] = {"documents": docs}
+    total = resp.headers.get("X-Total-Count")
+    if total is not None:
+        skip = int(args.get("skip", 0) or 0)
+        shown = len(docs) if isinstance(docs, list) else 0
+        structured.update(total=int(total), skip=skip)
+        note = f"Showing {shown} of {total} matching document(s) (skip={skip})."
+        if shown and skip + shown < int(total):
+            note += f" Call again with skip={skip + shown} for the next page."
+        blocks.append(_text(note))
+    return blocks, structured
+
+
+async def move_document(
+    reg: "ToolRegistry", spec: "ToolSpec", args: dict, token: str | None = None
+) -> list[ContentBlock]:
+    """Move a document into a folder, or to the library root when folder_id is
+    omitted. The generic pipeline strips a null arg, so we send folder_id (int or
+    null) explicitly in the PATCH body here."""
+    doc_id = args["document_id"]
+    resp = await reg.client.request(
+        "PATCH",
+        f"/api/rag/documents/{doc_id}",
+        json={"folder_id": args.get("folder_id")},
+        token=token,
+    )
+    return _response_blocks(resp)
+
+
 HANDLERS = {
     "http_json": http_json,
     "http_post_json": http_post_json,
     "document_pages": document_pages,
     "web_search": web_search,
-    "semantic_image_search": semantic_image_search,
+    "search_documents": search_documents,
     "search_by_image": search_by_image,
     "index_document": index_document,
+    "read_page_region": read_page_region,
+    "find_documents": find_documents,
+    "move_document": move_document,
 }

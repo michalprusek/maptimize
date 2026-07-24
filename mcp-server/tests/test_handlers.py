@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import base64
+import json
 
 import httpx
 
@@ -17,18 +18,67 @@ def _with_login(routes):
     return handler
 
 
-async def test_search_documents_maps_query_and_limit(make_registry):
+def _blocks(result):
+    """dispatch() returns either a list of content blocks, or a
+    (blocks, structuredContent) tuple — this unwraps to the blocks."""
+    return result[0] if isinstance(result, tuple) else result
+
+
+def _structured(result):
+    return result[1] if isinstance(result, tuple) else None
+
+
+async def test_search_documents_refs_mode_is_text_only(make_registry):
     def routes(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/api/rag/search/documents":
             assert request.url.params["q"] == "fixation"
             assert request.url.params["limit"] == "5"
-            return httpx.Response(200, json={"query": "fixation", "results": [{"document_id": 3}]})
+            return httpx.Response(200, json={"query": "fixation", "results": [
+                {"document_id": 3, "document_name": "Prot.pdf", "page_number": 2, "similarity_score": 0.9}]})
         return httpx.Response(404)
 
     reg = make_registry(_with_login(routes))
-    blocks = await reg.dispatch("search_documents", {"query": "fixation", "limit": 5})
+    result = await reg.dispatch("search_documents", {"query": "fixation", "return": "refs", "limit": 5})
+    blocks = _blocks(result)
     assert len(blocks) == 1 and blocks[0].type == "text"
-    assert "document_id" in blocks[0].text
+    assert "Prot.pdf" in blocks[0].text and "doc 3" in blocks[0].text
+    # structuredContent carries the machine-readable hits for chaining
+    assert _structured(result)["results"][0]["document_id"] == 3
+
+
+async def test_search_documents_default_returns_page_images(make_registry):
+    png = b"\x89PNG\r\n\x1a\n-page"
+
+    def routes(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path == "/api/rag/search/documents":
+            return httpx.Response(200, json={"query": "fixation", "results": [
+                {"document_id": 3, "document_name": "Prot.pdf", "page_number": 2, "similarity_score": 0.9}]})
+        if path == "/api/rag/documents/3/pages/2/image":
+            assert request.url.params["token"] == "T"  # query-token auth
+            return httpx.Response(200, content=png, headers={"content-type": "image/webp"})
+        return httpx.Response(404)
+
+    reg = make_registry(_with_login(routes))
+    # default return=images: retrieval is built in — one call yields the page image
+    blocks = _blocks(await reg.dispatch("search_documents", {"query": "fixation"}))
+    images = [b for b in blocks if b.type == "image"]
+    assert len(images) == 1 and base64.b64decode(images[0].data) == png
+
+
+async def test_search_documents_include_fov_appends_fov_matches(make_registry):
+    def routes(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path == "/api/rag/search/documents":
+            return httpx.Response(200, json={"query": "cell", "results": []})
+        if path == "/api/rag/search/fov":
+            return httpx.Response(200, json={"query": "cell", "results": [{"image_id": 42}]})
+        return httpx.Response(404)
+
+    reg = make_registry(_with_login(routes))
+    blocks = _blocks(await reg.dispatch("search_documents", {"query": "cell", "include_fov": True}))
+    text = " ".join(b.text for b in blocks if b.type == "text")
+    assert "42" in text  # FOV image match surfaced
 
 
 async def test_path_param_substitution(make_registry):
@@ -63,6 +113,107 @@ async def test_read_document_pages_returns_page_images(make_registry):
     assert images[0].mimeType == "image/webp"
 
 
+async def test_read_page_region_returns_high_res_crop(make_registry):
+    png = b"\x89PNG\r\n\x1a\n-crop-bytes"
+
+    def routes(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path == "/api/rag/documents/4/pages/4/region":
+            assert request.url.params["bbox"] == "100,200,400,600"  # ymin,xmin,ymax,xmax
+            assert request.url.params["token"] == "T"  # query-token auth
+            return httpx.Response(200, content=png, headers={"content-type": "image/png"})
+        return httpx.Response(404)
+
+    reg = make_registry(_with_login(routes))
+    blocks = await reg.dispatch(
+        "read_page_region",
+        {"document_id": 4, "page_number": 4, "ymin": 100, "xmin": 200, "ymax": 400, "xmax": 600},
+    )
+    images = [b for b in blocks if b.type == "image"]
+    assert len(images) == 1
+    assert base64.b64decode(images[0].data) == png
+    assert images[0].mimeType == "image/png"
+
+
+async def test_read_page_region_rejects_bad_bbox_without_calling_backend(make_registry):
+    called = {"n": 0}
+
+    def routes(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/region"):
+            called["n"] += 1
+        return httpx.Response(404)
+
+    reg = make_registry(_with_login(routes))
+    # xmin >= xmax is invalid -> a text error, and the region endpoint is never hit.
+    blocks = await reg.dispatch(
+        "read_page_region",
+        {"document_id": 4, "page_number": 4, "ymin": 100, "xmin": 600, "ymax": 400, "xmax": 200},
+    )
+    assert len(blocks) == 1 and blocks[0].type == "text"
+    assert "bbox" in blocks[0].text.lower()
+    assert called["n"] == 0
+
+
+async def test_find_documents_surfaces_total_and_pagination(make_registry):
+    def routes(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/rag/documents":
+            assert request.url.params["skip"] == "0"
+            return httpx.Response(
+                200, json=[{"id": 1}, {"id": 2}], headers={"X-Total-Count": "5"}
+            )
+        return httpx.Response(404)
+
+    reg = make_registry(_with_login(routes))
+    blocks = _blocks(await reg.dispatch("find_documents", {"skip": 0}))
+    text = " ".join(b.text for b in blocks if b.type == "text")
+    assert "2 of 5" in text  # showed 2, 5 total
+    assert "skip=2" in text  # steers the next page
+
+
+async def test_move_document_into_folder_sends_folder_id(make_registry):
+    seen = {}
+
+    def routes(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/rag/documents/7" and request.method == "PATCH":
+            seen["body"] = json.loads(request.content)
+            return httpx.Response(200, json={"id": 7, "folder_id": 3})
+        return httpx.Response(404)
+
+    reg = make_registry(_with_login(routes))
+    await reg.dispatch("move_document", {"document_id": 7, "folder_id": 3})
+    assert seen["body"] == {"folder_id": 3}
+
+
+async def test_move_document_to_root_sends_null_folder_id(make_registry):
+    seen = {}
+
+    def routes(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/rag/documents/7" and request.method == "PATCH":
+            seen["body"] = json.loads(request.content)
+            return httpx.Response(200, json={"id": 7, "folder_id": None})
+        return httpx.Response(404)
+
+    reg = make_registry(_with_login(routes))
+    # folder_id omitted -> the pipeline strips it, but the custom handler must
+    # still send an explicit null so the backend moves the doc to root.
+    await reg.dispatch("move_document", {"document_id": 7})
+    assert seen["body"] == {"folder_id": None}
+
+
+async def test_create_folder_posts_name_and_parent(make_registry):
+    seen = {}
+
+    def routes(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/rag/folders" and request.method == "POST":
+            seen["body"] = json.loads(request.content)
+            return httpx.Response(201, json={"id": 9, "name": "Papers", "parent_id": 2})
+        return httpx.Response(404)
+
+    reg = make_registry(_with_login(routes))
+    await reg.dispatch("create_folder", {"name": "Papers", "parent_id": 2})
+    assert seen["body"] == {"name": "Papers", "parent_id": 2}
+
+
 async def test_web_search_parses_ddg_results(make_registry):
     html = """
     <div class="result">
@@ -95,7 +246,7 @@ async def test_backend_error_is_reported_not_raised(make_registry):
         return httpx.Response(500, text="boom")
 
     reg = make_registry(_with_login(routes))
-    blocks = await reg.dispatch("list_documents", {})
+    blocks = await reg.dispatch("find_documents", {})
     assert blocks[0].type == "text"
     assert "Error" in blocks[0].text
 
@@ -118,7 +269,7 @@ async def test_per_request_token_passthrough(make_registry):
         return httpx.Response(404)
 
     reg = make_registry(routes)
-    blocks = await reg.dispatch("list_documents", {}, token="mtk_pat_abc123")
+    blocks = _blocks(await reg.dispatch("find_documents", {}, token="mtk_pat_abc123"))
     assert seen["auth"] == "Bearer mtk_pat_abc123"
     assert blocks[0].type == "text"
 

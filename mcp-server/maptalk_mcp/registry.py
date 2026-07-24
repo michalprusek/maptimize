@@ -18,7 +18,7 @@ import mcp.types as types
 import yaml
 
 from .client import MaptalkClient
-from .handlers import HANDLERS, ContentBlock
+from .handlers import HANDLERS, ContentBlock, HandlerResult
 
 _JSON_TYPES = {
     "string": "string",
@@ -31,12 +31,13 @@ _JSON_TYPES = {
 @dataclass(frozen=True)
 class ParamSpec:
     name: str
-    location: str = "query"          # query | path | arg
+    location: str = "query"          # query | path | body | arg
     maps_to: str | None = None       # backend param name if it differs from `name`
     type: str = "string"
     required: bool = False
     default: Any = None
     description: str = ""
+    enum: tuple[Any, ...] | None = None  # allowed values; None = unconstrained
 
     def coerce(self, value: Any) -> Any:
         try:
@@ -59,6 +60,10 @@ class ToolSpec:
     method: str = "GET"
     path: str = ""
     params: list[ParamSpec] = field(default_factory=list)
+    # MCP tool annotations (readOnlyHint / destructiveHint / idempotentHint /
+    # openWorldHint / title). Hints for client consent UX — NOT a security gate;
+    # real authz stays server-side. None = leave unset (SDK worst-case defaults).
+    annotations: dict[str, Any] | None = None
 
     def input_schema(self) -> dict[str, Any]:
         properties: dict[str, Any] = {}
@@ -69,6 +74,8 @@ class ToolSpec:
                 prop["description"] = param.description
             if param.default is not None:
                 prop["default"] = param.default
+            if param.enum:
+                prop["enum"] = list(param.enum)
             properties[param.name] = prop
             if param.required:
                 required.append(param.name)
@@ -90,6 +97,7 @@ class ToolSpec:
 
 
 def _parse_param(raw: dict[str, Any]) -> ParamSpec:
+    enum = raw.get("enum")
     return ParamSpec(
         name=raw["name"],
         location=raw.get("in", "query"),
@@ -98,6 +106,7 @@ def _parse_param(raw: dict[str, Any]) -> ParamSpec:
         required=bool(raw.get("required", False)),
         default=raw.get("default"),
         description=raw.get("description", ""),
+        enum=tuple(enum) if enum else None,
     )
 
 
@@ -112,6 +121,7 @@ def _parse_tool(raw: dict[str, Any]) -> ToolSpec:
         method=raw.get("method", "GET"),
         path=raw.get("path", ""),
         params=[_parse_param(p) for p in raw.get("params", [])],
+        annotations=raw.get("annotations"),
     )
 
 
@@ -153,13 +163,18 @@ class ToolRegistry:
     def list_tools(self) -> list[types.Tool]:
         self._reload()
         return [
-            types.Tool(name=s.name, description=s.description, inputSchema=s.input_schema())
+            types.Tool(
+                name=s.name,
+                description=s.description,
+                inputSchema=s.input_schema(),
+                annotations=types.ToolAnnotations(**s.annotations) if s.annotations else None,
+            )
             for s in self._specs.values()
         ]
 
     async def dispatch(
         self, name: str, arguments: dict[str, Any], token: str | None = None
-    ) -> list[ContentBlock]:
+    ) -> HandlerResult:
         self._reload()
         spec = self._specs.get(name)
         if spec is None:

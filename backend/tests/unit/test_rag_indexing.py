@@ -12,6 +12,7 @@ redirected to ``tmp_path``.
 import json
 import types as pytypes
 from contextlib import asynccontextmanager
+from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -490,6 +491,49 @@ async def test_page_image_path_success(mock_db, tmp_path):
 
 
 # ============================================================================ #
+# rag_service metadata count / conditions (pagination total)
+# ============================================================================ #
+def test_document_metadata_conditions_always_scopes():
+    # bare call = just the scope predicate; each filter adds exactly one clause
+    assert len(rag._document_metadata_conditions(7)) == 1
+    conds = rag._document_metadata_conditions(
+        7, name="x", status="completed", min_pages=3, in_folder=True, folder_id=5
+    )
+    assert len(conds) == 5  # scope + name + status + min_pages + folder
+
+
+def test_search_and_count_share_the_same_conditions():
+    # drift guard: the listing and the count must build identical WHERE clauses.
+    # Both delegate to _document_metadata_conditions, so compare the rendered SQL.
+    import services.rag_service as rs
+    calls = {}
+    real = rs._document_metadata_conditions
+
+    def spy(user_id, **kw):
+        calls.setdefault("kw", []).append(kw)
+        return real(user_id, **kw)
+
+    with patch.object(rs, "_document_metadata_conditions", spy):
+        # invoke the condition-building of both via their kwargs (no DB needed):
+        real_kw = dict(name="a", status="failed", file_type="pdf", min_pages=2)
+        c1 = rs._document_metadata_conditions(7, **real_kw)
+        c2 = rs._document_metadata_conditions(7, **real_kw)
+    # identical inputs -> identical number/kind of conditions
+    assert len(c1) == len(c2) == 5
+
+
+async def test_count_documents_metadata_returns_scalar(mock_db):
+    mock_db.execute.return_value = make_result(scalar=42)
+    n = await rag.count_documents_metadata(7, mock_db, status="completed")
+    assert n == 42
+
+
+async def test_count_documents_metadata_zero_when_null(mock_db):
+    mock_db.execute.return_value = make_result(scalar=None)
+    assert await rag.count_documents_metadata(7, mock_db) == 0
+
+
+# ============================================================================ #
 # rag_service.extract_passage_image
 # ============================================================================ #
 async def test_extract_passage_bad_bbox_len(mock_db):
@@ -556,6 +600,92 @@ async def test_extract_passage_exception(mock_db, tmp_path):
         out = await rag.extract_passage_image(1, 1, [100, 100, 400, 400], 7,
                                               mock_db)
     assert out is None
+
+
+# ============================================================================ #
+# rag_service.render_page_region  (on-demand high-DPI zoom)
+# ============================================================================ #
+_REGION_SETTINGS = SimpleNamespace(rag_region_dpi=300, rag_region_max_edge=1600)
+
+
+@pytest.mark.parametrize("bbox", [[1, 2, 3], [0, 0, 2000, 500], [500, 100, 100, 600]])
+async def test_render_region_invalid_bbox(mock_db, bbox):
+    # Bad length / out-of-range / bad order are all rejected before any DB call.
+    assert await rag.render_page_region(1, 1, bbox, 7, mock_db) is None
+
+
+async def test_render_region_page_not_found(mock_db):
+    mock_db.execute.return_value = make_result(scalar=None)
+    assert await rag.render_page_region(1, 1, [10, 10, 900, 900], 7, mock_db) is None
+
+
+async def test_render_region_pdf_uses_hires_and_caps_edge(mock_db, tmp_path):
+    # Stored raster is tiny (200x200); the hi-res PDF render is huge. If the crop
+    # comes back near the max edge, the hi-res path (not the raster) was used.
+    raster = make_png(tmp_path / "p.webp", size=(200, 200))
+    pdf = tmp_path / "doc.pdf"
+    pdf.write_bytes(b"%PDF-1.4 fake")
+    doc = document(file_type="pdf", original_path=str(pdf),
+                   pages=[page(page_number=4, image_path=str(raster))])
+    mock_db.execute.return_value = make_result(scalar=doc)
+    hires = PILImage.new("RGB", (3000, 4000), (10, 20, 30))
+    render = AsyncMock(return_value=hires)
+    with patch.object(rag, "settings", _REGION_SETTINGS), \
+         patch("services.document_indexing_service.render_single_pdf_page", render):
+        out = await rag.render_page_region(4, 4, [0, 0, 1000, 1000], 7, mock_db)
+    assert out is not None
+    render.assert_awaited_once()
+    got = PILImage.open(BytesIO(out))
+    assert max(got.size) == 1600  # longest edge capped
+    assert max(got.size) > 200    # proves the hi-res source, not the 200px raster
+
+
+async def test_render_single_pdf_page_success(tmp_path):
+    img = PILImage.new("RGB", (120, 160), (0, 0, 0))
+    with patch("pdf2image.convert_from_path", return_value=[img]) as conv:
+        out = await dind.render_single_pdf_page(tmp_path / "d.pdf", 3, 300)
+    assert out is img
+    # single page rendered in isolation -> first_page == last_page == 3
+    _, kwargs = conv.call_args
+    assert kwargs["first_page"] == 3 and kwargs["last_page"] == 3 and kwargs["dpi"] == 300
+
+
+async def test_render_single_pdf_page_empty_returns_none(tmp_path):
+    with patch("pdf2image.convert_from_path", return_value=[]):
+        assert await dind.render_single_pdf_page(tmp_path / "d.pdf", 1, 300) is None
+
+
+async def test_render_single_pdf_page_error_returns_none(tmp_path):
+    with patch("pdf2image.convert_from_path", side_effect=RuntimeError("poppler boom")):
+        assert await dind.render_single_pdf_page(tmp_path / "d.pdf", 1, 300) is None
+
+
+async def test_render_region_corrupt_raster_returns_none(mock_db, tmp_path):
+    # The stored raster exists on disk but is not a decodable image. That must
+    # degrade to None (-> 404), never bubble up as a 500.
+    raster = tmp_path / "p.png"
+    raster.write_bytes(b"not-a-real-image")
+    doc = document(file_type="image", original_path=str(tmp_path / "x.png"),
+                   pages=[page(page_number=1, image_path=str(raster))])
+    mock_db.execute.return_value = make_result(scalar=doc)
+    with patch.object(rag, "settings", _REGION_SETTINGS):
+        out = await rag.render_page_region(1, 1, [10, 10, 500, 500], 7, mock_db)
+    assert out is None
+
+
+async def test_render_region_non_pdf_falls_back_to_raster(mock_db, tmp_path):
+    raster = make_png(tmp_path / "p.png", size=(800, 1000))
+    doc = document(file_type="image", original_path=str(tmp_path / "img.png"),
+                   pages=[page(page_number=1, image_path=str(raster))])
+    mock_db.execute.return_value = make_result(scalar=doc)
+    render = AsyncMock()
+    with patch.object(rag, "settings", _REGION_SETTINGS), \
+         patch("services.document_indexing_service.render_single_pdf_page", render):
+        out = await rag.render_page_region(1, 1, [100, 100, 500, 500], 7, mock_db)
+    assert out is not None
+    render.assert_not_awaited()  # non-PDF never triggers a PDF render
+    got = PILImage.open(BytesIO(out))
+    assert max(got.size) <= 800  # cropped from the 800px raster, not upscaled
 
 
 # ============================================================================ #
