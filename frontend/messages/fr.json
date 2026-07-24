@@ -214,7 +214,9 @@
     "startFirst": "Definissez votre premier microscope pour l'associer aux experiences",
     "deleteConfirm": "Supprimer ce microscope ? Les experiences conservent leurs donnees mais perdent l'association.",
     "deleteSuccess": "Microscope supprime",
-    "deleteError": "Echec de la suppression du microscope"
+    "deleteError": "Echec de la suppression du microscope",
+    "loadError": "Echec du chargement des microscopes",
+    "saveError": "Echec de l'enregistrement du microscope"
   },
   "proteinsPage": {
     "title": "Proteines",

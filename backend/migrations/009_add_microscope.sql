@@ -13,8 +13,9 @@ CREATE TABLE IF NOT EXISTS microscopes (
     color         VARCHAR(7),
     created_at    TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
-
-CREATE INDEX IF NOT EXISTS ix_microscopes_name ON microscopes (name);
+-- No separate index on name: the UNIQUE constraint above already creates one
+-- (matches create_all, which builds a single unique index for the model's
+-- unique=True, index=True column).
 
 ALTER TABLE experiments
     ADD COLUMN IF NOT EXISTS microscope_id INTEGER REFERENCES microscopes(id);

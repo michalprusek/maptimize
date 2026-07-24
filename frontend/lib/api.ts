@@ -360,18 +360,18 @@ class ApiClient {
 
   // Microscopes
   async getMicroscopes() {
-    return this.request<Microscope[]>("/api/microscopes");
+    return this.request<MicroscopeDetailed[]>("/api/microscopes");
   }
 
   async createMicroscope(data: MicroscopeCreate) {
-    return this.request<Microscope>("/api/microscopes", {
+    return this.request<MicroscopeDetailed>("/api/microscopes", {
       method: "POST",
       body: JSON.stringify(data),
     });
   }
 
   async updateMicroscope(id: number, data: MicroscopeUpdate) {
-    return this.request<Microscope>(`/api/microscopes/${id}`, {
+    return this.request<MicroscopeDetailed>(`/api/microscopes/${id}`, {
       method: "PATCH",
       body: JSON.stringify(data),
     });
@@ -1469,6 +1469,7 @@ export interface MapProteinUpdate {
   organism?: string;
 }
 
+/** Basic microscope shape — mirrors backend MicroscopeResponse (embedded in Experiment). */
 export interface Microscope {
   id: number;
   name: string;
@@ -1476,8 +1477,12 @@ export interface Microscope {
   model?: string;
   objective?: string;
   magnification?: string;
-  description?: string;
   color?: string;
+}
+
+/** Detailed shape — mirrors backend MicroscopeDetailedResponse (list/create/update). */
+export interface MicroscopeDetailed extends Microscope {
+  description?: string;
   experiment_count: number;
   created_at?: string;
 }

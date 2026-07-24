@@ -13,6 +13,7 @@ from database import get_db
 from models.cell_crop import CellCrop
 from models.experiment import Experiment
 from models.image import Image
+from models.microscope import Microscope
 from models.user import User
 from schemas.embeddings import (
     FeatureExtractionStatus,
@@ -63,6 +64,19 @@ async def get_umap_visualization(
     Fit parameters are not tunable per request: every point in a scope must come
     from one shared fit, so refreshes always fit with the umap_service defaults.
     """
+    # Validate the microscope up front so a stale/deleted id (microscopes are
+    # shared data anyone can delete) fails with a clear 404 instead of silently
+    # matching zero crops and tripping the misleading "not enough crops" 400.
+    if microscope_id is not None:
+        micro = await db.execute(
+            select(Microscope).where(Microscope.id == microscope_id)
+        )
+        if micro.scalar_one_or_none() is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Microscope not found",
+            )
+
     group_id = await get_user_group_id(current_user.id, db)
     if umap_type is UmapType.FOV:
         return await _get_fov_umap(

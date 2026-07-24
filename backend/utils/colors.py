@@ -1,7 +1,9 @@
 """Shared color-assignment helpers for reference data (proteins, microscopes).
 
-pick_unused_color guarantees only that the exact hex is unused — not that it is
-visually distinct from what is already on the plot.
+pick_unused_color returns a hex not currently in use — except in the pathological
+exhaustion case, where it reuses one (with a warning) rather than failing. It only
+ever guarantees the exact hex is unused, not that it is visually distinct from what
+is already on the plot.
 """
 import colorsys
 import logging

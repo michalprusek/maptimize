@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useMemo, useCallback } from "react";
+import { useState, useMemo, useCallback, useEffect } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslations } from "next-intl";
 import { useRouter } from "next/navigation";
@@ -161,11 +161,20 @@ export function UmapVisualization({
 
   const queryClient = useQueryClient();
 
-  const { data: microscopes } = useQuery({
+  const { data: microscopes, isError: microscopesError } = useQuery({
     queryKey: ["microscopes"],
     queryFn: () => api.getMicroscopes(),
     staleTime: 1000 * 60 * 5,
   });
+
+  // If the microscope list fails to load, the <select> unmounts. Clear any
+  // active filter so the plot falls back to "all" rather than being silently
+  // constrained to a microscope with no visible control to undo it.
+  useEffect(() => {
+    if (microscopesError && microscopeId !== null) {
+      setMicroscopeId(null);
+    }
+  }, [microscopesError, microscopeId]);
 
   const { data, isLoading, error, refetch, isFetching } = useQuery({
     queryKey: ["umap", experimentId, viewMode, microscopeId],

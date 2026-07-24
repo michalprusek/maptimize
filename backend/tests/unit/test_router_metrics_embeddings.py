@@ -928,7 +928,7 @@ async def test_cropped_umap_too_few_crops(mock_db, no_group):
     with patch.object(e, "MIN_POINTS_FOR_UMAP", 10):
         with pytest.raises(HTTPException) as ei:
             await e.get_umap_visualization(
-                umap_type=e.UmapType.CROPPED, experiment_id=None,
+                umap_type=e.UmapType.CROPPED, experiment_id=None, microscope_id=None,
                 background_tasks=MagicMock(),
                 current_user=user(), db=mock_db,
             )
@@ -943,7 +943,7 @@ async def test_cropped_umap_no_precomputed_schedules_refresh(mock_db, no_group):
     bg = MagicMock()
     with patch.object(e, "MIN_POINTS_FOR_UMAP", 3):
         out = await e.get_umap_visualization(
-            umap_type=e.UmapType.CROPPED, experiment_id=None,
+            umap_type=e.UmapType.CROPPED, experiment_id=None, microscope_id=None,
             background_tasks=bg,
             current_user=user(), db=mock_db,
         )
@@ -968,7 +968,7 @@ async def test_scheduled_refresh_task_actually_runs_and_hits_the_right_corpus(
     bg = MagicMock()
     with patch.object(e, "MIN_POINTS_FOR_UMAP", 3):
         await e.get_umap_visualization(
-            umap_type=e.UmapType.CROPPED, experiment_id=None,
+            umap_type=e.UmapType.CROPPED, experiment_id=None, microscope_id=None,
             background_tasks=bg, current_user=user(), db=mock_db,
         )
 
@@ -997,7 +997,7 @@ async def test_scheduled_fov_refresh_task_actually_runs_and_hits_the_right_corpu
     bg = MagicMock()
     with patch.object(e, "MIN_POINTS_FOR_UMAP", 3):
         await e.get_umap_visualization(
-            umap_type=e.UmapType.FOV, experiment_id=None,
+            umap_type=e.UmapType.FOV, experiment_id=None, microscope_id=None,
             background_tasks=bg, current_user=user(), db=mock_db,
         )
 
@@ -1027,7 +1027,7 @@ async def test_cropped_umap_failed_refresh_is_not_rescheduled(mock_db, no_group)
     with patch.object(e, "MIN_POINTS_FOR_UMAP", 3), \
          patch.object(e, "get_refresh_error", return_value="RuntimeError: db down"):
         out = await e.get_umap_visualization(
-            umap_type=e.UmapType.CROPPED, experiment_id=None,
+            umap_type=e.UmapType.CROPPED, experiment_id=None, microscope_id=None,
             background_tasks=bg, current_user=user(), db=mock_db,
         )
     bg.add_task.assert_not_called()
@@ -1043,7 +1043,7 @@ async def test_fov_umap_failed_refresh_is_not_rescheduled(mock_db, no_group):
     with patch.object(e, "MIN_POINTS_FOR_UMAP", 3), \
          patch.object(e, "get_refresh_error", return_value="MemoryError: "):
         out = await e.get_umap_visualization(
-            umap_type=e.UmapType.FOV, experiment_id=None,
+            umap_type=e.UmapType.FOV, experiment_id=None, microscope_id=None,
             background_tasks=bg, current_user=user(), db=mock_db,
         )
     bg.add_task.assert_not_called()
@@ -1057,7 +1057,7 @@ async def test_cropped_umap_healthy_scope_reports_no_refresh_error(mock_db, no_g
     with patch.object(e, "MIN_POINTS_FOR_UMAP", 3), \
          patch.object(e, "compute_silhouette", return_value=0.3):
         out = await e.get_umap_visualization(
-            umap_type=e.UmapType.CROPPED, experiment_id=None,
+            umap_type=e.UmapType.CROPPED, experiment_id=None, microscope_id=None,
             background_tasks=MagicMock(), current_user=user(), db=mock_db,
         )
     assert out.refresh_error is None
@@ -1077,7 +1077,7 @@ async def test_cropped_umap_partially_stale_serves_existing_points(mock_db, no_g
     with patch.object(e, "MIN_POINTS_FOR_UMAP", 3), \
          patch.object(e, "compute_silhouette", return_value=0.4):
         out = await e.get_umap_visualization(
-            umap_type=e.UmapType.CROPPED, experiment_id=None,
+            umap_type=e.UmapType.CROPPED, experiment_id=None, microscope_id=None,
             background_tasks=bg,
             current_user=user(), db=mock_db,
         )
@@ -1103,7 +1103,7 @@ async def test_cropped_umap_precomputed_with_experiment_filter(mock_db, no_group
     with patch.object(e, "MIN_POINTS_FOR_UMAP", 3), \
          patch.object(e, "compute_silhouette", return_value=0.42) as sil:
         out = await e.get_umap_visualization(
-            umap_type=e.UmapType.CROPPED, experiment_id=9,
+            umap_type=e.UmapType.CROPPED, experiment_id=9, microscope_id=None,
             background_tasks=bg,
             current_user=user(), db=mock_db,
         )
@@ -1141,7 +1141,7 @@ async def test_fov_umap_too_few(mock_db, no_group):
     with patch.object(e, "MIN_POINTS_FOR_UMAP", 10):
         with pytest.raises(HTTPException) as ei:
             await e.get_umap_visualization(
-                umap_type=e.UmapType.FOV, experiment_id=None,
+                umap_type=e.UmapType.FOV, experiment_id=None, microscope_id=None,
                 background_tasks=MagicMock(),
                 current_user=user(), db=mock_db,
             )
@@ -1154,7 +1154,7 @@ async def test_fov_umap_no_precomputed_schedules_refresh(mock_db, no_group):
     bg = MagicMock()
     with patch.object(e, "MIN_POINTS_FOR_UMAP", 3):
         out = await e.get_umap_visualization(
-            umap_type=e.UmapType.FOV, experiment_id=None,
+            umap_type=e.UmapType.FOV, experiment_id=None, microscope_id=None,
             background_tasks=bg,
             current_user=user(), db=mock_db,
         )
@@ -1174,7 +1174,7 @@ async def test_fov_umap_experiment_filter_empty(mock_db, no_group):
     ]
     with patch.object(e, "MIN_POINTS_FOR_UMAP", 3):
         out = await e.get_umap_visualization(
-            umap_type=e.UmapType.FOV, experiment_id=9,
+            umap_type=e.UmapType.FOV, experiment_id=9, microscope_id=None,
             background_tasks=MagicMock(),
             current_user=user(), db=mock_db,
         )
@@ -1195,7 +1195,7 @@ async def test_fov_umap_partially_stale_reports_true_total(mock_db, no_group):
     with patch.object(e, "MIN_POINTS_FOR_UMAP", 3), \
          patch.object(e, "compute_silhouette", return_value=0.2):
         out = await e.get_umap_visualization(
-            umap_type=e.UmapType.FOV, experiment_id=None,
+            umap_type=e.UmapType.FOV, experiment_id=None, microscope_id=None,
             background_tasks=bg,
             current_user=user(), db=mock_db,
         )
@@ -1214,7 +1214,7 @@ async def test_fov_umap_precomputed_success(mock_db, no_group):
     with patch.object(e, "MIN_POINTS_FOR_UMAP", 3), \
          patch.object(e, "compute_silhouette", return_value=0.1):
         out = await e.get_umap_visualization(
-            umap_type=e.UmapType.FOV, experiment_id=None,
+            umap_type=e.UmapType.FOV, experiment_id=None, microscope_id=None,
             background_tasks=bg,
             current_user=user(), db=mock_db,
         )

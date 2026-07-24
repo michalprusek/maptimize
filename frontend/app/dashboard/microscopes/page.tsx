@@ -4,7 +4,7 @@ import { useState, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useTranslations } from "next-intl";
-import { api, Microscope, MicroscopeCreate, MicroscopeUpdate } from "@/lib/api";
+import { api, MicroscopeDetailed, MicroscopeCreate, MicroscopeUpdate } from "@/lib/api";
 import { ConfirmModal, Dialog, EmptyState, LoadingContainer } from "@/components/ui";
 import { staggerContainerVariants, staggerItemVariants } from "@/lib/animations";
 import {
@@ -17,8 +17,11 @@ import {
   CheckCircle,
   X,
   FolderOpen,
+  RefreshCw,
 } from "lucide-react";
 
+// Neutral swatch shown by the native color input when no color is chosen. Never
+// persisted — formData.color stays "" so the backend auto-assigns an unused color.
 const COLOR_PLACEHOLDER = "#64748b";
 
 const DEFAULT_FORM_DATA: MicroscopeCreate = {
@@ -37,8 +40,8 @@ export default function MicroscopesPage(): JSX.Element {
   const queryClient = useQueryClient();
 
   const [showModal, setShowModal] = useState(false);
-  const [editing, setEditing] = useState<Microscope | null>(null);
-  const [toDelete, setToDelete] = useState<Microscope | null>(null);
+  const [editing, setEditing] = useState<MicroscopeDetailed | null>(null);
+  const [toDelete, setToDelete] = useState<MicroscopeDetailed | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
   const [formData, setFormData] = useState<MicroscopeCreate>(DEFAULT_FORM_DATA);
@@ -52,7 +55,7 @@ export default function MicroscopesPage(): JSX.Element {
     setTimeout(() => setSuccessMessage(null), 3000);
   }, []);
 
-  const { data: microscopes, isLoading } = useQuery({
+  const { data: microscopes, isLoading, isError, refetch } = useQuery({
     queryKey: ["microscopes"],
     queryFn: () => api.getMicroscopes(),
   });
@@ -66,14 +69,20 @@ export default function MicroscopesPage(): JSX.Element {
   const createMutation = useMutation({
     mutationFn: (data: MicroscopeCreate) => api.createMicroscope(data),
     onSuccess: () => { invalidate(); closeModal(); },
-    onError: (err: Error) => setError(err.message),
+    onError: (err: Error) => {
+      console.error("Failed to create microscope:", err);
+      setError(err.message || t("saveError"));
+    },
   });
 
   const updateMutation = useMutation({
     mutationFn: ({ id, data }: { id: number; data: MicroscopeUpdate }) =>
       api.updateMicroscope(id, data),
     onSuccess: () => { invalidate(); closeModal(); },
-    onError: (err: Error) => setError(err.message),
+    onError: (err: Error) => {
+      console.error("Failed to update microscope:", err);
+      setError(err.message || t("saveError"));
+    },
   });
 
   const deleteMutation = useMutation({
@@ -89,7 +98,7 @@ export default function MicroscopesPage(): JSX.Element {
     setError(null);
   };
 
-  const openEditModal = (m: Microscope) => {
+  const openEditModal = (m: MicroscopeDetailed) => {
     setEditing(m);
     setFormData({
       name: m.name,
@@ -158,7 +167,18 @@ export default function MicroscopesPage(): JSX.Element {
 
       {/* Grid */}
       <LoadingContainer isLoading={isLoading}>
-        {microscopes && microscopes.length > 0 ? (
+        {isError ? (
+          // A load failure must not masquerade as "no microscopes" — with no
+          // seeded defaults, empty is a legitimate state, so surface the error.
+          <div className="glass-card p-8 flex flex-col items-center text-center gap-3">
+            <AlertCircle className="w-10 h-10 text-accent-red" />
+            <p className="text-text-secondary max-w-md">{t("loadError")}</p>
+            <button onClick={() => refetch()} className="btn-secondary flex items-center gap-2">
+              <RefreshCw className="w-4 h-4" />
+              {tCommon("retry")}
+            </button>
+          </div>
+        ) : microscopes && microscopes.length > 0 ? (
           <motion.div variants={staggerContainerVariants} initial="hidden" animate="visible"
             className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
             {microscopes.map((m) => (
