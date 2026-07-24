@@ -10,7 +10,8 @@
 #   name        tool name shown to the model
 #   description what the model reads to decide when to use it (keep it concrete)
 #   handler     one of: http_json, http_post_json, document_pages, search_documents,
-#               search_by_image, read_page_region, index_document, web_search
+#               search_by_image, find_documents, move_document, read_page_region,
+#               index_document, web_search
 #               (composite handlers live in handlers.py; the rest proxy a REST call)
 #   method/path backend REST endpoint (http_json / http_post_json)
 #   annotations optional MCP hints: readOnlyHint / destructiveHint / idempotentHint

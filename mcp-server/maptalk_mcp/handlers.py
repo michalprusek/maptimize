@@ -95,6 +95,12 @@ async def http_post_json(
 _MAX_SEARCH_IMAGES = 10
 
 
+def _image_block(content: bytes, mime: str) -> types.ImageContent:
+    return types.ImageContent(
+        type="image", data=base64.b64encode(content).decode("ascii"), mimeType=mime
+    )
+
+
 async def _pages_as_images(reg, hits, token) -> list[ContentBlock]:
     blocks: list[ContentBlock] = []
     for h in hits:
@@ -103,11 +109,7 @@ async def _pages_as_images(reg, hits, token) -> list[ContentBlock]:
             auth="query",
             token=token,
         )
-        blocks.append(
-            types.ImageContent(
-                type="image", data=base64.b64encode(content).decode("ascii"), mimeType=mime
-            )
-        )
+        blocks.append(_image_block(content, mime))
     return blocks
 
 
@@ -223,11 +225,7 @@ async def read_page_region(
         auth="query",
         token=token,
     )
-    return [
-        types.ImageContent(
-            type="image", data=base64.b64encode(content).decode("ascii"), mimeType=mime
-        )
-    ]
+    return [_image_block(content, mime)]
 
 
 # -- document_pages: read a document as page images (Vision RAG) -------------
