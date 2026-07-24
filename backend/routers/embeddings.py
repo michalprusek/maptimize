@@ -44,6 +44,7 @@ T = TypeVar("T")
 async def get_umap_visualization(
     umap_type: UmapType = Query(UmapType.CROPPED, description="Type: fov or cropped"),
     experiment_id: Optional[int] = Query(None, description="Filter by experiment"),
+    microscope_id: Optional[int] = Query(None, description="Filter by microscope"),
     background_tasks: BackgroundTasks = BackgroundTasks(),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
@@ -65,10 +66,10 @@ async def get_umap_visualization(
     group_id = await get_user_group_id(current_user.id, db)
     if umap_type is UmapType.FOV:
         return await _get_fov_umap(
-            experiment_id, current_user, group_id, background_tasks, db
+            experiment_id, microscope_id, current_user, group_id, background_tasks, db
         )
     return await _get_cropped_umap(
-        experiment_id, current_user, group_id, background_tasks, db
+        experiment_id, microscope_id, current_user, group_id, background_tasks, db
     )
 
 
@@ -138,6 +139,7 @@ async def _verify_experiment_ownership(
 
 async def _get_cropped_umap(
     experiment_id: Optional[int],
+    microscope_id: Optional[int],
     current_user: User,
     group_id: Optional[int],
     background_tasks: BackgroundTasks,
@@ -161,6 +163,9 @@ async def _get_cropped_umap(
     if experiment_id:
         await _verify_experiment_ownership(experiment_id, current_user.id, db)
         query = query.where(Image.experiment_id == experiment_id)
+
+    if microscope_id is not None:
+        query = query.where(Experiment.microscope_id == microscope_id)
 
     # Stable order so the payload does not reshuffle between polls
     query = query.order_by(CellCrop.id)
@@ -221,6 +226,7 @@ async def _get_cropped_umap(
 
 async def _get_fov_umap(
     experiment_id: Optional[int],
+    microscope_id: Optional[int],
     current_user: User,
     group_id: Optional[int],
     background_tasks: BackgroundTasks,
@@ -240,6 +246,9 @@ async def _get_fov_umap(
     if experiment_id:
         await _verify_experiment_ownership(experiment_id, current_user.id, db)
         query = query.where(Image.experiment_id == experiment_id)
+
+    if microscope_id is not None:
+        query = query.where(Experiment.microscope_id == microscope_id)
 
     # Stable order so the payload does not reshuffle between polls
     query = query.order_by(Image.id)
