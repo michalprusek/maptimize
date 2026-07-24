@@ -227,6 +227,25 @@ async def index_document(
     return [_text(result)]
 
 
+async def upload_image(
+    reg: "ToolRegistry", spec: "ToolSpec", args: dict, token: str | None = None
+) -> list[ContentBlock]:
+    """Upload one microscopy image (TIFF/PNG/JPEG, base64) into an experiment. The
+    backend stores it and starts projection/thumbnail generation; run cell
+    detection afterwards with process_images. Owner-only (you must own the
+    experiment)."""
+    raw, error = _decode_base64_arg(args, "content_base64")
+    if error is not None:
+        return [error]
+    result = await reg.client.post_multipart(
+        "/api/images/upload",
+        files={"file": (args["filename"], raw)},
+        data={"experiment_id": str(args["experiment_id"])},
+        token=token,
+    )
+    return [_text(result)]
+
+
 async def read_page_region(
     reg: "ToolRegistry", spec: "ToolSpec", args: dict, token: str | None = None
 ) -> list[ContentBlock]:
@@ -387,6 +406,7 @@ HANDLERS = {
     "search_documents": search_documents,
     "search_by_image": search_by_image,
     "index_document": index_document,
+    "upload_image": upload_image,
     "read_page_region": read_page_region,
     "find_documents": find_documents,
     "move_document": move_document,

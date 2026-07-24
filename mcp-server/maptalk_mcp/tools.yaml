@@ -471,3 +471,462 @@ tools:
         in: arg
         type: integer
         description: Target folder id; omit to move to the library root.
+
+  # ==========================================================================
+  # APPLICATION CONTROL — experiments, images + cell detection, proteins, DB.
+  # These let the agent operate Maptimize like a human user. ACL is enforced
+  # server-side by the SAME rules as the UI: reads are group-shared, writes are
+  # OWNER-ONLY (you can only change/delete your own data). destructiveHint marks
+  # irreversible tools so the client asks for confirmation.
+  # ==========================================================================
+
+  # -- Experiments -----------------------------------------------------------
+  - name: list_experiments
+    annotations: {readOnlyHint: true, openWorldHint: false}
+    description: >
+      List experiments you can see (your own plus any shared with you through
+      your group). Returns id, name, description, status, assigned protein, and
+      image/cell counts. Use it to find an experiment_id before reading or editing.
+    handler: http_json
+    method: GET
+    path: /api/experiments
+    params: []
+
+  - name: get_experiment
+    annotations: {readOnlyHint: true, openWorldHint: false}
+    description: >
+      Get one experiment by id, including its image summaries, counts, status and
+      assigned MAP protein.
+    handler: http_json
+    method: GET
+    path: /api/experiments/{experiment_id}
+    params:
+      - name: experiment_id
+        in: path
+        type: integer
+        required: true
+
+  - name: create_experiment
+    annotations: {readOnlyHint: false, destructiveHint: false}
+    description: >
+      Create a new experiment owned by you. Only `name` is required; you can
+      optionally assign a MAP protein (map_protein_id, from list_proteins) and a
+      FASTA sequence. Add images afterwards with upload_image.
+    handler: http_post_json
+    method: POST
+    path: /api/experiments
+    params:
+      - name: name
+        in: body
+        type: string
+        required: true
+        description: Experiment name (1-255 chars).
+      - name: description
+        in: body
+        type: string
+        description: Optional free-text description.
+      - name: map_protein_id
+        in: body
+        type: integer
+        description: Optional MAP protein to assign (id from list_proteins).
+      - name: fasta_sequence
+        in: body
+        type: string
+        description: Optional FASTA sequence for the experiment.
+
+  - name: update_experiment
+    annotations: {readOnlyHint: false, destructiveHint: false}
+    description: >
+      Update an experiment's name, description, status, or FASTA sequence. Only
+      the fields you pass are changed. Owner-only. To change the assigned protein
+      use assign_experiment_protein instead.
+    handler: http_post_json
+    method: PATCH
+    path: /api/experiments/{experiment_id}
+    params:
+      - name: experiment_id
+        in: path
+        type: integer
+        required: true
+      - name: name
+        in: body
+        type: string
+        description: New name (1-255 chars).
+      - name: description
+        in: body
+        type: string
+      - name: status
+        in: body
+        type: string
+        enum: [draft, active, completed, archived]
+        description: Experiment status.
+      - name: fasta_sequence
+        in: body
+        type: string
+
+  - name: delete_experiment
+    annotations: {readOnlyHint: false, destructiveHint: true, idempotentHint: false}
+    description: >
+      Permanently delete an experiment AND all of its images and cell-detection
+      crops (cascade). This is IRREVERSIBLE — there is no undo. Owner-only: you
+      cannot delete a group-shared experiment owned by someone else. Confirm the
+      experiment_id (e.g. via list_experiments) before calling.
+    handler: http_json
+    method: DELETE
+    path: /api/experiments/{experiment_id}
+    params:
+      - name: experiment_id
+        in: path
+        type: integer
+        required: true
+
+  - name: assign_experiment_protein
+    annotations: {readOnlyHint: false, destructiveHint: false}
+    description: >
+      Assign (or change) the MAP protein of an experiment. This cascades the
+      protein to all of the experiment's images and cell crops. Pass the protein
+      id from list_proteins; omit map_protein_id to unassign. Owner-only.
+    handler: http_json
+    method: PATCH
+    path: /api/experiments/{experiment_id}/protein
+    params:
+      - name: experiment_id
+        in: path
+        type: integer
+        required: true
+      - name: map_protein_id
+        in: query
+        type: integer
+        description: MAP protein id to assign; omit to clear the assignment.
+
+  # -- Images & cell detection ----------------------------------------------
+  - name: upload_image
+    annotations: {readOnlyHint: false, destructiveHint: false}
+    description: >
+      Upload a microscopy image (TIFF/TIF/PNG/JPG/JPEG) into one of your
+      experiments. Provide the file bytes as base64 plus the filename and the
+      target experiment_id. The backend stores it and generates projections and a
+      thumbnail; it does NOT run cell detection yet — call process_images with the
+      returned image id to detect cells. Owner-only.
+    handler: upload_image
+    params:
+      - name: experiment_id
+        in: arg
+        type: integer
+        required: true
+        description: Experiment to add the image to (you must own it).
+      - name: filename
+        in: arg
+        type: string
+        required: true
+        description: Original filename; its extension decides the type.
+      - name: content_base64
+        in: arg
+        type: string
+        required: true
+        description: Base64-encoded image bytes.
+
+  - name: list_fov_images
+    annotations: {readOnlyHint: true, openWorldHint: false}
+    description: >
+      List the field-of-view (FOV) microscopy images of an experiment, with their
+      processing status, dimensions and cell counts. Use it to get image ids for
+      get_image, process_images, reprocess_image or delete_image.
+    handler: http_json
+    method: GET
+    path: /api/images/fovs
+    params:
+      - name: experiment_id
+        in: query
+        type: integer
+        required: true
+        description: Experiment whose images to list.
+
+  - name: get_image
+    annotations: {readOnlyHint: true, openWorldHint: false}
+    description: >
+      Get one image (FOV) by id, including its processing status, dimensions,
+      assigned protein and cell count.
+    handler: http_json
+    method: GET
+    path: /api/images/{image_id}
+    params:
+      - name: image_id
+        in: path
+        type: integer
+        required: true
+
+  - name: process_images
+    annotations: {readOnlyHint: false, destructiveHint: false}
+    description: >
+      Run processing (projections + optional YOLO cell detection) on one or more
+      already-uploaded images, by id. Pass detect_cells=true (default) to detect
+      cells and create cell crops. This is the step that turns an uploaded image
+      into detection results (read them with list_cell_crops). Owner-only;
+      processing runs in the background, so poll get_image / list_fov_images for
+      status.
+    handler: http_post_json
+    method: POST
+    path: /api/images/batch-process
+    params:
+      - name: image_ids
+        in: body
+        type: array
+        items: integer
+        required: true
+        description: Image ids to process (1-1000).
+      - name: detect_cells
+        in: body
+        type: boolean
+        default: true
+        description: Run YOLO cell detection (true) or just projections (false).
+
+  - name: reprocess_image
+    annotations: {readOnlyHint: false, destructiveHint: false, idempotentHint: true}
+    description: >
+      Re-run processing for a single image: deletes its existing cell crops and
+      regenerates them. Use it to redo detection after a change. detect_cells
+      overrides the image's setting (omit to keep it). Fails if the source file
+      was discarded. Owner-only.
+    handler: http_json
+    method: POST
+    path: /api/images/{image_id}/reprocess
+    params:
+      - name: image_id
+        in: path
+        type: integer
+        required: true
+      - name: detect_cells
+        in: query
+        type: boolean
+        description: Override detection on/off; omit to keep the image's setting.
+
+  - name: redetect_cells
+    annotations: {readOnlyHint: false, destructiveHint: false, idempotentHint: true}
+    description: >
+      Re-run YOLO cell detection on several images at once (by id): deletes their
+      existing crops and detects again. Owner-only; runs in the background.
+    handler: http_post_json
+    method: POST
+    path: /api/images/batch-redetect
+    params:
+      - name: image_ids
+        in: body
+        type: array
+        items: integer
+        required: true
+        description: Image ids to re-detect.
+
+  - name: delete_image
+    annotations: {readOnlyHint: false, destructiveHint: true, idempotentHint: false}
+    description: >
+      Permanently delete one image and all of its cell-detection crops (cascade).
+      IRREVERSIBLE. Owner-only. Confirm the image_id (e.g. via list_fov_images)
+      before calling.
+    handler: http_json
+    method: DELETE
+    path: /api/images/{image_id}
+    params:
+      - name: image_id
+        in: path
+        type: integer
+        required: true
+
+  - name: list_cell_crops
+    annotations: {readOnlyHint: true, openWorldHint: false}
+    description: >
+      List the detected cell crops (detection results) of an experiment: bounding
+      box, detection confidence, and computed metrics (bundleness, intensity,
+      skewness, kurtosis). Set exclude_excluded=true to skip crops flagged as
+      excluded. This is how you read what cell detection produced.
+    handler: http_json
+    method: GET
+    path: /api/images/crops
+    params:
+      - name: experiment_id
+        in: query
+        type: integer
+        required: true
+        description: Experiment whose cell crops to list.
+      - name: exclude_excluded
+        in: query
+        type: boolean
+        description: Skip crops flagged as excluded.
+
+  # -- Proteins (shared reference data) --------------------------------------
+  - name: list_proteins
+    annotations: {readOnlyHint: true, openWorldHint: false}
+    description: >
+      List all MAP proteins (shared reference data): id, name, full name, gene,
+      organism, UniProt id, sequence length. Use it to get a map_protein_id for
+      create_experiment or assign_experiment_protein.
+    handler: http_json
+    method: GET
+    path: /api/proteins
+    params: []
+
+  - name: get_protein
+    annotations: {readOnlyHint: true, openWorldHint: false}
+    description: Get one MAP protein by id, with its full metadata.
+    handler: http_json
+    method: GET
+    path: /api/proteins/{protein_id}
+    params:
+      - name: protein_id
+        in: path
+        type: integer
+        required: true
+
+  - name: create_protein
+    annotations: {readOnlyHint: false, destructiveHint: false}
+    description: >
+      Create a new MAP protein (shared reference data — visible to everyone). Only
+      `name` is required (must be unique); a display color is auto-picked if you
+      omit it. Optionally set full_name, description, color (#rrggbb), uniprot_id,
+      fasta_sequence, gene_name, organism.
+    handler: http_post_json
+    method: POST
+    path: /api/proteins
+    params:
+      - name: name
+        in: body
+        type: string
+        required: true
+        description: Unique protein name (1-100 chars).
+      - name: full_name
+        in: body
+        type: string
+      - name: description
+        in: body
+        type: string
+      - name: color
+        in: body
+        type: string
+        description: Hex color like "#1f77b4"; auto-picked if omitted.
+      - name: uniprot_id
+        in: body
+        type: string
+      - name: fasta_sequence
+        in: body
+        type: string
+      - name: gene_name
+        in: body
+        type: string
+      - name: organism
+        in: body
+        type: string
+
+  - name: update_protein
+    annotations: {readOnlyHint: false, destructiveHint: false}
+    description: >
+      Update a MAP protein's fields (only the ones you pass are changed). Shared
+      reference data — changes are visible to everyone.
+    handler: http_post_json
+    method: PATCH
+    path: /api/proteins/{protein_id}
+    params:
+      - name: protein_id
+        in: path
+        type: integer
+        required: true
+      - name: name
+        in: body
+        type: string
+        description: New unique name (1-100 chars).
+      - name: full_name
+        in: body
+        type: string
+      - name: description
+        in: body
+        type: string
+      - name: color
+        in: body
+        type: string
+        description: Hex color like "#1f77b4".
+      - name: uniprot_id
+        in: body
+        type: string
+      - name: fasta_sequence
+        in: body
+        type: string
+      - name: gene_name
+        in: body
+        type: string
+      - name: organism
+        in: body
+        type: string
+
+  - name: delete_protein
+    annotations: {readOnlyHint: false, destructiveHint: true, idempotentHint: false}
+    description: >
+      Permanently delete a MAP protein. IRREVERSIBLE. Refused (409) if any image
+      still references it — reassign or delete those first. Shared reference data.
+    handler: http_json
+    method: DELETE
+    path: /api/proteins/{protein_id}
+    params:
+      - name: protein_id
+        in: path
+        type: integer
+        required: true
+
+  - name: compute_protein_embedding
+    annotations: {readOnlyHint: false, destructiveHint: false, idempotentHint: true}
+    description: >
+      Compute (or refresh) the ESM-C sequence embedding for a protein from its
+      FASTA sequence, so it can be placed on the protein UMAP. Requires the protein
+      to have a fasta_sequence. Safe to repeat.
+    handler: http_post_json
+    method: POST
+    path: /api/proteins/{protein_id}/compute-embedding
+    params:
+      - name: protein_id
+        in: path
+        type: integer
+        required: true
+
+  # -- Database (read-only) --------------------------------------------------
+  - name: query_database
+    annotations: {readOnlyHint: true, openWorldHint: false}
+    description: >
+      Run a READ-ONLY SQL SELECT over your data and return the rows. A per-user
+      access filter is injected automatically, so you only ever see your own rows
+      plus group-shared experiments — you cannot read other users' private data.
+      Only a single SELECT is allowed: NO INSERT/UPDATE/DELETE, no subqueries, no
+      CTEs (WITH), no UNION/INTERSECT/EXCEPT, no SQL comments, no multiple
+      statements. Joins must be explicit `JOIN ... ON` (no comma joins). Because
+      images and cell_crops have no owner column, a query on them MUST JOIN
+      experiments (images.experiment_id = experiments.id, and cell_crops.image_id
+      = images.id). Allowed tables and columns:
+      experiments(id, name, description, status, map_protein_id, group_id,
+      fasta_sequence, created_at, updated_at);
+      images(id, experiment_id, map_protein_id, original_filename, width, height,
+      z_slices, file_size, status, created_at, processed_at);
+      cell_crops(id, image_id, map_protein_id, bbox_x, bbox_y, bbox_w, bbox_h,
+      detection_confidence, bundleness_score, mean_intensity, skewness, kurtosis,
+      excluded, created_at);
+      map_proteins(id, name, full_name, uniprot_id, gene_name, organism,
+      sequence_length) [shared, no user filter];
+      comparisons(id, user_id, crop_a_id, crop_b_id, winner_id, response_time_ms,
+      undone, timestamp);
+      user_ratings(id, user_id, cell_crop_id, mu, sigma, comparison_count,
+      created_at, updated_at);
+      rag_documents(id, name, file_type, status, page_count, thread_id,
+      created_at);
+      rag_document_pages(id, document_id, page_number) [must JOIN rag_documents].
+      For document CONTENT use search_documents, not SQL (page text is not stored
+      as SQL). Example: SELECT status, COUNT(*) FROM images JOIN experiments ON
+      images.experiment_id = experiments.id GROUP BY status.
+    handler: http_post_json
+    method: POST
+    path: /api/query
+    params:
+      - name: sql
+        in: body
+        type: string
+        required: true
+        description: A single read-only SELECT over the allowed tables.
+      - name: limit
+        in: body
+        type: integer
+        description: Max rows to return (default 100, capped at 1000).

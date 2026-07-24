@@ -21,11 +21,23 @@ def test_list_tools_builds_schema_from_yaml(make_registry):
     # Pin the EXACT public tool contract: a dropped or accidentally-added tool
     # fails here (the three overlapping search/list tools are gone).
     assert set(tools) == {
+        # document library
         "search_documents", "read_document_pages", "read_page_region", "web_search",
         "find_documents", "get_document_metadata", "find_similar_pages",
         "search_by_image", "search_by_text_example", "index_text", "index_document",
         "reindex_document", "delete_document", "get_indexing_status",
         "list_folders", "create_folder", "move_document",
+        # application control: experiments
+        "list_experiments", "get_experiment", "create_experiment", "update_experiment",
+        "delete_experiment", "assign_experiment_protein",
+        # application control: images + cell detection
+        "upload_image", "list_fov_images", "get_image", "process_images",
+        "reprocess_image", "redetect_cells", "delete_image", "list_cell_crops",
+        # application control: proteins
+        "list_proteins", "get_protein", "create_protein", "update_protein",
+        "delete_protein", "compute_protein_embedding",
+        # database
+        "query_database",
     }
 
     schema = tools["search_documents"].inputSchema
