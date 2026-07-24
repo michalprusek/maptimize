@@ -242,9 +242,15 @@ export default function ProteinsPage(): JSX.Element {
     // request fails, leave it blank — the backend auto-assigns on save anyway.
     try {
       const { color } = await api.getSuggestedProteinColor();
-      setFormData((prev) => ({ ...prev, color }));
-    } catch {
-      // no-op: blank color still auto-assigns server-side
+      // Only fill a still-blank colour: a slow request must not clobber a colour
+      // the user typed meanwhile, nor bleed into an edit modal they switched to
+      // (which would silently change an existing protein's colour on save).
+      setFormData((prev) => (prev.color ? prev : { ...prev, color }));
+    } catch (err) {
+      // Convenience pre-fill only — blank colour still auto-assigns server-side.
+      // Logged (not surfaced) so a broken endpoint / route-order regression is
+      // debuggable instead of silently degrading to "always blank".
+      console.warn("[proteins] color suggestion failed; leaving blank", err);
     }
   };
 
