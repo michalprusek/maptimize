@@ -331,6 +331,22 @@ async def test_serve_page_region_bad_bbox_is_400(mock_db):
         assert ei.value.status_code == 400
 
 
+async def test_list_documents_sets_total_count_header(mock_db):
+    # The bare-array body is preserved; the total (ignoring skip/limit) rides in
+    # the X-Total-Count header so MCP find_documents can paginate.
+    resp = SimpleNamespace(headers={})
+    with patch.object(rag_router, "get_user_group_id", AsyncMock(return_value=7)), \
+         patch.object(rag_router, "search_documents_metadata", AsyncMock(return_value=[])), \
+         patch.object(rag_router, "count_documents_metadata",
+                      AsyncMock(return_value=17)) as mock_count:
+        out = await rag_router.list_documents(
+            response=resp, current_user=SimpleNamespace(id=1), db=mock_db
+        )
+    assert out == []  # bare array preserved
+    assert resp.headers["X-Total-Count"] == "17"
+    mock_count.assert_awaited_once()
+
+
 async def test_serve_page_region_unrenderable_is_404(mock_db):
     with patch.object(rag_router, "get_user_group_id", AsyncMock(return_value=None)), \
          patch.object(rag_router, "get_document_for_user",

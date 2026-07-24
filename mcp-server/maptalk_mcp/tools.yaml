@@ -168,7 +168,7 @@ tools:
       (pages are stored as images, not OCR text) — to search content by meaning,
       use search_documents. Also use this to browse the library and get a
       document_id.
-    handler: http_json
+    handler: find_documents
     method: GET
     path: /api/rag/documents
     params:
@@ -202,7 +202,14 @@ tools:
         in: query
         type: integer
         default: 50
-        description: Max documents to return.
+        description: Max documents per page.
+      - name: skip
+        in: query
+        type: integer
+        default: 0
+        description: >
+          Offset for pagination. The response reports the total match count and
+          the next skip value when more pages exist.
 
   - name: get_document_metadata
     annotations:
@@ -396,3 +403,58 @@ tools:
     method: GET
     path: /api/rag/indexing/status
     params: []
+
+  - name: list_folders
+    annotations:
+      readOnlyHint: true
+      openWorldHint: false
+    description: >
+      List the folders in the document library (id, name, parent_id). The tree is
+      flat — reconstruct nesting from parent_id (parent_id null = a top-level
+      folder). Use a folder's id with find_documents (folder_id + in_folder=true)
+      or move_document.
+    handler: http_json
+    method: GET
+    path: /api/rag/folders
+    params: []
+
+  - name: create_folder
+    annotations:
+      readOnlyHint: false
+      destructiveHint: false
+    description: >
+      Create a new library folder. Optionally nest it under an existing folder by
+      passing that folder's id as parent_id (omit for a top-level folder).
+    handler: http_post_json
+    method: POST
+    path: /api/rag/folders
+    params:
+      - name: name
+        in: body
+        type: string
+        required: true
+        description: Folder name.
+      - name: parent_id
+        in: body
+        type: integer
+        description: Parent folder id; omit to create at the top level.
+
+  - name: move_document
+    annotations:
+      readOnlyHint: false
+      destructiveHint: false
+    description: >
+      Move a document into a folder. Pass the target folder's id as folder_id, or
+      OMIT folder_id to move the document to the library root. Owner/group access
+      applies (you can only move documents you can access).
+    handler: move_document
+    params:
+      - name: document_id
+        in: arg
+        type: integer
+        required: true
+        description: Id of the document to move.
+      - name: folder_id
+        in: arg
+        type: integer
+        description: Target folder id; omit to move to the library root.

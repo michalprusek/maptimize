@@ -15,7 +15,7 @@ from io import BytesIO
 from pathlib import Path
 from typing import List, Optional, Dict, Any
 
-from sqlalchemy import select, text
+from sqlalchemy import select, text, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -255,6 +255,49 @@ async def search_similar_pages(
     )
 
 
+def _document_metadata_conditions(
+    user_id: int,
+    *,
+    name: Optional[str] = None,
+    doi: Optional[str] = None,
+    file_type: Optional[str] = None,
+    status: Optional[str] = None,
+    created_after=None,
+    created_before=None,
+    min_pages: Optional[int] = None,
+    max_pages: Optional[int] = None,
+    folder_id: Optional[int] = None,
+    in_folder: bool = False,
+    group_id: Optional[int] = None,
+    thread_id: Optional[int] = None,
+) -> list:
+    """The WHERE clauses for a metadata query. SSOT shared by the listing and the
+    count so a paginated total can never drift from the rows it counts."""
+    conds = [document_scope(user_id, thread_id, group_id)]
+    if name:
+        conds.append(RAGDocument.name.ilike(f"%{name}%"))
+    if doi:
+        conds.append(RAGDocument.doi.ilike(f"%{doi}%"))
+    if file_type:
+        conds.append(RAGDocument.file_type == file_type)
+    if status:
+        conds.append(RAGDocument.status == status)
+    if created_after is not None:
+        conds.append(RAGDocument.created_at >= created_after)
+    if created_before is not None:
+        conds.append(RAGDocument.created_at <= created_before)
+    if min_pages is not None:
+        conds.append(RAGDocument.page_count >= min_pages)
+    if max_pages is not None:
+        conds.append(RAGDocument.page_count <= max_pages)
+    if in_folder:  # scope to one folder (folder_id=None -> root)
+        conds.append(
+            RAGDocument.folder_id.is_(None) if folder_id is None
+            else RAGDocument.folder_id == folder_id
+        )
+    return conds
+
+
 async def search_documents_metadata(
     user_id: int,
     db: AsyncSession,
@@ -276,30 +319,46 @@ async def search_documents_metadata(
 ) -> List:
     """Filter documents by metadata (name/doi/type/status/date/page-range).
     Returns RAGDocument ORM rows. (Vision-RAG: no OCR text to full-text search.)"""
-    stmt = select(RAGDocument).where(document_scope(user_id, thread_id, group_id))
-    if name:
-        stmt = stmt.where(RAGDocument.name.ilike(f"%{name}%"))
-    if doi:
-        stmt = stmt.where(RAGDocument.doi.ilike(f"%{doi}%"))
-    if file_type:
-        stmt = stmt.where(RAGDocument.file_type == file_type)
-    if status:
-        stmt = stmt.where(RAGDocument.status == status)
-    if created_after is not None:
-        stmt = stmt.where(RAGDocument.created_at >= created_after)
-    if created_before is not None:
-        stmt = stmt.where(RAGDocument.created_at <= created_before)
-    if min_pages is not None:
-        stmt = stmt.where(RAGDocument.page_count >= min_pages)
-    if max_pages is not None:
-        stmt = stmt.where(RAGDocument.page_count <= max_pages)
-    if in_folder:  # scope to one folder (folder_id=None -> root)
-        stmt = stmt.where(
-            RAGDocument.folder_id.is_(None) if folder_id is None
-            else RAGDocument.folder_id == folder_id
-        )
-    stmt = stmt.order_by(RAGDocument.created_at.desc()).offset(skip).limit(limit)
+    conds = _document_metadata_conditions(
+        user_id, name=name, doi=doi, file_type=file_type, status=status,
+        created_after=created_after, created_before=created_before,
+        min_pages=min_pages, max_pages=max_pages, folder_id=folder_id,
+        in_folder=in_folder, group_id=group_id, thread_id=thread_id,
+    )
+    stmt = (
+        select(RAGDocument).where(*conds)
+        .order_by(RAGDocument.created_at.desc()).offset(skip).limit(limit)
+    )
     return list((await db.execute(stmt)).scalars().all())
+
+
+async def count_documents_metadata(
+    user_id: int,
+    db: AsyncSession,
+    *,
+    name: Optional[str] = None,
+    doi: Optional[str] = None,
+    file_type: Optional[str] = None,
+    status: Optional[str] = None,
+    created_after=None,
+    created_before=None,
+    min_pages: Optional[int] = None,
+    max_pages: Optional[int] = None,
+    folder_id: Optional[int] = None,
+    in_folder: bool = False,
+    group_id: Optional[int] = None,
+    thread_id: Optional[int] = None,
+) -> int:
+    """Total documents matching the same filters as search_documents_metadata
+    (ignoring skip/limit) — for the X-Total-Count pagination header."""
+    conds = _document_metadata_conditions(
+        user_id, name=name, doi=doi, file_type=file_type, status=status,
+        created_after=created_after, created_before=created_before,
+        min_pages=min_pages, max_pages=max_pages, folder_id=folder_id,
+        in_folder=in_folder, group_id=group_id, thread_id=thread_id,
+    )
+    stmt = select(func.count()).select_from(RAGDocument).where(*conds)
+    return int((await db.execute(stmt)).scalar() or 0)
 
 
 async def search_fov_images(

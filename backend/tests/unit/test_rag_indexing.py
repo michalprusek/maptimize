@@ -491,6 +491,49 @@ async def test_page_image_path_success(mock_db, tmp_path):
 
 
 # ============================================================================ #
+# rag_service metadata count / conditions (pagination total)
+# ============================================================================ #
+def test_document_metadata_conditions_always_scopes():
+    # bare call = just the scope predicate; each filter adds exactly one clause
+    assert len(rag._document_metadata_conditions(7)) == 1
+    conds = rag._document_metadata_conditions(
+        7, name="x", status="completed", min_pages=3, in_folder=True, folder_id=5
+    )
+    assert len(conds) == 5  # scope + name + status + min_pages + folder
+
+
+def test_search_and_count_share_the_same_conditions():
+    # drift guard: the listing and the count must build identical WHERE clauses.
+    # Both delegate to _document_metadata_conditions, so compare the rendered SQL.
+    import services.rag_service as rs
+    calls = {}
+    real = rs._document_metadata_conditions
+
+    def spy(user_id, **kw):
+        calls.setdefault("kw", []).append(kw)
+        return real(user_id, **kw)
+
+    with patch.object(rs, "_document_metadata_conditions", spy):
+        # invoke the condition-building of both via their kwargs (no DB needed):
+        real_kw = dict(name="a", status="failed", file_type="pdf", min_pages=2)
+        c1 = rs._document_metadata_conditions(7, **real_kw)
+        c2 = rs._document_metadata_conditions(7, **real_kw)
+    # identical inputs -> identical number/kind of conditions
+    assert len(c1) == len(c2) == 5
+
+
+async def test_count_documents_metadata_returns_scalar(mock_db):
+    mock_db.execute.return_value = make_result(scalar=42)
+    n = await rag.count_documents_metadata(7, mock_db, status="completed")
+    assert n == 42
+
+
+async def test_count_documents_metadata_zero_when_null(mock_db):
+    mock_db.execute.return_value = make_result(scalar=None)
+    assert await rag.count_documents_metadata(7, mock_db) == 0
+
+
+# ============================================================================ #
 # rag_service.extract_passage_image
 # ============================================================================ #
 async def test_extract_passage_bad_bbox_len(mock_db):

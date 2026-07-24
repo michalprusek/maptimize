@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import base64
+import json
 
 import httpx
 
@@ -138,6 +139,66 @@ async def test_read_page_region_rejects_bad_bbox_without_calling_backend(make_re
     assert len(blocks) == 1 and blocks[0].type == "text"
     assert "bbox" in blocks[0].text.lower()
     assert called["n"] == 0
+
+
+async def test_find_documents_surfaces_total_and_pagination(make_registry):
+    def routes(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/rag/documents":
+            assert request.url.params["skip"] == "0"
+            return httpx.Response(
+                200, json=[{"id": 1}, {"id": 2}], headers={"X-Total-Count": "5"}
+            )
+        return httpx.Response(404)
+
+    reg = make_registry(_with_login(routes))
+    blocks = await reg.dispatch("find_documents", {"skip": 0})
+    text = " ".join(b.text for b in blocks if b.type == "text")
+    assert "2 of 5" in text  # showed 2, 5 total
+    assert "skip=2" in text  # steers the next page
+
+
+async def test_move_document_into_folder_sends_folder_id(make_registry):
+    seen = {}
+
+    def routes(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/rag/documents/7" and request.method == "PATCH":
+            seen["body"] = json.loads(request.content)
+            return httpx.Response(200, json={"id": 7, "folder_id": 3})
+        return httpx.Response(404)
+
+    reg = make_registry(_with_login(routes))
+    await reg.dispatch("move_document", {"document_id": 7, "folder_id": 3})
+    assert seen["body"] == {"folder_id": 3}
+
+
+async def test_move_document_to_root_sends_null_folder_id(make_registry):
+    seen = {}
+
+    def routes(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/rag/documents/7" and request.method == "PATCH":
+            seen["body"] = json.loads(request.content)
+            return httpx.Response(200, json={"id": 7, "folder_id": None})
+        return httpx.Response(404)
+
+    reg = make_registry(_with_login(routes))
+    # folder_id omitted -> the pipeline strips it, but the custom handler must
+    # still send an explicit null so the backend moves the doc to root.
+    await reg.dispatch("move_document", {"document_id": 7})
+    assert seen["body"] == {"folder_id": None}
+
+
+async def test_create_folder_posts_name_and_parent(make_registry):
+    seen = {}
+
+    def routes(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/rag/folders" and request.method == "POST":
+            seen["body"] = json.loads(request.content)
+            return httpx.Response(201, json={"id": 9, "name": "Papers", "parent_id": 2})
+        return httpx.Response(404)
+
+    reg = make_registry(_with_login(routes))
+    await reg.dispatch("create_folder", {"name": "Papers", "parent_id": 2})
+    assert seen["body"] == {"name": "Papers", "parent_id": 2}
 
 
 async def test_web_search_parses_ddg_results(make_registry):

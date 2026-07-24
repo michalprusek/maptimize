@@ -56,6 +56,7 @@ from services.rag_service import (
     image_mime_type,
     search_similar_pages,
     search_documents_metadata,
+    count_documents_metadata,
     _search_pages_by_embedding,
 )
 from services.paper_discovery_service import (
@@ -199,6 +200,7 @@ async def list_documents(
     max_pages: Optional[int] = Query(None, ge=0),
     folder_id: Optional[int] = Query(None, description="Folder to scope to (with in_folder=true)"),
     in_folder: bool = Query(False, description="Scope to folder_id; folder_id omitted = root"),
+    response: Response = None,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
@@ -207,24 +209,21 @@ async def list_documents(
     Chat attachments are excluded: they belong to their thread, not the library.
     Group-shared library documents from other members are included, marked
     ``is_owner=False``. With ``in_folder=true`` the list is scoped to one folder.
+    The total matching count (ignoring skip/limit) is returned in the
+    ``X-Total-Count`` header so callers can paginate; the body stays a bare array.
     """
     group_id = await get_user_group_id(current_user.id, db)
-    documents = await search_documents_metadata(
-        current_user.id,
-        db,
-        name=name,
-        doi=doi,
-        folder_id=folder_id,
-        in_folder=in_folder,
-        file_type=file_type,
-        status=status_filter,
-        min_pages=min_pages,
-        max_pages=max_pages,
-        group_id=group_id,
-        thread_id=None,
-        skip=skip,
-        limit=limit,
+    filters = dict(
+        name=name, doi=doi, folder_id=folder_id, in_folder=in_folder,
+        file_type=file_type, status=status_filter, min_pages=min_pages,
+        max_pages=max_pages, group_id=group_id, thread_id=None,
     )
+    documents = await search_documents_metadata(
+        current_user.id, db, skip=skip, limit=limit, **filters
+    )
+    if response is not None:
+        total = await count_documents_metadata(current_user.id, db, **filters)
+        response.headers["X-Total-Count"] = str(total)
     return [RAGDocumentResponse.for_user(doc, current_user.id) for doc in documents]
 
 

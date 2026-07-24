@@ -310,6 +310,42 @@ async def web_search(
     return [_text(formatted)]
 
 
+async def find_documents(
+    reg: "ToolRegistry", spec: "ToolSpec", args: dict, token: str | None = None
+) -> list[ContentBlock]:
+    """Metadata listing that also surfaces the total match count (from the
+    X-Total-Count header) so the model can page with `skip`."""
+    path, query, _ = _route(spec, args)
+    resp = await reg.client.request("GET", path, params=query, token=token)
+    docs = resp.json()
+    blocks: list[ContentBlock] = [_text(docs)]
+    total = resp.headers.get("X-Total-Count")
+    if total is not None:
+        shown = len(docs) if isinstance(docs, list) else 0
+        skip = int(args.get("skip", 0) or 0)
+        note = f"Showing {shown} of {total} matching document(s) (skip={skip})."
+        if shown and skip + shown < int(total):
+            note += f" Call again with skip={skip + shown} for the next page."
+        blocks.append(_text(note))
+    return blocks
+
+
+async def move_document(
+    reg: "ToolRegistry", spec: "ToolSpec", args: dict, token: str | None = None
+) -> list[ContentBlock]:
+    """Move a document into a folder, or to the library root when folder_id is
+    omitted. The generic pipeline strips a null arg, so we send folder_id (int or
+    null) explicitly in the PATCH body here."""
+    doc_id = args["document_id"]
+    resp = await reg.client.request(
+        "PATCH",
+        f"/api/rag/documents/{doc_id}",
+        json={"folder_id": args.get("folder_id")},
+        token=token,
+    )
+    return _response_blocks(resp)
+
+
 HANDLERS = {
     "http_json": http_json,
     "http_post_json": http_post_json,
@@ -319,4 +355,6 @@ HANDLERS = {
     "search_by_image": search_by_image,
     "index_document": index_document,
     "read_page_region": read_page_region,
+    "find_documents": find_documents,
+    "move_document": move_document,
 }
