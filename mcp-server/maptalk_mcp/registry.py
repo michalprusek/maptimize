@@ -18,7 +18,7 @@ import mcp.types as types
 import yaml
 
 from .client import MaptalkClient
-from .handlers import HANDLERS, ContentBlock
+from .handlers import HANDLERS, ContentBlock, HandlerResult
 
 _JSON_TYPES = {
     "string": "string",
@@ -174,7 +174,7 @@ class ToolRegistry:
 
     async def dispatch(
         self, name: str, arguments: dict[str, Any], token: str | None = None
-    ) -> list[ContentBlock]:
+    ) -> HandlerResult:
         self._reload()
         spec = self._specs.get(name)
         if spec is None:

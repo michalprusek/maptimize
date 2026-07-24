@@ -18,6 +18,16 @@ def _with_login(routes):
     return handler
 
 
+def _blocks(result):
+    """dispatch() returns either a list of content blocks, or a
+    (blocks, structuredContent) tuple — this unwraps to the blocks."""
+    return result[0] if isinstance(result, tuple) else result
+
+
+def _structured(result):
+    return result[1] if isinstance(result, tuple) else None
+
+
 async def test_search_documents_refs_mode_is_text_only(make_registry):
     def routes(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/api/rag/search/documents":
@@ -28,9 +38,12 @@ async def test_search_documents_refs_mode_is_text_only(make_registry):
         return httpx.Response(404)
 
     reg = make_registry(_with_login(routes))
-    blocks = await reg.dispatch("search_documents", {"query": "fixation", "return": "refs", "limit": 5})
+    result = await reg.dispatch("search_documents", {"query": "fixation", "return": "refs", "limit": 5})
+    blocks = _blocks(result)
     assert len(blocks) == 1 and blocks[0].type == "text"
     assert "Prot.pdf" in blocks[0].text and "doc 3" in blocks[0].text
+    # structuredContent carries the machine-readable hits for chaining
+    assert _structured(result)["results"][0]["document_id"] == 3
 
 
 async def test_search_documents_default_returns_page_images(make_registry):
@@ -48,7 +61,7 @@ async def test_search_documents_default_returns_page_images(make_registry):
 
     reg = make_registry(_with_login(routes))
     # default return=images: retrieval is built in — one call yields the page image
-    blocks = await reg.dispatch("search_documents", {"query": "fixation"})
+    blocks = _blocks(await reg.dispatch("search_documents", {"query": "fixation"}))
     images = [b for b in blocks if b.type == "image"]
     assert len(images) == 1 and base64.b64decode(images[0].data) == png
 
@@ -63,7 +76,7 @@ async def test_search_documents_include_fov_appends_fov_matches(make_registry):
         return httpx.Response(404)
 
     reg = make_registry(_with_login(routes))
-    blocks = await reg.dispatch("search_documents", {"query": "cell", "include_fov": True})
+    blocks = _blocks(await reg.dispatch("search_documents", {"query": "cell", "include_fov": True}))
     text = " ".join(b.text for b in blocks if b.type == "text")
     assert "42" in text  # FOV image match surfaced
 
@@ -151,7 +164,7 @@ async def test_find_documents_surfaces_total_and_pagination(make_registry):
         return httpx.Response(404)
 
     reg = make_registry(_with_login(routes))
-    blocks = await reg.dispatch("find_documents", {"skip": 0})
+    blocks = _blocks(await reg.dispatch("find_documents", {"skip": 0}))
     text = " ".join(b.text for b in blocks if b.type == "text")
     assert "2 of 5" in text  # showed 2, 5 total
     assert "skip=2" in text  # steers the next page
@@ -256,7 +269,7 @@ async def test_per_request_token_passthrough(make_registry):
         return httpx.Response(404)
 
     reg = make_registry(routes)
-    blocks = await reg.dispatch("find_documents", {}, token="mtk_pat_abc123")
+    blocks = _blocks(await reg.dispatch("find_documents", {}, token="mtk_pat_abc123"))
     assert seen["auth"] == "Bearer mtk_pat_abc123"
     assert blocks[0].type == "text"
 

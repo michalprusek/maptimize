@@ -24,6 +24,12 @@ if TYPE_CHECKING:  # avoid an import cycle; only needed for type hints
     from .registry import ToolRegistry, ToolSpec
 
 ContentBlock = types.TextContent | types.ImageContent
+# A handler returns either content blocks, or (blocks, structuredContent). The
+# structured dict gives the model reliable machine-readable fields (ids, pages,
+# scores) alongside the human-readable/image blocks. We deliberately do NOT set
+# an outputSchema on any tool, so structuredContent is never enforced — error and
+# empty paths can safely return a plain list.
+HandlerResult = list[ContentBlock] | tuple[list[ContentBlock], dict[str, Any]]
 
 _MAX_PAGES_PER_CALL = 10
 _WEB_UA = (
@@ -136,11 +142,12 @@ _MAX_REF_HITS = 50
 
 async def search_documents(
     reg: "ToolRegistry", spec: "ToolSpec", args: dict, token: str | None = None
-) -> list[ContentBlock]:
+) -> HandlerResult:
     """Semantic search over the library. Retrieval is PART of search: by default
     it returns the matching page IMAGES (so you can answer straight away).
     return='refs' gives a lightweight text list of page references instead;
-    include_fov=true also searches microscopy field-of-view images."""
+    include_fov=true also searches microscopy field-of-view images. Also returns
+    the ranked hits as structuredContent for reliable chaining into a page read."""
     query = args["query"]
     return_images = args.get("return", "images") != "refs"
     cap = _MAX_SEARCH_IMAGES if return_images else _MAX_REF_HITS
@@ -149,23 +156,26 @@ async def search_documents(
     data = await reg.client.get_json(
         "/api/rag/search/documents", params={"q": query, "limit": limit}, token=token
     )
-    empty = f"No document pages matched: {query}"
-    if return_images:
-        blocks = await _page_hit_blocks(reg, data, limit, token, empty)
+    hits = (data.get("results") or [])[:limit]
+    if not hits:
+        blocks: list[ContentBlock] = [_text(f"No document pages matched: {query}")]
+    elif return_images:
+        blocks = [_hit_summary(hits), *await _pages_as_images(reg, hits, token)]
     else:
-        hits = data.get("results") or []
-        blocks = [_hit_summary(hits)] if hits else [_text(empty)]
+        blocks = [_hit_summary(hits)]
 
+    structured: dict[str, Any] = {"query": query, "results": hits}
     if args.get("include_fov"):
         fov = await reg.client.get_json(
             "/api/rag/search/fov", params={"q": query, "limit": limit}, token=token
         )
         fov_hits = fov.get("results") or []
+        structured["fov_matches"] = fov_hits
         blocks.append(
             _text({"fov_image_matches": fov_hits}) if fov_hits
             else _text("No FOV microscopy images matched.")
         )
-    return blocks
+    return blocks, structured
 
 
 async def search_by_image(
@@ -312,22 +322,25 @@ async def web_search(
 
 async def find_documents(
     reg: "ToolRegistry", spec: "ToolSpec", args: dict, token: str | None = None
-) -> list[ContentBlock]:
+) -> HandlerResult:
     """Metadata listing that also surfaces the total match count (from the
-    X-Total-Count header) so the model can page with `skip`."""
+    X-Total-Count header) so the model can page with `skip`. Returns the document
+    list + total as structuredContent."""
     path, query, _ = _route(spec, args)
     resp = await reg.client.request("GET", path, params=query, token=token)
     docs = resp.json()
     blocks: list[ContentBlock] = [_text(docs)]
+    structured: dict[str, Any] = {"documents": docs}
     total = resp.headers.get("X-Total-Count")
     if total is not None:
-        shown = len(docs) if isinstance(docs, list) else 0
         skip = int(args.get("skip", 0) or 0)
+        shown = len(docs) if isinstance(docs, list) else 0
+        structured.update(total=int(total), skip=skip)
         note = f"Showing {shown} of {total} matching document(s) (skip={skip})."
         if shown and skip + shown < int(total):
             note += f" Call again with skip={skip + shown} for the next page."
         blocks.append(_text(note))
-    return blocks
+    return blocks, structured
 
 
 async def move_document(
