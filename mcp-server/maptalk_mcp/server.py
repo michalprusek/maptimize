@@ -155,7 +155,7 @@ SERVER_INSTRUCTIONS = (
 # Bumped when the tool contract or capabilities change (see MCP versioning).
 # 2.1.0: added application-control tools (experiments, images + cell detection,
 # proteins) and a read-only query_database SQL tool alongside the document DB.
-SERVER_VERSION = "2.1.0"
+SERVER_VERSION = "2.2.0"
 
 
 def build_server(registry: ToolRegistry) -> Server:
