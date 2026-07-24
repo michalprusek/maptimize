@@ -50,6 +50,18 @@ async def get_experiment_for_user(
     return experiment
 
 
+async def _verify_microscope_exists(microscope_id: int, db: AsyncSession) -> None:
+    """Raise 404 if no microscope has this id."""
+    result = await db.execute(
+        select(Microscope).where(Microscope.id == microscope_id)
+    )
+    if result.scalar_one_or_none() is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Microscope not found"
+        )
+
+
 @router.get("", response_model=List[ExperimentResponse])
 async def list_experiments(
     skip: int = Query(0, ge=0),
@@ -115,14 +127,7 @@ async def create_experiment(
 
     # Verify microscope exists if provided
     if data.microscope_id is not None:
-        micro_result = await db.execute(
-            select(Microscope).where(Microscope.id == data.microscope_id)
-        )
-        if not micro_result.scalar_one_or_none():
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Microscope not found"
-            )
+        await _verify_microscope_exists(data.microscope_id, db)
 
     group_id = await get_user_group_id(current_user.id, db)
 
@@ -210,14 +215,7 @@ async def update_experiment(
 
     # Verify microscope exists if being (re)assigned
     if update_data.get("microscope_id") is not None:
-        micro_result = await db.execute(
-            select(Microscope).where(Microscope.id == update_data["microscope_id"])
-        )
-        if not micro_result.scalar_one_or_none():
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Microscope not found"
-            )
+        await _verify_microscope_exists(update_data["microscope_id"], db)
 
     for field, value in update_data.items():
         setattr(experiment, field, value)
