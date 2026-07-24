@@ -26,80 +26,49 @@
 tools:
   - name: search_documents
     description: >
-      Semantically search the user's indexed maptalk library documents
-      (scientific PDFs, lab protocols, papers). Returns the most relevant PAGES
-      with a similarity score, document id, document name, page number, and —
-      when available — a short text excerpt. Use this to find WHERE information
-      lives, then call read_document_pages to actually read those pages.
-    handler: http_json
-    method: GET
-    path: /api/rag/search/documents
+      Semantic search over the library (scientific PDFs, lab protocols, papers).
+      RETRIEVAL IS BUILT IN: by default it returns the matching page IMAGES so you
+      can read and answer in one call. Set return=refs for a lightweight text list
+      of page references (document, page, score) without the images — use that when
+      you only need to locate pages. Set include_fov=true to also search microscopy
+      field-of-view images. To read more pages of a specific hit, call
+      read_document_pages; to zoom a small figure, read_page_region.
+    handler: search_documents
+    annotations:
+      readOnlyHint: true
+      openWorldHint: false
     params:
       - name: query
-        in: query
-        maps_to: q
+        in: arg
         type: string
         required: true
         description: Natural-language search query.
-      - name: limit
-        in: query
-        type: integer
-        default: 20
-        description: Maximum number of page hits to return (1-100).
-
-  - name: semantic_search
-    description: >
-      Combined semantic search over BOTH indexed documents and microscopy
-      field-of-view (FOV) images. Returns ranked document-page hits and image
-      hits. Prefer search_documents when you only care about documents.
-    handler: http_json
-    method: GET
-    path: /api/rag/search
-    params:
-      - name: query
-        in: query
-        maps_to: q
+      - name: return
+        in: arg
         type: string
-        required: true
-        description: Natural-language search query.
-      - name: doc_limit
-        in: query
+        default: images
+        enum: [images, refs]
+        description: >
+          images = return the matching page images (default, retrieval built in);
+          refs = a text list of page references only.
+      - name: include_fov
+        in: arg
+        type: boolean
+        default: false
+        description: Also search microscopy field-of-view (FOV) images.
+      - name: limit
+        in: arg
         type: integer
         default: 10
-        description: Max document-page hits (1-50).
-      - name: fov_limit
-        in: query
-        type: integer
-        default: 10
-        description: Max microscopy-image hits (1-50).
-
-  - name: list_documents
-    description: >
-      List the user's indexed library documents with metadata (id, name, file
-      type, page count, indexing status, size, dates). Use this to see what is
-      available before searching or reading, or to get a document_id.
-    handler: http_json
-    method: GET
-    path: /api/rag/documents
-    params:
-      - name: status
-        in: query
-        type: string
-        description: Optional filter — pending, processing, completed or failed.
-      - name: limit
-        in: query
-        type: integer
-        default: 100
-        description: Maximum number of documents to return (1-100).
+        description: Max hits (page images are capped at 10; refs up to 50).
 
   - name: read_document_pages
     description: >
-      Read the actual CONTENT of a document. maptalk is a Vision-RAG system, so
-      page content is returned as rendered page IMAGES (which you can read
-      directly), not plain text. Returns up to `count` pages starting at
-      `start_page`. Requires a document_id. If a figure, table, or small label
-      on a page is too small to read reliably, call read_page_region to zoom into
-      that area at high resolution instead of guessing.
+      Read the actual CONTENT of specific pages of a known document, returned as
+      rendered page IMAGES. Returns up to `count` pages starting at `start_page`.
+      Requires a document_id (from search_documents or find_documents). If a figure,
+      table, or small label on a page is too small to read reliably, call
+      read_page_region to zoom into that area at high resolution instead of guessing.
     handler: document_pages
     params:
       - name: document_id
@@ -178,24 +147,6 @@ tools:
         type: integer
         default: 8
         description: How many results to return.
-
-  - name: semantic_image_search
-    description: >
-      Semantic search over the library that returns the top matching pages as
-      rendered IMAGES you can read directly (maptalk is Vision-RAG). Best default
-      for "find and show me the relevant pages".
-    handler: semantic_image_search
-    params:
-      - name: query
-        in: arg
-        type: string
-        required: true
-        description: Natural-language search query.
-      - name: count
-        in: arg
-        type: integer
-        default: 10
-        description: How many page images to return (max 10).
 
   - name: find_documents
     description: >

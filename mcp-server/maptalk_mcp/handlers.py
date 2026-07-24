@@ -131,15 +131,41 @@ def _decode_base64_arg(args: dict, field: str) -> tuple[bytes | None, ContentBlo
         return None, _text(f"{field} is not valid base64.")
 
 
-async def semantic_image_search(
+_MAX_REF_HITS = 50
+
+
+async def search_documents(
     reg: "ToolRegistry", spec: "ToolSpec", args: dict, token: str | None = None
 ) -> list[ContentBlock]:
+    """Semantic search over the library. Retrieval is PART of search: by default
+    it returns the matching page IMAGES (so you can answer straight away).
+    return='refs' gives a lightweight text list of page references instead;
+    include_fov=true also searches microscopy field-of-view images."""
     query = args["query"]
-    count = min(int(args.get("count", 10)), _MAX_SEARCH_IMAGES)
+    return_images = args.get("return", "images") != "refs"
+    cap = _MAX_SEARCH_IMAGES if return_images else _MAX_REF_HITS
+    limit = min(int(args.get("limit", 10 if return_images else 20)), cap)
+
     data = await reg.client.get_json(
-        "/api/rag/search/documents", params={"q": query, "limit": count}, token=token
+        "/api/rag/search/documents", params={"q": query, "limit": limit}, token=token
     )
-    return await _page_hit_blocks(reg, data, count, token, f"No document pages matched: {query}")
+    empty = f"No document pages matched: {query}"
+    if return_images:
+        blocks = await _page_hit_blocks(reg, data, limit, token, empty)
+    else:
+        hits = data.get("results") or []
+        blocks = [_hit_summary(hits)] if hits else [_text(empty)]
+
+    if args.get("include_fov"):
+        fov = await reg.client.get_json(
+            "/api/rag/search/fov", params={"q": query, "limit": limit}, token=token
+        )
+        fov_hits = fov.get("results") or []
+        blocks.append(
+            _text({"fov_image_matches": fov_hits}) if fov_hits
+            else _text("No FOV microscopy images matched.")
+        )
+    return blocks
 
 
 async def search_by_image(
@@ -210,24 +236,12 @@ async def document_pages(
     if not window:
         return [_text(f"Document {doc_id} has no pages at or after page {start}.")]
 
-    blocks: list[ContentBlock] = [
-        _text(
-            f"Document {doc_id}: returning page images {window} "
-            f"(document has {len(numbers)} indexed page(s))."
-        )
-    ]
-    for number in window:
-        content, mime = await reg.client.get_bytes(
-            f"/api/rag/documents/{doc_id}/pages/{number}/image", auth="query", token=token
-        )
-        blocks.append(
-            types.ImageContent(
-                type="image",
-                data=base64.b64encode(content).decode("ascii"),
-                mimeType=mime,
-            )
-        )
-    return blocks
+    summary = _text(
+        f"Document {doc_id}: returning page images {window} "
+        f"(document has {len(numbers)} indexed page(s))."
+    )
+    hits = [{"document_id": doc_id, "page_number": n} for n in window]
+    return [summary, *await _pages_as_images(reg, hits, token)]
 
 
 # -- web_search: independent of the (Gemini-quota-limited) backend -----------
@@ -301,7 +315,7 @@ HANDLERS = {
     "http_post_json": http_post_json,
     "document_pages": document_pages,
     "web_search": web_search,
-    "semantic_image_search": semantic_image_search,
+    "search_documents": search_documents,
     "search_by_image": search_by_image,
     "index_document": index_document,
     "read_page_region": read_page_region,

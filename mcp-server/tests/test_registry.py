@@ -17,14 +17,17 @@ def _noop(request: httpx.Request) -> httpx.Response:
 
 def test_list_tools_builds_schema_from_yaml(make_registry):
     tools = {t.name: t for t in make_registry(_noop).list_tools()}
-    assert {"search_documents", "semantic_search", "list_documents",
-            "get_document_metadata", "read_document_pages", "web_search"} <= set(tools)
+    # consolidated set: the three overlapping search/list tools are gone
+    assert {"search_documents", "find_documents", "get_document_metadata",
+            "read_document_pages", "web_search"} <= set(tools)
+    assert not ({"semantic_search", "semantic_image_search", "list_documents"} & set(tools))
 
     schema = tools["search_documents"].inputSchema
     assert schema["properties"]["query"]["type"] == "string"
-    assert schema["properties"]["limit"]["type"] == "integer"
-    assert schema["properties"]["limit"]["default"] == 20
     assert schema["required"] == ["query"]
+    # retrieval is built in: `return` defaults to images and is enum-constrained
+    assert schema["properties"]["return"]["default"] == "images"
+    assert schema["properties"]["return"]["enum"] == ["images", "refs"]
     # backend routing details (maps_to 'q') must never reach the model schema
     assert "q" not in schema["properties"]
 

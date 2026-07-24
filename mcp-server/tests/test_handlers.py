@@ -17,18 +17,54 @@ def _with_login(routes):
     return handler
 
 
-async def test_search_documents_maps_query_and_limit(make_registry):
+async def test_search_documents_refs_mode_is_text_only(make_registry):
     def routes(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/api/rag/search/documents":
             assert request.url.params["q"] == "fixation"
             assert request.url.params["limit"] == "5"
-            return httpx.Response(200, json={"query": "fixation", "results": [{"document_id": 3}]})
+            return httpx.Response(200, json={"query": "fixation", "results": [
+                {"document_id": 3, "document_name": "Prot.pdf", "page_number": 2, "similarity_score": 0.9}]})
         return httpx.Response(404)
 
     reg = make_registry(_with_login(routes))
-    blocks = await reg.dispatch("search_documents", {"query": "fixation", "limit": 5})
+    blocks = await reg.dispatch("search_documents", {"query": "fixation", "return": "refs", "limit": 5})
     assert len(blocks) == 1 and blocks[0].type == "text"
-    assert "document_id" in blocks[0].text
+    assert "Prot.pdf" in blocks[0].text and "doc 3" in blocks[0].text
+
+
+async def test_search_documents_default_returns_page_images(make_registry):
+    png = b"\x89PNG\r\n\x1a\n-page"
+
+    def routes(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path == "/api/rag/search/documents":
+            return httpx.Response(200, json={"query": "fixation", "results": [
+                {"document_id": 3, "document_name": "Prot.pdf", "page_number": 2, "similarity_score": 0.9}]})
+        if path == "/api/rag/documents/3/pages/2/image":
+            assert request.url.params["token"] == "T"  # query-token auth
+            return httpx.Response(200, content=png, headers={"content-type": "image/webp"})
+        return httpx.Response(404)
+
+    reg = make_registry(_with_login(routes))
+    # default return=images: retrieval is built in — one call yields the page image
+    blocks = await reg.dispatch("search_documents", {"query": "fixation"})
+    images = [b for b in blocks if b.type == "image"]
+    assert len(images) == 1 and base64.b64decode(images[0].data) == png
+
+
+async def test_search_documents_include_fov_appends_fov_matches(make_registry):
+    def routes(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path == "/api/rag/search/documents":
+            return httpx.Response(200, json={"query": "cell", "results": []})
+        if path == "/api/rag/search/fov":
+            return httpx.Response(200, json={"query": "cell", "results": [{"image_id": 42}]})
+        return httpx.Response(404)
+
+    reg = make_registry(_with_login(routes))
+    blocks = await reg.dispatch("search_documents", {"query": "cell", "include_fov": True})
+    text = " ".join(b.text for b in blocks if b.type == "text")
+    assert "42" in text  # FOV image match surfaced
 
 
 async def test_path_param_substitution(make_registry):
@@ -136,7 +172,7 @@ async def test_backend_error_is_reported_not_raised(make_registry):
         return httpx.Response(500, text="boom")
 
     reg = make_registry(_with_login(routes))
-    blocks = await reg.dispatch("list_documents", {})
+    blocks = await reg.dispatch("find_documents", {})
     assert blocks[0].type == "text"
     assert "Error" in blocks[0].text
 
@@ -159,7 +195,7 @@ async def test_per_request_token_passthrough(make_registry):
         return httpx.Response(404)
 
     reg = make_registry(routes)
-    blocks = await reg.dispatch("list_documents", {}, token="mtk_pat_abc123")
+    blocks = await reg.dispatch("find_documents", {}, token="mtk_pat_abc123")
     assert seen["auth"] == "Bearer mtk_pat_abc123"
     assert blocks[0].type == "text"
 
