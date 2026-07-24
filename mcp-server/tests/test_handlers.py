@@ -214,6 +214,128 @@ async def test_create_folder_posts_name_and_parent(make_registry):
     assert seen["body"] == {"name": "Papers", "parent_id": 2}
 
 
+async def test_search_documents_clamps_limit_per_mode(make_registry):
+    seen = {}
+
+    def routes(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/rag/search/documents":
+            seen["limit"] = request.url.params["limit"]
+            return httpx.Response(200, json={"query": "x", "results": []})
+        return httpx.Response(404)
+
+    reg = make_registry(_with_login(routes))
+    await reg.dispatch("search_documents", {"query": "x", "limit": 999})
+    assert seen["limit"] == "10"  # images mode capped at 10
+    await reg.dispatch("search_documents", {"query": "x", "return": "refs", "limit": 999})
+    assert seen["limit"] == "50"  # refs mode capped at 50
+
+
+async def test_search_documents_one_bad_page_keeps_the_others(make_registry):
+    png = b"\x89PNG\r\n\x1a\n-p"
+
+    def routes(request: httpx.Request) -> httpx.Response:
+        p = request.url.path
+        if p == "/api/rag/search/documents":
+            return httpx.Response(200, json={"query": "x", "results": [
+                {"document_id": 3, "document_name": "D", "page_number": 1, "similarity_score": 0.9},
+                {"document_id": 3, "document_name": "D", "page_number": 2, "similarity_score": 0.8}]})
+        if p == "/api/rag/documents/3/pages/1/image":
+            return httpx.Response(200, content=png, headers={"content-type": "image/webp"})
+        if p == "/api/rag/documents/3/pages/2/image":
+            return httpx.Response(404, text="gone")  # one bad page
+        return httpx.Response(404)
+
+    reg = make_registry(_with_login(routes))
+    blocks = _blocks(await reg.dispatch("search_documents", {"query": "x"}))
+    assert len([b for b in blocks if b.type == "image"]) == 1  # the good page survives
+    assert any(b.type == "text" and "p.2 image unavailable" in b.text for b in blocks)
+
+
+async def test_search_documents_fov_failure_keeps_doc_results(make_registry):
+    png = b"\x89PNG\r\n\x1a\n-p"
+
+    def routes(request: httpx.Request) -> httpx.Response:
+        p = request.url.path
+        if p == "/api/rag/search/documents":
+            return httpx.Response(200, json={"query": "x", "results": [
+                {"document_id": 3, "document_name": "D", "page_number": 1, "similarity_score": 0.9}]})
+        if p == "/api/rag/documents/3/pages/1/image":
+            return httpx.Response(200, content=png, headers={"content-type": "image/webp"})
+        if p == "/api/rag/search/fov":
+            return httpx.Response(500, text="fov down")  # optional augmentation fails
+        return httpx.Response(404)
+
+    reg = make_registry(_with_login(routes))
+    blocks = _blocks(await reg.dispatch("search_documents", {"query": "x", "include_fov": True}))
+    assert any(b.type == "image" for b in blocks)  # primary doc result NOT discarded
+    assert any(b.type == "text" and "FOV image search failed" in b.text for b in blocks)
+
+
+async def test_search_documents_include_fov_empty(make_registry):
+    def routes(request: httpx.Request) -> httpx.Response:
+        p = request.url.path
+        if p == "/api/rag/search/documents":
+            return httpx.Response(200, json={"query": "x", "results": []})
+        if p == "/api/rag/search/fov":
+            return httpx.Response(200, json={"query": "x", "results": []})
+        return httpx.Response(404)
+
+    reg = make_registry(_with_login(routes))
+    blocks = _blocks(await reg.dispatch("search_documents", {"query": "x", "include_fov": True}))
+    assert any(b.type == "text" and "No FOV" in b.text for b in blocks)
+
+
+async def test_find_documents_last_page_has_no_call_again(make_registry):
+    def routes(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/rag/documents":
+            return httpx.Response(200, json=[{"id": 5}], headers={"X-Total-Count": "5"})
+        return httpx.Response(404)
+
+    reg = make_registry(_with_login(routes))
+    blocks = _blocks(await reg.dispatch("find_documents", {"skip": 4}))
+    text = " ".join(b.text for b in blocks if b.type == "text")
+    assert "1 of 5" in text and "Call again" not in text  # terminal page
+
+
+async def test_find_documents_no_total_header_no_note(make_registry):
+    def routes(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/rag/documents":
+            return httpx.Response(200, json=[{"id": 1}])  # no X-Total-Count header
+        return httpx.Response(404)
+
+    reg = make_registry(_with_login(routes))
+    result = await reg.dispatch("find_documents", {})
+    assert not any("Showing" in b.text for b in _blocks(result) if b.type == "text")
+    assert "total" not in _structured(result)
+
+
+async def test_find_documents_malformed_total_degrades(make_registry):
+    def routes(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/rag/documents":
+            return httpx.Response(200, json=[{"id": 1}], headers={"X-Total-Count": "not-a-number"})
+        return httpx.Response(404)
+
+    reg = make_registry(_with_login(routes))
+    result = await reg.dispatch("find_documents", {})  # must NOT raise / discard the listing
+    assert _blocks(result)[0].type == "text"
+    assert "total" not in _structured(result)
+
+
+async def test_find_documents_forwards_folder_scope(make_registry):
+    seen = {}
+
+    def routes(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/rag/documents":
+            seen["params"] = dict(request.url.params)
+            return httpx.Response(200, json=[])
+        return httpx.Response(404)
+
+    reg = make_registry(_with_login(routes))
+    await reg.dispatch("find_documents", {"folder_id": 5, "in_folder": True})
+    assert seen["params"].get("folder_id") == "5"
+    assert seen["params"].get("in_folder") == "true"  # folder scope reaches the backend
+
+
 async def test_web_search_parses_ddg_results(make_registry):
     html = """
     <div class="result">
