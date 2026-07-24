@@ -32,6 +32,22 @@ def test_list_tools_builds_schema_from_yaml(make_registry):
     assert "q" not in schema["properties"]
 
 
+def test_real_tools_are_annotated_and_enum_constrained(make_registry):
+    tools = {t.name: t for t in make_registry(_noop).list_tools()}
+    # every tool carries annotations (consent UX hints)
+    assert all(t.annotations is not None for t in tools.values())
+    # reads are read-only; web_search reaches the open web; delete is destructive
+    assert tools["search_documents"].annotations.readOnlyHint is True
+    assert tools["web_search"].annotations.openWorldHint is True
+    assert tools["delete_document"].annotations.destructiveHint is True
+    assert tools["index_document"].annotations.readOnlyHint is False
+    # free-string params are enum-constrained; file_type must include the real
+    # stored value "text" (index_text writes file_type=text) or it would reject it
+    props = tools["find_documents"].inputSchema["properties"]
+    assert props["status"]["enum"] == ["pending", "processing", "completed", "failed"]
+    assert "text" in props["file_type"]["enum"]
+
+
 def test_path_param_is_in_schema_but_stays_declarative(make_registry):
     tools = {t.name: t for t in make_registry(_noop).list_tools()}
     schema = tools["get_document_metadata"].inputSchema

@@ -63,6 +63,9 @@ tools:
         description: Max hits (page images are capped at 10; refs up to 50).
 
   - name: read_document_pages
+    annotations:
+      readOnlyHint: true
+      openWorldHint: false
     description: >
       Read the actual CONTENT of specific pages of a known document, returned as
       rendered page IMAGES. Returns up to `count` pages starting at `start_page`.
@@ -88,6 +91,9 @@ tools:
         description: How many pages to return (hard-capped at 10 per call).
 
   - name: read_page_region
+    annotations:
+      readOnlyHint: true
+      openWorldHint: false
     description: >
       ZOOM into one rectangular region of a document page and return it as a
       high-resolution image. Use this whenever a figure, sub-panel, table cell,
@@ -131,6 +137,9 @@ tools:
         description: Right edge, 0-1000 (> xmin).
 
   - name: web_search
+    annotations:
+      readOnlyHint: true
+      openWorldHint: true
     description: >
       Search the public web and return a ranked list of result titles, URLs and
       snippets. Independent of the maptalk backend and its Gemini quota — safe
@@ -149,6 +158,9 @@ tools:
         description: How many results to return.
 
   - name: find_documents
+    annotations:
+      readOnlyHint: true
+      openWorldHint: false
     description: >
       Filter the document library by METADATA only — name, DOI, file type,
       indexing status, page-count range. Returns document metadata (id, name,
@@ -171,11 +183,13 @@ tools:
       - name: file_type
         in: query
         type: string
-        description: Exact file type (e.g. pdf, image, text).
+        enum: [pdf, docx, pptx, xlsx, office, image, video, text]
+        description: Exact file type.
       - name: status
         in: query
         type: string
-        description: pending | processing | completed | failed.
+        enum: [pending, processing, completed, failed]
+        description: Indexing status.
       - name: min_pages
         in: query
         type: integer
@@ -191,6 +205,9 @@ tools:
         description: Max documents to return.
 
   - name: get_document_metadata
+    annotations:
+      readOnlyHint: true
+      openWorldHint: false
     description: >
       Get one document's metadata by id: name, file type, page count, indexing
       status/progress, size, and dates. Use it to check whether a document is
@@ -206,6 +223,9 @@ tools:
         required: true
 
   - name: find_similar_pages
+    annotations:
+      readOnlyHint: true
+      openWorldHint: false
     description: >
       Query-by-example: find pages similar to an EXISTING indexed page,
       document, or FOV image (by id). Returns page hits (use read_document_pages
@@ -232,6 +252,9 @@ tools:
         default: 10
 
   - name: search_by_image
+    annotations:
+      readOnlyHint: true
+      openWorldHint: false
     description: >
       Query-by-example with an AD-HOC image: find library pages similar to the
       given image (base64) and return them as image pages.
@@ -253,6 +276,9 @@ tools:
         description: How many page images to return (max 10).
 
   - name: search_by_text_example
+    annotations:
+      readOnlyHint: true
+      openWorldHint: false
     description: >
       Find pages matching a pasted passage or description. mode=query for a short
       natural-language description, mode=passage for a long verbatim excerpt.
@@ -269,13 +295,19 @@ tools:
         in: body
         type: string
         default: query
-        description: query | passage.
+        enum: [query, passage]
+        description: >
+          query = a short natural-language description; passage = a long verbatim
+          excerpt to match.
       - name: limit
         in: body
         type: integer
         default: 10
 
   - name: index_text
+    annotations:
+      readOnlyHint: false
+      destructiveHint: false
     description: >
       Index a raw text snippet as a new searchable document in the user's
       library.
@@ -295,6 +327,9 @@ tools:
         description: The text content to index.
 
   - name: index_document
+    annotations:
+      readOnlyHint: false
+      destructiveHint: false
     description: >
       Index a new PDF / Office / image document into the library. Provide the
       file bytes as base64 plus a filename.
@@ -312,6 +347,10 @@ tools:
         description: Base64-encoded file bytes.
 
   - name: reindex_document
+    annotations:
+      readOnlyHint: false
+      destructiveHint: false
+      idempotentHint: true
     description: >
       Re-run indexing (page rendering + embeddings) for an existing document.
       Use this to recover a document whose status is `failed`, or to refresh one
@@ -327,6 +366,10 @@ tools:
         required: true
 
   - name: delete_document
+    annotations:
+      readOnlyHint: false
+      destructiveHint: true
+      idempotentHint: false
     description: >
       Permanently delete a document and all its indexed pages from the library.
       This is IRREVERSIBLE — there is no undo. Owner-only: you cannot delete a
@@ -342,6 +385,9 @@ tools:
         required: true
 
   - name: get_indexing_status
+    annotations:
+      readOnlyHint: true
+      openWorldHint: false
     description: >
       Show how many of your documents (and FOV images) are pending, processing,
       completed, or failed. Use it to check whether recently uploaded/indexed
