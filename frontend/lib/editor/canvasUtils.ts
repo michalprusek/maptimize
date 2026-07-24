@@ -13,7 +13,7 @@
  */
 export function extractCropFromImage(
   image: HTMLImageElement,
-  bbox: { x: number; y: number; width: number; height: number }
+  bbox: { x: number; y: number; width: number; height: number; angle?: number }
 ): string | null {
   // Validate bbox dimensions
   if (bbox.width <= 0 || bbox.height <= 0) return null;
@@ -27,17 +27,33 @@ export function extractCropFromImage(
 
   // Draw the crop region directly from the image
   try {
-    cropCtx.drawImage(
-      image,
-      bbox.x,
-      bbox.y,
-      bbox.width,
-      bbox.height, // Source (image coords)
-      0,
-      0,
-      cropCanvas.width,
-      cropCanvas.height // Dest
-    );
+    const angle = bbox.angle ?? 0;
+    if (angle) {
+      // De-rotate: rotate the source about the box centre so the rotated box
+      // becomes upright, then the w×h canvas keeps only that region. Mirrors the
+      // backend (crop_editor_service.extract_crop_from_projection) exactly, so this
+      // live preview matches the stored crop.
+      const cx = bbox.x + bbox.width / 2;
+      const cy = bbox.y + bbox.height / 2;
+      cropCtx.save();
+      cropCtx.translate(cropCanvas.width / 2, cropCanvas.height / 2);
+      cropCtx.rotate((-angle * Math.PI) / 180);
+      cropCtx.translate(-cx, -cy);
+      cropCtx.drawImage(image, 0, 0);
+      cropCtx.restore();
+    } else {
+      cropCtx.drawImage(
+        image,
+        bbox.x,
+        bbox.y,
+        bbox.width,
+        bbox.height, // Source (image coords)
+        0,
+        0,
+        cropCanvas.width,
+        cropCanvas.height // Dest
+      );
+    }
 
     return cropCanvas.toDataURL("image/png");
   } catch (error) {

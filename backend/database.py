@@ -141,6 +141,8 @@ async def ensure_schema_updates():
             ("cell_crops", "embedding", "vector(1024)"),
             ("cell_crops", "embedding_model", "VARCHAR(100)"),
             ("cell_crops", "map_protein_id", "INTEGER REFERENCES map_proteins(id)"),
+            # Rotation of the bounding box (degrees about its centre; NULL = axis-aligned)
+            ("cell_crops", "bbox_angle", "FLOAT"),
             # Embedding status tracking for background tasks
             ("cell_crops", "embedding_status", "VARCHAR(20)"),
             ("cell_crops", "embedding_error", "VARCHAR(500)"),

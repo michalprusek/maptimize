@@ -671,7 +671,10 @@ class ApiClient {
    * Update bounding box coordinates for a cell crop.
    * Use regenerateCropFeatures after to regenerate crop images and features.
    */
-  async updateCropBbox(cropId: number, bbox: { x: number; y: number; width: number; height: number }) {
+  async updateCropBbox(
+    cropId: number,
+    bbox: { x: number; y: number; width: number; height: number; angle?: number }
+  ) {
     return this.request<CropBboxUpdateResponse>(`/api/images/crops/${cropId}/bbox`, {
       method: "PATCH",
       body: JSON.stringify({
@@ -679,6 +682,7 @@ class ApiClient {
         bbox_y: bbox.y,
         bbox_w: bbox.width,
         bbox_h: bbox.height,
+        bbox_angle: bbox.angle ?? 0,
       }),
     });
   }
@@ -698,7 +702,7 @@ class ApiClient {
    */
   async createManualCrop(
     fovId: number,
-    bbox: { x: number; y: number; width: number; height: number },
+    bbox: { x: number; y: number; width: number; height: number; angle?: number },
     mapProteinId?: number
   ) {
     return this.request<ManualCropCreateResponse>(`/api/images/${fovId}/crops`, {
@@ -708,6 +712,7 @@ class ApiClient {
         bbox_y: bbox.y,
         bbox_w: bbox.width,
         bbox_h: bbox.height,
+        bbox_angle: bbox.angle ?? 0,
         map_protein_id: mapProteinId,
       }),
     });
@@ -1812,6 +1817,7 @@ export interface CellCropGallery {
   bbox_y: number;
   bbox_w: number;
   bbox_h: number;
+  bbox_angle?: number | null;
   bundleness_score?: number;
   detection_confidence?: number;
   excluded: boolean;
@@ -2188,6 +2194,7 @@ export interface CropBboxUpdateResponse {
   bbox_y: number;
   bbox_w: number;
   bbox_h: number;
+  bbox_angle?: number | null;
   needs_regeneration: boolean;
 }
 
@@ -2198,6 +2205,7 @@ export interface ManualCropCreateResponse {
   bbox_y: number;
   bbox_w: number;
   bbox_h: number;
+  bbox_angle?: number | null;
   detection_confidence: number | null;
   needs_processing: boolean;
 }
@@ -2208,6 +2216,7 @@ export interface CropRegenerateResponse {
   bbox_y: number;
   bbox_w: number;
   bbox_h: number;
+  bbox_angle?: number | null;
   mip_path: string | null;
   sum_crop_path: string | null;
   mean_intensity: number | null;
@@ -2223,6 +2232,7 @@ export interface CropBatchUpdateItem {
   bbox_y?: number;
   bbox_w?: number;
   bbox_h?: number;
+  bbox_angle?: number;
   map_protein_id?: number;
 }
 

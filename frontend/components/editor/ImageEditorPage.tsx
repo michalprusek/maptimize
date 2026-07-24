@@ -557,6 +557,7 @@ export function ImageEditorPage({
         y: bbox.y,
         width: bbox.width,
         height: bbox.height,
+        angle: bbox.angle ?? 0,
       });
       return result.id;
     },
@@ -570,6 +571,7 @@ export function ImageEditorPage({
         y: bbox.y ?? 0,
         width: bbox.width ?? 0,
         height: bbox.height ?? 0,
+        angle: bbox.angle ?? 0,
       });
     },
     []
@@ -597,6 +599,7 @@ export function ImageEditorPage({
           y: bbox.y ?? 0,
           width: bbox.width ?? 0,
           height: bbox.height ?? 0,
+          angle: bbox.angle ?? 0,
           isNew: false,
           isModified: false,
         },
@@ -617,6 +620,7 @@ export function ImageEditorPage({
                 y: bbox.y ?? b.y,
                 width: bbox.width ?? b.width,
                 height: bbox.height ?? b.height,
+                angle: bbox.angle ?? b.angle,
                 isModified: false,
               }
             : b
@@ -727,6 +731,7 @@ export function ImageEditorPage({
         y: rect.y,
         width: rect.width,
         height: rect.height,
+        angle: rect.angle ?? 0,
         isNew: true,
         isModified: false,
       };
