@@ -32,6 +32,7 @@ import routers.experiments as exp_r
 import routers.bug_reports as bug_r
 from models.user import UserRole
 from models.experiment import ExperimentStatus
+from utils.colors import COLOR_PALETTE
 
 
 # --------------------------------------------------------------------------- #
@@ -871,7 +872,7 @@ async def test_prot_create_without_colour_picks_an_unused_one(mock_db):
     mock_db.add.side_effect = lambda o: captured.setdefault("p", o)
     mock_db.execute.side_effect = [
         make_result(scalar=None),                       # name unique check
-        make_result(fetchall=[(prot_r.PROTEIN_COLOR_PALETTE[0],)]),  # colours in use
+        make_result(fetchall=[(COLOR_PALETTE[0],)]),  # colours in use
     ]
 
     async def _refresh(obj, *a, **k):
@@ -887,8 +888,8 @@ async def test_prot_create_without_colour_picks_an_unused_one(mock_db):
         prot_r.MapProteinCreate(name="NewProt"), current_user=user(), db=mock_db
     )
 
-    assert out.color == prot_r.PROTEIN_COLOR_PALETTE[1]
-    assert captured["p"].color == prot_r.PROTEIN_COLOR_PALETTE[1]
+    assert out.color == COLOR_PALETTE[1]
+    assert captured["p"].color == COLOR_PALETTE[1]
 
 
 async def test_prot_create_keeps_explicit_colour(mock_db):
@@ -913,22 +914,22 @@ async def test_prot_create_keeps_explicit_colour(mock_db):
 
 
 async def test_pick_colour_skips_used_case_insensitively(mock_db):
-    used = [(c.upper(),) for c in prot_r.PROTEIN_COLOR_PALETTE[:3]]
+    used = [(c.upper(),) for c in COLOR_PALETTE[:3]]
     mock_db.execute.return_value = make_result(fetchall=used)
-    assert await prot_r.pick_protein_color(mock_db) == prot_r.PROTEIN_COLOR_PALETTE[3]
+    assert await prot_r.pick_protein_color(mock_db) == COLOR_PALETTE[3]
 
 
 async def test_pick_colour_generates_one_when_palette_exhausted(mock_db):
-    used = [(c,) for c in prot_r.PROTEIN_COLOR_PALETTE]
+    used = [(c,) for c in COLOR_PALETTE]
     mock_db.execute.return_value = make_result(fetchall=used)
     colour = await prot_r.pick_protein_color(mock_db)
     assert re.fullmatch(r"#[0-9a-fA-F]{6}", colour)
-    assert colour.lower() not in {c.lower() for c in prot_r.PROTEIN_COLOR_PALETTE}
+    assert colour.lower() not in {c.lower() for c in COLOR_PALETTE}
 
 
 async def test_pick_colour_ignores_null_colours(mock_db):
     mock_db.execute.return_value = make_result(fetchall=[(None,)])
-    assert await prot_r.pick_protein_color(mock_db) == prot_r.PROTEIN_COLOR_PALETTE[0]
+    assert await prot_r.pick_protein_color(mock_db) == COLOR_PALETTE[0]
 
 
 async def test_generated_colours_differ_from_each_other(mock_db):
@@ -938,7 +939,7 @@ async def test_generated_colours_differ_from_each_other(mock_db):
     returned one constant colour — i.e. the exact bug this feature fixes,
     reintroduced for proteins 21+.
     """
-    used = {c.lower() for c in prot_r.PROTEIN_COLOR_PALETTE}
+    used = {c.lower() for c in COLOR_PALETTE}
     picked = []
     for _ in range(5):
         mock_db.execute.return_value = make_result(
@@ -953,16 +954,16 @@ async def test_generated_colours_differ_from_each_other(mock_db):
 async def test_update_protein_explicit_null_colour_reassigns(mock_db):
     """The UI's Auto button sends null on edit; that must re-pick, not no-op."""
     p = protein(id=1)
-    p.color = prot_r.PROTEIN_COLOR_PALETTE[0]
+    p.color = COLOR_PALETTE[0]
     mock_db.execute.side_effect = [
         make_result(scalar=p),                                      # get_protein_or_404
-        make_result(fetchall=[(prot_r.PROTEIN_COLOR_PALETTE[0],)]),  # colours in use
+        make_result(fetchall=[(COLOR_PALETTE[0],)]),  # colours in use
         make_result(scalar=0),                                      # image count
     ]
     await prot_r.update_protein(
         1, prot_r.MapProteinUpdate(color=None), current_user=user(), db=mock_db
     )
-    assert p.color == prot_r.PROTEIN_COLOR_PALETTE[1]
+    assert p.color == COLOR_PALETTE[1]
 
 
 async def test_update_protein_omitted_colour_left_alone(mock_db):
@@ -980,7 +981,7 @@ async def test_update_protein_omitted_colour_left_alone(mock_db):
 
 
 def test_palette_entries_are_unique_valid_hex():
-    palette = prot_r.PROTEIN_COLOR_PALETTE
+    palette = COLOR_PALETTE
     assert all(re.fullmatch(r"#[0-9a-f]{6}", c) for c in palette)
     assert len({c.lower() for c in palette}) == len(palette)
 

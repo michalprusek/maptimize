@@ -33,7 +33,7 @@ async def test_stdio_server_lists_tools():
     # consolidation removed these
     assert not ({"semantic_search", "semantic_image_search", "list_documents"} & names)
     # server metadata + prompts (none of these touch the backend)
-    assert init.serverInfo.version == "2.1.0"
+    assert init.serverInfo.version == "2.2.0"
     assert init.instructions and "Vision-RAG" in init.instructions
     assert {"summarize_document", "compare_documents", "literature_search"} <= prompt_names
     assert got.messages and got.messages[0].content.text

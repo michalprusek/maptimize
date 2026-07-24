@@ -2,6 +2,7 @@
 from .user import User
 from .user_settings import UserSettings, DisplayMode, Theme, Language
 from .experiment import Experiment
+from .microscope import Microscope
 from .image import Image, MapProtein
 from .cell_crop import CellCrop
 from .ranking import UserRating, Comparison, RankingSource
@@ -21,6 +22,7 @@ __all__ = [
     "Theme",
     "Language",
     "Experiment",
+    "Microscope",
     "Image",
     "MapProtein",
     "CellCrop",

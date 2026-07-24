@@ -69,6 +69,16 @@ class TestUMAP:
         )
         assert response.status_code == 404
 
+    def test_umap_nonexistent_microscope(self, client, auth_headers):
+        """UMAP filtered by a nonexistent microscope returns 404 (not a misleading
+        'not enough crops'). Microscopes are shared data anyone can delete, so a
+        stale id must fail loudly and specifically."""
+        response = client.get(
+            "/api/embeddings/umap?microscope_id=999999",
+            headers=auth_headers,
+        )
+        assert response.status_code == 404
+
     def test_umap_recompute_requires_auth(self, client):
         """UMAP recompute without auth returns 401."""
         response = client.post("/api/embeddings/umap/recompute?umap_type=cropped")

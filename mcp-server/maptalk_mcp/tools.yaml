@@ -530,6 +530,10 @@ tools:
         in: body
         type: integer
         description: Optional MAP protein to assign (id from list_proteins).
+      - name: microscope_id
+        in: body
+        type: integer
+        description: Optional microscope to assign (id from list_microscopes).
       - name: fasta_sequence
         in: body
         type: string
@@ -540,7 +544,8 @@ tools:
     description: >
       Update an experiment's name, description, status, or FASTA sequence. Only
       the fields you pass are changed. Owner-only. To change the assigned protein
-      use assign_experiment_protein instead.
+      use assign_experiment_protein instead. You can also (re)assign a microscope
+      with microscope_id (from list_microscopes).
     handler: http_post_json
     method: PATCH
     path: /api/experiments/{experiment_id}
@@ -561,6 +566,10 @@ tools:
         type: string
         enum: [draft, active, completed, archived]
         description: Experiment status.
+      - name: microscope_id
+        in: body
+        type: integer
+        description: Microscope to assign (id from list_microscopes).
       - name: fasta_sequence
         in: body
         type: string
@@ -882,6 +891,118 @@ tools:
     path: /api/proteins/{protein_id}/compute-embedding
     params:
       - name: protein_id
+        in: path
+        type: integer
+        required: true
+
+  # -- Microscopes (shared reference data) -----------------------------------
+  - name: list_microscopes
+    annotations: {readOnlyHint: true, openWorldHint: false}
+    description: >
+      List all microscopes (shared reference data): id, name, manufacturer, model,
+      objective, magnification, and per-microscope experiment count. Use it to get
+      a microscope_id for create_experiment or update_experiment.
+    handler: http_json
+    method: GET
+    path: /api/microscopes
+    params: []
+
+  - name: get_microscope
+    annotations: {readOnlyHint: true, openWorldHint: false}
+    description: Get one microscope by id, with its full metadata.
+    handler: http_json
+    method: GET
+    path: /api/microscopes/{microscope_id}
+    params:
+      - name: microscope_id
+        in: path
+        type: integer
+        required: true
+
+  - name: create_microscope
+    annotations: {readOnlyHint: false, destructiveHint: false}
+    description: >
+      Create a microscope (shared reference data — visible to everyone). Only
+      `name` is required (must be unique); a display color is auto-picked if you
+      omit it. Optionally set manufacturer, model, objective, magnification
+      (e.g. "63×"), description, color (#rrggbb).
+    handler: http_post_json
+    method: POST
+    path: /api/microscopes
+    params:
+      - name: name
+        in: body
+        type: string
+        required: true
+        description: Unique microscope name (1-100 chars).
+      - name: manufacturer
+        in: body
+        type: string
+      - name: model
+        in: body
+        type: string
+      - name: objective
+        in: body
+        type: string
+      - name: magnification
+        in: body
+        type: string
+        description: Free text, e.g. "63×" or "10×–100×".
+      - name: description
+        in: body
+        type: string
+      - name: color
+        in: body
+        type: string
+        description: Hex color like "#1f77b4"; auto-picked if omitted.
+
+  - name: update_microscope
+    annotations: {readOnlyHint: false, destructiveHint: false}
+    description: >
+      Update a microscope's fields (only the ones you pass are changed). Shared
+      reference data — changes are visible to everyone.
+    handler: http_post_json
+    method: PATCH
+    path: /api/microscopes/{microscope_id}
+    params:
+      - name: microscope_id
+        in: path
+        type: integer
+        required: true
+      - name: name
+        in: body
+        type: string
+        description: New unique name (1-100 chars).
+      - name: manufacturer
+        in: body
+        type: string
+      - name: model
+        in: body
+        type: string
+      - name: objective
+        in: body
+        type: string
+      - name: magnification
+        in: body
+        type: string
+      - name: description
+        in: body
+        type: string
+      - name: color
+        in: body
+        type: string
+        description: Hex color like "#1f77b4".
+
+  - name: delete_microscope
+    annotations: {readOnlyHint: false, destructiveHint: true, idempotentHint: false}
+    description: >
+      Permanently delete a microscope. IRREVERSIBLE. Refused (409) if any
+      experiment still references it — reassign those first. Shared reference data.
+    handler: http_json
+    method: DELETE
+    path: /api/microscopes/{microscope_id}
+    params:
+      - name: microscope_id
         in: path
         type: integer
         required: true

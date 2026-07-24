@@ -11,6 +11,7 @@ from database import get_db
 from models.user import User
 from models.experiment import Experiment
 from models.image import Image, MapProtein
+from models.microscope import Microscope
 from models.cell_crop import CellCrop
 from schemas.experiment import (
     ExperimentCreate,
@@ -49,6 +50,18 @@ async def get_experiment_for_user(
     return experiment
 
 
+async def _verify_microscope_exists(microscope_id: int, db: AsyncSession) -> None:
+    """Raise 404 if no microscope has this id."""
+    result = await db.execute(
+        select(Microscope).where(Microscope.id == microscope_id)
+    )
+    if result.scalar_one_or_none() is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Microscope not found"
+        )
+
+
 @router.get("", response_model=List[ExperimentResponse])
 async def list_experiments(
     skip: int = Query(0, ge=0),
@@ -70,7 +83,7 @@ async def list_experiments(
             func.count(distinct(Image.id)).filter(Image.sum_path.isnot(None)).label("sum_count"),
             User.name.label("creator_name")
         )
-        .options(selectinload(Experiment.map_protein))
+        .options(selectinload(Experiment.map_protein), selectinload(Experiment.microscope))
         .outerjoin(Image, Experiment.id == Image.experiment_id)
         .outerjoin(CellCrop, Image.id == CellCrop.image_id)
         .join(User, Experiment.user_id == User.id)
@@ -112,6 +125,10 @@ async def create_experiment(
                 detail="MAP protein not found"
             )
 
+    # Verify microscope exists if provided
+    if data.microscope_id is not None:
+        await _verify_microscope_exists(data.microscope_id, db)
+
     group_id = await get_user_group_id(current_user.id, db)
 
     experiment = Experiment(
@@ -120,11 +137,12 @@ async def create_experiment(
         user_id=current_user.id,
         group_id=group_id,
         map_protein_id=data.map_protein_id,
+        microscope_id=data.microscope_id,
         fasta_sequence=data.fasta_sequence,
     )
     db.add(experiment)
     await db.commit()
-    await db.refresh(experiment, attribute_names=["map_protein"])
+    await db.refresh(experiment, attribute_names=["map_protein", "microscope"])
 
     exp_response = ExperimentResponse.model_validate(experiment)
     exp_response.creator_name = current_user.name
@@ -145,6 +163,7 @@ async def get_experiment(
         .options(
             selectinload(Experiment.images),
             selectinload(Experiment.map_protein),
+            selectinload(Experiment.microscope),
             selectinload(Experiment.user)
         )
         .where(
@@ -193,11 +212,16 @@ async def update_experiment(
 
     # Update fields
     update_data = data.model_dump(exclude_unset=True)
+
+    # Verify microscope exists if being (re)assigned
+    if update_data.get("microscope_id") is not None:
+        await _verify_microscope_exists(update_data["microscope_id"], db)
+
     for field, value in update_data.items():
         setattr(experiment, field, value)
 
     await db.commit()
-    await db.refresh(experiment)
+    await db.refresh(experiment, attribute_names=["map_protein", "microscope"])
 
     return ExperimentResponse.model_validate(experiment)
 

@@ -160,6 +160,8 @@ async def ensure_schema_updates():
             ("experiments", "map_protein_id", "INTEGER REFERENCES map_proteins(id)"),
             # FASTA sequence storage for protein reference
             ("experiments", "fasta_sequence", "TEXT"),
+            # Microscope assignment at experiment level
+            ("experiments", "microscope_id", "INTEGER REFERENCES microscopes(id)"),
             # MAP protein extended fields for protein page
             ("map_proteins", "uniprot_id", "VARCHAR(20)"),
             ("map_proteins", "fasta_sequence", "TEXT"),

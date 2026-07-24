@@ -37,10 +37,13 @@ export default function ExperimentsPage(): JSX.Element {
   const [newExpDescription, setNewExpDescription] = useState("");
   const [selectedProteinId, setSelectedProteinId] = useState<number | null>(null);
   const [proteinDropdownOpen, setProteinDropdownOpen] = useState(false);
+  const [selectedMicroscopeId, setSelectedMicroscopeId] = useState<number | null>(null);
+  const [microscopeDropdownOpen, setMicroscopeDropdownOpen] = useState(false);
   const [experimentToDelete, setExperimentToDelete] = useState<{ id: number; name: string } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const queryClient = useQueryClient();
   const proteinDropdownRef = useRef<HTMLDivElement>(null);
+  const microscopeDropdownRef = useRef<HTMLDivElement>(null);
 
   const { data: experiments, isLoading } = useQuery({
     queryKey: ["experiments"],
@@ -52,23 +55,32 @@ export default function ExperimentsPage(): JSX.Element {
     queryFn: () => api.getProteins(),
   });
 
-  // Close protein dropdown when clicking outside
+  const { data: microscopes } = useQuery({
+    queryKey: ["microscopes"],
+    queryFn: () => api.getMicroscopes(),
+  });
+
+  // Close dropdowns when clicking outside
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
       if (proteinDropdownRef.current && !proteinDropdownRef.current.contains(event.target as Node)) {
         setProteinDropdownOpen(false);
       }
+      if (microscopeDropdownRef.current && !microscopeDropdownRef.current.contains(event.target as Node)) {
+        setMicroscopeDropdownOpen(false);
+      }
     };
-    if (proteinDropdownOpen) {
+    if (proteinDropdownOpen || microscopeDropdownOpen) {
       document.addEventListener("mousedown", handleClickOutside);
       return () => document.removeEventListener("mousedown", handleClickOutside);
     }
-  }, [proteinDropdownOpen]);
+  }, [proteinDropdownOpen, microscopeDropdownOpen]);
 
   const selectedProtein = proteins?.find(p => p.id === selectedProteinId);
+  const selectedMicroscope = microscopes?.find(m => m.id === selectedMicroscopeId);
 
   const createMutation = useMutation({
-    mutationFn: (data: { name: string; description?: string; map_protein_id?: number }) =>
+    mutationFn: (data: { name: string; description?: string; map_protein_id?: number; microscope_id?: number }) =>
       api.createExperiment(data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["experiments"] });
@@ -76,6 +88,7 @@ export default function ExperimentsPage(): JSX.Element {
       setNewExpName("");
       setNewExpDescription("");
       setSelectedProteinId(null);
+      setSelectedMicroscopeId(null);
       setError(null);
     },
     onError: (err: Error) => {
@@ -104,6 +117,7 @@ export default function ExperimentsPage(): JSX.Element {
       name: newExpName,
       description: newExpDescription || undefined,
       map_protein_id: selectedProteinId ?? undefined,
+      microscope_id: selectedMicroscopeId ?? undefined,
     });
   };
 
@@ -375,6 +389,70 @@ export default function ExperimentsPage(): JSX.Element {
                             <span className="text-text-primary">{protein.name}</span>
                             {protein.full_name && (
                               <span className="text-xs text-text-muted ml-1">({protein.full_name})</span>
+                            )}
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                {/* Microscope selector */}
+                <div>
+                  <label className="block text-sm font-medium text-text-secondary mb-2">
+                    {t("assignMicroscope")}
+                  </label>
+                  <div ref={microscopeDropdownRef} className="relative">
+                    <button
+                      type="button"
+                      onClick={() => setMicroscopeDropdownOpen(!microscopeDropdownOpen)}
+                      className="input-field w-full flex items-center justify-between text-left"
+                    >
+                      <span className="flex items-center gap-2">
+                        {selectedMicroscope ? (
+                          <>
+                            <span
+                              className="w-3 h-3 rounded-full"
+                              style={{ backgroundColor: selectedMicroscope.color || "#888" }}
+                            />
+                            {selectedMicroscope.name}
+                          </>
+                        ) : (
+                          <span className="text-text-muted">{t("unassignedMicroscope")}</span>
+                        )}
+                      </span>
+                      <ChevronDown className={`w-4 h-4 text-text-muted transition-transform ${microscopeDropdownOpen ? "rotate-180" : ""}`} />
+                    </button>
+                    {microscopeDropdownOpen && (
+                      <div className="absolute top-full left-0 right-0 mt-1 bg-bg-elevated border border-white/10 rounded-lg shadow-xl z-50 py-1 max-h-48 overflow-y-auto">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setSelectedMicroscopeId(null);
+                            setMicroscopeDropdownOpen(false);
+                          }}
+                          className="w-full px-3 py-2 text-left hover:bg-white/5 transition-colors flex items-center gap-2"
+                        >
+                          <span className="w-3 h-3 rounded-full bg-text-muted/30" />
+                          <span className="text-text-muted">{t("unassignedMicroscope")}</span>
+                        </button>
+                        {microscopes?.map((microscope) => (
+                          <button
+                            key={microscope.id}
+                            type="button"
+                            onClick={() => {
+                              setSelectedMicroscopeId(microscope.id);
+                              setMicroscopeDropdownOpen(false);
+                            }}
+                            className="w-full px-3 py-2 text-left hover:bg-white/5 transition-colors flex items-center gap-2"
+                          >
+                            <span
+                              className="w-3 h-3 rounded-full"
+                              style={{ backgroundColor: microscope.color || "#888" }}
+                            />
+                            <span className="text-text-primary">{microscope.name}</span>
+                            {microscope.manufacturer && (
+                              <span className="text-xs text-text-muted ml-1">({microscope.manufacturer})</span>
                             )}
                           </button>
                         ))}

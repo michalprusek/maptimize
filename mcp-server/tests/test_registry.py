@@ -36,6 +36,9 @@ def test_list_tools_builds_schema_from_yaml(make_registry):
         # application control: proteins
         "list_proteins", "get_protein", "create_protein", "update_protein",
         "delete_protein", "compute_protein_embedding",
+        # application control: microscopes
+        "list_microscopes", "get_microscope", "create_microscope",
+        "update_microscope", "delete_microscope",
         # database
         "query_database",
     }

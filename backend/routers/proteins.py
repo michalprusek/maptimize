@@ -1,5 +1,4 @@
 """MAP Protein routes."""
-import colorsys
 import logging
 from typing import Dict, List, Optional
 
@@ -17,6 +16,7 @@ from schemas.image import (
     UmapProteinPointResponse,
     UmapProteinDataResponse,
 )
+from utils.colors import pick_unused_color
 from utils.security import get_current_user
 
 logger = logging.getLogger(__name__)
@@ -90,43 +90,6 @@ async def check_protein_name_unique(
             detail="Protein with this name already exists"
         )
 
-# Assignment order for auto-assigned protein colours. pick_protein_color
-# guarantees only that the exact hex is unused — not that it is visually
-# distinct from what is already on the plot.
-PROTEIN_COLOR_PALETTE = [
-    "#3b82f6",  # blue
-    "#ef4444",  # red
-    "#00d4aa",  # teal
-    "#f59e0b",  # amber
-    "#8b5cf6",  # violet
-    "#ec4899",  # pink
-    "#22c55e",  # green
-    "#06b6d4",  # cyan
-    "#f97316",  # orange
-    "#a855f7",  # purple
-    "#84cc16",  # lime
-    "#e11d48",  # rose
-    "#6366f1",  # indigo
-    "#eab308",  # yellow
-    "#10b981",  # emerald
-    "#d946ef",  # fuchsia
-    "#0ea5e9",  # sky
-    "#14b8a6",  # turquoise
-    "#f43f5e",  # crimson
-    "#65a30d",  # olive
-]
-
-# Golden angle as a fraction of a turn (137.5 degrees). Spreads *generated*
-# hues evenly among themselves; it is not coordinated with the palette above.
-_HUE_STEP = 0.381966
-
-
-def _generated_color(index: int) -> str:
-    """Hue-rotated fallback colour for when the palette runs out."""
-    r, g, b = colorsys.hls_to_rgb((index * _HUE_STEP) % 1.0, 0.58, 0.65)
-    return "#{:02x}{:02x}{:02x}".format(round(r * 255), round(g * 255), round(b * 255))
-
-
 async def pick_protein_color(db: AsyncSession) -> str:
     """Pick a colour no existing protein is using.
 
@@ -139,27 +102,7 @@ async def pick_protein_color(db: AsyncSession) -> str:
         select(MapProtein.color).where(MapProtein.color.isnot(None))
     )
     used = {row[0].lower() for row in result.all() if row[0]}
-
-    for color in PROTEIN_COLOR_PALETTE:
-        if color.lower() not in used:
-            return color
-
-    # Palette exhausted. The generator is injective over this range, so a free
-    # colour is found in practice; the bound only stops a pathological colour
-    # set from spinning here.
-    for offset in range(len(used) + 1):
-        candidate = _generated_color(len(PROTEIN_COLOR_PALETTE) + offset)
-        if candidate.lower() not in used:
-            return candidate
-
-    # Every candidate collided. Reusing a colour beats failing the create, but
-    # it silently reintroduces the very bug this palette exists to prevent.
-    fallback = _generated_color(len(used))
-    logger.warning(
-        "Protein colour palette exhausted (%d in use); reusing %s - two "
-        "proteins will now share a colour.", len(used), fallback,
-    )
-    return fallback
+    return pick_unused_color(used)
 
 
 @router.get("", response_model=List[MapProteinDetailedResponse])

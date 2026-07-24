@@ -6,6 +6,7 @@ from pydantic import BaseModel, Field
 
 from models.experiment import ExperimentStatus
 from schemas.image import MapProteinResponse
+from schemas.microscope import MicroscopeResponse
 
 
 class ExperimentCreate(BaseModel):
@@ -13,6 +14,7 @@ class ExperimentCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=255)
     description: Optional[str] = None
     map_protein_id: Optional[int] = None
+    microscope_id: Optional[int] = None
     fasta_sequence: Optional[str] = None
 
 
@@ -21,6 +23,7 @@ class ExperimentUpdate(BaseModel):
     name: Optional[str] = Field(None, min_length=1, max_length=255)
     description: Optional[str] = None
     status: Optional[ExperimentStatus] = None
+    microscope_id: Optional[int] = None
     fasta_sequence: Optional[str] = None
 
 
@@ -43,6 +46,7 @@ class ExperimentResponse(BaseModel):
     status: ExperimentStatus
     group_id: Optional[int] = None
     map_protein: Optional[MapProteinResponse] = None
+    microscope: Optional[MicroscopeResponse] = None
     fasta_sequence: Optional[str] = None
     created_at: datetime
     updated_at: datetime
