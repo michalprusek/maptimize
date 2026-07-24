@@ -128,24 +128,34 @@ def _render_prompt(name: str, arguments: dict | None) -> str:
 # whole system?", so the Vision-RAG framing lives here once instead of in every
 # tool description.
 SERVER_INSTRUCTIONS = (
-    "maptalk is a per-user document database for the Dr. Janke lab (scientific "
-    "PDFs, lab protocols, papers). It is a Vision-RAG system: pages are indexed "
-    "and returned as rendered IMAGES you read directly — there is no OCR text, so "
-    "search is semantic over page images, not keyword/full-text.\n\n"
-    "Typical workflow:\n"
-    "1. search_documents (semantic) — finds and, by default, RETURNS the matching "
-    "page images so you can answer straight away; use find_documents to filter the "
-    "library by metadata (name/DOI/type/status/pages).\n"
-    "2. read_document_pages — read specific pages of a known document.\n"
-    "3. read_page_region — ZOOM into a small figure/table/label that is illegible "
-    "at full-page scale (the full page is downsampled).\n\n"
-    "Everything is scoped to the documents you can access (your own plus your "
-    "group's shared library). Write tools (index/reindex/delete/move) act only on "
-    "your own documents; delete is irreversible."
+    "maptalk is the per-user connector for Maptimize, the Dr. Janke lab's cell-"
+    "microscopy and document platform. You can both READ the lab's data and OPERATE "
+    "the application like a human user — create and manage experiments, upload "
+    "microscopy images, run cell detection, manage MAP proteins, and query the "
+    "database.\n\n"
+    "Two surfaces:\n\n"
+    "A) Document library (Vision-RAG): scientific PDFs/protocols/papers are indexed "
+    "and returned as rendered IMAGES you read directly — no OCR text, so search is "
+    "semantic over page images. Workflow: search_documents (returns matching page "
+    "images) → read_document_pages (specific pages) → read_page_region (ZOOM into a "
+    "figure/table illegible at full-page scale). find_documents filters by metadata.\n\n"
+    "B) Application control: list/create/update/delete experiments; upload_image then "
+    "process_images to run YOLO cell detection; read results with list_cell_crops; "
+    "manage proteins (list/create/update/delete) and assign them to experiments; "
+    "query_database runs a READ-ONLY SQL SELECT over your data. A typical pipeline is "
+    "create_experiment → upload_image → process_images → list_cell_crops. Image "
+    "processing runs in the background, so poll get_image / list_fov_images for status.\n\n"
+    "Access control mirrors the UI exactly: reads are group-shared (you see your own "
+    "data plus your group's), writes are OWNER-ONLY (you can only change or delete your "
+    "own experiments/images), and query_database injects a per-user filter so you never "
+    "see other users' private rows. Proteins are shared reference data. Deletes are "
+    "IRREVERSIBLE and cascade (deleting an experiment deletes its images and cell crops)."
 )
 
 # Bumped when the tool contract or capabilities change (see MCP versioning).
-SERVER_VERSION = "2.0.0"
+# 2.1.0: added application-control tools (experiments, images + cell detection,
+# proteins) and a read-only query_database SQL tool alongside the document DB.
+SERVER_VERSION = "2.1.0"
 
 
 def build_server(registry: ToolRegistry) -> Server:

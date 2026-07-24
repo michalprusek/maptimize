@@ -28,10 +28,12 @@ async def test_stdio_server_lists_tools():
             got = await session.get_prompt("summarize_document", {"document_id": "3"})
 
     assert {"search_documents", "read_document_pages", "web_search"} <= names
+    # application-control tools ship alongside the document tools
+    assert {"create_experiment", "upload_image", "query_database"} <= names
     # consolidation removed these
     assert not ({"semantic_search", "semantic_image_search", "list_documents"} & names)
     # server metadata + prompts (none of these touch the backend)
-    assert init.serverInfo.version == "2.0.0"
+    assert init.serverInfo.version == "2.1.0"
     assert init.instructions and "Vision-RAG" in init.instructions
     assert {"summarize_document", "compare_documents", "literature_search"} <= prompt_names
     assert got.messages and got.messages[0].content.text

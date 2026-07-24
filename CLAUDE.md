@@ -13,263 +13,81 @@ docker compose -f docker-compose.prod.yml up -d maptimize-backend
 
 Neboj se dělat velké a rozsáhlé změny a mazat kód. Legacy implementace maž kdykoliv na ně narazíš. Codebase udržuje maximálně clean a přehlednou.
 
-## 🤖 AI Chat Agent
+## 🤖 MCP — ovládací plocha agenta (Claude connector)
 
-**Model:** `gemini-3.6-flash` (nasazeno 2026-07-22) - VŽDY používat tento model pro chat agenta!
+Agent (Claude) ovládá Maptimize **výhradně přes MCP server** `mcp-server/`
+(balík `maptalk_mcp`, HTTP transport, OAuth 2.0 PKCE + per-user PAT). Žádný in-app
+LLM tu není — dřívější Gemini chat agent byl smazán (commit `2ba9181`) a agentní
+vrstva se přesunula do Claude přes hostovaný per-user konektor.
 
-⚠️ Model ID **nikdy nehardcoduj** - je v `backend/config.py` jako `settings.gemini_model`
-(a `settings.gemini_vision_model` pro extrakci regionů ze stránek). Dřív byl na třech
-místech ve dvou souborech a dvě z nich zůstala na `gemini-2.0-flash`, který Google
-**vypnul 2026-06-01** - web search i vyřezávání obrázků ze stránek tiše přestaly fungovat.
+**CRITICAL — SSOT pravidlo: každý nový/změněný aplikační endpoint přidej i do MCP.**
+MCP je to, čím agent appku „vidí" a „ovládá"; když endpoint v MCP chybí, pro agenta
+neexistuje. Přidání toolu je většinou **jen YAML záznam** v
+`mcp-server/maptalk_mcp/tools.yaml`:
+- jednoduchý REST → generický handler `http_json` (GET/DELETE/PATCH bez těla) nebo
+  `http_post_json` (POST/PATCH s JSON tělem); `method`/`path`/`params` jsou v YAML.
+- vlastní handler v `handlers.py` **jen** pro: multipart upload (`upload_image`,
+  `index_document`), binární/obrázkové odpovědi (`read_page_region`), nebo tělo
+  s explicitním `null` (`move_document`). Nový handler registruj v `HANDLERS`.
+- pole se deklaruje `type: array` + `items: <typ>` (registry to umí od 2026-07-24).
+- anotace `readOnlyHint`/`destructiveHint`/`idempotentHint`/`openWorldHint` řídí
+  consent UX v klientovi — **nejsou** bezpečnostní brána (autorizace je server-side).
 
-**Gemini 3.x konfigurace:** `temperature`/`top_p`/`top_k` jsou nahrazeny
-`thinking_level` (`minimal`/`low`/`medium`/`high`, default `medium`).
+`tools.yaml` je mountovaný read-only a **hot-reloaduje se** (změna textu toolu
+nevyžaduje rebuild); změna `handlers.py`/`registry.py`/`server.py` vyžaduje **rebuild
+image** `maptimize-mcp`. Verzi serveru (`SERVER_VERSION` v `server.py`) zvyš při
+změně tool kontraktu.
 
-**Soubor:** `backend/services/gemini_agent_service.py`
+⚠️ **Connector token nesmí narazit na `require_interactive_user`** (`utils/security.py`).
+Ten blokuje OAuth/PAT tokeny u account-sensitive akcí (heslo/e-mail/admin). Feature
+routery (`experiments`/`images`/`proteins`/`query`) používají `get_current_user`, takže
+connector projde. Endpoint chráněný `require_interactive_user` do MCP nepatří (vrátí 403).
 
-### Konvergence smyčky (OPRAVENO 2026-07-19)
+**ACL se propisuje samo.** MCP je čistý HTTP klient; token protéká do backendu, kde
+platí stejná pravidla jako pro člověka: **čtení skupinově sdílené**
+(`experiment_owner_filter`, SSOT `utils/groups.py`), **zápisy do experimentů/obrázků
+owner-only** (re-check `obj.user_id == current_user.id` → 403). ⚠️ **Proteiny jsou
+sdílená referenční data** — `MapProtein` nemá `user_id`, takže je smí měnit/mazat
+kdokoliv přihlášený (není to bug). Když přidáš write endpoint, zkontroluj, že re-check
+vlastníka SKUTEČNĚ je v handleru — `update_experiment_protein` ho omylem neměl a šel
+přes něj group-write (opraveno v PR #43). Maže se kaskádově (experiment → obrázky →
+cropy) a nevratně — proto destruktivní tooly nesou `destructiveHint`.
 
-**Symptom:** místo odpovědi agent vrátil `Completed actions: <30 toolů>. Please
-try your query again.`
+### query_database — read-only SQL (SSOT `services/sql_query_service.py`)
 
-**Příčina:** soft-cap "po 25 toolech vypni tools ať model odpoví" **nefungoval** —
-kód sice nastavil `current_tools = None`, ale `function_call` party z modelu
-sbíral a **vykonával dál bez ohledu na to** (žádná kontrola stavu). Model
-napodoboval dlouhou historii volání a volal tool každý tah až do
-`max_iterations=30`, pak spadl do fallbacku, který vypsal seznam toolů.
+Agent má read-only okno do DB: `POST /api/query` → `sql_query_service.run_query()`.
+Jen **SELECT** nad whitelistem tabulek; per-user ACL predikát se injektuje **až po
+validaci** (model ho nevidí a neobejde). Pořadí: **validace → whitelist → injekce
+predikátu → exekuce.** Chyby se hlásí jako HTTP 400 s opravitelnou hláškou.
 
-**Řešení:** (1) když jsou tools vypnuté a model přesto vrátí `function_call`,
-**nevykonávat je** — vyskočit na finální syntézu; (2) fallback dělá **jeden
-finální `generate_content` bez toolů** s pokynem "odpověz teď v jazyce uživatele",
-místo výpisu toolů.
+Zákeřné třídy chyb (zamčené v `tests/unit/test_sql_query_service.py`):
+- ⚠️ **Predikát se MUSÍ psát přes ALIAS tabulky**, ne přes jméno. Postgres zahodí
+  jméno tabulky, jakmile má alias, takže `FROM experiments e ... WHERE
+  experiments.user_id=…` spadne na `invalid reference to FROM-clause entry`.
+  `_table_references()` vrací `(jméno, reference)` a predikát kvalifikuje `reference`.
+- ⚠️ **Self-join = jeden predikát na KAŽDÝ alias** — proto `_table_references()` vrací
+  **seznam**, ne set; kolaps na set nechá druhý alias nescopovaný a protečou přes něj
+  cizí řádky.
+- ⚠️ **Nekorelované joiny jsou zakázané** (comma / CROSS / NATURAL) a `LIMIT`/`OFFSET`
+  v dotazu taky (LIMIT přidává `run_query` sám naclampovaný, aby `LIMIT 100000` neobešel
+  strop). Vyžaduje se explicitní `JOIN ... ON`.
+- ⚠️ **Nepřímé tabulky NEVĚŘÍ modelovu `ON`.** `images`/`cell_crops`/`rag_document_pages`
+  nemají `user_id`; scopují se přes rodiče, ale `ON c.map_protein_id = e.map_protein_id`
+  (nebo `ON true`) by protáhl cizí řádky. Proto `_scoping_plan` **sám injektuje FK
+  korelaci** (`child.fk = parent.pk`) nezávisle na modelově ON, a vyžaduje **celý řetěz**
+  (`cell_crops → images → experiments`; chybějící/dvojznačný rodič = odmítnuto). Toto byla
+  reálná díra nalezená v PR #43 review.
+- ⚠️ **Schema hint** (`SQL_SCHEMA_HINT`) je zrcadlený v popisu toolu `query_database`
+  v `tools.yaml` — **při změně sloupců aktualizuj obojí** (model bez názvů sloupců SQL
+  neuhodne).
 
-### query_database MUSÍ nést schéma
-
-Pokud tool description neobsahuje **názvy sloupců**, model je neuhodne, dotaz
-selže a model to zkouší znovu → jeden dotaz vyvolá tucet volání DB. Schéma je v
-`_SQL_SCHEMA_HINT` (SSOT) a vkládá se do description. Při změně modelů ho
-aktualizuj. Dovolené JOINy, zakázané subqueries/CTE/UNION.
-
-⚠️ **ACL predikát se MUSÍ psát přes alias tabulky** (opraveno 2026-07-23).
-Postgres zahodí původní jméno tabulky ve chvíli, kdy dostane alias, takže
-`FROM user_ratings ur ... WHERE user_ratings.user_id = :user_id` spadne na
-`invalid reference to FROM-clause entry`. Aliasy řeší `_table_references()`
-(jediný parser FROM klauzule, `_extract_referenced_tables` je nad ním jen
-tenká obálka).
-
-Tahle třída chyb je **zákeřná: model se z ní nikdy nevzpamatuje.** Predikát se
-injektuje až po validaci jeho SQL, takže ho model nevidí — dostane chybu o
-tabulce, kterou v `FROM` má, vyhodnotí ji jako nesmysl a zkouší varianty dál.
-Reálně to sežralo 6 volání za 27 s a shodilo celý tah na kvótě. **Cokoli, co
-přepisuje model-generované SQL, musí být otestované s aliasy i bez nich.**
-
-⚠️ **Self-join = jeden predikát na KAŽDÝ alias.** `FROM comparisons c1 JOIN
-comparisons c2` má dvě nezávislé reference; odfiltrovat jen první nechá druhou
-nescopovanou a přes ni protečou cizí řádky. Proto `_table_references()` vrací
-**seznam** referencí na tabulku, ne jednu.
-
-### 🔴 Gemini free tier = 5 requestů/min A **20 requestů ZA DEN**
-
-Jeden tah agenta pošle **jeden API request na iteraci** (až `MAX_ITERATIONS=30`),
-takže netriviální otázka běžně potřebuje víc než 5 requestů za minutu a na free
-tieru narazí na 429 uprostřed smyčky. Dřív to zahodilo celý tah včetně všech už
-získaných tool výsledků.
-
-**Denní strop 20 requestů znamená ~2–3 otázky za den.** Na free tieru je agent
-prakticky nepoužitelný; jediné skutečné řešení je **zapnout billing** na Google
-projektu. Ověřeno živě 2026-07-23 (`GenerateRequestsPerDayPerProjectPerModel-FreeTier`,
-`quotaValue: 20`).
-
-⚠️ **Minutová a denní kvóta vypadají v odpovědi STEJNĚ** — obojí 429,
-`RESOURCE_EXHAUSTED`, obojí nese `retryDelay` kolem minuty. Liší se **jen
-`quotaId`** (`...PerMinute...` vs `...PerDay...`). Rozlišuje je `_quota_kind()`
-a je to zásadní: minutové okno se přečkáním posune, **denní se resetuje až zítra**.
-Čekat na denní kvótu podle jejího `retryDelay` znamená utratit uživateli pět
-minut za selhání, které bylo jisté od první odpovědi. Denní kvóta proto
-**nepadá do retry** a hlásí se vlastní hláškou.
-
-**Politika: na limit se ČEKÁ, nepadá se.** Rate limit je problém časování —
-počkat stojí sekundy, spadnout zahodí všechny tool výsledky, které tah už zaplatil.
-`_call_gemini_with_retry()` čte `RetryInfo.retryDelay` z chyby a počká
-(`_QUOTA_RETRY_ATTEMPTS=5`, strop `_QUOTA_RETRY_MAX_WAIT=65 s` ≈ jedno kvótové okno).
-**Retry delay od serveru je zaokrouhlený dolů** (reálně 11,577 s hlášeno jako
-`'11s'`), proto se přičítá `_QUOTA_RETRY_BUFFER` — retry přesně na uvedené hodnotě
-spadne na tutéž kvótu znovu.
-
-⚠️ **Retry MUSÍ obalit všechna tři `generate_content` volání**: smyčku agenta,
-finální syntézu i two-phase `google_search`. Táhnou ze **stejné** kvóty, takže
-nechat kterékoli nechráněné vrátí přesně to selhání, kvůli kterému retry vznikl.
-Proto existuje `_call_gemini_with_retry` jako SSOT — nekopíruj retry logiku.
-
-⚠️ **Backendní čekání musí vejít do polling okna frontendu.** `maxPolls`
-v `stores/chatStore.ts` (900 = 15 min) je strop; když ho backend přeteče,
-uživatel uvidí chybu, zatímco generování normálně běží dál. **Měň obojí
-zároveň** — test `test_quota_budget_fits_frontend_polling_window` to hlídá.
-
-Retry je záchranná brzda, ne řešení. Trvalé zvýšení limitu = **zapnout billing**
-na Google projektu; z kódu to udělat nejde.
-
-### 💰 Request budget na tah (od 2026-07-23)
-
-Denní kvóta je tvrdý strop, takže **tah má rozpočet requestů**, ne volný běh:
-
-```
-REQUEST_BUDGET_PER_TURN = gemini_daily_request_quota // gemini_target_questions_per_day
-                        = 20 // 10 = 2
-```
-
-Obojí je v `config.py` (**nehardcoduj to** — po zapnutí billingu se zvedne jen
-`gemini_daily_request_quota` a agent automaticky dostane víc kol). Minimum je **2**:
-první request zavolá tooly, druhý přečte jejich výsledky. Jeden request by uměl
-odpovědět jen z hlavy modelu.
-
-Důsledek: model má **jedno kolo toolů**. To je záměrné — tím je donucený tooly
-**dávkovat** (sekce „Calling Tools Efficiently" v `SYSTEM_PROMPT`) místo aby šel
-jedno volání na request. Před rozpočtem stál složitý dotaz ~10 requestů, tedy
-2 otázky na den.
-
-⚠️ **Do rozpočtu se počítá i finální syntéza.** Je to právě ta větev, kterou jde
-tah, když se model chová špatně — nechat ji nezapočítanou znamená, že nejhorší
-tahy stojí nejvíc. Proto `requests_used` a `_SynthesisSkipped`.
-
-⚠️ **Data-extraction fallback (`**Analysis Results:**`) NESMÍ být pod rozpočtem** —
-nestojí žádný API request a je potřeba přesně tehdy, když už rozpočet došel.
-Jednou už se to omylem zaškrtilo celé naráz a čtyři testy to chytily.
-
-⚠️ Testy, které cílí na **jiné** brzdy (`FORCE_ANSWER_AFTER`, syntéza, poslední
-fallback), si musí vyžádat fixture `generous_request_budget` — s produkčními
-dvěma requesty se k nim nedostanou.
-
-### Jak se šetří requesty
-
-Každá iterace smyčky = **jeden API request**, takže počet requestů se snižuje
-snižováním počtu tahů, ne zmenšováním odpovědí:
-
-1. **Paralelní tool cally.** Gemini 3 umí vrátit víc `function_call` partů naráz
-   a smyčka je všechny vykoná (`Collect ALL function calls`). Model to ale sám od
-   sebe dělá jen občas — sekce „Calling Tools Efficiently" v `SYSTEM_PROMPT` mu to
-   explicitně ukládá. Osm sériových tahů vs. dva paralelní je rozdíl mezi rychlou
-   odpovědí a čekáním na kvótu.
-2. **Širší výsledky místo opakovaného hledání.** `SEARCH_RESULT_DEFAULT = 20`
-   (dřív 10) pro `search_documents`, `semantic_search` i `search_fov_images`.
-   Je to levné: ve Vision RAG je `extracted_text` NULL, takže výsledek je jen
-   metadata + URL stránky — **text stránky se neposílá**.
-
-⚠️ **`SEARCH_RESULT_DEFAULT` se NESMÍ přenést na `get_document_content` /
-`show_document_pages`.** Ty posílají reálné base64 obrázky stránek a jejich strop
-10 je tam schválně (40stránkové PDF zaplavilo kontext). Hlídá
-`test_page_reading_cap_did_not_follow_the_search_default_up`.
-
-⚠️ `semantic_search` si `doc_limit`/`image_limit` bralo **mimo `_clamp_limit`**,
-takže halucinovaný `doc_limit=5000` prošel a re-billoval se každou iterací.
-Každý model-supplied limit musí projít `_clamp_limit`.
-
-### Filosofie návrhu - AUTONOMNÍ AGENT
-
-**CRITICAL: Agent musí být maximálně autonomní!**
-
-Místo vytváření specifických tools pro každý typ úkolu (např. `create_cell_histogram`, `compare_experiments_bar_chart`) preferujeme **obecné nástroje**, které agentovi umožní:
-
-1. **Přístup k datům** - `query_database`, `list_experiments`, `list_images`, `get_cell_detection_results`
-2. **Výpočetní schopnosti** - `execute_python_code` (sandbox pro matplotlib, numpy, pandas, scipy)
-3. **Vizualizační nástroje** - `create_visualization` (obecný), ale hlavně Python execution pro custom grafy
-4. **Export dat** - `export_data`, `batch_export` pro stažení dat
-
-### Proč autonomie?
-
-- **Flexibilita** - Agent může vytvořit JAKÝKOLIV graf/analýzu, ne jen předdefinované typy
-- **Kreativita** - Na základě dat může agent navrhnout vlastní vizualizace
-- **Škálovatelnost** - Nemusíme přidávat nový tool pro každý nový typ analýzy
-- **Biolog-friendly** - Uživatel popíše co chce přirozeným jazykem, agent to implementuje
-
-### Příklady správného přístupu
-
-**✅ SPRÁVNĚ:**
-```
-User: "Udělej mi histogram distribuce velikostí buněk"
-Agent: Použije execute_python_code s matplotlib, napočítá z dat a vytvoří custom graf
-```
-
-**❌ ŠPATNĚ:**
-```
-Vytvořit specifický tool `create_cell_size_histogram` jen pro tento účel
-```
-
-### Kdy přidat nový tool?
-
-Nový tool přidávat pouze když:
-1. Operace vyžaduje **přístup k systémovým zdrojům** (DB, filesystem, externí API)
-2. Operace je **bezpečnostně citlivá** a potřebuje validaci
-3. Operace je **velmi častá** a Python execution by byl neefektivní
-
-Pro výpočty, grafy a analýzy → **vždy preferovat `execute_python_code`**
-
-### 🧪 Testování AI Agenta
-
-**Když uživatel řekne "otestuj chat" nebo "otestuj agenta"**, proveď následující:
-
-**Nejrychlejší cesta — živý konverzační smoke-test** (volá reálné Gemini + DB + GPU,
-takže stojí peníze; exit code je nenulový, když nějaký tah selže):
-```bash
-docker exec maptimize-backend python /app/tests/run_agent_conversations.py
-```
-Označí `FAIL` (prázdná/fallback odpověď), `NEAR-CAP` (tah použil ≥25 toolů, málem
-se zacyklil) a `OK`. Vlastní otázky: `-q "..." -q "..."`.
-
-**Testovací otázky (statická sada):** `backend/tests/test_agent_questions.json`
-
-**Postup testování:**
-
-1. **Spusť sledování logů:**
-```bash
-docker compose -f docker-compose.dev.yml logs -f backend 2>&1 | grep -i -E "gemini|tool|error|exception|google_search"
-```
-
-2. **Pošli testovací otázky do chatu** (vyber z každé kategorie):
-
-| Kategorie | Příklad otázky | Očekávaný tool |
-|-----------|----------------|----------------|
-| Google Search | "What is the weather in Prague?" | `google_search` |
-| Code Execution | "Create a histogram of cell sizes" | `execute_python_code` |
-| Experiment Data | "Show me 5 sample images from PRC1" | `get_sample_images` |
-| Segmentation | "Show segmentation masks for image 42" | `get_segmentation_masks` |
-| Document RAG | "Search my documents for fixation protocols" | `search_documents` |
-| External APIs | "Get UniProt info about PRC1 protein" | `call_external_api` |
-| Database | "How many cells in all experiments?" | `query_database` |
-| Export | "Export PRC1 data to CSV" | `export_data` |
-
-3. **Kontroluj v logu:**
-   - `FUNCTION_CALL (tool_name)` - agent správně zavolal tool
-   - `Tool X completed successfully` - tool proběhl bez chyb
-   - `ERROR` nebo `exception` - problém k vyřešení
-
-4. **Kritéria úspěchu:**
-   - ✅ Agent volá správné tools pro daný typ dotazu
-   - ✅ Tools vracejí výsledky bez ERROR v logu
-   - ✅ Agent generuje smysluplnou odpověď s výsledky
-   - ✅ Obrázky/grafy se správně zobrazují v chatu
-
-**Rychlý smoke test:**
-```bash
-# Otestuj klíčové tools jedním příkazem v logu:
-docker compose -f docker-compose.dev.yml logs backend 2>&1 | grep -c "completed successfully"
-```
-
-**Google Search (two-phase approach):**
-- Agent má `google_search` jako callable tool
-- Při volání se dělá separátní API call s `types.Tool(google_search=types.GoogleSearch())`
-- Historicky obcházelo limitaci "Tool use with function calling is unsupported"
-
-⚠️ **NEMIGRUJ na nativní search — limitace STÁLE PLATÍ (ověřeno live 2026-07-21).**
-Dřívější tvrzení, že Gemini 3.5 umí built-in Google Search + function declarations
-v jednom requestu, se v živém testu **nepotvrdilo**: přidání
-`types.Tool(google_search=types.GoogleSearch())` vedle function-declaration Tool
-(i s `include_server_side_tool_invocations=True`) grounding **nespustilo** — odpověď
-měla **0 `grounding_chunks`**, SDK logovalo `AFC is disabled ... do not include
-function declaration ... in the tool list`, a model si `[Web: …]` markery **vymyslel**
-z tréninku. Two-phase přístup proto **zůstává** (funguje: reálně vrátí web citace).
-Jeho skutečný bug byl **timeout** — 30s bylo málo (grounded call trvá i >40s → timeout
-→ 0 zdrojů), **opraveno na 60s**. Viz commit „bump two-phase google_search timeout".
+### Testování MCP / agenta
+- MCP: `mcp-server/.venv/bin/python -m pytest` (mockovaný backend přes
+  `httpx.MockTransport`, žádný live backend/GPU).
+- Backend: viz „Backend test coverage" (`run-coverage.sh`); rychlý běh unit testů viz
+  memory `reference_fast_unit_test_runner`.
+- Živě přes připojený konektor: `create_experiment → upload_image → process_images →
+  list_cell_crops → query_database → delete_experiment` a ověř, že ACL drží.
 
 ## ⚠️ KRITICKÉ UPOZORNĚNÍ - PRODUKCE
 
@@ -520,12 +338,12 @@ zapisovatelné pro uid 1000 — jinak backend spadne při importu na
 docker run --rm -v $(pwd)/data:/dst alpine chown -R 1000:1000 /dst/<novy_adresar>
 ```
 
-### ACL v agentovi
+### ACL (sdílená pro UI i MCP)
 
 Čtecí dotazy používají `experiment_owner_filter` (SSOT z `utils/groups.py`),
-takže agent vidí i experimenty sdílené přes skupinu — stejně jako UI.
-`group_id` se resolvuje **jednou za tah** v `generate_response` a předává do
-`execute_tool(..., group_id)`; default `None` = jen vlastník (fail-closed).
+takže je vidět i experimenty sdílené přes skupinu — stejně pro UI i MCP konektor.
+`group_id` resolvuje endpoint přes `get_user_group_id(current_user.id, db)`;
+default `None` = jen vlastník (fail-closed).
 
 **Dokumenty mají druhou, paralelní ACL plochu** (od 2026-07-21): `rag_documents`
 se sdílí stejným způsobem přes `document_scope` (listing/search) a
@@ -533,16 +351,16 @@ se sdílí stejným způsobem přes `document_scope` (listing/search) a
 knihovní** dokumenty — group term je **vždy** AND-gated přes `thread_id IS NULL`,
 takže přílohy konverzace se nikdy nerozšíří na skupinu. Tentýž invariant je ručně
 zopakovaný na dalších dvou místech: raw-SQL `owner_clause` v
-`rag_service.search_documents` a `_inject_user_id_filter` v agentově SQL toolu
-(ten widenuje `experiments` i `rag_documents`). **Když měníš jedno, zkontroluj
-všechny čtyři** — testy v `tests/unit/test_document_acl.py` zamykají *strukturu*
-SQL (ne jen substring), takže záměna `and_`→`or_` shodí test.
+`rag_service.search_documents` a `_inject_user_id_filter` v
+`services/sql_query_service.py` (ten widenuje `experiments` i `rag_documents`).
+**Když měníš jedno, zkontroluj všechny čtyři** — testy v
+`tests/unit/test_document_acl.py` zamykají *strukturu* SQL (ne jen substring),
+takže záměna `and_`→`or_` shodí test.
 
-⚠️ **Zápisy** (`manage_experiment`, `redetect_cells`, a u dokumentů
-`delete_document` / `reindex_document`) zůstávají striktně na vlastníkovi -
-skupina dává právo číst, ne měnit. Ty dvě dokumentové funkce schválně používají
-holý `RAGDocument.user_id == user_id` a **nesmí** se „uklidit" na
-`document_read_scope`.
+⚠️ **Zápisy** zůstávají striktně na vlastníkovi (re-check `obj.user_id ==
+current_user.id` → 403) — skupina dává právo číst, ne měnit. U dokumentů
+`delete_document` / `reindex_document` schválně používají holý
+`RAGDocument.user_id == user_id` a **nesmí** se „uklidit" na `document_read_scope`.
 
 ### Komprese obrázků
 
@@ -592,7 +410,7 @@ DELETE /api/images/crops/{id}?confirm_delete_comparisons=true
 
 ### Proč Vision RAG?
 
-1. **Lepší kvalita** - Gemini přímo "čte" stránky jako obrázky, zachovává layout, tabulky, grafy
+1. **Lepší kvalita** - agent (Claude přes MCP) přímo "čte" stránky jako obrázky, zachovává layout, tabulky, grafy
 2. **Univerzálnost** - Funguje pro jakýkoli PDF (skenované, vědecké články, prezentace)
 3. **Bez OCR závislosti** - Nepotřebuje Tesseract ani jiné OCR nástroje
 
@@ -601,8 +419,8 @@ DELETE /api/images/crops/{id}?confirm_delete_comparisons=true
 1. **Upload PDF** → Stránky se renderují jako PNG obrázky (150 DPI)
 2. **Indexování** → Qwen VL encoder vytvoří visual embeddings pro každou stránku
 3. **Vyhledávání** → Semantic search pomocí pgvector nad visual embeddings
-4. **Čtení** → Agent volá `get_document_content` → stránky se pošlou jako base64 obrázky do Gemini
-5. **Gemini Vision** → AI přečte obsah přímo z obrázků stránek
+4. **Čtení** → agent (Claude) volá MCP `read_document_pages` → stránky přijdou jako base64 obrázky
+5. **Vision** → agent přečte obsah přímo z obrázků stránek (Gemini se používá už jen pro pomocnou extrakci pasáží v `rag_service`)
 
 ### Klíčové soubory
 
@@ -610,20 +428,21 @@ DELETE /api/images/crops/{id}?confirm_delete_comparisons=true
 |--------|------|
 | `backend/services/document_indexing_service.py` | Upload, rendering PDF→PNG, embedding |
 | `backend/services/rag_service.py` | Vyhledávání, `get_document_content` s base64 obrázky |
-| `backend/services/gemini_agent_service.py` | Agent s vision - posílá obrázky do Gemini |
+| `mcp-server/maptalk_mcp/` | MCP konektor — agent (Claude) čte stránky přes vision |
 | `backend/ml/rag/qwen_vl_encoder.py` | Qwen VL model pro visual embeddings |
 
 ### Přístup agenta k dokumentům (nástroje)
 
-Agent má plný přístup ke všem nahraným dokumentům uživatele:
-- `list_documents` — všechny dokumenty + metadata (typ, velikost, počet stran, data)
-- `search_documents` — sémantické vyhledávání; `limit` = kolik stran (default **10**),
-  `document_ids` = omezit na konkrétní dokumenty
-- `get_document_content` — agent si **čte** stránky přes vision (default prvních 10, max 10/volání)
-- `show_document_pages` — **zobrazí** celé stránky uživateli (markdown obrázky, default 10, max 10)
-- `extract_document_region` — vyřízne a zobrazí konkrétní oblast (obrázek/tabulku)
+Agent (Claude přes MCP) má plný přístup ke všem dokumentům uživatele (názvy = MCP tooly
+v `tools.yaml`):
+- `find_documents` / `list_folders` — procházení knihovny podle metadat / složek
+- `search_documents` — sémantické vyhledávání (vrací page images; `return=refs` = jen odkazy)
+- `read_document_pages` — **čte** stránky přes vision (default 5, **max 10/volání**)
+- `read_page_region` — **zoom** na oblast stránky (vysoké DPI, čitelné malé figury/tabulky)
+- zápisy: `index_document` / `index_text`, `reindex_document`, `delete_document`,
+  `move_document`, `create_folder`
 
-⚠️ `get_document_content` capuje počet stran i když je předán `page_numbers` (dřív ne →
+⚠️ `read_document_pages` capuje počet stran na 10 i při explicitním výběru (dřív ne →
 40stránkové PDF zaplavilo kontext).
 
 ### ⚠️ HF cache: Qwen VL encoder se nenačte (PermissionError) — OPRAVENO 2026-07-20
@@ -696,7 +515,7 @@ klíčová slova a vrátí 0 z 6 relevantních (AlphaFold2, sborníky). Po přek
 | `_QUERY_REWRITE_TIMEOUT` | 20 s | musí zůstat výrazně pod EPMC_TIMEOUT, ať stojící překlad nenafoukne čekání |
 | `_MAX_REWRITTEN_QUERY_LEN` | 500 | model má vrátit JEN dotaz, ale stejně přidá prózu/fence — tvrdý strop |
 
-Stahování PDF jde přes `gemini_agent_service._is_safe_url` (SSRF) s **ručním
+Stahování PDF jde přes `paper_discovery_service._is_safe_url` (SSRF) s **ručním
 následováním redirectů a revalidací každého hopu** — reálné EPMC PDF URL redirectují,
 takže tahle větev musí být otestovaná (jednou už tu byl bug, který spadl na každém
 skutečném stažení, protože žádný test redirect nevracel).
