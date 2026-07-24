@@ -157,12 +157,19 @@ export function UmapVisualization({
   const t = useTranslations("umap");
   const router = useRouter();
   const [viewMode, setViewMode] = useState<UmapType>(preferFovMode ? "fov" : "cropped");
+  const [microscopeId, setMicroscopeId] = useState<number | null>(null);
 
   const queryClient = useQueryClient();
 
+  const { data: microscopes } = useQuery({
+    queryKey: ["microscopes"],
+    queryFn: () => api.getMicroscopes(),
+    staleTime: 1000 * 60 * 5,
+  });
+
   const { data, isLoading, error, refetch, isFetching } = useQuery({
-    queryKey: ["umap", experimentId, viewMode],
-    queryFn: () => api.getUmapData(experimentId, viewMode),
+    queryKey: ["umap", experimentId, viewMode, microscopeId],
+    queryFn: () => api.getUmapData(experimentId, viewMode, microscopeId ?? undefined),
     staleTime: 1000 * 60 * 5, // Cache for 5 minutes
     retry: false,
     // New uploads/edits arrive without coordinates; the request that observes
@@ -487,6 +494,21 @@ export function UmapVisualization({
         </div>
 
         <div className="flex items-center gap-3">
+          {/* Microscope filter */}
+          {microscopes && microscopes.length > 0 && (
+            <select
+              value={microscopeId ?? ""}
+              onChange={(e) => setMicroscopeId(e.target.value ? Number(e.target.value) : null)}
+              className="input-field py-1.5 text-sm max-w-[180px]"
+              title={t("microscopeFilter")}
+            >
+              <option value="">{t("allMicroscopes")}</option>
+              {microscopes.map((m) => (
+                <option key={m.id} value={m.id}>{m.name}</option>
+              ))}
+            </select>
+          )}
+
           {/* Toggle Buttons */}
           <div className="flex items-center bg-bg-secondary rounded-lg p-1">
             <button

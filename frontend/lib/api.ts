@@ -164,6 +164,7 @@ class ApiClient {
     name: string;
     description?: string;
     map_protein_id?: number;
+    microscope_id?: number;
     fasta_sequence?: string;
   }) {
     return this.request<Experiment>("/api/experiments", {
@@ -185,7 +186,7 @@ class ApiClient {
   /**
    * Update experiment name and/or description.
    */
-  async updateExperiment(id: number, data: { name?: string; description?: string }) {
+  async updateExperiment(id: number, data: { name?: string; description?: string; microscope_id?: number }) {
     return this.request<Experiment>(`/api/experiments/${id}`, {
       method: "PATCH",
       body: JSON.stringify(data),
@@ -355,6 +356,29 @@ class ApiClient {
 
   async getProteinUmap() {
     return this.request<UmapProteinDataResponse>("/api/proteins/umap");
+  }
+
+  // Microscopes
+  async getMicroscopes() {
+    return this.request<Microscope[]>("/api/microscopes");
+  }
+
+  async createMicroscope(data: MicroscopeCreate) {
+    return this.request<Microscope>("/api/microscopes", {
+      method: "POST",
+      body: JSON.stringify(data),
+    });
+  }
+
+  async updateMicroscope(id: number, data: MicroscopeUpdate) {
+    return this.request<Microscope>(`/api/microscopes/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(data),
+    });
+  }
+
+  async deleteMicroscope(id: number) {
+    return this.request<void>(`/api/microscopes/${id}`, { method: "DELETE" });
   }
 
   // Ranking
@@ -571,11 +595,15 @@ class ApiClient {
   // Embeddings / UMAP
   async getUmapData(
     experimentId?: number,
-    umapType: UmapType = "cropped"
+    umapType: UmapType = "cropped",
+    microscopeId?: number
   ): Promise<UmapDataResponse | UmapFovDataResponse> {
     const params = new URLSearchParams({ umap_type: umapType });
     if (experimentId) {
       params.append("experiment_id", experimentId.toString());
+    }
+    if (microscopeId) {
+      params.append("microscope_id", microscopeId.toString());
     }
     if (umapType === "fov") {
       return this.request<UmapFovDataResponse>(`/api/embeddings/umap?${params}`);
@@ -1352,6 +1380,7 @@ export interface Experiment {
   description?: string;
   status: "draft" | "active" | "completed" | "archived";
   map_protein?: MapProtein;
+  microscope?: Microscope | null;
   fasta_sequence?: string;
   created_at: string;
   updated_at: string;
@@ -1438,6 +1467,40 @@ export interface MapProteinUpdate {
   fasta_sequence?: string;
   gene_name?: string;
   organism?: string;
+}
+
+export interface Microscope {
+  id: number;
+  name: string;
+  manufacturer?: string;
+  model?: string;
+  objective?: string;
+  magnification?: string;
+  description?: string;
+  color?: string;
+  experiment_count: number;
+  created_at?: string;
+}
+
+export interface MicroscopeCreate {
+  name: string;
+  manufacturer?: string;
+  model?: string;
+  objective?: string;
+  magnification?: string;
+  description?: string;
+  color?: string;
+}
+
+export interface MicroscopeUpdate {
+  name?: string;
+  manufacturer?: string;
+  model?: string;
+  objective?: string;
+  magnification?: string;
+  description?: string;
+  /** null asks the backend to assign an unused colour; omit to leave unchanged. */
+  color?: string | null;
 }
 
 export interface UmapProteinPoint {
