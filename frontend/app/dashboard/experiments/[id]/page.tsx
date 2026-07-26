@@ -12,8 +12,9 @@ import {
   staggerItemVariants,
   cardHoverProps,
 } from "@/lib/animations";
-import { ConfirmModal, MicroscopyImage, Pagination, ImagePreviewModal, type PreviewImage } from "@/components/ui";
+import { ColorTagSelect, ConfirmModal, MicroscopyImage, Pagination, ImagePreviewModal, toColorTagOptions, type PreviewImage } from "@/components/ui";
 import { FOVGallery } from "@/components/experiment";
+import { useAssignMicroscope } from "@/hooks";
 import {
   ImageGalleryFilters,
   SortOrder,
@@ -82,7 +83,6 @@ export default function ExperimentDetailPage(): JSX.Element {
   const [selectedCropIds, setSelectedCropIds] = useState<Set<number>>(new Set());
   const [selectedFovIds, setSelectedFovIds] = useState<Set<number>>(new Set());
   const [showBulkDeleteConfirm, setShowBulkDeleteConfirm] = useState(false);
-  const [experimentProteinDropdownOpen, setExperimentProteinDropdownOpen] = useState(false);
 
   // Pagination state for crops
   const [cropPage, setCropPage] = useState(1);
@@ -123,6 +123,11 @@ export default function ExperimentDetailPage(): JSX.Element {
   const { data: proteins } = useQuery({
     queryKey: ["proteins"],
     queryFn: () => api.getProteins(),
+  });
+
+  const { data: microscopes } = useQuery({
+    queryKey: ["microscopes"],
+    queryFn: () => api.getMicroscopes(),
   });
 
   // Auto-select view mode based on available data
@@ -171,6 +176,14 @@ export default function ExperimentDetailPage(): JSX.Element {
     onError: (err: Error) => {
       console.error("Failed to update experiment protein:", err);
       setMutationError(err.message || "Failed to update protein assignment");
+    },
+  });
+
+  const assignMicroscopeMutation = useAssignMicroscope({
+    onError: setMutationError,
+    onSuccess: () => {
+      setMutationError(null);
+      invalidateExperimentQueries();
     },
   });
 
@@ -312,23 +325,6 @@ export default function ExperimentDetailPage(): JSX.Element {
       router.push(`/editor/${experimentId}/${crop.image_id}`);
     }
   }, [router, experimentId, crops]);
-
-  // State for experiment protein dropdown
-  const experimentProteinRef = useRef<HTMLDivElement>(null);
-
-  // Close dropdown when clicking outside
-  useEffect(() => {
-    const handleClickOutside = (event: MouseEvent) => {
-      if (experimentProteinRef.current && !experimentProteinRef.current.contains(event.target as Node)) {
-        setExperimentProteinDropdownOpen(false);
-      }
-    };
-
-    if (experimentProteinDropdownOpen) {
-      document.addEventListener("mousedown", handleClickOutside);
-      return () => document.removeEventListener("mousedown", handleClickOutside);
-    }
-  }, [experimentProteinDropdownOpen]);
 
   // Selection helpers
   const toggleSelect = (id: number) => {
@@ -680,84 +676,30 @@ export default function ExperimentDetailPage(): JSX.Element {
           </button>
         </div>
 
-        {/* Experiment Protein Selector */}
-        <div className="relative" ref={experimentProteinRef}>
-          <button
-            onClick={() => setExperimentProteinDropdownOpen(!experimentProteinDropdownOpen)}
-            className={`flex items-center gap-2 px-4 py-2 rounded-lg transition-all ${
-              experiment.map_protein
-                ? "border border-white/10 hover:border-white/20"
-                : "bg-bg-secondary hover:bg-bg-hover"
-            }`}
-            style={experiment.map_protein ? {
-              backgroundColor: `${experiment.map_protein.color}15`,
-              borderColor: `${experiment.map_protein.color}40`,
-            } : undefined}
-          >
-            {experiment.map_protein ? (
-              <>
-                <span
-                  className="w-3 h-3 rounded-full"
-                  style={{ backgroundColor: experiment.map_protein.color }}
-                />
-                <span
-                  className="font-medium"
-                  style={{ color: experiment.map_protein.color }}
-                >
-                  {experiment.map_protein.name}
-                </span>
-              </>
-            ) : (
-              <span className="text-text-muted">{t("assignProtein")}</span>
-            )}
-            <svg
-              className={`w-4 h-4 text-text-muted transition-transform ${experimentProteinDropdownOpen ? "rotate-180" : ""}`}
-              fill="none"
-              viewBox="0 0 24 24"
-              stroke="currentColor"
-            >
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
-            </svg>
-          </button>
+        {/* Experiment protein + microscope assignment */}
+        <ColorTagSelect
+          options={toColorTagOptions(proteins)}
+          value={experiment.map_protein?.id ?? null}
+          onChange={(proteinId) => updateExperimentProteinMutation.mutate({ proteinId })}
+          placeholder={t("assignProtein")}
+          clearLabel={tCommon("none")}
+          hint={t("experimentProteinHint")}
+          variant="chip"
+          align="right"
+        />
 
-          {experimentProteinDropdownOpen && (
-            <div className="absolute top-full right-0 mt-1 w-56 bg-bg-elevated border border-white/10 rounded-lg shadow-xl z-50">
-              <div className="px-3 py-2 text-xs text-text-muted border-b border-white/10">
-                {t("experimentProteinHint")}
-              </div>
-              <button
-                onClick={() => {
-                  updateExperimentProteinMutation.mutate({ proteinId: null });
-                  setExperimentProteinDropdownOpen(false);
-                }}
-                className={`w-full px-3 py-2 text-left text-sm hover:bg-white/5 ${
-                  !experiment.map_protein ? "text-primary-400" : "text-text-muted"
-                }`}
-              >
-                {tCommon("none")}
-              </button>
-              {proteins?.map((p) => (
-                <button
-                  key={p.id}
-                  onClick={() => {
-                    updateExperimentProteinMutation.mutate({ proteinId: p.id });
-                    setExperimentProteinDropdownOpen(false);
-                  }}
-                  className={`w-full px-3 py-2 text-left text-sm hover:bg-white/5 flex items-center gap-2 ${
-                    experiment.map_protein?.id === p.id ? "bg-white/5" : ""
-                  }`}
-                  style={{ color: p.color }}
-                >
-                  <span className="w-3 h-3 rounded-full" style={{ backgroundColor: p.color }} />
-                  {p.name}
-                  {experiment.map_protein?.id === p.id && (
-                    <Check className="w-4 h-4 ml-auto" />
-                  )}
-                </button>
-              ))}
-            </div>
-          )}
-        </div>
+        <ColorTagSelect
+          options={toColorTagOptions(microscopes, (m) => m.manufacturer)}
+          value={experiment.microscope?.id ?? null}
+          onChange={(microscopeId) =>
+            assignMicroscopeMutation.mutate({ experimentId, microscopeId })
+          }
+          placeholder={t("assignMicroscope")}
+          clearLabel={t("unassignedMicroscope")}
+          hint={t("experimentMicroscopeHint")}
+          variant="chip"
+          align="right"
+        />
       </div>
 
       {/* Error notification */}

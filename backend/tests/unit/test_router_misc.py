@@ -1369,15 +1369,9 @@ async def test_exp_create_protein_not_found(mock_db):
 
 
 async def test_exp_create_success(mock_db):
-    async def _refresh(obj, *a, **k):
-        obj.id = 50
-        obj.status = ExperimentStatus.ACTIVE
-        obj.map_protein = None
-        obj.group_id = None
-        obj.created_at = datetime(2024, 1, 1, tzinfo=timezone.utc)
-        obj.updated_at = datetime(2024, 1, 1, tzinfo=timezone.utc)
-
-    mock_db.refresh.side_effect = _refresh
+    # The handler re-reads the committed row to build its response rather than
+    # serialising the in-session object (see load_experiment_response).
+    mock_db.execute.return_value = make_result(scalar=_exp(id=50))
     with patch.object(exp_r, "get_user_group_id", new=AsyncMock(return_value=None)):
         data = exp_r.ExperimentCreate(name="E", description="d")
         out = await exp_r.create_experiment(data, current_user=user(id=1, name="Alice"), db=mock_db)
@@ -1421,6 +1415,8 @@ async def test_exp_update_not_owner(mock_db):
 
 async def test_exp_update_success(mock_db):
     exp = _exp(user_id=1, name="Old")
+    # Same object comes back from the post-commit re-read, now renamed.
+    mock_db.execute.return_value = make_result(scalar=exp)
     with patch.object(exp_r, "get_experiment_for_user", new=AsyncMock(return_value=exp)):
         data = exp_r.ExperimentUpdate(name="New Name")
         out = await exp_r.update_experiment(1, data, current_user=user(id=1), db=mock_db)

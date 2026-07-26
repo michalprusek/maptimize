@@ -1,12 +1,12 @@
 "use client";
 
-import { useState, useRef, useEffect } from "react";
+import { useState } from "react";
 import Link from "next/link";
 import { motion, AnimatePresence } from "framer-motion";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useTranslations } from "next-intl";
 import { api } from "@/lib/api";
-import { ConfirmModal } from "@/components/ui";
+import { ColorTagSelect, ConfirmModal, toColorTagOptions } from "@/components/ui";
 import {
   Plus,
   FolderOpen,
@@ -17,12 +17,12 @@ import {
   Trash2,
   AlertCircle,
   Layers,
-  ChevronDown,
   Download,
   Upload,
   User,
 } from "lucide-react";
 import { ExportModal, ImportModal } from "@/components/export";
+import { useAssignMicroscope } from "@/hooks";
 
 export default function ExperimentsPage(): JSX.Element {
   const t = useTranslations("experiments");
@@ -36,14 +36,14 @@ export default function ExperimentsPage(): JSX.Element {
   const [newExpName, setNewExpName] = useState("");
   const [newExpDescription, setNewExpDescription] = useState("");
   const [selectedProteinId, setSelectedProteinId] = useState<number | null>(null);
-  const [proteinDropdownOpen, setProteinDropdownOpen] = useState(false);
   const [selectedMicroscopeId, setSelectedMicroscopeId] = useState<number | null>(null);
-  const [microscopeDropdownOpen, setMicroscopeDropdownOpen] = useState(false);
+  // Which card has its microscope menu open. Each card is a framer-motion
+  // element, so it creates a stacking context the menu cannot escape -- without
+  // lifting the open card, the next card in the grid paints over the menu.
+  const [openMicroscopeCardId, setOpenMicroscopeCardId] = useState<number | null>(null);
   const [experimentToDelete, setExperimentToDelete] = useState<{ id: number; name: string } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const queryClient = useQueryClient();
-  const proteinDropdownRef = useRef<HTMLDivElement>(null);
-  const microscopeDropdownRef = useRef<HTMLDivElement>(null);
 
   const { data: experiments, isLoading } = useQuery({
     queryKey: ["experiments"],
@@ -60,24 +60,8 @@ export default function ExperimentsPage(): JSX.Element {
     queryFn: () => api.getMicroscopes(),
   });
 
-  // Close dropdowns when clicking outside
-  useEffect(() => {
-    const handleClickOutside = (event: MouseEvent) => {
-      if (proteinDropdownRef.current && !proteinDropdownRef.current.contains(event.target as Node)) {
-        setProteinDropdownOpen(false);
-      }
-      if (microscopeDropdownRef.current && !microscopeDropdownRef.current.contains(event.target as Node)) {
-        setMicroscopeDropdownOpen(false);
-      }
-    };
-    if (proteinDropdownOpen || microscopeDropdownOpen) {
-      document.addEventListener("mousedown", handleClickOutside);
-      return () => document.removeEventListener("mousedown", handleClickOutside);
-    }
-  }, [proteinDropdownOpen, microscopeDropdownOpen]);
-
-  const selectedProtein = proteins?.find(p => p.id === selectedProteinId);
-  const selectedMicroscope = microscopes?.find(m => m.id === selectedMicroscopeId);
+  const proteinOptions = toColorTagOptions(proteins, (p) => p.full_name);
+  const microscopeOptions = toColorTagOptions(microscopes, (m) => m.manufacturer);
 
   const createMutation = useMutation({
     mutationFn: (data: { name: string; description?: string; map_protein_id?: number; microscope_id?: number }) =>
@@ -109,6 +93,11 @@ export default function ExperimentsPage(): JSX.Element {
       setError(err.message || "Failed to delete experiment. Please try again.");
       setExperimentToDelete(null);
     },
+  });
+
+  const assignMicroscopeMutation = useAssignMicroscope({
+    onError: setError,
+    onSuccess: () => setError(null),
   });
 
   const handleCreate = (e: React.FormEvent) => {
@@ -198,9 +187,12 @@ export default function ExperimentsPage(): JSX.Element {
               initial={{ opacity: 0, y: 20 }}
               animate={{ opacity: 1, y: 0 }}
               transition={{ delay: i * 0.05 }}
+              className={`relative ${openMicroscopeCardId === exp.id ? "z-50" : ""}`}
             >
-              <Link href={`/dashboard/experiments/${exp.id}`}>
-                <div className="glass-card p-6 h-full cursor-pointer group hover:border-primary-500/30 transition-all duration-300 card-hover">
+              <div className="glass-card p-6 h-full group hover:border-primary-500/30 transition-all duration-300 card-hover">
+                {/* The microscope picker below sits outside this Link on purpose:
+                    nested inside it, every click would navigate away. */}
+                <Link href={`/dashboard/experiments/${exp.id}`} className="block cursor-pointer">
                   <div className="flex items-start justify-between mb-4">
                     <div className="p-3 bg-primary-500/10 rounded-xl">
                       <FolderOpen className="w-6 h-6 text-primary-400" />
@@ -245,15 +237,33 @@ export default function ExperimentsPage(): JSX.Element {
                       <span>{exp.cell_count} {t("crops")}</span>
                     </div>
                   </div>
+                </Link>
 
-                  <div className="flex items-center justify-between mt-4 pt-4 border-t border-white/5">
+                <div className="flex items-center justify-between gap-2 mt-4 pt-4 border-t border-white/5">
+                  <ColorTagSelect
+                    options={microscopeOptions}
+                    value={exp.microscope?.id ?? null}
+                    onChange={(microscopeId) =>
+                      assignMicroscopeMutation.mutate({ experimentId: exp.id, microscopeId })
+                    }
+                    onOpenChange={(open) =>
+                      setOpenMicroscopeCardId(open ? exp.id : null)
+                    }
+                    placeholder={t("unassignedMicroscope")}
+                    variant="chip"
+                    size="sm"
+                  />
+                  {/* Deliberately NOT a second <Link>: the card would then expose
+                      two anchors to the same href, and the e2e suite counts cards
+                      by `a[href*="/experiments/"]`. The body Link above navigates. */}
+                  <div className="flex items-center gap-2 flex-shrink-0">
                     <span className="text-xs text-text-muted">
                       {new Date(exp.created_at).toLocaleDateString()}
                     </span>
                     <ArrowRight className="w-5 h-5 text-text-muted group-hover:text-primary-400 group-hover:translate-x-1 transition-all" />
                   </div>
                 </div>
-              </Link>
+              </div>
             </motion.div>
           ))}
         </motion.div>
@@ -338,63 +348,12 @@ export default function ExperimentsPage(): JSX.Element {
                   <label className="block text-sm font-medium text-text-secondary mb-2">
                     {t("assignProtein")}
                   </label>
-                  <div ref={proteinDropdownRef} className="relative">
-                    <button
-                      type="button"
-                      onClick={() => setProteinDropdownOpen(!proteinDropdownOpen)}
-                      className="input-field w-full flex items-center justify-between text-left"
-                    >
-                      <span className="flex items-center gap-2">
-                        {selectedProtein ? (
-                          <>
-                            <span
-                              className="w-3 h-3 rounded-full"
-                              style={{ backgroundColor: selectedProtein.color || "#888" }}
-                            />
-                            {selectedProtein.name}
-                          </>
-                        ) : (
-                          <span className="text-text-muted">{tProteins("unassigned")}</span>
-                        )}
-                      </span>
-                      <ChevronDown className={`w-4 h-4 text-text-muted transition-transform ${proteinDropdownOpen ? "rotate-180" : ""}`} />
-                    </button>
-                    {proteinDropdownOpen && (
-                      <div className="absolute top-full left-0 right-0 mt-1 bg-bg-elevated border border-white/10 rounded-lg shadow-xl z-50 py-1 max-h-48 overflow-y-auto">
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setSelectedProteinId(null);
-                            setProteinDropdownOpen(false);
-                          }}
-                          className="w-full px-3 py-2 text-left hover:bg-white/5 transition-colors flex items-center gap-2"
-                        >
-                          <span className="w-3 h-3 rounded-full bg-text-muted/30" />
-                          <span className="text-text-muted">{tProteins("unassigned")}</span>
-                        </button>
-                        {proteins?.map((protein) => (
-                          <button
-                            key={protein.id}
-                            type="button"
-                            onClick={() => {
-                              setSelectedProteinId(protein.id);
-                              setProteinDropdownOpen(false);
-                            }}
-                            className="w-full px-3 py-2 text-left hover:bg-white/5 transition-colors flex items-center gap-2"
-                          >
-                            <span
-                              className="w-3 h-3 rounded-full"
-                              style={{ backgroundColor: protein.color || "#888" }}
-                            />
-                            <span className="text-text-primary">{protein.name}</span>
-                            {protein.full_name && (
-                              <span className="text-xs text-text-muted ml-1">({protein.full_name})</span>
-                            )}
-                          </button>
-                        ))}
-                      </div>
-                    )}
-                  </div>
+                  <ColorTagSelect
+                    options={proteinOptions}
+                    value={selectedProteinId}
+                    onChange={setSelectedProteinId}
+                    placeholder={tProteins("unassigned")}
+                  />
                 </div>
 
                 {/* Microscope selector */}
@@ -402,63 +361,12 @@ export default function ExperimentsPage(): JSX.Element {
                   <label className="block text-sm font-medium text-text-secondary mb-2">
                     {t("assignMicroscope")}
                   </label>
-                  <div ref={microscopeDropdownRef} className="relative">
-                    <button
-                      type="button"
-                      onClick={() => setMicroscopeDropdownOpen(!microscopeDropdownOpen)}
-                      className="input-field w-full flex items-center justify-between text-left"
-                    >
-                      <span className="flex items-center gap-2">
-                        {selectedMicroscope ? (
-                          <>
-                            <span
-                              className="w-3 h-3 rounded-full"
-                              style={{ backgroundColor: selectedMicroscope.color || "#888" }}
-                            />
-                            {selectedMicroscope.name}
-                          </>
-                        ) : (
-                          <span className="text-text-muted">{t("unassignedMicroscope")}</span>
-                        )}
-                      </span>
-                      <ChevronDown className={`w-4 h-4 text-text-muted transition-transform ${microscopeDropdownOpen ? "rotate-180" : ""}`} />
-                    </button>
-                    {microscopeDropdownOpen && (
-                      <div className="absolute top-full left-0 right-0 mt-1 bg-bg-elevated border border-white/10 rounded-lg shadow-xl z-50 py-1 max-h-48 overflow-y-auto">
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setSelectedMicroscopeId(null);
-                            setMicroscopeDropdownOpen(false);
-                          }}
-                          className="w-full px-3 py-2 text-left hover:bg-white/5 transition-colors flex items-center gap-2"
-                        >
-                          <span className="w-3 h-3 rounded-full bg-text-muted/30" />
-                          <span className="text-text-muted">{t("unassignedMicroscope")}</span>
-                        </button>
-                        {microscopes?.map((microscope) => (
-                          <button
-                            key={microscope.id}
-                            type="button"
-                            onClick={() => {
-                              setSelectedMicroscopeId(microscope.id);
-                              setMicroscopeDropdownOpen(false);
-                            }}
-                            className="w-full px-3 py-2 text-left hover:bg-white/5 transition-colors flex items-center gap-2"
-                          >
-                            <span
-                              className="w-3 h-3 rounded-full"
-                              style={{ backgroundColor: microscope.color || "#888" }}
-                            />
-                            <span className="text-text-primary">{microscope.name}</span>
-                            {microscope.manufacturer && (
-                              <span className="text-xs text-text-muted ml-1">({microscope.manufacturer})</span>
-                            )}
-                          </button>
-                        ))}
-                      </div>
-                    )}
-                  </div>
+                  <ColorTagSelect
+                    options={microscopeOptions}
+                    value={selectedMicroscopeId}
+                    onChange={setSelectedMicroscopeId}
+                    placeholder={t("unassignedMicroscope")}
+                  />
                 </div>
 
                 <div className="flex gap-3 pt-4">

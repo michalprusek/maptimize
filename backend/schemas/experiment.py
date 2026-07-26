@@ -2,7 +2,7 @@
 from datetime import datetime
 from typing import Optional, List
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from models.experiment import ExperimentStatus
 from schemas.image import MapProteinResponse
@@ -19,11 +19,18 @@ class ExperimentCreate(BaseModel):
 
 
 class ExperimentUpdate(BaseModel):
-    """Schema for updating an experiment."""
+    """Schema for updating an experiment.
+
+    No `microscope_id` on purpose: the microscope is assigned through
+    `PATCH /experiments/{id}/microscope`, which any group member may call.
+    Accepting it here too would give one field two endpoints with two different
+    ACLs -- and the wider one would be reachable by mistake.
+    """
+    model_config = ConfigDict(extra="forbid")
+
     name: Optional[str] = Field(None, min_length=1, max_length=255)
     description: Optional[str] = None
     status: Optional[ExperimentStatus] = None
-    microscope_id: Optional[int] = None
     fasta_sequence: Optional[str] = None
 
 

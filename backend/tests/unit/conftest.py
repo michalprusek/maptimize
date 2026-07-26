@@ -32,6 +32,7 @@ def make_result(*, scalar=None, scalars_all=None, first=None, fetchall=None,
     """Build a mock SQLAlchemy Result with the chained accessors services use."""
     result = MagicMock(name="Result")
     result.scalar_one_or_none.return_value = scalar
+    result.scalar_one.return_value = scalar
     result.scalar.return_value = scalar if scalar is not None else (
         first if first is not None else None
     )

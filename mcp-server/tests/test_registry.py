@@ -30,6 +30,7 @@ def test_list_tools_builds_schema_from_yaml(make_registry):
         # application control: experiments
         "list_experiments", "get_experiment", "create_experiment", "update_experiment",
         "delete_experiment", "assign_experiment_protein",
+        "assign_experiment_microscope",
         # application control: images + cell detection
         "upload_image", "list_fov_images", "get_image", "process_images",
         "reprocess_image", "redetect_cells", "delete_image", "list_cell_crops",

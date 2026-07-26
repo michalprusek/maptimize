@@ -184,9 +184,12 @@ class ApiClient {
   }
 
   /**
-   * Update experiment name and/or description.
+   * Update experiment name and/or description. Owner only.
+   *
+   * The microscope is NOT settable here -- the backend rejects the field -- because
+   * assigning it is open to the whole group. Use `updateExperimentMicroscope`.
    */
-  async updateExperiment(id: number, data: { name?: string; description?: string; microscope_id?: number }) {
+  async updateExperiment(id: number, data: { name?: string; description?: string }) {
     return this.request<Experiment>(`/api/experiments/${id}`, {
       method: "PATCH",
       body: JSON.stringify(data),
@@ -211,6 +214,24 @@ class ApiClient {
     }>(`/api/experiments/${experimentId}/protein?${params.toString()}`, {
       method: "PATCH",
     });
+  }
+
+  /**
+   * Assign the acquisition microscope for an experiment. Pass null to clear it.
+   *
+   * Unlike the other experiment writes this is open to the whole group, so the
+   * lab can backfill the microscope on each other's experiments and make the
+   * dashboard UMAP filter meaningful.
+   */
+  async updateExperimentMicroscope(experimentId: number, microscopeId: number | null) {
+    const params = new URLSearchParams();
+    if (microscopeId !== null) {
+      params.set("microscope_id", microscopeId.toString());
+    }
+    return this.request<Experiment>(
+      `/api/experiments/${experimentId}/microscope?${params.toString()}`,
+      { method: "PATCH" }
+    );
   }
 
   // Images
