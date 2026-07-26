@@ -76,6 +76,42 @@ async def test_assign_protein_uses_query_param(make_registry):
     _blocks(await reg.dispatch("assign_experiment_protein", {"experiment_id": 3, "map_protein_id": 9}))
 
 
+async def test_assign_microscope_uses_dedicated_endpoint(make_registry):
+    """Must hit /microscope, not the generic PATCH.
+
+    The generic experiment PATCH is owner-only and now rejects `microscope_id`
+    outright, so routing this through it would 422 on every call and would also
+    be unusable on a colleague's experiment.
+    """
+    def routes(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/experiments/3/microscope" and request.method == "PATCH":
+            assert request.url.params["microscope_id"] == "5"
+            return httpx.Response(200, json={"ok": True})
+        return httpx.Response(404)
+
+    reg = make_registry(_with_login(routes))
+    _blocks(await reg.dispatch("assign_experiment_microscope", {"experiment_id": 3, "microscope_id": 5}))
+
+
+async def test_assign_microscope_omitted_id_clears(make_registry):
+    def routes(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/experiments/3/microscope" and request.method == "PATCH":
+            assert "microscope_id" not in request.url.params
+            return httpx.Response(200, json={"ok": True})
+        return httpx.Response(404)
+
+    reg = make_registry(_with_login(routes))
+    _blocks(await reg.dispatch("assign_experiment_microscope", {"experiment_id": 3}))
+
+
+async def test_generic_update_experiment_no_longer_takes_microscope_id(make_registry):
+    """One field, one endpoint. Re-adding it here would resurrect a 422 path."""
+    reg = make_registry(_with_login(lambda r: httpx.Response(404)))
+    tools = {t.name: t for t in reg.list_tools()}
+    assert "microscope_id" not in tools["update_experiment"].inputSchema["properties"]
+    assert "microscope_id" in tools["assign_experiment_microscope"].inputSchema["properties"]
+
+
 # -- images & detection ----------------------------------------------------
 
 async def test_upload_image_posts_multipart_with_experiment_id(make_registry):
@@ -255,6 +291,7 @@ async def test_new_tools_are_registered_with_correct_schema(make_registry):
     # mutating (non-destructive) writes must NOT be readOnly, or the client would
     # skip consent for a mutation
     for name in ["create_experiment", "update_experiment", "assign_experiment_protein",
+                 "assign_experiment_microscope",
                  "upload_image", "process_images", "reprocess_image", "redetect_cells",
                  "create_protein", "update_protein", "compute_protein_embedding"]:
         assert tools[name].annotations.readOnlyHint is False

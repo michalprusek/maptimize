@@ -203,19 +203,33 @@ async def get_image_for_write(
     return image
 
 
-async def get_crop_for_write(
+async def get_crop_for_curation(
     db: AsyncSession,
     crop_id: int,
     user_id: int,
 ) -> CellCrop:
-    """Load a cell crop the user can mutate (must be the experiment owner)."""
-    crop = await get_crop_for_read(db, crop_id, user_id)
-    if crop.image.experiment.user_id != user_id:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Only the experiment owner can modify this cell crop"
-        )
-    return crop
+    """Load a cell crop the user may curate (owner or group member).
+
+    Crops are collaborative annotation data: one person annotates a batch and
+    another corrects it, so anyone who can see an experiment may fix its
+    detections. This is deliberately wider than the image- and
+    experiment-level writes, which stay owner-only (`get_image_for_write`) --
+    the container belongs to whoever uploaded it, the annotations do not.
+    """
+    return await get_crop_for_read(db, crop_id, user_id)
+
+
+async def get_image_for_curation(
+    db: AsyncSession,
+    image_id: int,
+    user_id: int,
+) -> Image:
+    """Load an FOV whose crops the user may curate (owner or group member).
+
+    Guards crop create/batch endpoints, which mutate annotations on the image
+    without mutating the image itself. See `get_crop_for_curation`.
+    """
+    return await get_image_for_read(db, image_id, user_id)
 
 
 def safe_remove_file(path: Optional[str]) -> bool:
@@ -676,7 +690,7 @@ async def delete_cell_crop(
     If the crop has ranking comparisons, you must pass confirm_delete_comparisons=true
     to acknowledge that comparison history will be permanently deleted.
     """
-    crop = await get_crop_for_write(db, crop_id, current_user.id)
+    crop = await get_crop_for_curation(db, crop_id, current_user.id)
 
     # Check for ranking comparisons that will be deleted (CASCADE)
     comparison_count_result = await db.execute(
@@ -749,17 +763,10 @@ async def update_crop_bbox(
     This updates the bbox coordinates in the database. Use the /regenerate
     endpoint afterwards to regenerate crop images and features.
     """
-    from services.crop_editor_service import (
-        get_crop_with_ownership_check,
-        validate_bbox_within_image,
-    )
+    from services.crop_editor_service import validate_bbox_within_image
 
-    crop, image, error = await get_crop_with_ownership_check(crop_id, current_user.id, db)
-    if error:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=error
-        )
+    crop = await get_crop_for_curation(db, crop_id, current_user.id)
+    image = crop.image
 
     # Validate bbox within image bounds
     is_valid, validation_error = validate_bbox_within_image(
@@ -817,17 +824,11 @@ async def regenerate_crop_features(
     and calculates mean_intensity. DINOv3 embedding is extracted asynchronously.
     """
     from services.crop_editor_service import (
-        get_crop_with_ownership_check,
         regenerate_crop_features as do_regenerate,
     )
-    from ml.features import extract_features_for_crops
 
-    crop, image, error = await get_crop_with_ownership_check(crop_id, current_user.id, db)
-    if error:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=error
-        )
+    crop = await get_crop_for_curation(db, crop_id, current_user.id)
+    image = crop.image
 
     # Perform regeneration (synchronous part - crop images)
     result = await do_regenerate(crop, image, db)
@@ -886,18 +887,9 @@ async def create_manual_crop(
     Creates a crop with the specified bounding box, extracts pixels from
     the parent FOV, and queues feature extraction.
     """
-    from services.crop_editor_service import (
-        get_image_with_ownership_check,
-        create_manual_crop as do_create,
-    )
-    from ml.features import extract_features_for_crops
+    from services.crop_editor_service import create_manual_crop as do_create
 
-    image, error = await get_image_with_ownership_check(fov_id, current_user.id, db)
-    if error:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=error
-        )
+    image = await get_image_for_curation(db, fov_id, current_user.id)
 
     # Verify image is ready for manual bbox creation
     # Allow both UPLOADED (manual-only workflow) and READY (post-detection) statuses
@@ -960,20 +952,13 @@ async def batch_update_crops(
     feature regeneration for modified crops.
     """
     from services.crop_editor_service import (
-        get_image_with_ownership_check,
         validate_bbox_within_image,
         create_manual_crop as do_create,
         delete_crop_files,
     )
     from services.umap_service import invalidate_crop_umap
-    from ml.features import extract_features_for_crops
 
-    image, error = await get_image_with_ownership_check(fov_id, current_user.id, db)
-    if error:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=error
-        )
+    image = await get_image_for_curation(db, fov_id, current_user.id)
 
     created_ids = []
     updated_ids = []

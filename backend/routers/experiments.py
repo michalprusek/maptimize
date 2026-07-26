@@ -27,6 +27,29 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
+async def load_experiment_response(
+    db: AsyncSession,
+    experiment_id: int,
+) -> ExperimentResponse:
+    """Re-read an experiment after a write and build its response.
+
+    Do NOT replace this with `db.refresh(experiment, attribute_names=[...])`.
+    `Experiment.updated_at` carries `onupdate=func.now()`, so an UPDATE leaves the
+    attribute expired to be re-read from the server; refreshing only the
+    relationships (what this code did until 2026-07-26) left it expired, and
+    serialising an expired attribute in async context attempts lazy IO and raises
+    `MissingGreenlet`. That made every rename/description edit return 500 in
+    production while every unit test passed -- an AsyncMock session has no expiry
+    semantics, so only a real database can catch it.
+    """
+    result = await db.execute(
+        select(Experiment)
+        .options(selectinload(Experiment.map_protein), selectinload(Experiment.microscope))
+        .where(Experiment.id == experiment_id)
+    )
+    return ExperimentResponse.model_validate(result.scalar_one())
+
+
 async def get_experiment_for_user(
     db: AsyncSession,
     experiment_id: int,
@@ -142,9 +165,10 @@ async def create_experiment(
     )
     db.add(experiment)
     await db.commit()
-    await db.refresh(experiment, attribute_names=["map_protein", "microscope"])
 
-    exp_response = ExperimentResponse.model_validate(experiment)
+    # Same re-read as the update paths, so all three writes share one response
+    # shape and none of them can regress into the expired-attribute trap.
+    exp_response = await load_experiment_response(db, experiment.id)
     exp_response.creator_name = current_user.name
     return exp_response
 
@@ -213,17 +237,12 @@ async def update_experiment(
     # Update fields
     update_data = data.model_dump(exclude_unset=True)
 
-    # Verify microscope exists if being (re)assigned
-    if update_data.get("microscope_id") is not None:
-        await _verify_microscope_exists(update_data["microscope_id"], db)
-
     for field, value in update_data.items():
         setattr(experiment, field, value)
 
     await db.commit()
-    await db.refresh(experiment, attribute_names=["map_protein", "microscope"])
 
-    return ExperimentResponse.model_validate(experiment)
+    return await load_experiment_response(db, experiment_id)
 
 
 @router.delete("/{experiment_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -238,6 +257,41 @@ async def delete_experiment(
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only the experiment owner can delete it")
     await db.delete(experiment)
     await db.commit()
+
+
+@router.patch("/{experiment_id}/microscope", response_model=ExperimentResponse)
+async def update_experiment_microscope(
+    experiment_id: int,
+    microscope_id: Optional[int] = Query(
+        default=None, description="Microscope ID to assign; omit to clear the assignment"
+    ),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Assign the acquisition microscope for an experiment (owner OR group member).
+
+    Deliberately wider than `PATCH /{experiment_id}`, which stays owner-only: the
+    microscope is shared acquisition metadata (`microscopes` has no `user_id`),
+    and the lab needs to backfill it across everyone's experiments to make the
+    UMAP microscope filter useful. Scoping this to one nullable FK is why it is a
+    separate endpoint -- widening the generic PATCH would also hand the group
+    everyone's name and description.
+    """
+    experiment = await get_experiment_for_user(db, experiment_id, current_user.id)
+
+    if microscope_id is not None:
+        await _verify_microscope_exists(microscope_id, db)
+
+    experiment.microscope_id = microscope_id
+    await db.commit()
+
+    logger.info(
+        f"User {current_user.id} set microscope for experiment {experiment_id} "
+        f"to {microscope_id}"
+    )
+
+    return await load_experiment_response(db, experiment_id)
 
 
 @router.patch("/{experiment_id}/protein")

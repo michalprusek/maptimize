@@ -46,7 +46,9 @@ connector projde. Endpoint chráněný `require_interactive_user` do MCP nepatř
 **ACL se propisuje samo.** MCP je čistý HTTP klient; token protéká do backendu, kde
 platí stejná pravidla jako pro člověka: **čtení skupinově sdílené**
 (`experiment_owner_filter`, SSOT `utils/groups.py`), **zápisy do experimentů/obrázků
-owner-only** (re-check `obj.user_id == current_user.id` → 403). ⚠️ **Proteiny jsou
+owner-only** (re-check `obj.user_id == current_user.id` → 403). ⚠️ **Dvě výjimky
+od 2026-07-26: cropy a přiřazení mikroskopu smí měnit celá skupina** (viz
+„Kurátorování cropů" níže). ⚠️ **Proteiny jsou
 sdílená referenční data** — `MapProtein` nemá `user_id`, takže je smí měnit/mazat
 kdokoliv přihlášený (není to bug). Když přidáš write endpoint, zkontroluj, že re-check
 vlastníka SKUTEČNĚ je v handleru — `update_experiment_protein` ho omylem neměl a šel
@@ -361,6 +363,77 @@ takže záměna `and_`→`or_` shodí test.
 current_user.id` → 403) — skupina dává právo číst, ne měnit. U dokumentů
 `delete_document` / `reindex_document` schválně používají holý
 `RAGDocument.user_id == user_id` a **nesmí** se „uklidit" na `document_read_scope`.
+
+#### Kurátorování cropů — jediná výjimka ze „zápisy jen vlastník" (od 2026-07-26)
+
+**Cropy jsou skupinově kurátorovaná anotační data**, ne vlastnictví uploadera: Theo
+anotuje dávku, Michal ji opravuje. Kdo experiment **vidí**, smí opravit jeho detekce.
+Tři tiery v `routers/images.py`, každý s jedním jasným účelem:
+
+| Helper | Scope | Chyba | Co hlídá |
+|--------|-------|-------|----------|
+| `get_crop_for_read` / `get_image_for_read` | skupina | 404 | čtení |
+| `get_crop_for_curation` / `get_image_for_curation` | **skupina** | 404 | bbox, regenerate, ruční crop, batch, delete cropu |
+| `get_image_for_write` | **jen vlastník** | 403 | smazání FOV, reprocess — *kontejner* patří uploaderovi |
+
+⚠️ **Nespojuj `_for_curation` a `_for_write` do jednoho helperu.** Vypadají skoro
+stejně (curation je dnes jen delegace na `_for_read`), ale kolaps by dal celé skupině
+právo mazat kolegovi FOV. `tests/unit/test_crop_curation_acl.py` zamyká **obě** strany
+hranice — i to, že se rozšíření *nepřelilo* na obrázky.
+
+⚠️ **Historie: crop editor měl vlastní paralelní kopii ACL** v `crop_editor_service.py`
+(`get_crop_with_ownership_check` & spol.), owner-only, a vracela `"Access denied"`
+namapované na **404** — status tvrdil „neexistuje", text „nesmíš". Kvůli té druhé
+implementaci nešly opravovat cizí cropy i po zavedení skupin. Smazána; test
+`test_curation_helpers_do_not_reintroduce_a_second_acl_path` hlídá, aby se nevrátila.
+**Crop ACL patří výhradně do `routers/images.py`.**
+
+Batch endpoint (`PATCH /{fov_id}/crops/batch`) si vnitřně dohledává cropy holým
+`select(CellCrop).where(id==…, image_id==fov_id)` bez ACL predikátu — to je v pořádku,
+protože FOV už prošel `get_image_for_curation` a `image_id` pin drží crop uvnitř
+autorizovaného obrázku. **Kdyby ten pin kdokoliv odstranil, je to okamžitě IDOR.**
+
+#### Přiřazení mikroskopu — druhá výjimka (od 2026-07-26)
+
+`PATCH /api/experiments/{id}/microscope` (`update_experiment_microscope`) je
+**skupinový zápis**: `get_experiment_for_user` + **žádný** owner re-check. Mikroskop je
+sdílená akviziční metadata (`microscopes` nemá `user_id`) a v produkci patří **31 z 37
+experimentů** anotátorovi — owner-only přiřazení by nechalo filtr mikroskopu na
+dashboard UMAP pokrývat 6 experimentů, tedy prakticky nic.
+
+⚠️ **Proto je to samostatný endpoint a NE pole v `ExperimentUpdate`.** Generický
+`PATCH /api/experiments/{id}` zůstává owner-only; kdyby přijímal i `microscope_id`,
+mělo by jedno pole dvě cesty se dvěma ACL a ta užší by byla dosažitelná omylem (a
+skupině by vracela 403). `ExperimentUpdate` má `model_config = ConfigDict(extra="forbid")`,
+takže starý klient, který `microscope_id` pošle tam, spadne na **422** místo tichého
+zahození. `ExperimentCreate` ho naopak přijímá dál — zakládá vlastník.
+
+MCP: tool `assign_experiment_microscope` (`update_experiment` ho už **nemá**);
+`SERVER_VERSION` 2.3.0. Testy pinují jmennou sadu i verzi — při změně kontraktu je
+uprav (`tests/test_registry.py`, `tests/test_protocol.py`, `tests/test_app_control_tools.py`).
+
+### ⚠️ `MissingGreenlet` po zápisu: NIKDY neserializuj objekt ze session
+
+**Po `db.commit()` si odpověď načti novým SELECTem** — `load_experiment_response()`
+v `routers/experiments.py` je pro experimenty SSOT. Důvod: `Experiment.updated_at` má
+`onupdate=func.now()`, takže po UPDATE je atribut **expirovaný** (hodnotu generuje
+server). Jeho serializace v async kontextu zkusí lazy IO a spadne na
+`MissingGreenlet` → HTTP 500.
+
+`await db.refresh(obj, attribute_names=["map_protein", "microscope"])` **problém
+neřeší** — obnoví jen jmenované relace a `updated_at` nechá expirovaný. Přesně tohle
+tu bylo a **přejmenování / změna popisu experimentu vracely v produkci 500**, zatímco
+všech 1457 testů svítilo zeleně: `mock_db` je `AsyncMock` a **žádnou expiraci
+nemodeluje**, takže tuhle třídu bugů unit testy chytit NEMOHOU. Odhalilo to až spuštění
+handleru proti reálné DB (`docker exec -i -w /app maptimize-backend python - < script.py`).
+
+⚠️ INSERT tímhle netrpí (Postgres vrací server defaulty přes `RETURNING`), takže
+`create_experiment` fungoval — nenech se tím zmást, že „to přece jde".
+`test_writes_rebuild_the_response_by_reselecting_the_row` proto hlídá **tvar** kódu
+(všechny tři write handlery musí jít přes helper a nesmí mít `attribute_names`).
+
+**Pravidlo: po každém novém write endpointu ho jednou zavolej proti reálné DB.**
+Mock ti nikdy neřekne, že jsi serializoval expirovaný atribut.
 
 ### Komprese obrázků
 

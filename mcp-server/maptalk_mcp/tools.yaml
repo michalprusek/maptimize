@@ -543,9 +543,9 @@ tools:
     annotations: {readOnlyHint: false, destructiveHint: false}
     description: >
       Update an experiment's name, description, status, or FASTA sequence. Only
-      the fields you pass are changed. Owner-only. To change the assigned protein
-      use assign_experiment_protein instead. You can also (re)assign a microscope
-      with microscope_id (from list_microscopes).
+      the fields you pass are changed. Owner-only. Use assign_experiment_protein
+      to change the protein and assign_experiment_microscope to change the
+      microscope — this tool rejects those fields.
     handler: http_post_json
     method: PATCH
     path: /api/experiments/{experiment_id}
@@ -566,10 +566,6 @@ tools:
         type: string
         enum: [draft, active, completed, archived]
         description: Experiment status.
-      - name: microscope_id
-        in: body
-        type: integer
-        description: Microscope to assign (id from list_microscopes).
       - name: fasta_sequence
         in: body
         type: string
@@ -608,6 +604,27 @@ tools:
         in: query
         type: integer
         description: MAP protein id to assign; omit to clear the assignment.
+
+  - name: assign_experiment_microscope
+    annotations: {readOnlyHint: false, destructiveHint: false}
+    description: >
+      Assign (or change) the microscope an experiment was acquired on. Pass the
+      microscope id from list_microscopes; omit microscope_id to clear it. Unlike
+      the other experiment writes this is NOT owner-only — any member of the group
+      may set it, so the lab can backfill the microscope across shared
+      experiments and make the dashboard UMAP microscope filter useful.
+    handler: http_json
+    method: PATCH
+    path: /api/experiments/{experiment_id}/microscope
+    params:
+      - name: experiment_id
+        in: path
+        type: integer
+        required: true
+      - name: microscope_id
+        in: query
+        type: integer
+        description: Microscope id to assign; omit to clear the assignment.
 
   # -- Images & cell detection ----------------------------------------------
   - name: upload_image
@@ -901,7 +918,7 @@ tools:
     description: >
       List all microscopes (shared reference data): id, name, manufacturer, model,
       objective, magnification, and per-microscope experiment count. Use it to get
-      a microscope_id for create_experiment or update_experiment.
+      a microscope_id for create_experiment or assign_experiment_microscope.
     handler: http_json
     method: GET
     path: /api/microscopes

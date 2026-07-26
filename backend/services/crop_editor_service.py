@@ -16,7 +16,6 @@ from typing import Optional, Tuple
 import numpy as np
 from PIL import Image as PILImage
 
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from models.cell_crop import CellCrop
@@ -371,107 +370,6 @@ async def create_manual_crop(
     await db.flush()
 
     return crop, None
-
-
-async def verify_experiment_ownership(
-    experiment_id: int,
-    user_id: int,
-    db: AsyncSession,
-) -> Tuple[bool, Optional[str]]:
-    """
-    Verify user owns an experiment.
-
-    DRY: Common ownership check pattern used across multiple routers.
-
-    Args:
-        experiment_id: ID of the experiment
-        user_id: ID of the user
-        db: Database session
-
-    Returns:
-        Tuple of (is_owner, error message or None)
-    """
-    from models.experiment import Experiment
-
-    result = await db.execute(
-        select(Experiment).where(
-            Experiment.id == experiment_id,
-            Experiment.user_id == user_id
-        )
-    )
-    experiment = result.scalar_one_or_none()
-
-    if not experiment:
-        return False, "Experiment not found"
-
-    return True, None
-
-
-async def get_image_with_ownership_check(
-    image_id: int,
-    user_id: int,
-    db: AsyncSession,
-) -> Tuple[Optional[Image], Optional[str]]:
-    """
-    Get an image and verify user ownership.
-
-    Args:
-        image_id: ID of the image
-        user_id: ID of the user
-        db: Database session
-
-    Returns:
-        Tuple of (Image or None, error message or None)
-    """
-    from models.experiment import Experiment
-
-    result = await db.execute(
-        select(Image)
-        .join(Experiment, Image.experiment_id == Experiment.id)
-        .where(Image.id == image_id, Experiment.user_id == user_id)
-    )
-    image = result.scalar_one_or_none()
-
-    if not image:
-        return None, "Image not found or access denied"
-
-    return image, None
-
-
-async def get_crop_with_ownership_check(
-    crop_id: int,
-    user_id: int,
-    db: AsyncSession,
-) -> Tuple[Optional[CellCrop], Optional[Image], Optional[str]]:
-    """
-    Get a crop and its parent image, verifying user ownership.
-
-    Args:
-        crop_id: ID of the crop
-        user_id: ID of the user
-        db: Database session
-
-    Returns:
-        Tuple of (CellCrop or None, Image or None, error message or None)
-    """
-    from models.experiment import Experiment
-    from sqlalchemy.orm import selectinload
-
-    result = await db.execute(
-        select(CellCrop)
-        .options(selectinload(CellCrop.image).selectinload(Image.experiment))
-        .where(CellCrop.id == crop_id)
-    )
-    crop = result.scalar_one_or_none()
-
-    if not crop:
-        return None, None, "Crop not found"
-
-    # Check ownership via experiment
-    if crop.image.experiment.user_id != user_id:
-        return None, None, "Access denied"
-
-    return crop, crop.image, None
 
 
 # =============================================================================

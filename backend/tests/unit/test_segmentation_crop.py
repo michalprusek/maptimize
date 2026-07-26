@@ -1049,58 +1049,6 @@ async def test_create_manual_crop_sum_fails(mock_db, tmp_path):
 
 
 # ============================================================================
-# verify_experiment_ownership / get_image_with_ownership_check / get_crop_...
-# ============================================================================
-
-
-async def test_verify_experiment_ownership_found(mock_db):
-    mock_db.execute.return_value = make_result(scalar=MagicMock())
-    ok, err = await crop_svc.verify_experiment_ownership(1, 2, mock_db)
-    assert ok is True and err is None
-
-
-async def test_verify_experiment_ownership_not_found(mock_db):
-    mock_db.execute.return_value = make_result(scalar=None)
-    ok, err = await crop_svc.verify_experiment_ownership(1, 2, mock_db)
-    assert ok is False and err == "Experiment not found"
-
-
-async def test_get_image_with_ownership_check_found(mock_db):
-    img = MagicMock()
-    mock_db.execute.return_value = make_result(scalar=img)
-    out, err = await crop_svc.get_image_with_ownership_check(1, 2, mock_db)
-    assert out is img and err is None
-
-
-async def test_get_image_with_ownership_check_denied(mock_db):
-    mock_db.execute.return_value = make_result(scalar=None)
-    out, err = await crop_svc.get_image_with_ownership_check(1, 2, mock_db)
-    assert out is None and "access denied" in err.lower()
-
-
-async def test_get_crop_with_ownership_check_not_found(mock_db):
-    mock_db.execute.return_value = make_result(scalar=None)
-    crop, img, err = await crop_svc.get_crop_with_ownership_check(1, 2, mock_db)
-    assert crop is None and img is None and err == "Crop not found"
-
-
-async def test_get_crop_with_ownership_check_access_denied(mock_db):
-    crop = MagicMock()
-    crop.image.experiment.user_id = 99
-    mock_db.execute.return_value = make_result(scalar=crop)
-    out_crop, img, err = await crop_svc.get_crop_with_ownership_check(1, 2, mock_db)
-    assert out_crop is None and img is None and err == "Access denied"
-
-
-async def test_get_crop_with_ownership_check_success(mock_db):
-    crop = MagicMock()
-    crop.image.experiment.user_id = 2
-    mock_db.execute.return_value = make_result(scalar=crop)
-    out_crop, img, err = await crop_svc.get_crop_with_ownership_check(1, 2, mock_db)
-    assert out_crop is crop and img is crop.image and err is None
-
-
-# ============================================================================
 # truncate_error_message / update_crop_embedding_status / run_embedding_task
 # ============================================================================
 

@@ -234,19 +234,46 @@ async def test_get_image_for_write_not_owner_403(mock_db, no_group):
     assert exc.value.status_code == 403
 
 
-async def test_get_crop_for_write_owner_ok(mock_db, no_group):
+async def test_get_crop_for_curation_owner_ok(mock_db, no_group):
     crop = fake_crop(owner_id=1)
     mock_db.execute.return_value = make_result(scalar=crop)
-    out = await r.get_crop_for_write(mock_db, 200, 1)
+    out = await r.get_crop_for_curation(mock_db, 200, 1)
     assert out is crop
 
 
-async def test_get_crop_for_write_not_owner_403(mock_db, no_group):
+async def test_get_crop_for_curation_non_owner_allowed(mock_db, no_group):
+    """Crops are collaborative annotation data: anyone who can READ the
+    experiment may curate them, so a crop owned by someone else is returned
+    instead of raising 403 (the old owner-only `get_crop_for_write` behaviour).
+    The read scope itself is what gates access — see the 404 test below."""
     crop = fake_crop(owner_id=2)
     mock_db.execute.return_value = make_result(scalar=crop)
+    out = await r.get_crop_for_curation(mock_db, 200, 1)
+    assert out is crop
+
+
+async def test_get_crop_for_curation_out_of_scope_404(mock_db, no_group):
+    mock_db.execute.return_value = make_result(scalar=None)
     with pytest.raises(HTTPException) as exc:
-        await r.get_crop_for_write(mock_db, 200, 1)
-    assert exc.value.status_code == 403
+        await r.get_crop_for_curation(mock_db, 200, 1)
+    assert exc.value.status_code == 404
+    assert exc.value.detail == "Cell crop not found"
+
+
+async def test_get_image_for_curation_non_owner_allowed(mock_db, no_group):
+    """Same widening for the FOV-level crop endpoints (create / batch)."""
+    img = fake_image(owner_id=2)
+    mock_db.execute.return_value = make_result(scalar=img)
+    out = await r.get_image_for_curation(mock_db, 100, 1)
+    assert out is img
+
+
+async def test_get_image_for_curation_out_of_scope_404(mock_db, no_group):
+    mock_db.execute.return_value = make_result(scalar=None)
+    with pytest.raises(HTTPException) as exc:
+        await r.get_image_for_curation(mock_db, 100, 1)
+    assert exc.value.status_code == 404
+    assert exc.value.detail == "Image not found"
 
 
 # ============================================================================
@@ -618,7 +645,7 @@ async def test_get_crop_image_success_sum(mock_db, no_group, tmp_path):
 
 async def test_delete_cell_crop_conflict(mock_db, no_group):
     crop = fake_crop(owner_id=1)
-    # 1: get_crop_for_write loader, 2: comparison count > 0
+    # 1: get_crop_for_curation loader, 2: comparison count > 0
     mock_db.execute.side_effect = [
         make_result(scalar=crop),
         make_result(scalar=2),
@@ -634,7 +661,7 @@ async def test_delete_cell_crop_success(mock_db, no_group):
     crop = fake_crop(owner_id=1)
     metric_img = SimpleNamespace(id=300, cell_crop_id=200)
     mock_db.execute.side_effect = [
-        make_result(scalar=crop),  # get_crop_for_write
+        make_result(scalar=crop),  # get_crop_for_curation
         make_result(scalar=0),  # comparison count
         make_result(scalars_all=[metric_img]),  # metric images
         make_result(rowcount=1),  # delete MetricComparison
@@ -670,8 +697,12 @@ async def test_delete_cell_crop_confirmed_with_comparisons(mock_db, no_group):
 async def test_update_crop_bbox_not_found(mock_db):
     req = CropBboxUpdateRequest(bbox_x=0, bbox_y=0, bbox_w=20, bbox_h=20)
     with patch(
-        "services.crop_editor_service.get_crop_with_ownership_check",
-        new=AsyncMock(return_value=(None, None, "Crop not found")),
+        "routers.images.get_crop_for_curation",
+        new=AsyncMock(
+            side_effect=HTTPException(
+                status_code=404, detail="Cell crop not found"
+            )
+        ),
     ):
         with pytest.raises(HTTPException) as exc:
             await r.update_crop_bbox(
@@ -683,10 +714,9 @@ async def test_update_crop_bbox_not_found(mock_db):
 async def test_update_crop_bbox_invalid(mock_db):
     req = CropBboxUpdateRequest(bbox_x=0, bbox_y=0, bbox_w=20, bbox_h=20)
     crop = fake_crop()
-    img = fake_image()
     with patch(
-        "services.crop_editor_service.get_crop_with_ownership_check",
-        new=AsyncMock(return_value=(crop, img, None)),
+        "routers.images.get_crop_for_curation",
+        new=AsyncMock(return_value=crop),
     ), patch(
         "services.crop_editor_service.validate_bbox_within_image",
         return_value=(False, "out of bounds"),
@@ -699,10 +729,9 @@ async def test_update_crop_bbox_invalid(mock_db):
 async def test_update_crop_bbox_success(mock_db):
     req = CropBboxUpdateRequest(bbox_x=5, bbox_y=6, bbox_w=20, bbox_h=22)
     crop = fake_crop()
-    img = fake_image()
     with patch(
-        "services.crop_editor_service.get_crop_with_ownership_check",
-        new=AsyncMock(return_value=(crop, img, None)),
+        "routers.images.get_crop_for_curation",
+        new=AsyncMock(return_value=crop),
     ), patch(
         "services.crop_editor_service.validate_bbox_within_image",
         return_value=(True, None),
@@ -722,8 +751,12 @@ async def test_regenerate_crop_not_found(mock_db):
     req = CropRegenerateRequest()
     bt = BackgroundTasks()
     with patch(
-        "services.crop_editor_service.get_crop_with_ownership_check",
-        new=AsyncMock(return_value=(None, None, "Crop not found")),
+        "routers.images.get_crop_for_curation",
+        new=AsyncMock(
+            side_effect=HTTPException(
+                status_code=404, detail="Cell crop not found"
+            )
+        ),
     ), patch(
         "services.crop_editor_service.regenerate_crop_features", new=AsyncMock()
     ), patch("ml.features.extract_features_for_crops", new=AsyncMock()):
@@ -738,10 +771,9 @@ async def test_regenerate_crop_failure(mock_db):
     req = CropRegenerateRequest()
     bt = BackgroundTasks()
     crop = fake_crop()
-    img = fake_image()
     with patch(
-        "services.crop_editor_service.get_crop_with_ownership_check",
-        new=AsyncMock(return_value=(crop, img, None)),
+        "routers.images.get_crop_for_curation",
+        new=AsyncMock(return_value=crop),
     ), patch(
         "services.crop_editor_service.regenerate_crop_features",
         new=AsyncMock(return_value={"success": False, "error": "regen fail"}),
@@ -757,10 +789,9 @@ async def test_regenerate_crop_success_with_embedding(mock_db):
     req = CropRegenerateRequest()
     bt = BackgroundTasks()
     crop = fake_crop()
-    img = fake_image()
     with patch(
-        "services.crop_editor_service.get_crop_with_ownership_check",
-        new=AsyncMock(return_value=(crop, img, None)),
+        "routers.images.get_crop_for_curation",
+        new=AsyncMock(return_value=crop),
     ), patch(
         "services.crop_editor_service.regenerate_crop_features",
         new=AsyncMock(
@@ -785,10 +816,9 @@ async def test_regenerate_crop_success_umap_warning(mock_db):
     req = CropRegenerateRequest()
     bt = BackgroundTasks()
     crop = fake_crop()
-    img = fake_image()
     with patch(
-        "services.crop_editor_service.get_crop_with_ownership_check",
-        new=AsyncMock(return_value=(crop, img, None)),
+        "routers.images.get_crop_for_curation",
+        new=AsyncMock(return_value=crop),
     ), patch(
         "services.crop_editor_service.regenerate_crop_features",
         new=AsyncMock(
@@ -815,8 +845,10 @@ async def test_create_manual_crop_image_not_found(mock_db):
     req = ManualCropCreateRequest(bbox_x=0, bbox_y=0, bbox_w=20, bbox_h=20)
     bt = BackgroundTasks()
     with patch(
-        "services.crop_editor_service.get_image_with_ownership_check",
-        new=AsyncMock(return_value=(None, "Image not found")),
+        "routers.images.get_image_for_curation",
+        new=AsyncMock(
+            side_effect=HTTPException(status_code=404, detail="Image not found")
+        ),
     ), patch("ml.features.extract_features_for_crops", new=AsyncMock()):
         with pytest.raises(HTTPException) as exc:
             await r.create_manual_crop(
@@ -830,8 +862,8 @@ async def test_create_manual_crop_bad_status(mock_db):
     bt = BackgroundTasks()
     img = fake_image(status=UploadStatus.PROCESSING)
     with patch(
-        "services.crop_editor_service.get_image_with_ownership_check",
-        new=AsyncMock(return_value=(img, None)),
+        "routers.images.get_image_for_curation",
+        new=AsyncMock(return_value=img),
     ), patch("ml.features.extract_features_for_crops", new=AsyncMock()):
         with pytest.raises(HTTPException) as exc:
             await r.create_manual_crop(
@@ -845,8 +877,8 @@ async def test_create_manual_crop_create_error(mock_db):
     bt = BackgroundTasks()
     img = fake_image(status=UploadStatus.UPLOADED)
     with patch(
-        "services.crop_editor_service.get_image_with_ownership_check",
-        new=AsyncMock(return_value=(img, None)),
+        "routers.images.get_image_for_curation",
+        new=AsyncMock(return_value=img),
     ), patch(
         "services.crop_editor_service.create_manual_crop",
         new=AsyncMock(return_value=(None, "create failed")),
@@ -864,8 +896,8 @@ async def test_create_manual_crop_success(mock_db):
     img = fake_image(status=UploadStatus.READY)
     crop = fake_crop()
     with patch(
-        "services.crop_editor_service.get_image_with_ownership_check",
-        new=AsyncMock(return_value=(img, None)),
+        "routers.images.get_image_for_curation",
+        new=AsyncMock(return_value=img),
     ), patch(
         "services.crop_editor_service.create_manual_crop",
         new=AsyncMock(return_value=(crop, None)),
@@ -897,8 +929,10 @@ async def test_batch_update_image_not_found(mock_db):
     req = CropBatchUpdateRequest(changes=[], regenerate_features=False)
     bt = BackgroundTasks()
     with patch(
-        "services.crop_editor_service.get_image_with_ownership_check",
-        new=AsyncMock(return_value=(None, "Image not found")),
+        "routers.images.get_image_for_curation",
+        new=AsyncMock(
+            side_effect=HTTPException(status_code=404, detail="Image not found")
+        ),
     ), patch("services.umap_service.invalidate_crop_umap", new=AsyncMock()), patch(
         "ml.features.extract_features_for_crops", new=AsyncMock()
     ):
@@ -921,8 +955,8 @@ async def test_batch_update_create_missing_bbox(mock_db):
     bt = BackgroundTasks()
     img = fake_image()
     with patch(
-        "services.crop_editor_service.get_image_with_ownership_check",
-        new=AsyncMock(return_value=(img, None)),
+        "routers.images.get_image_for_curation",
+        new=AsyncMock(return_value=img),
     ), patch(
         "services.crop_editor_service.create_manual_crop", new=AsyncMock()
     ), patch(
@@ -948,8 +982,8 @@ async def test_batch_update_create_success(mock_db):
     img = fake_image()
     new_crop = fake_crop(crop_id=500)
     with patch(
-        "services.crop_editor_service.get_image_with_ownership_check",
-        new=AsyncMock(return_value=(img, None)),
+        "routers.images.get_image_for_curation",
+        new=AsyncMock(return_value=img),
     ), patch(
         "services.crop_editor_service.create_manual_crop",
         new=AsyncMock(return_value=(new_crop, None)),
@@ -975,8 +1009,8 @@ async def test_batch_update_create_error(mock_db):
     bt = BackgroundTasks()
     img = fake_image()
     with patch(
-        "services.crop_editor_service.get_image_with_ownership_check",
-        new=AsyncMock(return_value=(img, None)),
+        "routers.images.get_image_for_curation",
+        new=AsyncMock(return_value=img),
     ), patch(
         "services.crop_editor_service.create_manual_crop",
         new=AsyncMock(return_value=(None, "create boom")),
@@ -1005,8 +1039,8 @@ async def test_batch_update_update_missing_id(mock_db):
     bt = BackgroundTasks()
     img = fake_image()
     with patch(
-        "services.crop_editor_service.get_image_with_ownership_check",
-        new=AsyncMock(return_value=(img, None)),
+        "routers.images.get_image_for_curation",
+        new=AsyncMock(return_value=img),
     ), patch(
         "services.crop_editor_service.create_manual_crop", new=AsyncMock()
     ), patch(
@@ -1032,8 +1066,8 @@ async def test_batch_update_update_crop_not_found(mock_db):
     img = fake_image()
     mock_db.execute.return_value = make_result(scalar=None)  # crop lookup -> None
     with patch(
-        "services.crop_editor_service.get_image_with_ownership_check",
-        new=AsyncMock(return_value=(img, None)),
+        "routers.images.get_image_for_curation",
+        new=AsyncMock(return_value=img),
     ), patch(
         "services.crop_editor_service.validate_bbox_within_image",
         return_value=(True, None),
@@ -1056,8 +1090,8 @@ async def test_batch_update_update_invalid_bbox(mock_db):
     crop = fake_crop()
     mock_db.execute.return_value = make_result(scalar=crop)
     with patch(
-        "services.crop_editor_service.get_image_with_ownership_check",
-        new=AsyncMock(return_value=(img, None)),
+        "routers.images.get_image_for_curation",
+        new=AsyncMock(return_value=img),
     ), patch(
         "services.crop_editor_service.validate_bbox_within_image",
         return_value=(False, "bbox bad"),
@@ -1082,8 +1116,8 @@ async def test_batch_update_update_success_and_regen(mock_db):
     # crop lookup, then update-status execute calls
     mock_db.execute.return_value = make_result(scalar=crop)
     with patch(
-        "services.crop_editor_service.get_image_with_ownership_check",
-        new=AsyncMock(return_value=(img, None)),
+        "routers.images.get_image_for_curation",
+        new=AsyncMock(return_value=img),
     ), patch(
         "services.crop_editor_service.validate_bbox_within_image",
         return_value=(True, None),
@@ -1111,8 +1145,8 @@ async def test_batch_update_delete_missing_id(mock_db):
     bt = BackgroundTasks()
     img = fake_image()
     with patch(
-        "services.crop_editor_service.get_image_with_ownership_check",
-        new=AsyncMock(return_value=(img, None)),
+        "routers.images.get_image_for_curation",
+        new=AsyncMock(return_value=img),
     ), patch(
         "services.crop_editor_service.delete_crop_files"
     ), patch(
@@ -1131,8 +1165,8 @@ async def test_batch_update_delete_crop_not_found(mock_db):
     img = fake_image()
     mock_db.execute.return_value = make_result(scalar=None)
     with patch(
-        "services.crop_editor_service.get_image_with_ownership_check",
-        new=AsyncMock(return_value=(img, None)),
+        "routers.images.get_image_for_curation",
+        new=AsyncMock(return_value=img),
     ), patch(
         "services.crop_editor_service.delete_crop_files"
     ), patch(
@@ -1157,8 +1191,8 @@ async def test_batch_update_delete_has_comparisons(mock_db):
         make_result(scalar=3),  # comparison count > 0
     ]
     with patch(
-        "services.crop_editor_service.get_image_with_ownership_check",
-        new=AsyncMock(return_value=(img, None)),
+        "routers.images.get_image_for_curation",
+        new=AsyncMock(return_value=img),
     ), patch(
         "services.crop_editor_service.delete_crop_files"
     ), patch(
@@ -1180,8 +1214,8 @@ async def test_batch_update_delete_success(mock_db):
     crop = fake_crop(crop_id=200)
     mock_db.execute.return_value = make_result(scalar=crop)  # crop lookup
     with patch(
-        "services.crop_editor_service.get_image_with_ownership_check",
-        new=AsyncMock(return_value=(img, None)),
+        "routers.images.get_image_for_curation",
+        new=AsyncMock(return_value=img),
     ), patch(
         "services.crop_editor_service.delete_crop_files"
     ) as del_files, patch(
@@ -1203,8 +1237,8 @@ async def test_batch_update_exception_in_change(mock_db):
     bt = BackgroundTasks()
     img = fake_image()
     with patch(
-        "services.crop_editor_service.get_image_with_ownership_check",
-        new=AsyncMock(return_value=(img, None)),
+        "routers.images.get_image_for_curation",
+        new=AsyncMock(return_value=img),
     ), patch(
         "services.crop_editor_service.create_manual_crop",
         new=AsyncMock(side_effect=RuntimeError("kaboom")),
@@ -1240,8 +1274,8 @@ async def test_batch_update_regenerate_task_runs(mock_db):
         yield task_db
 
     with patch(
-        "services.crop_editor_service.get_image_with_ownership_check",
-        new=AsyncMock(return_value=(img, None)),
+        "routers.images.get_image_for_curation",
+        new=AsyncMock(return_value=img),
     ), patch(
         "services.crop_editor_service.create_manual_crop",
         new=AsyncMock(return_value=(new_crop, None)),
@@ -1308,8 +1342,8 @@ async def test_batch_update_regenerate_task_handles_errors(mock_db):
             raise RuntimeError("status update boom")
 
     with patch(
-        "services.crop_editor_service.get_image_with_ownership_check",
-        new=AsyncMock(return_value=(img, None)),
+        "routers.images.get_image_for_curation",
+        new=AsyncMock(return_value=img),
     ), patch(
         "services.crop_editor_service.create_manual_crop", new=create_mock
     ), patch(
@@ -1359,8 +1393,8 @@ async def test_batch_update_regenerate_task_regen_raises(mock_db):
             raise RuntimeError("nested status boom")
 
     with patch(
-        "services.crop_editor_service.get_image_with_ownership_check",
-        new=AsyncMock(return_value=(img, None)),
+        "routers.images.get_image_for_curation",
+        new=AsyncMock(return_value=img),
     ), patch(
         "services.crop_editor_service.create_manual_crop",
         new=AsyncMock(return_value=(crop, None)),

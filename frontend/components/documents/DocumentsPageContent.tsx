@@ -6,14 +6,14 @@
  * The document database UI: a searchable library of indexed documents with a
  * persistent upload dropzone, paper discovery ("Find sources"), an inline PDF
  * viewer, and the "Connect to Claude" MCP connector panel. Full-screen and
- * outside /dashboard, using the collapsible navigation sidebar like the editor.
+ * outside /dashboard, but with the navigation sidebar permanently pinned open
+ * (same "fixed" variant as the dashboard layout) — no collapse toggle here.
  */
 
 import { useState, useCallback, useRef } from "react";
 import { useTranslations } from "next-intl";
 import { AnimatePresence, motion } from "framer-motion";
 import {
-  ChevronRight,
   ChevronLeft,
   FileText,
   Search,
@@ -46,7 +46,6 @@ export function DocumentsPageContent() {
   const isDesktop = useMediaQuery(BREAKPOINTS.tablet);
   const reducedMotion = useReducedMotion();
 
-  const [showNavigation, setShowNavigation] = useState(false);
   const [isDiscoverOpen, setIsDiscoverOpen] = useState(false);
   const [isConnectOpen, setIsConnectOpen] = useState(false);
 
@@ -112,42 +111,11 @@ export function DocumentsPageContent() {
 
   return (
     <div className="h-screen bg-bg-primary flex overflow-hidden">
-      {/* Navigation sidebar toggle trigger */}
-      <button
-        onClick={() => setShowNavigation(!showNavigation)}
-        className={clsx(
-          "absolute top-1/2 -translate-y-1/2 z-50 bg-bg-secondary px-1 py-6 rounded-r-lg border-y border-r border-white/5 hover:bg-white/5",
-          "transition-all duration-300 ease-out",
-          showNavigation ? "left-64" : "left-0"
-        )}
-        title={showNavigation ? t("hideNavigation") : t("showNavigation")}
-      >
-        <ChevronRight
-          className={clsx(
-            "w-4 h-4 text-text-secondary transition-transform duration-200",
-            showNavigation && "rotate-180"
-          )}
-        />
-      </button>
+      {/* Navigation sidebar - always pinned open on this page (not collapsible) */}
+      <AppSidebar variant="fixed" />
 
-      {/* Slide-out navigation sidebar */}
-      <AnimatePresence>
-        {showNavigation && (
-          <AppSidebar
-            variant="overlay"
-            onClose={() => setShowNavigation(false)}
-            activePath="/documents"
-          />
-        )}
-      </AnimatePresence>
-
-      {/* Main content area - shifts based on navigation sidebar */}
-      <div
-        className={clsx(
-          "flex-1 flex transition-all duration-300 ease-out min-w-0",
-          showNavigation ? "ml-64" : "ml-0"
-        )}
-      >
+      {/* Main content area - offset by the pinned sidebar */}
+      <div className="flex-1 flex min-w-0 ml-64">
         <div className="flex-1 flex flex-col min-w-0">
           {/* Header */}
           <div className="flex items-center gap-3 px-4 sm:px-6 py-3 border-b border-white/5 bg-bg-secondary/50">
@@ -299,8 +267,7 @@ export function DocumentsPageContent() {
           className={clsx(
             "absolute top-1/2 -translate-y-1/2 z-50 bg-bg-secondary px-1 py-6 rounded-l-lg border-y border-l border-white/5 hover:bg-white/5",
             "transition-all duration-300 ease-out",
-            isPDFPanelOpen ? "right-[500px]" : "right-0",
-            showNavigation && !isPDFPanelOpen && "opacity-0 pointer-events-none"
+            isPDFPanelOpen ? "right-[500px]" : "right-0"
           )}
           title={isPDFPanelOpen ? t("hidePreview") : t("showPreview")}
         >

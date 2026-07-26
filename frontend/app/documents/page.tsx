@@ -4,8 +4,8 @@
  * Documents Page
  *
  * Standalone document database UI (replaces the former /chat agent page).
- * Located outside /dashboard to avoid inheriting the dashboard layout; uses the
- * collapsible navigation sidebar (same pattern as the editor).
+ * Located outside /dashboard to avoid inheriting the dashboard layout, but the
+ * navigation sidebar stays pinned open here (no collapse toggle).
  */
 
 import { useEffect } from "react";
