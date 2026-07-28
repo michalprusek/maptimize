@@ -22,7 +22,7 @@ import {
   User,
 } from "lucide-react";
 import { ExportModal, ImportModal } from "@/components/export";
-import { useAssignMicroscope } from "@/hooks";
+import { useAssignMicroscope, useAssignPtm } from "@/hooks";
 
 export default function ExperimentsPage(): JSX.Element {
   const t = useTranslations("experiments");
@@ -37,10 +37,14 @@ export default function ExperimentsPage(): JSX.Element {
   const [newExpDescription, setNewExpDescription] = useState("");
   const [selectedProteinId, setSelectedProteinId] = useState<number | null>(null);
   const [selectedMicroscopeId, setSelectedMicroscopeId] = useState<number | null>(null);
-  // Which card has its microscope menu open. Each card is a framer-motion
-  // element, so it creates a stacking context the menu cannot escape -- without
-  // lifting the open card, the next card in the grid paints over the menu.
-  const [openMicroscopeCardId, setOpenMicroscopeCardId] = useState<number | null>(null);
+  const [selectedPtmId, setSelectedPtmId] = useState<number | null>(null);
+  // Which card has one of its tag menus (microscope, PTM) open. Each card is a
+  // framer-motion element, so it creates a stacking context the menu cannot
+  // escape -- without lifting the open card, the next card in the grid paints
+  // over the menu. A single id covers both chips because only one menu is ever
+  // open at a time: opening the second closes the first on mousedown, which
+  // lands before the click that opens it.
+  const [openMenuCardId, setOpenMenuCardId] = useState<number | null>(null);
   const [experimentToDelete, setExperimentToDelete] = useState<{ id: number; name: string } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const queryClient = useQueryClient();
@@ -60,11 +64,17 @@ export default function ExperimentsPage(): JSX.Element {
     queryFn: () => api.getMicroscopes(),
   });
 
+  const { data: ptms } = useQuery({
+    queryKey: ["ptms"],
+    queryFn: () => api.getPtms(),
+  });
+
   const proteinOptions = toColorTagOptions(proteins, (p) => p.full_name);
   const microscopeOptions = toColorTagOptions(microscopes, (m) => m.manufacturer);
+  const ptmOptions = toColorTagOptions(ptms, (p) => p.abbreviation);
 
   const createMutation = useMutation({
-    mutationFn: (data: { name: string; description?: string; map_protein_id?: number; microscope_id?: number }) =>
+    mutationFn: (data: { name: string; description?: string; map_protein_id?: number; microscope_id?: number; ptm_id?: number }) =>
       api.createExperiment(data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["experiments"] });
@@ -73,6 +83,7 @@ export default function ExperimentsPage(): JSX.Element {
       setNewExpDescription("");
       setSelectedProteinId(null);
       setSelectedMicroscopeId(null);
+      setSelectedPtmId(null);
       setError(null);
     },
     onError: (err: Error) => {
@@ -100,6 +111,11 @@ export default function ExperimentsPage(): JSX.Element {
     onSuccess: () => setError(null),
   });
 
+  const assignPtmMutation = useAssignPtm({
+    onError: setError,
+    onSuccess: () => setError(null),
+  });
+
   const handleCreate = (e: React.FormEvent) => {
     e.preventDefault();
     createMutation.mutate({
@@ -107,6 +123,7 @@ export default function ExperimentsPage(): JSX.Element {
       description: newExpDescription || undefined,
       map_protein_id: selectedProteinId ?? undefined,
       microscope_id: selectedMicroscopeId ?? undefined,
+      ptm_id: selectedPtmId ?? undefined,
     });
   };
 
@@ -187,11 +204,11 @@ export default function ExperimentsPage(): JSX.Element {
               initial={{ opacity: 0, y: 20 }}
               animate={{ opacity: 1, y: 0 }}
               transition={{ delay: i * 0.05 }}
-              className={`relative ${openMicroscopeCardId === exp.id ? "z-50" : ""}`}
+              className={`relative ${openMenuCardId === exp.id ? "z-50" : ""}`}
             >
               <div className="glass-card p-6 h-full group hover:border-primary-500/30 transition-all duration-300 card-hover">
-                {/* The microscope picker below sits outside this Link on purpose:
-                    nested inside it, every click would navigate away. */}
+                {/* The microscope and PTM pickers below sit outside this Link on
+                    purpose: nested inside it, every click would navigate away. */}
                 <Link href={`/dashboard/experiments/${exp.id}`} className="block cursor-pointer">
                   <div className="flex items-start justify-between mb-4">
                     <div className="p-3 bg-primary-500/10 rounded-xl">
@@ -240,19 +257,37 @@ export default function ExperimentsPage(): JSX.Element {
                 </Link>
 
                 <div className="flex items-center justify-between gap-2 mt-4 pt-4 border-t border-white/5">
-                  <ColorTagSelect
-                    options={microscopeOptions}
-                    value={exp.microscope?.id ?? null}
-                    onChange={(microscopeId) =>
-                      assignMicroscopeMutation.mutate({ experimentId: exp.id, microscopeId })
-                    }
-                    onOpenChange={(open) =>
-                      setOpenMicroscopeCardId(open ? exp.id : null)
-                    }
-                    placeholder={t("unassignedMicroscope")}
-                    variant="chip"
-                    size="sm"
-                  />
+                  <div className="flex items-center gap-2 min-w-0">
+                    <ColorTagSelect
+                      options={microscopeOptions}
+                      value={exp.microscope?.id ?? null}
+                      onChange={(microscopeId) =>
+                        assignMicroscopeMutation.mutate({ experimentId: exp.id, microscopeId })
+                      }
+                      onOpenChange={(open) =>
+                        setOpenMenuCardId(open ? exp.id : null)
+                      }
+                      placeholder={t("unassignedMicroscope")}
+                      variant="chip"
+                      size="sm"
+                    />
+                    {/* Right-aligned because this chip sits further into the card:
+                        a left-aligned menu would hang off the card's edge. */}
+                    <ColorTagSelect
+                      options={ptmOptions}
+                      value={exp.ptm?.id ?? null}
+                      onChange={(ptmId) =>
+                        assignPtmMutation.mutate({ experimentId: exp.id, ptmId })
+                      }
+                      onOpenChange={(open) =>
+                        setOpenMenuCardId(open ? exp.id : null)
+                      }
+                      placeholder={t("unassignedPtm")}
+                      variant="chip"
+                      size="sm"
+                      align="right"
+                    />
+                  </div>
                   {/* Deliberately NOT a second <Link>: the card would then expose
                       two anchors to the same href, and the e2e suite counts cards
                       by `a[href*="/experiments/"]`. The body Link above navigates. */}
@@ -366,6 +401,19 @@ export default function ExperimentsPage(): JSX.Element {
                     value={selectedMicroscopeId}
                     onChange={setSelectedMicroscopeId}
                     placeholder={t("unassignedMicroscope")}
+                  />
+                </div>
+
+                {/* PTM selector */}
+                <div>
+                  <label className="block text-sm font-medium text-text-secondary mb-2">
+                    {t("assignPtm")}
+                  </label>
+                  <ColorTagSelect
+                    options={ptmOptions}
+                    value={selectedPtmId}
+                    onChange={setSelectedPtmId}
+                    placeholder={t("unassignedPtm")}
                   />
                 </div>
 

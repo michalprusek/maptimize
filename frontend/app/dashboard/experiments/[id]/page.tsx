@@ -14,7 +14,7 @@ import {
 } from "@/lib/animations";
 import { ColorTagSelect, ConfirmModal, MicroscopyImage, Pagination, ImagePreviewModal, toColorTagOptions, type PreviewImage } from "@/components/ui";
 import { FOVGallery } from "@/components/experiment";
-import { useAssignMicroscope } from "@/hooks";
+import { useAssignMicroscope, useAssignPtm } from "@/hooks";
 import {
   ImageGalleryFilters,
   SortOrder,
@@ -130,6 +130,11 @@ export default function ExperimentDetailPage(): JSX.Element {
     queryFn: () => api.getMicroscopes(),
   });
 
+  const { data: ptms } = useQuery({
+    queryKey: ["ptms"],
+    queryFn: () => api.getPtms(),
+  });
+
   // Auto-select view mode based on available data
   useEffect(() => {
     if (viewMode === null && experiment) {
@@ -180,6 +185,14 @@ export default function ExperimentDetailPage(): JSX.Element {
   });
 
   const assignMicroscopeMutation = useAssignMicroscope({
+    onError: setMutationError,
+    onSuccess: () => {
+      setMutationError(null);
+      invalidateExperimentQueries();
+    },
+  });
+
+  const assignPtmMutation = useAssignPtm({
     onError: setMutationError,
     onSuccess: () => {
       setMutationError(null);
@@ -676,7 +689,7 @@ export default function ExperimentDetailPage(): JSX.Element {
           </button>
         </div>
 
-        {/* Experiment protein + microscope assignment */}
+        {/* Experiment protein + microscope + PTM assignment */}
         <ColorTagSelect
           options={toColorTagOptions(proteins)}
           value={experiment.map_protein?.id ?? null}
@@ -697,6 +710,17 @@ export default function ExperimentDetailPage(): JSX.Element {
           placeholder={t("assignMicroscope")}
           clearLabel={t("unassignedMicroscope")}
           hint={t("experimentMicroscopeHint")}
+          variant="chip"
+          align="right"
+        />
+
+        <ColorTagSelect
+          options={toColorTagOptions(ptms, (p) => p.abbreviation)}
+          value={experiment.ptm?.id ?? null}
+          onChange={(ptmId) => assignPtmMutation.mutate({ experimentId, ptmId })}
+          placeholder={t("assignPtm")}
+          clearLabel={t("unassignedPtm")}
+          hint={t("experimentPtmHint")}
           variant="chip"
           align="right"
         />

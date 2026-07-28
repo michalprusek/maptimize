@@ -25,7 +25,7 @@ import {
   API_URL,
 } from "@/lib/api";
 import { Spinner, MicroscopyImage } from "@/components/ui";
-import { RefreshCw, Info, AlertCircle, Grid, Layers } from "lucide-react";
+import { RefreshCw, Info, AlertCircle, Grid, Layers, FilterX } from "lucide-react";
 import {
   DEFAULT_POINT_COLOR,
   UMAP_AXIS_STYLE,
@@ -36,6 +36,18 @@ import {
   formatAxisTick,
   getSilhouetteScoreStyle,
 } from "./chartConfig";
+import { UmapFilterPanel, type ColorBy } from "./UmapFilterPanel";
+import {
+  EMPTY_SELECTION,
+  experimentColor,
+  experimentMetaById,
+  isSelectionEmpty,
+  selectionFromQuery,
+  selectionKey,
+  selectionToQuery,
+  totalPoints,
+  type FacetSelection,
+} from "./umapFacets";
 
 interface UmapVisualizationProps {
   experimentId?: number;
@@ -56,22 +68,56 @@ function hideOnError(e: React.SyntheticEvent<HTMLImageElement>): void {
   e.currentTarget.style.display = "none";
 }
 
+/** The acquisition context of a point, resolved from the facet summary. */
+interface PointContext {
+  experimentName: string;
+  microscopeName: string | null;
+  ptmName: string | null;
+}
+
+/** The rows shared by both tooltips: where this point came from. */
+function ContextRows({
+  context,
+  t,
+}: {
+  context: PointContext;
+  t: (key: string, values?: Record<string, string | number>) => string;
+}): JSX.Element {
+  return (
+    <>
+      <div className="text-xs text-text-secondary truncate">{context.experimentName}</div>
+      {context.microscopeName && (
+        <div className="text-xs text-text-muted truncate">
+          {t("facetMicroscope")}: {context.microscopeName}
+        </div>
+      )}
+      {context.ptmName && (
+        <div className="text-xs text-text-muted truncate">
+          {t("facetPtm")}: {context.ptmName}
+        </div>
+      )}
+    </>
+  );
+}
+
 // Tooltip for cropped cell view
 interface CroppedTooltipProps extends TooltipProps<number, string> {
   t: (key: string, values?: Record<string, string | number>) => string;
+  contextOf: (point: UmapPoint | UmapFovPoint) => PointContext;
 }
 
 function CroppedTooltip({
   active,
   payload,
   t,
+  contextOf,
 }: CroppedTooltipProps): JSX.Element | null {
   if (!active || !payload || !payload.length) return null;
 
   const point = payload[0].payload as UmapPoint;
 
   return (
-    <div className="bg-bg-elevated border border-white/10 rounded-lg shadow-xl p-3 max-w-[200px]">
+    <div className="bg-bg-elevated border border-white/10 rounded-lg shadow-xl p-3 max-w-[220px]">
       <MicroscopyImage
         src={buildAuthenticatedUrl(point.thumbnail_url)}
         alt="Cell crop"
@@ -89,6 +135,7 @@ function CroppedTooltip({
           />
           {point.protein_name || t("unassigned")}
         </div>
+        <ContextRows context={contextOf(point)} t={t} />
         {point.bundleness_score !== null && (
           <div className="text-xs text-text-secondary">
             {t("bundleness")}: {point.bundleness_score.toFixed(2)}
@@ -103,12 +150,14 @@ function CroppedTooltip({
 // Tooltip for FOV view
 interface FovTooltipProps extends TooltipProps<number, string> {
   t: (key: string, values?: Record<string, string | number>) => string;
+  contextOf: (point: UmapPoint | UmapFovPoint) => PointContext;
 }
 
 function FovTooltip({
   active,
   payload,
   t,
+  contextOf,
 }: FovTooltipProps): JSX.Element | null {
   if (!active || !payload || !payload.length) return null;
 
@@ -136,6 +185,7 @@ function FovTooltip({
           />
           {point.protein_name || t("unassigned")}
         </div>
+        <ContextRows context={contextOf(point)} t={t} />
         <div className="text-xs text-text-muted">{t("imageId", { id: point.image_id })}</div>
       </div>
     </div>
@@ -157,28 +207,60 @@ export function UmapVisualization({
   const t = useTranslations("umap");
   const router = useRouter();
   const [viewMode, setViewMode] = useState<UmapType>(preferFovMode ? "fov" : "cropped");
-  const [microscopeId, setMicroscopeId] = useState<number | null>(null);
+  const [colorBy, setColorBy] = useState<ColorBy>("protein");
+
+  // Only the dashboard's global plot round-trips its filter through the URL, so
+  // a filtered view can be shared. On an experiment page the scope is the route
+  // itself and writing facets into it would fight the page's own params.
+  const syncsUrl = experimentId === undefined;
+  const [selection, setSelection] = useState<FacetSelection>(() =>
+    syncsUrl && typeof window !== "undefined"
+      ? selectionFromQuery(window.location.search)
+      : EMPTY_SELECTION
+  );
 
   const queryClient = useQueryClient();
 
-  const { data: microscopes, isError: microscopesError } = useQuery({
+  useEffect(() => {
+    if (!syncsUrl) return;
+    const query = selectionToQuery(selection);
+    // replaceState, not the router: this must not push history entries or
+    // re-run the route's data fetching on every pill click.
+    window.history.replaceState(
+      null,
+      "",
+      query ? `${window.location.pathname}?${query}` : window.location.pathname
+    );
+  }, [selection, syncsUrl]);
+
+  const { data: microscopes } = useQuery({
     queryKey: ["microscopes"],
     queryFn: () => api.getMicroscopes(),
     staleTime: 1000 * 60 * 5,
   });
+  const { data: proteins } = useQuery({
+    queryKey: ["proteins"],
+    queryFn: () => api.getProteins(),
+    staleTime: 1000 * 60 * 5,
+  });
+  const { data: ptms } = useQuery({
+    queryKey: ["ptms"],
+    queryFn: () => api.getPtms(),
+    staleTime: 1000 * 60 * 5,
+  });
 
-  // If the microscope list fails to load, the <select> unmounts. Clear any
-  // active filter so the plot falls back to "all" rather than being silently
-  // constrained to a microscope with no visible control to undo it.
-  useEffect(() => {
-    if (microscopesError && microscopeId !== null) {
-      setMicroscopeId(null);
-    }
-  }, [microscopesError, microscopeId]);
+  // An experimentId prop scopes the plot; the user filters within it.
+  const effectiveSelection = useMemo(
+    () =>
+      experimentId === undefined
+        ? selection
+        : { ...selection, experiment: [experimentId] },
+    [selection, experimentId]
+  );
 
   const { data, isLoading, error, refetch, isFetching } = useQuery({
-    queryKey: ["umap", experimentId, viewMode, microscopeId],
-    queryFn: () => api.getUmapData(experimentId, viewMode, microscopeId ?? undefined),
+    queryKey: ["umap", experimentId, viewMode, selectionKey(effectiveSelection)],
+    queryFn: () => api.getUmapData({ umapType: viewMode, selection: effectiveSelection }),
     staleTime: 1000 * 60 * 5, // Cache for 5 minutes
     retry: false,
     // New uploads/edits arrive without coordinates; the request that observes
@@ -186,6 +268,15 @@ export function UmapVisualization({
     refetchInterval: (query) =>
       query.state.data?.is_stale ? UMAP_STALE_POLL_MS : false,
   });
+
+  // A reference value the user has ticked can be deleted by anyone (reference
+  // data is shared), and the backend then 404s the whole request. Drop the dead
+  // ids rather than leaving the plot stuck behind an error it cannot explain.
+  useEffect(() => {
+    const detail = error instanceof Error ? error.message : "";
+    if (!detail.includes("not found") || isSelectionEmpty(selection)) return;
+    setSelection(EMPTY_SELECTION);
+  }, [error, selection]);
 
   const isRecomputing = data?.is_stale ?? false;
   const refreshError = data?.refresh_error ?? null;
@@ -226,27 +317,93 @@ export function UmapVisualization({
     router.push(`/editor/${expId}/${pointData.image_id}`);
   }, [router, experimentId]);
 
-  // Group points by protein for legend
-  const proteinGroups = useMemo(() => {
+  // The backend summarises the whole readable scope, since the panel must keep
+  // offering a value after you untick it. On an experiment page that scope is
+  // wider than the plot, so narrow it here — the summary is per experiment,
+  // which is exactly the granularity that makes this a filter and not a second
+  // request.
+  const facetRows = useMemo(() => {
+    const rows = data?.facets ?? [];
+    return experimentId === undefined
+      ? rows
+      : rows.filter((row) => row.experiment_id === experimentId);
+  }, [data?.facets, experimentId]);
+
+  // Microscope and PTM live on the experiment, so points carry only
+  // experiment_id and the rest is looked up here.
+  const experimentMeta = useMemo(() => experimentMetaById(data?.facets ?? []), [data?.facets]);
+  const microscopeById = useMemo(
+    () => new Map((microscopes ?? []).map((m) => [m.id, m])),
+    [microscopes]
+  );
+  const ptmById = useMemo(() => new Map((ptms ?? []).map((p) => [p.id, p])), [ptms]);
+
+  const contextOf = useCallback(
+    (point: UmapPoint | UmapFovPoint): PointContext => {
+      const meta = experimentMeta.get(point.experiment_id);
+      const microscope = meta?.microscopeId ? microscopeById.get(meta.microscopeId) : undefined;
+      const ptm = meta?.ptmId ? ptmById.get(meta.ptmId) : undefined;
+      return {
+        experimentName: meta?.name ?? `#${point.experiment_id}`,
+        microscopeName: microscope?.name ?? null,
+        ptmName: ptm?.abbreviation || ptm?.name || null,
+      };
+    },
+    [experimentMeta, microscopeById, ptmById]
+  );
+
+  /** The label and colour a point takes under the current colour-by dimension. */
+  const styleOf = useCallback(
+    (point: UmapPoint | UmapFovPoint): { name: string; color: string } => {
+      const meta = experimentMeta.get(point.experiment_id);
+
+      switch (colorBy) {
+        case "microscope": {
+          const microscope = meta?.microscopeId
+            ? microscopeById.get(meta.microscopeId)
+            : undefined;
+          return {
+            name: microscope?.name ?? t("unassigned"),
+            color: microscope?.color || DEFAULT_POINT_COLOR,
+          };
+        }
+        case "ptm": {
+          const ptm = meta?.ptmId ? ptmById.get(meta.ptmId) : undefined;
+          return {
+            name: ptm?.name ?? t("unassigned"),
+            color: ptm?.color || DEFAULT_POINT_COLOR,
+          };
+        }
+        case "experiment":
+          return {
+            name: meta?.name ?? `#${point.experiment_id}`,
+            color: experimentColor(point.experiment_id),
+          };
+        case "protein":
+        default:
+          return {
+            name: point.protein_name || t("unassigned"),
+            color: point.protein_color || DEFAULT_POINT_COLOR,
+          };
+      }
+    },
+    [colorBy, experimentMeta, microscopeById, ptmById, t]
+  );
+
+  // Legend groups, derived from the same styleOf as the points themselves so a
+  // swatch can never disagree with what is drawn.
+  const legendGroups = useMemo(() => {
     if (!data?.points) return [];
 
-    const groups = new Map<
-      string,
-      { name: string; color: string; count: number }
-    >();
-
+    const groups = new Map<string, { name: string; color: string; count: number }>();
     data.points.forEach((point) => {
-      const name = point.protein_name || t("unassigned");
-      const color = point.protein_color || DEFAULT_POINT_COLOR;
-
-      if (!groups.has(name)) {
-        groups.set(name, { name, color, count: 0 });
-      }
+      const { name, color } = styleOf(point);
+      if (!groups.has(name)) groups.set(name, { name, color, count: 0 });
       groups.get(name)!.count++;
     });
 
     return Array.from(groups.values()).sort((a, b) => b.count - a.count);
-  }, [data?.points, t]);
+  }, [data?.points, styleOf]);
 
   // Prepare data for rendering (may be null/undefined)
   const isFov = data ? isFovResponse(data) : viewMode === "fov";
@@ -342,6 +499,29 @@ export function UmapVisualization({
     }
 
     if (!data || data.points.length === 0) {
+      // The filter excluded everything. Saying "upload and process images" here
+      // would send the user to fix a problem they do not have.
+      if (data && !isSelectionEmpty(selection)) {
+        return (
+          <div
+            className="flex flex-col items-center justify-center text-center"
+            style={{ height: height - 100 }}
+          >
+            <FilterX className="w-12 h-12 text-text-muted mb-4" />
+            <h3 className="text-lg font-semibold text-text-primary mb-2">
+              {t("noMatchingPoints")}
+            </h3>
+            <p className="text-text-secondary max-w-md mb-4">{t("noMatchingPointsHint")}</p>
+            <button
+              onClick={() => setSelection(EMPTY_SELECTION)}
+              className="btn-secondary inline-flex items-center gap-2"
+            >
+              {t("clearAll")}
+            </button>
+          </div>
+        );
+      }
+
       // Nothing to plot yet, but a re-fit is running — the data is on its way,
       // so don't claim there are no embeddings.
       if (isRecomputing) {
@@ -433,7 +613,13 @@ export function UmapVisualization({
               />
               <ZAxis range={[60, 60]} />
               <Tooltip
-                content={isFov ? <FovTooltip t={t} /> : <CroppedTooltip t={t} />}
+                content={
+                  isFov ? (
+                    <FovTooltip t={t} contextOf={contextOf} />
+                  ) : (
+                    <CroppedTooltip t={t} contextOf={contextOf} />
+                  )
+                }
                 cursor={UMAP_TOOLTIP_CURSOR}
               />
               <Scatter
@@ -443,7 +629,7 @@ export function UmapVisualization({
                 {data.points.map((point, index) => (
                   <Cell
                     key={`cell-${index}`}
-                    fill={point.protein_color || DEFAULT_POINT_COLOR}
+                    fill={styleOf(point).color}
                     fillOpacity={0.75}
                     stroke="rgba(255,255,255,0.3)"
                     strokeWidth={1}
@@ -457,7 +643,7 @@ export function UmapVisualization({
 
         {/* Legend */}
         <div className="flex flex-wrap gap-3 mt-4 pt-4 border-t border-white/5">
-          {proteinGroups.map((group) => (
+          {legendGroups.map((group) => (
             <div
               key={group.name}
               className="flex items-center gap-1.5 px-2 py-1 rounded bg-white/5"
@@ -503,21 +689,6 @@ export function UmapVisualization({
         </div>
 
         <div className="flex items-center gap-3">
-          {/* Microscope filter */}
-          {microscopes && microscopes.length > 0 && (
-            <select
-              value={microscopeId ?? ""}
-              onChange={(e) => setMicroscopeId(e.target.value ? Number(e.target.value) : null)}
-              className="input-field py-1.5 text-sm max-w-[180px]"
-              title={t("microscopeFilter")}
-            >
-              <option value="">{t("allMicroscopes")}</option>
-              {microscopes.map((m) => (
-                <option key={m.id} value={m.id}>{m.name}</option>
-              ))}
-            </select>
-          )}
-
           {/* Toggle Buttons */}
           <div className="flex items-center bg-bg-secondary rounded-lg p-1">
             <button
@@ -559,6 +730,23 @@ export function UmapVisualization({
           </button>
         </div>
       </div>
+
+      {/* Advanced filter — needs the facet summary, which arrives with the data */}
+      {data && (
+        <UmapFilterPanel
+          rows={facetRows}
+          selection={selection}
+          onSelectionChange={setSelection}
+          colorBy={colorBy}
+          onColorByChange={setColorBy}
+          microscopes={microscopes}
+          proteins={proteins}
+          ptms={ptms}
+          showExperimentFacet={experimentId === undefined}
+          shownCount={data.points.length}
+          totalCount={totalPoints(facetRows)}
+        />
+      )}
 
       {/* Content area */}
       {renderContent()}

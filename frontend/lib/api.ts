@@ -661,17 +661,31 @@ class ApiClient {
   }
 
   // Embeddings / UMAP
-  async getUmapData(
-    experimentId?: number,
-    umapType: UmapType = "cropped",
-    microscopeId?: number
-  ): Promise<UmapDataResponse | UmapFovDataResponse> {
+  /**
+   * Fetch the UMAP projection, optionally narrowed by the dashboard filter.
+   *
+   * Each facet is a repeated query parameter: OR within a facet, AND across
+   * facets. Id 0 means "not assigned" for microscope, protein and PTM — without
+   * it the PTM facet would be unusable, since experiments start unassigned.
+   */
+  async getUmapData({
+    umapType = "cropped",
+    selection,
+  }: {
+    umapType?: UmapType;
+    selection?: UmapFacetSelection;
+  } = {}): Promise<UmapDataResponse | UmapFovDataResponse> {
     const params = new URLSearchParams({ umap_type: umapType });
-    if (experimentId) {
-      params.append("experiment_id", experimentId.toString());
-    }
-    if (microscopeId) {
-      params.append("microscope_id", microscopeId.toString());
+    const facetParams: Array<[keyof UmapFacetSelection, string]> = [
+      ["experiment", "experiment_id"],
+      ["microscope", "microscope_id"],
+      ["protein", "protein_id"],
+      ["ptm", "ptm_id"],
+    ];
+    for (const [facet, param] of facetParams) {
+      for (const id of selection?.[facet] ?? []) {
+        params.append(param, id.toString());
+      }
     }
     if (umapType === "fov") {
       return this.request<UmapFovDataResponse>(`/api/embeddings/umap?${params}`);
@@ -1858,9 +1872,36 @@ export interface UmapPoint {
   bundleness_score: number | null;
 }
 
+/** Which values the dashboard UMAP filter has ticked, per facet. */
+export interface UmapFacetSelection {
+  experiment: number[];
+  microscope: number[];
+  protein: number[];
+  ptm: number[];
+}
+
+/**
+ * One (experiment, protein) bucket of the plot, with its point count.
+ *
+ * The backend summarises the scope this way instead of repeating an
+ * experiment's microscope and PTM on every one of its points; the client joins
+ * on `experiment_id` to colour by, filter on, or label those dimensions. Rows
+ * cover the scope BEFORE facet filters, so unticking a value never makes it
+ * vanish from the filter panel. A null id means nothing is assigned.
+ */
+export interface UmapFacetRow {
+  experiment_id: number;
+  experiment_name: string;
+  microscope_id: number | null;
+  ptm_id: number | null;
+  protein_id: number | null;
+  count: number;
+}
+
 export interface UmapDataResponse {
   points: UmapPoint[];
   total_crops: number;
+  facets: UmapFacetRow[];
   silhouette_score: number | null;
   /** Coordinates are being refreshed in the background; poll until false. */
   is_stale: boolean;
@@ -1882,6 +1923,7 @@ export interface UmapFovPoint {
 export interface UmapFovDataResponse {
   points: UmapFovPoint[];
   total_images: number;
+  facets: UmapFacetRow[];
   silhouette_score: number | null;
   computed_at: string | null;
   /** Coordinates are being refreshed in the background; poll until false. */
