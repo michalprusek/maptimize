@@ -126,7 +126,10 @@ export function facetOptions(
     options.push({
       id,
       name: ref?.name ?? experimentNames.get(id) ?? `#${id}`,
-      color: ref?.color ?? null,
+      // Experiments have no reference row to take a colour from, so they use the
+      // same derived hue the points do. Without this every experiment pill in the
+      // panel renders the same grey while the plot draws them distinctly.
+      color: ref?.color ?? (facet === "experiment" ? experimentColor(id) : null),
       count,
     });
   }
@@ -222,12 +225,61 @@ export function selectionFromQuery(search: string): FacetSelection {
   return selection;
 }
 
-/** The query string for a selection — empty facets are omitted, not sent blank. */
-export function selectionToQuery(selection: FacetSelection): string {
-  const params = new URLSearchParams();
+/**
+ * Write the selection into an existing query string, leaving other params alone.
+ *
+ * Takes the page's current search string rather than building from scratch: the
+ * plot owns four params, not the whole URL, and silently dropping a param some
+ * other part of the page put there would be a nasty surprise for whoever adds
+ * one. Empty facets are removed, not written blank.
+ */
+export function selectionToQuery(selection: FacetSelection, search = ""): string {
+  const params = new URLSearchParams(search);
   for (const facet of Object.keys(FACET_PARAMS) as FacetKey[]) {
     const ids = selection[facet];
-    if (ids.length > 0) params.set(FACET_PARAMS[facet], [...ids].sort((a, b) => a - b).join(","));
+    if (ids.length > 0) {
+      params.set(FACET_PARAMS[facet], [...ids].sort((a, b) => a - b).join(","));
+    } else {
+      params.delete(FACET_PARAMS[facet]);
+    }
   }
   return params.toString();
+}
+
+/** Backend 404 detail prefix -> the facet whose ids it names. */
+const FACET_BY_ERROR_LABEL: Array<[string, FacetKey]> = [
+  ["MAP protein not found:", "protein"],
+  ["Microscope not found:", "microscope"],
+  ["Experiment not found:", "experiment"],
+  ["PTM not found:", "ptm"],
+];
+
+/**
+ * Drop the ids a backend 404 named, or null if the message names none of them.
+ *
+ * Reference data is shared, so a colleague can delete a value another tab still
+ * has ticked and the whole request then 404s. The error carries the offending
+ * ids ("Microscope not found: 5"), so only those need to go — clearing the
+ * user's other, still-valid facets to recover would throw away work they did not
+ * lose.
+ */
+export function selectionWithoutDeadIds(
+  selection: FacetSelection,
+  message: string
+): FacetSelection | null {
+  for (const [prefix, facet] of FACET_BY_ERROR_LABEL) {
+    const at = message.indexOf(prefix);
+    if (at === -1) continue;
+
+    const dead = message
+      .slice(at + prefix.length)
+      .split(",")
+      .map((value) => Number(value.trim()))
+      .filter((value) => Number.isInteger(value));
+
+    const kept = selection[facet].filter((id) => !dead.includes(id));
+    if (kept.length === selection[facet].length) continue;
+    return { ...selection, [facet]: kept };
+  }
+  return null;
 }

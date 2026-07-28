@@ -45,6 +45,7 @@ import {
   selectionFromQuery,
   selectionKey,
   selectionToQuery,
+  selectionWithoutDeadIds,
   totalPoints,
   type FacetSelection,
 } from "./umapFacets";
@@ -223,7 +224,7 @@ export function UmapVisualization({
 
   useEffect(() => {
     if (!syncsUrl) return;
-    const query = selectionToQuery(selection);
+    const query = selectionToQuery(selection, window.location.search);
     // replaceState, not the router: this must not push history entries or
     // re-run the route's data fetching on every pill click.
     window.history.replaceState(
@@ -270,12 +271,14 @@ export function UmapVisualization({
   });
 
   // A reference value the user has ticked can be deleted by anyone (reference
-  // data is shared), and the backend then 404s the whole request. Drop the dead
-  // ids rather than leaving the plot stuck behind an error it cannot explain.
+  // data is shared), and the backend then 404s the whole request. Drop only the
+  // ids the error names, rather than leaving the plot stuck behind an error it
+  // cannot explain — or throwing away the facets that are still valid.
   useEffect(() => {
     const detail = error instanceof Error ? error.message : "";
-    if (!detail.includes("not found") || isSelectionEmpty(selection)) return;
-    setSelection(EMPTY_SELECTION);
+    if (!detail) return;
+    const pruned = selectionWithoutDeadIds(selection, detail);
+    if (pruned) setSelection(pruned);
   }, [error, selection]);
 
   const isRecomputing = data?.is_stale ?? false;
