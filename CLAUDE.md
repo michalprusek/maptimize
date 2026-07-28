@@ -506,6 +506,18 @@ handleru proti reálné DB (`docker exec -i -w /app maptimize-backend python - <
 **Pravidlo: po každém novém write endpointu ho jednou zavolej proti reálné DB.**
 Mock ti nikdy neřekne, že jsi serializoval expirovaný atribut.
 
+⚠️ **V takové sondě dej KAŽDÉMU volání handleru vlastní session** (`async with
+async_session_maker()`), protože přesně to dostane reálný request z `get_db()`. Sdílení
+jedné session napříč voláními není zkratka — `async_session_maker` má
+`expire_on_commit=False`, takže si drží relace načtené dřívějším voláním. Důsledky
+vypadají jako chyby aplikace, ale jsou artefaktem sondy:
+- zrušení přiřazení (`ptm_id=None`) vrátí **starou** hodnotu, protože `.ptm` zůstal načtený;
+- opětovné přiřazení hodnoty, kterou zastaralá instance už drží, **nevygeneruje žádný
+  UPDATE** (SQLAlchemy nevidí změnu atributu) → následné kontroly padají v kaskádě.
+
+Obojí mě při zavádění PTM chytlo; oprava je jednořádkový `call()` helper, ne změna
+aplikace.
+
 ### Komprese obrázků
 
 Naměřeno na reálných datech - PNG je pro tenhle obsah nejhorší volba:
