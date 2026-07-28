@@ -796,7 +796,29 @@ Na stacku torch 2.11 + coverage 7.x + greenlet + asyncpg narazíš na tvrdé pá
 - Importuj helper přes `from tests.unit.conftest import make_result` (bare `from conftest` nefunguje).
 - Routery se testují přímým voláním handler-coroutin s `current_user=SimpleNamespace(...)`, `db=mock_db`; služby mockuj na hranici routeru (`patch("routers.X.<name>", ...)`).
 
+## 🧪 Frontend unit testy (čistá logika)
+
+`npm run test:unit` (`frontend/e2e/unit.config.ts`) — běží na **stejném Playwright
+runneru** jako E2E, ale bez prohlížeče a bez serveru. Proto je to samostatná konfigurace:
+`playwright.config.ts` deklaruje `webServer`, takže přidat je tam jako projekt by
+kvůli otestování čistých funkcí nastartovalo Next dev server.
+
+Sem patří logika odvozená z API dat, kde se chyba projeví jako **tiše nesouhlasící UI**,
+ne jako výjimka — např. `components/visualization/umapFacets.ts` (odvození facet, počty,
+sentinel „unassigned", round-trip do URL, prořezání mrtvých id). Reálný nález: facety
+experimentů vracely `color: null`, takže všechny pilulky ve filtru byly šedé, zatímco
+graf tytéž experimenty kreslil barevně. Typy i tsc byly spokojené.
+
+⚠️ **Zelený test nic neznamená, dokud jsi ho neviděl zčervenat.** Ověřuj perturbací —
+odstraň opravu ze zdrojáku (se `assert old in s`, ať tiché minutí nevypadá jako
+„test to nechytil"), spusť, vrať zpět.
+
 ## 🧪 E2E Testování (Playwright)
+
+⚠️ **E2E sada vytváří a maže data proti tomu, na co míří `BASE_URL`.** Proti produkci
+ji nespouštěj: `deleteTestExperiment` maže kaskádově a proteiny/mikroskopy/PTM jsou
+sdílená referenční data, na která ukazují reálné experimenty. Testovací uživatel
+(`e2e-test@maptimize.test.com`) v produkční DB **není** a nezakládej ho tam.
 
 ### Struktura testů
 
