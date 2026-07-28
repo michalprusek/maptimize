@@ -165,6 +165,7 @@ class ApiClient {
     description?: string;
     map_protein_id?: number;
     microscope_id?: number;
+    ptm_id?: number;
     fasta_sequence?: string;
   }) {
     return this.request<Experiment>("/api/experiments", {
@@ -230,6 +231,24 @@ class ApiClient {
     }
     return this.request<Experiment>(
       `/api/experiments/${experimentId}/microscope?${params.toString()}`,
+      { method: "PATCH" }
+    );
+  }
+
+  /**
+   * Assign the tubulin-code PTM for an experiment. Pass null to clear it.
+   *
+   * Like the microscope this is open to the whole group, so the lab can backfill
+   * the modification on each other's experiments and make the dashboard UMAP
+   * filter meaningful.
+   */
+  async updateExperimentPtm(experimentId: number, ptmId: number | null) {
+    const params = new URLSearchParams();
+    if (ptmId !== null) {
+      params.set("ptm_id", ptmId.toString());
+    }
+    return this.request<Experiment>(
+      `/api/experiments/${experimentId}/ptm?${params.toString()}`,
       { method: "PATCH" }
     );
   }
@@ -405,6 +424,29 @@ class ApiClient {
 
   async deleteMicroscope(id: number) {
     return this.request<void>(`/api/microscopes/${id}`, { method: "DELETE" });
+  }
+
+  // PTMs (post-translational modifications of the microtubule lattice)
+  async getPtms() {
+    return this.request<PTMDetailed[]>("/api/ptms");
+  }
+
+  async createPtm(data: PTMCreate) {
+    return this.request<PTMDetailed>("/api/ptms", {
+      method: "POST",
+      body: JSON.stringify(data),
+    });
+  }
+
+  async updatePtm(id: number, data: PTMUpdate) {
+    return this.request<PTMDetailed>(`/api/ptms/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(data),
+    });
+  }
+
+  async deletePtm(id: number) {
+    return this.request<void>(`/api/ptms/${id}`, { method: "DELETE" });
   }
 
   // Ranking
@@ -1407,6 +1449,7 @@ export interface Experiment {
   status: "draft" | "active" | "completed" | "archived";
   map_protein?: MapProtein;
   microscope?: Microscope | null;
+  ptm?: PTM | null;
   fasta_sequence?: string;
   created_at: string;
   updated_at: string;
@@ -1529,6 +1572,42 @@ export interface MicroscopeUpdate {
   model?: string;
   objective?: string;
   magnification?: string;
+  description?: string;
+  /** null asks the backend to assign an unused colour; omit to leave unchanged. */
+  color?: string | null;
+}
+
+/** Basic PTM shape — mirrors backend PTMResponse (embedded in Experiment). */
+export interface PTM {
+  id: number;
+  name: string;
+  abbreviation?: string;
+  modified_residue?: string;
+  enzyme?: string;
+  color?: string;
+}
+
+/** Detailed shape — mirrors backend PTMDetailedResponse (list/create/update). */
+export interface PTMDetailed extends PTM {
+  description?: string;
+  experiment_count: number;
+  created_at?: string;
+}
+
+export interface PTMCreate {
+  name: string;
+  abbreviation?: string;
+  modified_residue?: string;
+  enzyme?: string;
+  description?: string;
+  color?: string;
+}
+
+export interface PTMUpdate {
+  name?: string;
+  abbreviation?: string;
+  modified_residue?: string;
+  enzyme?: string;
   description?: string;
   /** null asks the backend to assign an unused colour; omit to leave unchanged. */
   color?: string | null;

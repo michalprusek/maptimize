@@ -104,12 +104,39 @@ async def test_assign_microscope_omitted_id_clears(make_registry):
     _blocks(await reg.dispatch("assign_experiment_microscope", {"experiment_id": 3}))
 
 
+async def test_assign_ptm_uses_dedicated_endpoint(make_registry):
+    """Must hit /ptm, not the generic PATCH — same reasoning as the microscope."""
+    def routes(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/experiments/3/ptm" and request.method == "PATCH":
+            assert request.url.params["ptm_id"] == "6"
+            return httpx.Response(200, json={"ok": True})
+        return httpx.Response(404)
+
+    reg = make_registry(_with_login(routes))
+    _blocks(await reg.dispatch("assign_experiment_ptm", {"experiment_id": 3, "ptm_id": 6}))
+
+
+async def test_assign_ptm_omitted_id_clears(make_registry):
+    def routes(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/experiments/3/ptm" and request.method == "PATCH":
+            assert "ptm_id" not in request.url.params
+            return httpx.Response(200, json={"ok": True})
+        return httpx.Response(404)
+
+    reg = make_registry(_with_login(routes))
+    _blocks(await reg.dispatch("assign_experiment_ptm", {"experiment_id": 3}))
+
+
 async def test_generic_update_experiment_no_longer_takes_microscope_id(make_registry):
-    """One field, one endpoint. Re-adding it here would resurrect a 422 path."""
+    """One field, one endpoint. Re-adding either would resurrect a 422 path."""
     reg = make_registry(_with_login(lambda r: httpx.Response(404)))
     tools = {t.name: t for t in reg.list_tools()}
     assert "microscope_id" not in tools["update_experiment"].inputSchema["properties"]
     assert "microscope_id" in tools["assign_experiment_microscope"].inputSchema["properties"]
+    assert "ptm_id" not in tools["update_experiment"].inputSchema["properties"]
+    assert "ptm_id" in tools["assign_experiment_ptm"].inputSchema["properties"]
+    # create_experiment is the exception: the owner sets both at creation time.
+    assert "ptm_id" in tools["create_experiment"].inputSchema["properties"]
 
 
 # -- images & detection ----------------------------------------------------
@@ -283,15 +310,17 @@ async def test_new_tools_are_registered_with_correct_schema(make_registry):
     assert proc["properties"]["image_ids"]["items"]["type"] == "integer"
 
     # destructive tools carry the hint so the client asks for confirmation
-    for name in ["delete_experiment", "delete_image", "delete_protein"]:
+    for name in ["delete_experiment", "delete_image", "delete_protein", "delete_ptm"]:
         assert tools[name].annotations.destructiveHint is True
     # reads are marked read-only
-    for name in ["list_experiments", "get_image", "list_cell_crops", "list_proteins"]:
+    for name in ["list_experiments", "get_image", "list_cell_crops", "list_proteins",
+                 "list_ptms", "get_ptm"]:
         assert tools[name].annotations.readOnlyHint is True
     # mutating (non-destructive) writes must NOT be readOnly, or the client would
     # skip consent for a mutation
     for name in ["create_experiment", "update_experiment", "assign_experiment_protein",
-                 "assign_experiment_microscope",
+                 "assign_experiment_microscope", "assign_experiment_ptm",
+                 "create_ptm", "update_ptm",
                  "upload_image", "process_images", "reprocess_image", "redetect_cells",
                  "create_protein", "update_protein", "compute_protein_embedding"]:
         assert tools[name].annotations.readOnlyHint is False

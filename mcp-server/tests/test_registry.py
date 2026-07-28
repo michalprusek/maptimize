@@ -30,7 +30,7 @@ def test_list_tools_builds_schema_from_yaml(make_registry):
         # application control: experiments
         "list_experiments", "get_experiment", "create_experiment", "update_experiment",
         "delete_experiment", "assign_experiment_protein",
-        "assign_experiment_microscope",
+        "assign_experiment_microscope", "assign_experiment_ptm",
         # application control: images + cell detection
         "upload_image", "list_fov_images", "get_image", "process_images",
         "reprocess_image", "redetect_cells", "delete_image", "list_cell_crops",
@@ -40,6 +40,8 @@ def test_list_tools_builds_schema_from_yaml(make_registry):
         # application control: microscopes
         "list_microscopes", "get_microscope", "create_microscope",
         "update_microscope", "delete_microscope",
+        # application control: PTMs
+        "list_ptms", "get_ptm", "create_ptm", "update_ptm", "delete_ptm",
         # database
         "query_database",
     }
