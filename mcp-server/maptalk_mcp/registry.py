@@ -141,6 +141,20 @@ def _parse_param(raw: dict[str, Any]) -> ParamSpec:
     )
 
 
+# Accepted annotation keys: both the SDK's Python field names and their wire
+# aliases. tools.yaml is written in the wire form (`readOnlyHint`), but the SDK
+# renamed its Python fields to snake_case in mcp 2.0 while keeping those aliases.
+# Validating against field names alone made every annotated tool fail to load the
+# moment an unpinned `mcp>=1.2` resolved to 2.0 — with the whole server refusing
+# to start, and the local venv still on 1.x so the tests stayed green.
+_ANNOTATION_KEYS = frozenset(
+    key
+    for name, field in types.ToolAnnotations.model_fields.items()
+    for key in (name, field.alias)
+    if key
+)
+
+
 def _parse_tool(raw: dict[str, Any]) -> ToolSpec:
     handler = raw["handler"]
     if handler not in HANDLERS:
@@ -150,7 +164,7 @@ def _parse_tool(raw: dict[str, Any]) -> ToolSpec:
         # ToolAnnotations has extra="allow", so a typo'd key (e.g. `destructive`
         # instead of `destructiveHint`) would silently ship an unset consent hint.
         # Reject unknown keys at load time. Allowed set is the SDK model (SSOT).
-        unknown = set(annotations) - set(types.ToolAnnotations.model_fields)
+        unknown = set(annotations) - _ANNOTATION_KEYS
         if unknown:
             raise ValueError(
                 f"Tool '{raw.get('name')}' has unknown annotation(s): {sorted(unknown)}"

@@ -155,6 +155,22 @@ def test_enum_and_annotations_surface_in_tool(tmp_path):
     assert tool.annotations.openWorldHint is False
 
 
+def test_every_wire_annotation_name_is_accepted():
+    """The keys tools.yaml actually uses must all load.
+
+    These are the MCP wire names. The SDK renamed its Python fields to
+    snake_case in mcp 2.0 and kept the wire names only as aliases, so validating
+    against field names alone rejected every annotated tool and the server
+    refused to start — in production, while the tests stayed green because the
+    local venv was still on 1.x and `mcp>=1.2` had no upper bound.
+    """
+    for key in ("readOnlyHint", "destructiveHint", "idempotentHint", "openWorldHint"):
+        spec = _parse_tool(
+            {"name": "x", "handler": "http_json", "annotations": {key: True}}
+        )
+        assert spec.annotations == {key: True}
+
+
 def test_unknown_annotation_key_is_rejected():
     # A typo'd hint (destructive vs destructiveHint) would silently ship an unset
     # consent hint (ToolAnnotations has extra="allow") — reject it at load time.
