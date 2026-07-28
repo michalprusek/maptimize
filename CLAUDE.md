@@ -83,6 +83,14 @@ Zákeřné třídy chyb (zamčené v `tests/unit/test_sql_query_service.py`):
   v `tools.yaml` — **při změně sloupců aktualizuj obojí** (model bez názvů sloupců SQL
   neuhodne).
 
+⚠️ **`mcp` SDK je připnuté na `>=1.2,<2` a ta horní mez je nosná.** Volné `mcp>=1.2`
+se při nejbližším rebuildu image přeložilo na **2.0** a server přestal startovat: 2.0
+přejmenovalo pole `ToolAnnotations` na snake_case (drátové názvy zůstaly jen jako
+aliasy) **a** zrušilo dekorátor `Server.list_tools()`, na kterém tenhle server stojí.
+Přechod na 2.x je port, ne bump verze. **Testy to chytit nemohly** — běží proti lokální
+`.venv`, která zůstala na 1.x, takže zelená suita neříká nic o tom, co nainstaluje image.
+Validace anotací v `registry.py` proto přijímá jména polí SDK **i jejich aliasy**.
+
 ### Testování MCP / agenta
 - MCP: `mcp-server/.venv/bin/python -m pytest` (mockovaný backend přes
   `httpx.MockTransport`, žádný live backend/GPU).
@@ -409,8 +417,71 @@ takže starý klient, který `microscope_id` pošle tam, spadne na **422** míst
 zahození. `ExperimentCreate` ho naopak přijímá dál — zakládá vlastník.
 
 MCP: tool `assign_experiment_microscope` (`update_experiment` ho už **nemá**);
-`SERVER_VERSION` 2.3.0. Testy pinují jmennou sadu i verzi — při změně kontraktu je
+`SERVER_VERSION` 2.4.0. Testy pinují jmennou sadu i verzi — při změně kontraktu je
 uprav (`tests/test_registry.py`, `tests/test_protocol.py`, `tests/test_app_control_tools.py`).
+
+#### Přiřazení PTM — třetí výjimka (od 2026-07-28)
+
+`PATCH /api/experiments/{id}/ptm` (`update_experiment_ptm`) je **skupinový zápis** ze
+**stejného** důvodu jako mikroskop, jen vyhrocenějšího: PTM (post-translační modifikace
+mikrotubulů — tubulinový kód) je sdílená metadata přípravy vzorku (`ptms` nemá `user_id`)
+a **všech 46 experimentů startuje s `ptm_id = NULL`**. Owner-only přiřazení by nechalo
+facetu PTM navždy prázdnou. Platí tedy doslova celý odstavec výše: samostatný endpoint,
+`ptm_id` v `ExperimentCreate` ale **ne** v `ExperimentUpdate` (`extra="forbid"` → 422),
+`ptm_id` jako **query** parametr (ne tělo), odpověď přes `load_experiment_response()`.
+
+`tests/unit/test_experiment_ptm.py` zamyká **obě** strany hranice — že skupina PTM měnit
+smí, a že `update_experiment`/`delete_experiment` si owner re-check ponechaly.
+
+Vokabulář (tyrosinace, detyrosinace, Δ2, acetylace K40, polyglutamylace, …) se seeduje
+z `DEFAULT_PTMS` v `models/ptm.py` přes `seed_default_data()` — jsou to **běžné
+editovatelné řádky, ne enum**. Seed je podmíněný prázdností tabulky, ne existencí
+jednotlivých jmen: vrátit řádek, který laboratoř schválně smazala, je horší než mít
+slovník kratší.
+
+⚠️ **`backend/migrations/*.sql` nikdo nespouští** — jsou to dokumentační artefakty.
+Reálně schéma aplikuje `create_all` (nové tabulky) + `ensure_schema_updates()` (nové
+sloupce do existujících tabulek) při startu. Vynechání té prostřední nohy je tichá past:
+na čisté DB projde přes `create_all`, v produkci sloupec nikdy nevznikne.
+
+#### Sdílená referenční data: proteiny / mikroskopy / PTM
+
+Všechny tři jsou tentýž tvar (unikátní jméno, barva do legendy, nullable FK odjinud,
+žádné `user_id`), takže jejich CRUD helpery žijí **jednou** v `utils/reference_data.py`
+(`get_or_404`, `count_referencing`, `count_referencing_grouped`, `ensure_name_unique`,
+`pick_color`). `microscopes.py` a `ptms.py` na nich stojí. Nepiš čtvrtou kopii.
+
+V `sql_query_service` patří do `ALLOWED_SQL_TABLES` a do **žádné** ze scoping množin —
+ta nepřítomnost JE způsob, jak se vyjádří „čte každý, ACL predikát se neinjektuje".
+
+### Pokročilý filtr dashboard UMAPu (od 2026-07-28)
+
+`GET /api/embeddings/umap` bere čtyři **opakovatelné** parametry — `experiment_id`,
+`microscope_id`, `protein_id`, `ptm_id`. Sémantika: **OR uvnitř facety, AND napříč
+facetami**. Klauzule staví jediný helper `utils/facets.py::facet_clause`, aby se čtyři
+facety nerozešly.
+
+⚠️ **Id `0` = „nepřiřazeno"** (`UNASSIGNED_FACET_ID`). Funguje to jen proto, že reálná
+id jsou SERIAL od 1. Bez toho by byla facета PTM od začátku k ničemu — všechny experimenty
+startují nepřiřazené. `real_ids()` sentinel odstraní **před** ověřováním existence, jinak
+by každý filtr obsahující „Unassigned" vrátil 404.
+
+⚠️ **`MIN_POINTS_FOR_UMAP` (400) smí padnout JEN u nefiltrovaného pohledu**
+(`_guard_enough_points`). Práh chrání **fitování**, ne čtení: souřadnice pocházejí
+z jednoho sdíleného fitu, který už proběhl, takže zobrazit tři filtrované body je správná
+odpověď. Dřív filtr mikroskopu na úzký výběr vracel „Need at least N crops" — chyba tam,
+kam patří prázdný graf.
+
+Odpověď nese navíc `facets`: jeden řádek na dvojici (experiment, protein) s počtem bodů,
+počítaný nad scope **před** facetovými filtry (jinak by odškrtnutá hodnota z panelu
+zmizela). Body nesou jen `experiment_id` — mikroskop a PTM si klient dojoinuje z `facets`.
+**Nepřidávej je na bod**: opakovaly by se stokrát a vznikla by druhá pravda o tom, jaký
+mikroskop experiment má.
+
+Parametry chodí do handleru jako jedna FastAPI dependency (`facet_selection` →
+`FacetSelection`). ⚠️ To je záměr: testy volají handlery **přímo**, a každý parametr
+s defaultem `Query(...)`, který test nepředá, doteče do těla jako objekt `Query` — ne
+`None`. Se čtyřmi filtry by to byla čtyřnásobná mina.
 
 ### ⚠️ `MissingGreenlet` po zápisu: NIKDY neserializuj objekt ze session
 
