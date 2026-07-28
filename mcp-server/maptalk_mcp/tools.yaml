@@ -534,6 +534,12 @@ tools:
         in: body
         type: integer
         description: Optional microscope to assign (id from list_microscopes).
+      - name: ptm_id
+        in: body
+        type: integer
+        description: >
+          Optional microtubule post-translational modification to assign
+          (id from list_ptms).
       - name: fasta_sequence
         in: body
         type: string
@@ -544,8 +550,9 @@ tools:
     description: >
       Update an experiment's name, description, status, or FASTA sequence. Only
       the fields you pass are changed. Owner-only. Use assign_experiment_protein
-      to change the protein and assign_experiment_microscope to change the
-      microscope — this tool rejects those fields.
+      to change the protein, assign_experiment_microscope to change the
+      microscope and assign_experiment_ptm to change the PTM — this tool rejects
+      those fields.
     handler: http_post_json
     method: PATCH
     path: /api/experiments/{experiment_id}
@@ -625,6 +632,29 @@ tools:
         in: query
         type: integer
         description: Microscope id to assign; omit to clear the assignment.
+
+  - name: assign_experiment_ptm
+    annotations: {readOnlyHint: false, destructiveHint: false}
+    description: >
+      Assign (or change) the microtubule post-translational modification the
+      experiment's cells carried. Pass the PTM id from list_ptms; omit ptm_id to
+      clear it. Like assign_experiment_microscope and unlike the other experiment
+      writes this is NOT owner-only — any member of the group may set it, because
+      every experiment starts unassigned and the lab has to backfill the PTM
+      across shared experiments before the dashboard UMAP PTM filter covers
+      anything.
+    handler: http_json
+    method: PATCH
+    path: /api/experiments/{experiment_id}/ptm
+    params:
+      - name: experiment_id
+        in: path
+        type: integer
+        required: true
+      - name: ptm_id
+        in: query
+        type: integer
+        description: PTM id to assign; omit to clear the assignment.
 
   # -- Images & cell detection ----------------------------------------------
   - name: upload_image
@@ -1024,6 +1054,118 @@ tools:
         type: integer
         required: true
 
+  # -- PTMs (shared reference data) -------------------------------------------
+  - name: list_ptms
+    annotations: {readOnlyHint: true, openWorldHint: false}
+    description: >
+      List all microtubule post-translational modifications (shared reference
+      data): id, name, abbreviation, modified_residue, enzyme, and per-PTM
+      experiment count. A PTM is the tubulin-code state of the lattice the cells
+      were grown on — tyrosination, detyrosination, Δ2, acetylation (K40),
+      polyglutamylation, polyglycylation and so on. Use it to get a ptm_id for
+      create_experiment or assign_experiment_ptm.
+    handler: http_json
+    method: GET
+    path: /api/ptms
+    params: []
+
+  - name: get_ptm
+    annotations: {readOnlyHint: true, openWorldHint: false}
+    description: Get one PTM by id, with its full metadata.
+    handler: http_json
+    method: GET
+    path: /api/ptms/{ptm_id}
+    params:
+      - name: ptm_id
+        in: path
+        type: integer
+        required: true
+
+  - name: create_ptm
+    annotations: {readOnlyHint: false, destructiveHint: false}
+    description: >
+      Create a PTM (shared reference data — visible to everyone). Only `name` is
+      required (must be unique); a display color is auto-picked if you omit it.
+      The canonical tubulin code is already seeded, so check list_ptms first —
+      create one only for a modification the lab genuinely does not have yet, or
+      for a defined combination such as "deTyr + polyE".
+    handler: http_post_json
+    method: POST
+    path: /api/ptms
+    params:
+      - name: name
+        in: body
+        type: string
+        required: true
+        description: Unique PTM name (1-100 chars), e.g. "Polyglutamylation".
+      - name: abbreviation
+        in: body
+        type: string
+        description: Short form for plot legends, e.g. "polyE", "deTyr", "Δ2".
+      - name: modified_residue
+        in: body
+        type: string
+        description: Where on tubulin it sits, e.g. "α-tubulin K40".
+      - name: enzyme
+        in: body
+        type: string
+        description: Writer and/or eraser enzymes, e.g. "TTLL1-TTLL7 / CCP1-CCP6".
+      - name: description
+        in: body
+        type: string
+      - name: color
+        in: body
+        type: string
+        description: Hex color like "#1f77b4"; auto-picked if omitted.
+
+  - name: update_ptm
+    annotations: {readOnlyHint: false, destructiveHint: false}
+    description: >
+      Update a PTM's fields (only the ones you pass are changed). Shared
+      reference data — changes are visible to everyone.
+    handler: http_post_json
+    method: PATCH
+    path: /api/ptms/{ptm_id}
+    params:
+      - name: ptm_id
+        in: path
+        type: integer
+        required: true
+      - name: name
+        in: body
+        type: string
+        description: New unique name (1-100 chars).
+      - name: abbreviation
+        in: body
+        type: string
+      - name: modified_residue
+        in: body
+        type: string
+      - name: enzyme
+        in: body
+        type: string
+      - name: description
+        in: body
+        type: string
+      - name: color
+        in: body
+        type: string
+        description: Hex color like "#1f77b4".
+
+  - name: delete_ptm
+    annotations: {readOnlyHint: false, destructiveHint: true, idempotentHint: false}
+    description: >
+      Permanently delete a PTM. IRREVERSIBLE. Refused (409) if any experiment
+      still references it — reassign those first. Shared reference data.
+    handler: http_json
+    method: DELETE
+    path: /api/ptms/{ptm_id}
+    params:
+      - name: ptm_id
+        in: path
+        type: integer
+        required: true
+
   # -- Database (read-only) --------------------------------------------------
   - name: query_database
     annotations: {readOnlyHint: true, openWorldHint: false}
@@ -1040,8 +1182,8 @@ tools:
       (images.experiment_id = experiments.id), and cell_crops MUST JOIN images
       which MUST JOIN experiments (cell_crops.image_id = images.id, then
       images.experiment_id = experiments.id). Allowed tables and columns:
-      experiments(id, name, description, status, map_protein_id, group_id,
-      fasta_sequence, created_at, updated_at);
+      experiments(id, name, description, status, map_protein_id, microscope_id,
+      ptm_id, group_id, fasta_sequence, created_at, updated_at);
       images(id, experiment_id, map_protein_id, original_filename, width, height,
       z_slices, file_size, status, created_at, processed_at);
       cell_crops(id, image_id, map_protein_id, bbox_x, bbox_y, bbox_w, bbox_h,
@@ -1049,6 +1191,10 @@ tools:
       excluded, created_at);
       map_proteins(id, name, full_name, uniprot_id, gene_name, organism,
       sequence_length) [shared, no user filter];
+      microscopes(id, name, manufacturer, model, objective, magnification)
+      [shared, no user filter];
+      ptms(id, name, abbreviation, modified_residue, enzyme) [microtubule
+      post-translational modification; shared, no user filter];
       comparisons(id, user_id, crop_a_id, crop_b_id, winner_id, response_time_ms,
       undone, timestamp);
       user_ratings(id, user_id, cell_crop_id, mu, sigma, comparison_count,

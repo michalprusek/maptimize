@@ -1,13 +1,21 @@
-"""MAP Protein routes."""
+"""MAP Protein routes.
+
+Shared reference data on the same `utils.reference_data` helpers as microscopes
+and PTMs, with one difference worth knowing before you read the counts: a
+protein's usage is counted in IMAGES (`Image.map_protein_id`), not experiments,
+because the images of one experiment may each carry their own protein.
+"""
 import logging
-from typing import Dict, List, Optional
+from typing import List
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import select, func
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import get_db
 from models.user import User
+from models.cell_crop import CellCrop
+from models.experiment import Experiment
 from models.image import DEFAULT_PROTEINS, MapProtein, Image
 from schemas.image import (
     MapProteinCreate,
@@ -16,49 +24,20 @@ from schemas.image import (
     UmapProteinPointResponse,
     UmapProteinDataResponse,
 )
-from utils.colors import pick_unused_color
+from utils.reference_data import (
+    count_referencing,
+    count_referencing_grouped,
+    ensure_name_unique,
+    get_or_404,
+    pick_color,
+)
 from utils.security import get_current_user
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
-
-# =============================================================================
-# Helper Functions (DRY)
-# =============================================================================
-
-
-async def get_protein_or_404(protein_id: int, db: AsyncSession) -> MapProtein:
-    """Fetch protein by ID or raise 404."""
-    result = await db.execute(
-        select(MapProtein).where(MapProtein.id == protein_id)
-    )
-    protein = result.scalar_one_or_none()
-    if not protein:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Protein not found"
-        )
-    return protein
-
-
-async def get_image_count_for_protein(protein_id: int, db: AsyncSession) -> int:
-    """Get count of images associated with a protein."""
-    result = await db.execute(
-        select(func.count(Image.id)).where(Image.map_protein_id == protein_id)
-    )
-    return result.scalar() or 0
-
-
-async def get_image_counts_by_protein(db: AsyncSession) -> Dict[int, int]:
-    """Get image counts grouped by protein ID."""
-    result = await db.execute(
-        select(Image.map_protein_id, func.count(Image.id))
-        .where(Image.map_protein_id.isnot(None))
-        .group_by(Image.map_protein_id)
-    )
-    return dict(result.all())
+LABEL = "Protein"
 
 
 def empty_protein_umap(total_proteins: int) -> UmapProteinDataResponse:
@@ -76,35 +55,6 @@ def empty_protein_umap(total_proteins: int) -> UmapProteinDataResponse:
     )
 
 
-async def check_protein_name_unique(
-    name: str, db: AsyncSession, exclude_id: Optional[int] = None
-) -> None:
-    """Raise 400 if protein name already exists."""
-    query = select(MapProtein).where(MapProtein.name == name)
-    if exclude_id:
-        query = query.where(MapProtein.id != exclude_id)
-    result = await db.execute(query)
-    if result.scalar_one_or_none():
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Protein with this name already exists"
-        )
-
-async def pick_protein_color(db: AsyncSession) -> str:
-    """Pick a colour no existing protein is using.
-
-    Check-then-act: two concurrent creates can pick the same colour. Accepted
-    for the same reason as the document dedup in CLAUDE.md — the cost is one
-    duplicate marker, while a unique constraint on colour would reject
-    perfectly legitimate user-chosen values.
-    """
-    result = await db.execute(
-        select(MapProtein.color).where(MapProtein.color.isnot(None))
-    )
-    used = {row[0].lower() for row in result.all() if row[0]}
-    return pick_unused_color(used)
-
-
 @router.get("", response_model=List[MapProteinDetailedResponse])
 async def list_proteins(
     current_user: User = Depends(get_current_user),
@@ -116,7 +66,6 @@ async def list_proteins(
     )
     proteins = result.scalars().all()
 
-    # If no proteins exist, create defaults
     if not proteins:
         for p_data in DEFAULT_PROTEINS:
             db.add(MapProtein(**p_data))
@@ -127,7 +76,7 @@ async def list_proteins(
         )
         proteins = result.scalars().all()
 
-    image_counts = await get_image_counts_by_protein(db)
+    image_counts = await count_referencing_grouped(db, Image.map_protein_id)
 
     return [
         MapProteinDetailedResponse.from_protein(p, image_counts.get(p.id, 0))
@@ -142,11 +91,11 @@ async def create_protein(
     db: AsyncSession = Depends(get_db)
 ):
     """Create a new MAP protein."""
-    await check_protein_name_unique(data.name, db)
+    await ensure_name_unique(db, MapProtein, data.name, LABEL)
 
     values = data.model_dump()
     if not values.get("color"):
-        values["color"] = await pick_protein_color(db)
+        values["color"] = await pick_color(db, MapProtein)
 
     protein = MapProtein(**values)
     db.add(protein)
@@ -178,7 +127,7 @@ async def get_protein_umap(
     if len(proteins) < 3:
         return empty_protein_umap(len(proteins))
 
-    image_counts = await get_image_counts_by_protein(db)
+    image_counts = await count_referencing_grouped(db, Image.map_protein_id)
     all_precomputed = all(p.umap_x is not None and p.umap_y is not None for p in proteins)
 
     if all_precomputed:
@@ -206,7 +155,6 @@ async def get_protein_umap(
             computed_at=computed_at.isoformat() if computed_at else None,
         )
 
-    # Compute UMAP on-the-fly
     embeddings = np.array([p.embedding for p in proteins])
     try:
         projection, silhouette = compute_protein_umap_online(embeddings)
@@ -254,7 +202,7 @@ async def get_suggested_protein_color(
     may change it — and it is NOT reserved, so two concurrent creates can still
     land on the same colour (accepted, exactly like the create path).
     """
-    return {"color": await pick_protein_color(db)}
+    return {"color": await pick_color(db, MapProtein)}
 
 
 # =============================================================================
@@ -269,8 +217,8 @@ async def get_protein(
     db: AsyncSession = Depends(get_db)
 ):
     """Get protein details."""
-    protein = await get_protein_or_404(protein_id, db)
-    image_count = await get_image_count_for_protein(protein_id, db)
+    protein = await get_or_404(db, MapProtein, protein_id, LABEL)
+    image_count = await count_referencing(db, Image.map_protein_id, protein_id)
     return MapProteinDetailedResponse.from_protein(protein, image_count)
 
 
@@ -282,20 +230,18 @@ async def update_protein(
     db: AsyncSession = Depends(get_db)
 ):
     """Update a MAP protein."""
-    protein = await get_protein_or_404(protein_id, db)
+    protein = await get_or_404(db, MapProtein, protein_id, LABEL)
 
-    # Check if new name conflicts (exclude current protein)
     if data.name and data.name != protein.name:
-        await check_protein_name_unique(data.name, db, exclude_id=protein_id)
+        await ensure_name_unique(db, MapProtein, data.name, LABEL, exclude_id=protein_id)
 
-    # Update fields
     update_data = data.model_dump(exclude_unset=True)
 
     # An explicitly null colour means "assign me an unused one" (the UI's Auto
     # button). Omitting the field entirely still means "leave it alone" — the
     # two must stay distinguishable, which is why exclude_unset is load-bearing.
     if "color" in update_data and not update_data["color"]:
-        update_data["color"] = await pick_protein_color(db)
+        update_data["color"] = await pick_color(db, MapProtein)
 
     for field, value in update_data.items():
         setattr(protein, field, value)
@@ -313,7 +259,7 @@ async def update_protein(
     await db.commit()
     await db.refresh(protein)
 
-    image_count = await get_image_count_for_protein(protein_id, db)
+    image_count = await count_referencing(db, Image.map_protein_id, protein_id)
     return MapProteinDetailedResponse.from_protein(protein, image_count)
 
 
@@ -323,14 +269,31 @@ async def delete_protein(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
-    """Delete a MAP protein (only if no images are associated)."""
-    protein = await get_protein_or_404(protein_id, db)
-    image_count = await get_image_count_for_protein(protein_id, db)
+    """Delete a MAP protein (only if nothing references it).
 
-    if image_count > 0:
+    All THREE foreign keys are counted, because guarding on images alone was
+    wrong in two different ways:
+
+    * ``experiments.map_protein_id`` is ``NO ACTION``, so an experiment that
+      carries a protein but has no images yet slipped past the guard and the
+      DELETE then died on the constraint — a 500 where a 409 belongs.
+    * ``cell_crops.map_protein_id`` is ``ON DELETE SET NULL`` and a crop's
+      protein may legitimately differ from its image's (the crop editor and the
+      group-writable curation batch both set it directly), so a protein applied
+      only by curation was deletable and took those annotations with it.
+    """
+    protein = await get_or_404(db, MapProtein, protein_id, LABEL)
+    counts = {
+        "experiments": await count_referencing(db, Experiment.map_protein_id, protein_id),
+        "images": await count_referencing(db, Image.map_protein_id, protein_id),
+        "cell crops": await count_referencing(db, CellCrop.map_protein_id, protein_id),
+    }
+
+    if any(counts.values()):
+        used = ", ".join(f"{n} {label}" for label, n in counts.items() if n)
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail=f"Cannot delete protein with {image_count} associated images"
+            detail=f"Cannot delete protein still referenced by {used}"
         )
 
     await db.delete(protein)

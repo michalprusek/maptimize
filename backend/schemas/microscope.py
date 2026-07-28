@@ -4,8 +4,10 @@ from typing import Optional
 
 from pydantic import BaseModel, Field
 
+from schemas.reference import ReferenceCreate, ReferenceUpdate
 
-class MicroscopeCreate(BaseModel):
+
+class MicroscopeCreate(ReferenceCreate):
     """Schema for creating a microscope."""
     name: str = Field(..., min_length=1, max_length=100)
     manufacturer: Optional[str] = Field(None, max_length=100)
@@ -16,7 +18,7 @@ class MicroscopeCreate(BaseModel):
     color: Optional[str] = Field(None, pattern=r"^#[0-9A-Fa-f]{6}$")
 
 
-class MicroscopeUpdate(BaseModel):
+class MicroscopeUpdate(ReferenceUpdate):
     """Schema for updating a microscope (all optional)."""
     name: Optional[str] = Field(None, min_length=1, max_length=100)
     manufacturer: Optional[str] = Field(None, max_length=100)

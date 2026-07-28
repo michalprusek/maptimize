@@ -19,6 +19,9 @@ from services.sql_query_service import (
     _table_references,
     _validate,
     run_query,
+    ALLOWED_SQL_TABLES,
+    DIRECT_SCOPED,
+    INDIRECT_SCOPED,
 )
 
 
@@ -257,6 +260,20 @@ def test_self_join_scopes_every_alias():
 def test_map_proteins_only_is_unscoped_shared_data():
     refs = _validate("SELECT id, name FROM map_proteins")
     assert _scoping_plan(refs) == ([], [])
+
+
+@pytest.mark.parametrize("table", ["map_proteins", "microscopes", "ptms"])
+def test_reference_tables_are_readable_and_never_scoped(table):
+    """Their absence from both scoping sets IS the "shared reference data" rule.
+
+    Nothing else observes it, so adding one to DIRECT_SCOPED is silent here and
+    fatal in production: every SELECT would gain `<table>.user_id = :user_id` on
+    a table that has no such column.
+    """
+    assert table in ALLOWED_SQL_TABLES
+    assert table not in DIRECT_SCOPED
+    assert table not in INDIRECT_SCOPED
+    assert _scoping_plan(_validate(f"SELECT id, name FROM {table}")) == ([], [])
 
 
 # ---------------------------------------------------------------------------

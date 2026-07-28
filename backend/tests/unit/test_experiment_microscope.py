@@ -105,7 +105,7 @@ async def test_assign_microscope_with_valid_microscope(mock_db):
 async def test_group_member_may_assign_microscope_to_another_users_experiment(mock_db):
     """The reason this endpoint exists.
 
-    31 of 37 experiments in production belong to the lab's annotator, so an
+    40 of 46 experiments in production belong to the lab's annotator, so an
     owner-only assignment would leave the dashboard's microscope filter covering
     almost nothing. `get_experiment_for_user` is group-scoped and there is
     deliberately NO owner re-check after it -- unlike `update_experiment`.
@@ -155,7 +155,12 @@ def test_writes_rebuild_the_response_by_reselecting_the_row():
     import inspect
 
     source = inspect.getsource(mod)
-    for handler in ("create_experiment", "update_experiment", "update_experiment_microscope"):
+    for handler in (
+        "create_experiment",
+        "update_experiment",
+        "update_experiment_microscope",
+        "update_experiment_ptm",
+    ):
         body = source.split(f"async def {handler}(", 1)[1].split("\n@router", 1)[0]
         assert "load_experiment_response" in body, (
             f"{handler} must build its response via load_experiment_response"

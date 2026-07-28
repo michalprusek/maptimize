@@ -7,6 +7,8 @@ from pydantic import BaseModel, ConfigDict, Field
 from models.experiment import ExperimentStatus
 from schemas.image import MapProteinResponse
 from schemas.microscope import MicroscopeResponse
+from schemas.ptm import PTMResponse
+from schemas.reference import RejectsNullName
 
 
 class ExperimentCreate(BaseModel):
@@ -15,16 +17,21 @@ class ExperimentCreate(BaseModel):
     description: Optional[str] = None
     map_protein_id: Optional[int] = None
     microscope_id: Optional[int] = None
+    ptm_id: Optional[int] = None
     fasta_sequence: Optional[str] = None
 
 
-class ExperimentUpdate(BaseModel):
+class ExperimentUpdate(RejectsNullName):
     """Schema for updating an experiment.
 
-    No `microscope_id` on purpose: the microscope is assigned through
-    `PATCH /experiments/{id}/microscope`, which any group member may call.
-    Accepting it here too would give one field two endpoints with two different
-    ACLs -- and the wider one would be reachable by mistake.
+    No `microscope_id` and no `ptm_id` on purpose: both are assigned through
+    their own endpoints (`PATCH /experiments/{id}/microscope` and
+    `.../ptm`), which any group member may call. Accepting them here too would
+    give one field two endpoints with two different ACLs -- and the wider one
+    would be reachable by mistake.
+
+    `RejectsNullName` because `experiments.name` is NOT NULL: an explicit
+    `{"name": null}` otherwise reaches the UPDATE and returns 500, not 422.
     """
     model_config = ConfigDict(extra="forbid")
 
@@ -54,6 +61,7 @@ class ExperimentResponse(BaseModel):
     group_id: Optional[int] = None
     map_protein: Optional[MapProteinResponse] = None
     microscope: Optional[MicroscopeResponse] = None
+    ptm: Optional[PTMResponse] = None
     fasta_sequence: Optional[str] = None
     created_at: datetime
     updated_at: datetime

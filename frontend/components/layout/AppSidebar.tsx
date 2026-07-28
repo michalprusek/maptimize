@@ -32,6 +32,7 @@ import {
   Bug,
   Dna,
   Microscope,
+  Atom,
   FileText,
   Shield,
 } from "lucide-react";
@@ -77,6 +78,7 @@ export function AppSidebar({
     { name: t("experiments"), href: "/dashboard/experiments", icon: FolderOpen },
     { name: t("proteins"), href: "/dashboard/proteins", icon: Dna },
     { name: t("microscopes"), href: "/dashboard/microscopes", icon: Microscope },
+    { name: t("ptms"), href: "/dashboard/ptms", icon: Atom },
     { name: t("metrics"), href: "/dashboard/ranking", icon: Scale },
     { name: t("documents"), href: "/documents", icon: FileText },
     // Admin panel - only visible to admins

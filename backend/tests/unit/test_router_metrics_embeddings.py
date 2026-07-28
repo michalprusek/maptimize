@@ -891,16 +891,28 @@ def test_experiment_owner_filter_with_group():
     assert clause is not None
 
 
-async def test_verify_ownership_found(mock_db, no_group):
-    mock_db.execute.return_value = make_result(scalar=SimpleNamespace(id=1))
-    await e._verify_experiment_ownership(1, 1, mock_db)  # no raise
+async def test_verify_experiments_visible_found(mock_db, no_group):
+    mock_db.execute.return_value = make_result(scalars_all=[1])
+    await e._verify_experiments_visible([1], 1, None, mock_db)  # no raise
 
 
-async def test_verify_ownership_not_found(mock_db, no_group):
-    mock_db.execute.return_value = make_result(scalar=None)
+async def test_verify_experiments_visible_not_found(mock_db, no_group):
+    mock_db.execute.return_value = make_result(scalars_all=[])
     with pytest.raises(HTTPException) as ei:
-        await e._verify_experiment_ownership(99, 1, mock_db)
+        await e._verify_experiments_visible([99], 1, None, mock_db)
     assert ei.value.status_code == 404
+
+
+async def test_verify_experiments_visible_reports_only_the_unreadable_ids(
+    mock_db, no_group
+):
+    # A partially-valid selection must name exactly what was rejected, so the UI
+    # can drop those chips instead of blanking the whole filter.
+    mock_db.execute.return_value = make_result(scalars_all=[1, 2])
+    with pytest.raises(HTTPException) as ei:
+        await e._verify_experiments_visible([1, 2, 77], 1, None, mock_db)
+    assert "77" in ei.value.detail
+    assert "1" not in ei.value.detail.split(":")[-1].replace("77", "")
 
 
 # =============================================================================
@@ -928,7 +940,7 @@ async def test_cropped_umap_too_few_crops(mock_db, no_group):
     with patch.object(e, "MIN_POINTS_FOR_UMAP", 10):
         with pytest.raises(HTTPException) as ei:
             await e.get_umap_visualization(
-                umap_type=e.UmapType.CROPPED, experiment_id=None, microscope_id=None,
+                umap_type=e.UmapType.CROPPED, selection=e.FacetSelection(),
                 background_tasks=MagicMock(),
                 current_user=user(), db=mock_db,
             )
@@ -943,7 +955,7 @@ async def test_cropped_umap_no_precomputed_schedules_refresh(mock_db, no_group):
     bg = MagicMock()
     with patch.object(e, "MIN_POINTS_FOR_UMAP", 3):
         out = await e.get_umap_visualization(
-            umap_type=e.UmapType.CROPPED, experiment_id=None, microscope_id=None,
+            umap_type=e.UmapType.CROPPED, selection=e.FacetSelection(),
             background_tasks=bg,
             current_user=user(), db=mock_db,
         )
@@ -968,7 +980,7 @@ async def test_scheduled_refresh_task_actually_runs_and_hits_the_right_corpus(
     bg = MagicMock()
     with patch.object(e, "MIN_POINTS_FOR_UMAP", 3):
         await e.get_umap_visualization(
-            umap_type=e.UmapType.CROPPED, experiment_id=None, microscope_id=None,
+            umap_type=e.UmapType.CROPPED, selection=e.FacetSelection(),
             background_tasks=bg, current_user=user(), db=mock_db,
         )
 
@@ -997,7 +1009,7 @@ async def test_scheduled_fov_refresh_task_actually_runs_and_hits_the_right_corpu
     bg = MagicMock()
     with patch.object(e, "MIN_POINTS_FOR_UMAP", 3):
         await e.get_umap_visualization(
-            umap_type=e.UmapType.FOV, experiment_id=None, microscope_id=None,
+            umap_type=e.UmapType.FOV, selection=e.FacetSelection(),
             background_tasks=bg, current_user=user(), db=mock_db,
         )
 
@@ -1027,7 +1039,7 @@ async def test_cropped_umap_failed_refresh_is_not_rescheduled(mock_db, no_group)
     with patch.object(e, "MIN_POINTS_FOR_UMAP", 3), \
          patch.object(e, "get_refresh_error", return_value="RuntimeError: db down"):
         out = await e.get_umap_visualization(
-            umap_type=e.UmapType.CROPPED, experiment_id=None, microscope_id=None,
+            umap_type=e.UmapType.CROPPED, selection=e.FacetSelection(),
             background_tasks=bg, current_user=user(), db=mock_db,
         )
     bg.add_task.assert_not_called()
@@ -1043,7 +1055,7 @@ async def test_fov_umap_failed_refresh_is_not_rescheduled(mock_db, no_group):
     with patch.object(e, "MIN_POINTS_FOR_UMAP", 3), \
          patch.object(e, "get_refresh_error", return_value="MemoryError: "):
         out = await e.get_umap_visualization(
-            umap_type=e.UmapType.FOV, experiment_id=None, microscope_id=None,
+            umap_type=e.UmapType.FOV, selection=e.FacetSelection(),
             background_tasks=bg, current_user=user(), db=mock_db,
         )
     bg.add_task.assert_not_called()
@@ -1057,7 +1069,7 @@ async def test_cropped_umap_healthy_scope_reports_no_refresh_error(mock_db, no_g
     with patch.object(e, "MIN_POINTS_FOR_UMAP", 3), \
          patch.object(e, "compute_silhouette", return_value=0.3):
         out = await e.get_umap_visualization(
-            umap_type=e.UmapType.CROPPED, experiment_id=None, microscope_id=None,
+            umap_type=e.UmapType.CROPPED, selection=e.FacetSelection(),
             background_tasks=MagicMock(), current_user=user(), db=mock_db,
         )
     assert out.refresh_error is None
@@ -1077,7 +1089,7 @@ async def test_cropped_umap_partially_stale_serves_existing_points(mock_db, no_g
     with patch.object(e, "MIN_POINTS_FOR_UMAP", 3), \
          patch.object(e, "compute_silhouette", return_value=0.4):
         out = await e.get_umap_visualization(
-            umap_type=e.UmapType.CROPPED, experiment_id=None, microscope_id=None,
+            umap_type=e.UmapType.CROPPED, selection=e.FacetSelection(),
             background_tasks=bg,
             current_user=user(), db=mock_db,
         )
@@ -1096,14 +1108,15 @@ async def test_cropped_umap_precomputed_with_experiment_filter(mock_db, no_group
         crop_obj(cid=3, umap_x=0.5, umap_y=0.6, protein=protein),
     ]
     mock_db.execute.side_effect = [
-        make_result(scalar=SimpleNamespace(id=9)),  # _verify_experiment_ownership
-        make_result(scalars_all=crops),              # crops query
+        make_result(scalars_all=[9]),   # _verify_experiments_visible
+        make_result(scalars_all=crops),  # crops query
+        make_result(fetchall=[]),        # facet summary
     ]
     bg = MagicMock()
     with patch.object(e, "MIN_POINTS_FOR_UMAP", 3), \
          patch.object(e, "compute_silhouette", return_value=0.42) as sil:
         out = await e.get_umap_visualization(
-            umap_type=e.UmapType.CROPPED, experiment_id=9, microscope_id=None,
+            umap_type=e.UmapType.CROPPED, selection=e.FacetSelection(experiment_ids=[9]),
             background_tasks=bg,
             current_user=user(), db=mock_db,
         )
@@ -1141,7 +1154,7 @@ async def test_fov_umap_too_few(mock_db, no_group):
     with patch.object(e, "MIN_POINTS_FOR_UMAP", 10):
         with pytest.raises(HTTPException) as ei:
             await e.get_umap_visualization(
-                umap_type=e.UmapType.FOV, experiment_id=None, microscope_id=None,
+                umap_type=e.UmapType.FOV, selection=e.FacetSelection(),
                 background_tasks=MagicMock(),
                 current_user=user(), db=mock_db,
             )
@@ -1154,7 +1167,7 @@ async def test_fov_umap_no_precomputed_schedules_refresh(mock_db, no_group):
     bg = MagicMock()
     with patch.object(e, "MIN_POINTS_FOR_UMAP", 3):
         out = await e.get_umap_visualization(
-            umap_type=e.UmapType.FOV, experiment_id=None, microscope_id=None,
+            umap_type=e.UmapType.FOV, selection=e.FacetSelection(),
             background_tasks=bg,
             current_user=user(), db=mock_db,
         )
@@ -1165,16 +1178,17 @@ async def test_fov_umap_no_precomputed_schedules_refresh(mock_db, no_group):
 
 
 async def test_fov_umap_experiment_filter_empty(mock_db, no_group):
-    # FOV with experiment_id -> _verify_experiment_ownership + where filter;
+    # FOV with experiment_id -> _verify_experiments_visible + where filter;
     # no pre-computed UMAP -> empty response.
     imgs = [image_obj(iid=i, umap_x=None, umap_y=None) for i in range(4)]
     mock_db.execute.side_effect = [
-        make_result(scalar=SimpleNamespace(id=9)),  # _verify_experiment_ownership
-        make_result(scalars_all=imgs),               # images query
+        make_result(scalars_all=[9]),   # _verify_experiments_visible
+        make_result(scalars_all=imgs),   # images query
+        make_result(fetchall=[]),        # facet summary
     ]
     with patch.object(e, "MIN_POINTS_FOR_UMAP", 3):
         out = await e.get_umap_visualization(
-            umap_type=e.UmapType.FOV, experiment_id=9, microscope_id=None,
+            umap_type=e.UmapType.FOV, selection=e.FacetSelection(experiment_ids=[9]),
             background_tasks=MagicMock(),
             current_user=user(), db=mock_db,
         )
@@ -1195,7 +1209,7 @@ async def test_fov_umap_partially_stale_reports_true_total(mock_db, no_group):
     with patch.object(e, "MIN_POINTS_FOR_UMAP", 3), \
          patch.object(e, "compute_silhouette", return_value=0.2):
         out = await e.get_umap_visualization(
-            umap_type=e.UmapType.FOV, experiment_id=None, microscope_id=None,
+            umap_type=e.UmapType.FOV, selection=e.FacetSelection(),
             background_tasks=bg,
             current_user=user(), db=mock_db,
         )
@@ -1214,7 +1228,7 @@ async def test_fov_umap_precomputed_success(mock_db, no_group):
     with patch.object(e, "MIN_POINTS_FOR_UMAP", 3), \
          patch.object(e, "compute_silhouette", return_value=0.1):
         out = await e.get_umap_visualization(
-            umap_type=e.UmapType.FOV, experiment_id=None, microscope_id=None,
+            umap_type=e.UmapType.FOV, selection=e.FacetSelection(),
             background_tasks=bg,
             current_user=user(), db=mock_db,
         )
@@ -1304,7 +1318,7 @@ async def test_embedding_status_zero_total_and_experiment_filter(mock_db, no_gro
 async def test_trigger_feature_extraction_none_pending(mock_db, no_group):
     bg = MagicMock()
     mock_db.execute.side_effect = [
-        make_result(scalar=SimpleNamespace(id=1)),  # ownership
+        make_result(scalars_all=[1]),                # ownership
         make_result(scalar=0),                       # pending_count = 0
     ]
     out = await e.trigger_feature_extraction(
@@ -1317,7 +1331,7 @@ async def test_trigger_feature_extraction_none_pending(mock_db, no_group):
 async def test_trigger_feature_extraction_with_pending(mock_db, no_group):
     bg = MagicMock()
     mock_db.execute.side_effect = [
-        make_result(scalar=SimpleNamespace(id=1)),  # ownership
+        make_result(scalars_all=[1]),                # ownership
         make_result(scalar=2),                       # pending_count
         make_result(fetchall=[(10,), (11,)]),        # crop ids
     ]
@@ -1375,7 +1389,7 @@ async def test_trigger_fov_extraction_none_pending_no_experiment(mock_db, no_gro
 async def test_trigger_fov_extraction_with_pending_and_experiment(mock_db, with_group):
     bg = MagicMock()
     mock_db.execute.side_effect = [
-        make_result(scalar=SimpleNamespace(id=1)),  # ownership verify
+        make_result(scalars_all=[1]),                # ownership verify
         make_result(scalar=3),                       # pending_count
         make_result(fetchall=[(1,), (2,), (3,)]),    # image ids
     ]

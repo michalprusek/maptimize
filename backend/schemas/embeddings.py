@@ -22,6 +22,31 @@ class UmapType(str, Enum):
         return "images" if self is UmapType.FOV else "crops"
 
 
+class UmapFacetRow(BaseModel):
+    """One (experiment, protein) bucket of the plot, with its point count.
+
+    The filter panel needs, for every value it offers, how many points carry it.
+    Rather than repeat an experiment's microscope and PTM on each of its hundreds
+    of points, the scope is summarised here once per bucket and the client joins
+    on ``experiment_id``. Rows are computed over the scope *before* facet filters
+    are applied, so unticking a facet value never makes it disappear from the
+    panel.
+
+    A null id means nothing is assigned, and the client offers those buckets as
+    the "Unassigned" option — but note the two grains: a null microscope or PTM
+    is a property of the experiment, while a null protein is a property of these
+    points only, so one experiment can have both a null-protein bucket and
+    assigned ones.
+    """
+
+    experiment_id: int = Field(..., description="Experiment these points belong to")
+    experiment_name: str = Field(..., description="Experiment name, for the filter list")
+    microscope_id: Optional[int] = Field(None, description="Microscope, or null if unassigned")
+    ptm_id: Optional[int] = Field(None, description="PTM, or null if unassigned")
+    protein_id: Optional[int] = Field(None, description="MAP protein, or null if unassigned")
+    count: int = Field(..., description="Points with embeddings in this bucket")
+
+
 class UmapPointResponse(BaseModel):
     """Single point in UMAP visualization."""
 
@@ -41,6 +66,10 @@ class UmapDataResponse(BaseModel):
 
     points: List[UmapPointResponse] = Field(..., description="UMAP points")
     total_crops: int = Field(..., description="Total number of crops")
+    facets: List[UmapFacetRow] = Field(
+        default_factory=list,
+        description="Filter options with counts, over the scope before facet filters",
+    )
     silhouette_score: Optional[float] = Field(
         None,
         description="Silhouette score measuring cluster separation (-1 to 1)"
@@ -80,6 +109,10 @@ class UmapFovDataResponse(BaseModel):
 
     points: List[UmapFovPointResponse] = Field(..., description="UMAP FOV points")
     total_images: int = Field(..., description="Total number of FOV images")
+    facets: List[UmapFacetRow] = Field(
+        default_factory=list,
+        description="Filter options with counts, over the scope before facet filters",
+    )
     silhouette_score: Optional[float] = Field(
         None,
         description="Silhouette score measuring cluster separation (-1 to 1)"

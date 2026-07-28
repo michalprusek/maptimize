@@ -162,6 +162,8 @@ async def ensure_schema_updates():
             ("experiments", "fasta_sequence", "TEXT"),
             # Microscope assignment at experiment level
             ("experiments", "microscope_id", "INTEGER REFERENCES microscopes(id)"),
+            # Microtubule post-translational modification at experiment level
+            ("experiments", "ptm_id", "INTEGER REFERENCES ptms(id)"),
             # MAP protein extended fields for protein page
             ("map_proteins", "uniprot_id", "VARCHAR(20)"),
             ("map_proteins", "fasta_sequence", "TEXT"),
@@ -388,6 +390,7 @@ async def seed_default_data():
     from models.user import User, UserRole
     from models.image import DEFAULT_PROTEINS, MapProtein
     from models.experiment import Experiment
+    from models.ptm import DEFAULT_PTMS, PTM
     from utils.security import hash_password
 
     async with async_session_maker() as db:
@@ -413,5 +416,14 @@ async def seed_default_data():
             for p_data in DEFAULT_PROTEINS:
                 db.add(MapProtein(**p_data))
             print("Created default MAP proteins")
+
+        # Seed the tubulin code once. Guarded on the table being empty, not on
+        # each name: re-adding a row the lab deliberately deleted would be worse
+        # than leaving the vocabulary short.
+        result = await db.execute(select(PTM).limit(1))
+        if not result.scalar_one_or_none():
+            for ptm_data in DEFAULT_PTMS:
+                db.add(PTM(**ptm_data))
+            print("Created default PTMs")
 
         await db.commit()

@@ -14,8 +14,38 @@ import type { SAMEmbeddingStatus, SegmentClickPoint } from "@/lib/editor/types";
 
 export const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
+/** One entry of FastAPI's 422 body: which field, and what is wrong with it. */
+interface ValidationIssue {
+  loc?: (string | number)[];
+  msg?: string;
+}
+
 interface ApiError {
-  detail: string;
+  /**
+   * A string for `HTTPException`, but a LIST of issues for a 422.
+   *
+   * Typing it as `string` was a lie that only surfaced once a schema started
+   * rejecting input: `new Error([{...}])` stringifies to "[object Object]", and
+   * because that is truthy it also defeats every `err.message || fallback`.
+   */
+  detail: string | ValidationIssue[];
+}
+
+/** Render an error body as something a user can act on. */
+export function describeApiError(detail: ApiError["detail"]): string {
+  if (typeof detail === "string") return detail;
+  if (!Array.isArray(detail)) return "";
+
+  return detail
+    .map((issue) => {
+      // Drop the leading "body"/"query" locator — the field name is the part the
+      // user can do anything about.
+      const field = (issue.loc ?? []).slice(1).join(".");
+      const message = issue.msg ?? "";
+      return field ? `${field}: ${message}`.trim() : message;
+    })
+    .filter(Boolean)
+    .join("; ");
 }
 
 class ApiClient {
@@ -80,7 +110,9 @@ class ApiClient {
       let errorDetail: string;
       try {
         const error: ApiError = await response.json();
-        errorDetail = error.detail;
+        errorDetail =
+          describeApiError(error.detail) ||
+          `Request failed: ${response.status} ${response.statusText}`;
       } catch {
         // Response wasn't JSON - log for debugging
         let rawBody = "";
@@ -165,6 +197,7 @@ class ApiClient {
     description?: string;
     map_protein_id?: number;
     microscope_id?: number;
+    ptm_id?: number;
     fasta_sequence?: string;
   }) {
     return this.request<Experiment>("/api/experiments", {
@@ -230,6 +263,24 @@ class ApiClient {
     }
     return this.request<Experiment>(
       `/api/experiments/${experimentId}/microscope?${params.toString()}`,
+      { method: "PATCH" }
+    );
+  }
+
+  /**
+   * Assign the tubulin-code PTM for an experiment. Pass null to clear it.
+   *
+   * Like the microscope this is open to the whole group, so the lab can backfill
+   * the modification on each other's experiments and make the dashboard UMAP
+   * filter meaningful.
+   */
+  async updateExperimentPtm(experimentId: number, ptmId: number | null) {
+    const params = new URLSearchParams();
+    if (ptmId !== null) {
+      params.set("ptm_id", ptmId.toString());
+    }
+    return this.request<Experiment>(
+      `/api/experiments/${experimentId}/ptm?${params.toString()}`,
       { method: "PATCH" }
     );
   }
@@ -405,6 +456,29 @@ class ApiClient {
 
   async deleteMicroscope(id: number) {
     return this.request<void>(`/api/microscopes/${id}`, { method: "DELETE" });
+  }
+
+  // PTMs (post-translational modifications of the microtubule lattice)
+  async getPtms() {
+    return this.request<PTMDetailed[]>("/api/ptms");
+  }
+
+  async createPtm(data: PTMCreate) {
+    return this.request<PTMDetailed>("/api/ptms", {
+      method: "POST",
+      body: JSON.stringify(data),
+    });
+  }
+
+  async updatePtm(id: number, data: PTMUpdate) {
+    return this.request<PTMDetailed>(`/api/ptms/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(data),
+    });
+  }
+
+  async deletePtm(id: number) {
+    return this.request<void>(`/api/ptms/${id}`, { method: "DELETE" });
   }
 
   // Ranking
@@ -619,17 +693,38 @@ class ApiClient {
   }
 
   // Embeddings / UMAP
-  async getUmapData(
-    experimentId?: number,
-    umapType: UmapType = "cropped",
-    microscopeId?: number
-  ): Promise<UmapDataResponse | UmapFovDataResponse> {
+  /**
+   * Fetch the UMAP projection, optionally narrowed by the dashboard filter.
+   *
+   * Each facet is a repeated query parameter: OR within a facet, AND across
+   * facets. Id 0 means "not assigned" for microscope, protein and PTM — without
+   * it the PTM facet would be unusable, since experiments start unassigned.
+   */
+  async getUmapData({
+    umapType = "cropped",
+    selection,
+  }: {
+    umapType?: UmapType;
+    selection?: UmapFacetSelection;
+  } = {}): Promise<UmapDataResponse | UmapFovDataResponse> {
     const params = new URLSearchParams({ umap_type: umapType });
-    if (experimentId) {
-      params.append("experiment_id", experimentId.toString());
-    }
-    if (microscopeId) {
-      params.append("microscope_id", microscopeId.toString());
+    // A Record, not an array of pairs: it is exhaustive over the facet keys, so
+    // adding a facet without wiring it here fails to compile instead of silently
+    // dropping that filter from the request while the UI still shows it ticked.
+    // umapFacets.ts aliases its FacetSelection to this type, so the keys are
+    // declared once and this guard covers the caller too.
+    const facetParams: Record<keyof UmapFacetSelection, string> = {
+      experiment: "experiment_id",
+      microscope: "microscope_id",
+      protein: "protein_id",
+      ptm: "ptm_id",
+    };
+    for (const [facet, param] of Object.entries(facetParams) as Array<
+      [keyof UmapFacetSelection, string]
+    >) {
+      for (const id of selection?.[facet] ?? []) {
+        params.append(param, id.toString());
+      }
     }
     if (umapType === "fov") {
       return this.request<UmapFovDataResponse>(`/api/embeddings/umap?${params}`);
@@ -1407,6 +1502,7 @@ export interface Experiment {
   status: "draft" | "active" | "completed" | "archived";
   map_protein?: MapProtein;
   microscope?: Microscope | null;
+  ptm?: PTM | null;
   fasta_sequence?: string;
   created_at: string;
   updated_at: string;
@@ -1529,6 +1625,42 @@ export interface MicroscopeUpdate {
   model?: string;
   objective?: string;
   magnification?: string;
+  description?: string;
+  /** null asks the backend to assign an unused colour; omit to leave unchanged. */
+  color?: string | null;
+}
+
+/** Basic PTM shape — mirrors backend PTMResponse (embedded in Experiment). */
+export interface PTM {
+  id: number;
+  name: string;
+  abbreviation?: string;
+  modified_residue?: string;
+  enzyme?: string;
+  color?: string;
+}
+
+/** Detailed shape — mirrors backend PTMDetailedResponse (list/create/update). */
+export interface PTMDetailed extends PTM {
+  description?: string;
+  experiment_count: number;
+  created_at?: string;
+}
+
+export interface PTMCreate {
+  name: string;
+  abbreviation?: string;
+  modified_residue?: string;
+  enzyme?: string;
+  description?: string;
+  color?: string;
+}
+
+export interface PTMUpdate {
+  name?: string;
+  abbreviation?: string;
+  modified_residue?: string;
+  enzyme?: string;
   description?: string;
   /** null asks the backend to assign an unused colour; omit to leave unchanged. */
   color?: string | null;
@@ -1779,9 +1911,36 @@ export interface UmapPoint {
   bundleness_score: number | null;
 }
 
+/** Which values the dashboard UMAP filter has ticked, per facet. */
+export interface UmapFacetSelection {
+  experiment: number[];
+  microscope: number[];
+  protein: number[];
+  ptm: number[];
+}
+
+/**
+ * One (experiment, protein) bucket of the plot, with its point count.
+ *
+ * The backend summarises the scope this way instead of repeating an
+ * experiment's microscope and PTM on every one of its points; the client joins
+ * on `experiment_id` to colour by, filter on, or label those dimensions. Rows
+ * cover the scope BEFORE facet filters, so unticking a value never makes it
+ * vanish from the filter panel. A null id means nothing is assigned.
+ */
+export interface UmapFacetRow {
+  experiment_id: number;
+  experiment_name: string;
+  microscope_id: number | null;
+  ptm_id: number | null;
+  protein_id: number | null;
+  count: number;
+}
+
 export interface UmapDataResponse {
   points: UmapPoint[];
   total_crops: number;
+  facets: UmapFacetRow[];
   silhouette_score: number | null;
   /** Coordinates are being refreshed in the background; poll until false. */
   is_stale: boolean;
@@ -1803,6 +1962,7 @@ export interface UmapFovPoint {
 export interface UmapFovDataResponse {
   points: UmapFovPoint[];
   total_images: number;
+  facets: UmapFacetRow[];
   silhouette_score: number | null;
   computed_at: string | null;
   /** Coordinates are being refreshed in the background; poll until false. */

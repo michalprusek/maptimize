@@ -1,7 +1,8 @@
 """Embeddings and UMAP visualization endpoints."""
 
 import logging
-from typing import Optional, TypeVar, Union
+from dataclasses import dataclass, field
+from typing import List, Optional, Sequence, Type, TypeVar, Union
 
 import numpy as np
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, status
@@ -12,18 +13,21 @@ from sqlalchemy.orm import selectinload
 from database import get_db
 from models.cell_crop import CellCrop
 from models.experiment import Experiment
-from models.image import Image
+from models.image import Image, MapProtein
 from models.microscope import Microscope
+from models.ptm import PTM
 from models.user import User
 from schemas.embeddings import (
     FeatureExtractionStatus,
     FeatureExtractionTriggerResponse,
     UmapDataResponse,
+    UmapFacetRow,
     UmapFovDataResponse,
     UmapFovPointResponse,
     UmapPointResponse,
     UmapType,
 )
+from utils.facets import facet_clause, real_ids
 from services.umap_service import (
     MIN_POINTS_FOR_UMAP,
     clear_refresh_error,
@@ -41,11 +45,61 @@ logger = logging.getLogger(__name__)
 T = TypeVar("T")
 
 
+@dataclass(frozen=True)
+class FacetSelection:
+    """What the dashboard filter panel currently has ticked.
+
+    Empty list = facet untouched = no constraint. Facets combine as OR within and
+    AND across, and any of them may include ``UNASSIGNED_FACET_ID`` to also match
+    rows with nothing assigned.
+    """
+
+    experiment_ids: List[int] = field(default_factory=list)
+    microscope_ids: List[int] = field(default_factory=list)
+    protein_ids: List[int] = field(default_factory=list)
+    ptm_ids: List[int] = field(default_factory=list)
+
+    @property
+    def is_active(self) -> bool:
+        """True when the user has narrowed the plot at all."""
+        return any(
+            (self.experiment_ids, self.microscope_ids, self.protein_ids, self.ptm_ids)
+        )
+
+
+def facet_selection(
+    experiment_id: Optional[List[int]] = Query(
+        None, description="Filter by experiment; repeat for several"
+    ),
+    microscope_id: Optional[List[int]] = Query(
+        None, description="Filter by microscope; repeat for several, 0 = unassigned"
+    ),
+    protein_id: Optional[List[int]] = Query(
+        None, description="Filter by MAP protein; repeat for several, 0 = unassigned"
+    ),
+    ptm_id: Optional[List[int]] = Query(
+        None, description="Filter by PTM; repeat for several, 0 = unassigned"
+    ),
+) -> FacetSelection:
+    """Collect the four dashboard filters into one value.
+
+    A dependency rather than four parameters on the handler: it keeps the facets
+    together as the single thing they are, lets a future endpoint take the same
+    filter without re-declaring them, and means a caller that constructs the
+    handler's arguments itself supplies one object instead of four lists.
+    """
+    return FacetSelection(
+        experiment_ids=experiment_id or [],
+        microscope_ids=microscope_id or [],
+        protein_ids=protein_id or [],
+        ptm_ids=ptm_id or [],
+    )
+
+
 @router.get("/umap")
 async def get_umap_visualization(
     umap_type: UmapType = Query(UmapType.CROPPED, description="Type: fov or cropped"),
-    experiment_id: Optional[int] = Query(None, description="Filter by experiment"),
-    microscope_id: Optional[int] = Query(None, description="Filter by microscope"),
+    selection: FacetSelection = Depends(facet_selection),
     background_tasks: BackgroundTasks = BackgroundTasks(),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
@@ -63,27 +117,32 @@ async def get_umap_visualization(
 
     Fit parameters are not tunable per request: every point in a scope must come
     from one shared fit, so refreshes always fit with the umap_service defaults.
+    Filtering therefore never changes where a point sits — it only chooses which
+    points of the one shared projection are returned.
+
+    The four filters are OR within a facet and AND across facets. Passing id 0
+    for microscope, protein or PTM also matches rows with nothing assigned.
     """
-    # Validate the microscope up front so a stale/deleted id (microscopes are
-    # shared data anyone can delete) fails with a clear 404 instead of silently
-    # matching zero crops and tripping the misleading "not enough crops" 400.
-    if microscope_id is not None:
-        micro = await db.execute(
-            select(Microscope).where(Microscope.id == microscope_id)
-        )
-        if micro.scalar_one_or_none() is None:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Microscope not found",
-            )
+    # Validate references up front so a stale or deleted id fails with a clear
+    # 404 instead of silently matching nothing and looking like an empty result.
+    # Reference data is shared, so anyone can delete a value another user's open
+    # tab still has ticked.
+    await _verify_reference_ids(db, Microscope, selection.microscope_ids, "Microscope")
+    await _verify_reference_ids(db, MapProtein, selection.protein_ids, "MAP protein")
+    await _verify_reference_ids(db, PTM, selection.ptm_ids, "PTM")
 
     group_id = await get_user_group_id(current_user.id, db)
+    if selection.experiment_ids:
+        await _verify_experiments_visible(
+            selection.experiment_ids, current_user.id, group_id, db
+        )
+
     if umap_type is UmapType.FOV:
         return await _get_fov_umap(
-            experiment_id, microscope_id, current_user, group_id, background_tasks, db
+            selection, current_user, group_id, background_tasks, db
         )
     return await _get_cropped_umap(
-        experiment_id, microscope_id, current_user, group_id, background_tasks, db
+        selection, current_user, group_id, background_tasks, db
     )
 
 
@@ -131,29 +190,176 @@ def _take_precomputed(
     return with_umap, True, None
 
 
+async def _verify_reference_ids(
+    db: AsyncSession,
+    model: Type,
+    ids: Sequence[int],
+    label: str,
+) -> None:
+    """404 if any selected reference id no longer exists.
+
+    The unassigned sentinel is stripped first: it names the absence of a row, so
+    looking it up would 404 every filter that includes "Unassigned".
+    """
+    wanted = real_ids(ids)
+    if not wanted:
+        return
+
+    result = await db.execute(select(model.id).where(model.id.in_(wanted)))
+    missing = sorted(set(wanted) - set(result.scalars().all()))
+    if missing:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"{label} not found: {', '.join(str(i) for i in missing)}",
+        )
+
+
 async def _verify_experiment_ownership(
     experiment_id: int,
     user_id: int,
     db: AsyncSession,
 ) -> None:
-    """Verify that user owns the experiment or is in the same group."""
+    """Verify that user owns the experiment or is in the same group.
+
+    The single-id entry point, for endpoints that scope to one experiment rather
+    than filter across many.
+    """
     group_id = await get_user_group_id(user_id, db)
+    await _verify_experiments_visible([experiment_id], user_id, group_id, db)
+
+
+async def _verify_experiments_visible(
+    experiment_ids: Sequence[int],
+    user_id: int,
+    group_id: Optional[int],
+    db: AsyncSession,
+) -> None:
+    """404 unless every selected experiment is one the user may read.
+
+    One query for the whole selection rather than one per id — and it reports
+    only ids the ACL filter rejected, so a user cannot probe for the existence of
+    another group's experiments by watching which ids come back.
+    """
     result = await db.execute(
-        select(Experiment).where(
-            Experiment.id == experiment_id,
+        select(Experiment.id).where(
+            Experiment.id.in_(list(experiment_ids)),
             experiment_owner_filter(user_id, group_id),
         )
     )
-    if not result.scalar_one_or_none():
+    missing = sorted(set(experiment_ids) - set(result.scalars().all()))
+    if missing:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Experiment not found",
+            detail=f"Experiment not found: {', '.join(str(i) for i in missing)}",
         )
 
 
+async def _load_facets(
+    umap_type: UmapType,
+    user_id: int,
+    group_id: Optional[int],
+    db: AsyncSession,
+) -> List[UmapFacetRow]:
+    """Summarise the readable scope into filter options with counts.
+
+    Deliberately ignores the active facet selection: the panel has to keep
+    offering a value after you untick it, and has to show how many points each
+    *other* value would bring back. Grouping by (experiment, protein) is the
+    coarsest grouping that still separates every facet, because microscope and
+    PTM live on the experiment while protein is per point — roughly one row per
+    experiment, so this stays far cheaper than the point query and loads no
+    embeddings.
+    """
+    if umap_type is UmapType.FOV:
+        protein_col = Image.map_protein_id
+        count_col = Image.id
+        embedded = Image.embedding.isnot(None)
+        joins = [(Experiment, Image.experiment_id == Experiment.id)]
+    else:
+        protein_col = CellCrop.map_protein_id
+        count_col = CellCrop.id
+        embedded = CellCrop.embedding.isnot(None)
+        joins = [
+            (Image, CellCrop.image_id == Image.id),
+            (Experiment, Image.experiment_id == Experiment.id),
+        ]
+
+    buckets = (
+        Experiment.id,
+        Experiment.name,
+        Experiment.microscope_id,
+        Experiment.ptm_id,
+        protein_col,
+    )
+    source = select(*buckets, func.count(count_col))
+    for target, onclause in joins:
+        source = source.join(target, onclause)
+
+    result = await db.execute(
+        source.where(
+            experiment_owner_filter(user_id, group_id),
+            embedded,
+        ).group_by(*buckets)
+    )
+
+    return [
+        UmapFacetRow(
+            experiment_id=exp_id,
+            experiment_name=exp_name,
+            microscope_id=microscope_id,
+            ptm_id=ptm_id,
+            protein_id=protein_id,
+            count=count,
+        )
+        for exp_id, exp_name, microscope_id, ptm_id, protein_id, count in result.all()
+    ]
+
+
+def _guard_enough_points(
+    found: int, selection: FacetSelection, umap_type: UmapType
+) -> None:
+    """400 only when the *unfiltered* scope is too small to have been projected.
+
+    The threshold guards fitting, not reading. Coordinates come from one shared
+    fit that has already happened, so a filtered view returning three points is
+    correct and worth plotting. Applying the threshold to filtered views instead
+    answered any narrow combination with "Need at least N crops with embeddings"
+    — an error where an honest, empty plot belonged — and would have made the PTM
+    facet unusable from day one, since every experiment starts unassigned.
+    """
+    if selection.is_active or found >= MIN_POINTS_FOR_UMAP:
+        return
+
+    raise HTTPException(
+        status_code=status.HTTP_400_BAD_REQUEST,
+        detail=(
+            f"Need at least {MIN_POINTS_FOR_UMAP} {umap_type.item_word} "
+            f"with embeddings. Found: {found}"
+        ),
+    )
+
+
+def _apply_facets(query, selection: FacetSelection, protein_column):
+    """AND every active facet onto the point query.
+
+    ``protein_column`` differs per corpus (the crop's protein for cropped, the
+    image's for FOV) so that filtering by protein always agrees with the colour
+    the point is actually drawn in.
+    """
+    clauses = [
+        facet_clause(Image.experiment_id, selection.experiment_ids),
+        facet_clause(Experiment.microscope_id, selection.microscope_ids),
+        facet_clause(Experiment.ptm_id, selection.ptm_ids),
+        facet_clause(protein_column, selection.protein_ids),
+    ]
+    for clause in clauses:
+        if clause is not None:
+            query = query.where(clause)
+    return query
+
+
 async def _get_cropped_umap(
-    experiment_id: Optional[int],
-    microscope_id: Optional[int],
+    selection: FacetSelection,
     current_user: User,
     group_id: Optional[int],
     background_tasks: BackgroundTasks,
@@ -174,23 +380,16 @@ async def _get_cropped_umap(
         )
     )
 
-    if experiment_id:
-        await _verify_experiment_ownership(experiment_id, current_user.id, db)
-        query = query.where(Image.experiment_id == experiment_id)
-
-    if microscope_id is not None:
-        query = query.where(Experiment.microscope_id == microscope_id)
+    query = _apply_facets(query, selection, CellCrop.map_protein_id)
 
     # Stable order so the payload does not reshuffle between polls
     query = query.order_by(CellCrop.id)
     result = await db.execute(query)
     crops = result.scalars().all()
 
-    if len(crops) < MIN_POINTS_FOR_UMAP:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Need at least {MIN_POINTS_FOR_UMAP} crops with embeddings. Found: {len(crops)}",
-        )
+    _guard_enough_points(len(crops), selection, UmapType.CROPPED)
+
+    facets = await _load_facets(UmapType.CROPPED, current_user.id, group_id, db)
 
     crops_with_umap, is_stale, refresh_error = _take_precomputed(
         crops, UmapType.CROPPED, current_user.id, group_id, background_tasks
@@ -204,6 +403,7 @@ async def _get_cropped_umap(
         return UmapDataResponse(
             points=[],
             total_crops=total_crops,
+            facets=facets,
             silhouette_score=None,
             is_stale=is_stale,
             refresh_error=refresh_error,
@@ -213,7 +413,9 @@ async def _get_cropped_umap(
     embeddings = np.array([c.embedding for c in crops_with_umap])
     silhouette = compute_silhouette(embeddings, crops_with_umap)
 
-    # Build response
+    # Build response. Points carry only what varies per point; the experiment's
+    # microscope and PTM are repeated far too often to send per point, so the
+    # client joins them from `facets` on experiment_id.
     points = [
         UmapPointResponse(
             crop_id=crop.id,
@@ -232,6 +434,7 @@ async def _get_cropped_umap(
     return UmapDataResponse(
         points=points,
         total_crops=total_crops,
+        facets=facets,
         silhouette_score=silhouette,
         is_stale=is_stale,
         refresh_error=refresh_error,
@@ -239,8 +442,7 @@ async def _get_cropped_umap(
 
 
 async def _get_fov_umap(
-    experiment_id: Optional[int],
-    microscope_id: Optional[int],
+    selection: FacetSelection,
     current_user: User,
     group_id: Optional[int],
     background_tasks: BackgroundTasks,
@@ -257,23 +459,16 @@ async def _get_fov_umap(
         )
     )
 
-    if experiment_id:
-        await _verify_experiment_ownership(experiment_id, current_user.id, db)
-        query = query.where(Image.experiment_id == experiment_id)
-
-    if microscope_id is not None:
-        query = query.where(Experiment.microscope_id == microscope_id)
+    query = _apply_facets(query, selection, Image.map_protein_id)
 
     # Stable order so the payload does not reshuffle between polls
     query = query.order_by(Image.id)
     result = await db.execute(query)
     images = result.scalars().all()
 
-    if len(images) < MIN_POINTS_FOR_UMAP:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Need at least {MIN_POINTS_FOR_UMAP} FOV images with embeddings. Found: {len(images)}",
-        )
+    _guard_enough_points(len(images), selection, UmapType.FOV)
+
+    facets = await _load_facets(UmapType.FOV, current_user.id, group_id, db)
 
     images_with_umap, is_stale, refresh_error = _take_precomputed(
         images, UmapType.FOV, current_user.id, group_id, background_tasks
@@ -287,6 +482,7 @@ async def _get_fov_umap(
         return UmapFovDataResponse(
             points=[],
             total_images=total_images,
+            facets=facets,
             silhouette_score=None,
             computed_at=None,
             is_stale=is_stale,
@@ -299,7 +495,6 @@ async def _get_fov_umap(
     computed_times = [img.umap_computed_at for img in images_with_umap if img.umap_computed_at]
     computed_at = min(computed_times) if computed_times else None
 
-    # Build response
     points = [
         UmapFovPointResponse(
             image_id=image.id,
@@ -317,6 +512,7 @@ async def _get_fov_umap(
     return UmapFovDataResponse(
         points=points,
         total_images=total_images,
+        facets=facets,
         silhouette_score=silhouette,
         computed_at=computed_at,
         is_stale=is_stale,
