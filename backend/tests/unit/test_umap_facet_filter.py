@@ -222,6 +222,50 @@ async def test_facet_summary_ignores_the_active_selection(mock_db):
     assert "microscope_id IN" not in sql
 
 
+async def test_facet_summary_unpacks_the_rows_it_selects(mock_db):
+    """Every other summary test feeds zero rows, so the unpack never runs.
+
+    What this pins is the column ORDER: the six positions are unlabelled, and
+    transposing `ptm_id` with `protein_id` mislabels every filter pill with no
+    error anywhere.
+
+    ⚠️ It cannot pin the column COUNT. Under an AsyncMock the row shape comes
+    from this test, not from the query, so widening `buckets` without widening
+    the unpack stays green here — it fails loudly at runtime instead, on the
+    first dashboard load in any environment with data.
+    """
+    mock_db.execute.return_value = make_result(
+        fetchall=[
+            (1, "AeryScan MAP7", 10, 20, 30, 5),
+            (1, "AeryScan MAP7", 10, 20, None, 2),
+            (2, "SIM Tau", None, None, 30, 4),
+        ]
+    )
+    rows = await mod._load_facets(mod.UmapType.CROPPED, 7, None, mock_db)
+
+    assert [r.experiment_id for r in rows] == [1, 1, 2]
+    assert rows[0].experiment_name == "AeryScan MAP7"
+    assert (rows[0].microscope_id, rows[0].ptm_id, rows[0].protein_id) == (10, 20, 30)
+    assert rows[1].protein_id is None  # a bucket of crops with no protein
+    assert (rows[2].microscope_id, rows[2].ptm_id) == (None, None)
+    assert sum(r.count for r in rows) == 11
+
+
+async def test_selected_experiments_are_checked_against_the_acl(mock_db):
+    """Not just "does it exist" — "may this user see it".
+
+    Without the predicate a foreign id returns 200-with-zero-points instead of
+    404, which is an existence oracle for other groups' experiments; the
+    docstring claims that cannot happen, so pin the predicate itself.
+    """
+    mock_db.execute.return_value = make_result(scalars_all=[9])
+    await mod._verify_experiments_visible([9], user_id=7, group_id=3, db=mock_db)
+
+    sql = _compiled(mock_db.execute.await_args.args[0])
+    assert "experiments.user_id = 7" in sql
+    assert "experiments.group_id = 3" in sql
+
+
 # =============================================================================
 # The filter is actually wired into the endpoint
 #

@@ -14,6 +14,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import get_db
 from models.user import User
+from models.cell_crop import CellCrop
+from models.experiment import Experiment
 from models.image import DEFAULT_PROTEINS, MapProtein, Image
 from schemas.image import (
     MapProteinCreate,
@@ -267,14 +269,31 @@ async def delete_protein(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
-    """Delete a MAP protein (only if no images are associated)."""
-    protein = await get_or_404(db, MapProtein, protein_id, LABEL)
-    image_count = await count_referencing(db, Image.map_protein_id, protein_id)
+    """Delete a MAP protein (only if nothing references it).
 
-    if image_count > 0:
+    All THREE foreign keys are counted, because guarding on images alone was
+    wrong in two different ways:
+
+    * ``experiments.map_protein_id`` is ``NO ACTION``, so an experiment that
+      carries a protein but has no images yet slipped past the guard and the
+      DELETE then died on the constraint — a 500 where a 409 belongs.
+    * ``cell_crops.map_protein_id`` is ``ON DELETE SET NULL`` and a crop's
+      protein may legitimately differ from its image's (the crop editor and the
+      group-writable curation batch both set it directly), so a protein applied
+      only by curation was deletable and took those annotations with it.
+    """
+    protein = await get_or_404(db, MapProtein, protein_id, LABEL)
+    counts = {
+        "experiments": await count_referencing(db, Experiment.map_protein_id, protein_id),
+        "images": await count_referencing(db, Image.map_protein_id, protein_id),
+        "cell crops": await count_referencing(db, CellCrop.map_protein_id, protein_id),
+    }
+
+    if any(counts.values()):
+        used = ", ".join(f"{n} {label}" for label, n in counts.items() if n)
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail=f"Cannot delete protein with {image_count} associated images"
+            detail=f"Cannot delete protein still referenced by {used}"
         )
 
     await db.delete(protein)

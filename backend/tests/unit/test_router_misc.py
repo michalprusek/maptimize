@@ -1082,7 +1082,9 @@ async def test_prot_delete_with_images(mock_db):
     p = protein()
     mock_db.execute.side_effect = [
         make_result(scalar=p),    # get_protein_or_404
+        make_result(scalar=0),    # experiment count
         make_result(scalar=2),    # image count > 0
+        make_result(scalar=0),    # crop count
     ]
     with pytest.raises(HTTPException) as e:
         await prot_r.delete_protein(1, current_user=user(), db=mock_db)
@@ -1093,7 +1095,9 @@ async def test_prot_delete_ok(mock_db):
     p = protein()
     mock_db.execute.side_effect = [
         make_result(scalar=p),
+        make_result(scalar=0),  # no experiments
         make_result(scalar=0),  # no images
+        make_result(scalar=0),  # and no crops
     ]
     out = await prot_r.delete_protein(1, current_user=user(), db=mock_db)
     assert out is None
@@ -1560,3 +1564,70 @@ async def test_bug_get_all_admin(mock_db):
     out = await bug_r.get_all_bug_reports(current_user=admin(), db=mock_db)
     assert out.total == 1
     assert out.reports[0].user_name == "Bob"
+
+
+async def test_protein_usage_is_counted_by_image_not_experiment(mock_db):
+    """Which column the count reads is the whole delete guard.
+
+    Harmonising proteins with PTM/microscope is an obvious follow-up now that all
+    three share `utils/reference_data.py` — and those two count experiments. Swap
+    the column here and `image_count` silently changes meaning while the 409
+    guard starts protecting the wrong number.
+    """
+    from models.cell_crop import CellCrop
+    from models.image import Image, MapProtein
+    from routers import proteins as mod
+
+    mock_db.execute.side_effect = [
+        make_result(scalar=SimpleNamespace(id=3, name="MAP7")),  # get_or_404
+        make_result(scalar=0),  # experiment count
+        make_result(scalar=0),  # image count
+        make_result(scalar=0),  # crop count
+    ]
+    await mod.delete_protein(3, current_user=SimpleNamespace(id=1), db=mock_db)
+
+    counted = [
+        str(call.args[0].compile(compile_kwargs={"literal_binds": True}))
+        for call in mock_db.execute.await_args_list[1:]
+    ]
+    assert any("count(images.map_protein_id)" in sql for sql in counted)
+    # Crops too: a crop's protein may differ from its image's, and the FK is
+    # ON DELETE SET NULL, so ignoring them silently wipes curated annotations.
+    assert any("count(cell_crops.map_protein_id)" in sql for sql in counted)
+
+
+async def test_protein_delete_refuses_when_only_crops_reference_it(mock_db):
+    from routers import proteins as mod
+
+    mock_db.execute.side_effect = [
+        make_result(scalar=SimpleNamespace(id=3, name="MAP7")),
+        make_result(scalar=0),  # no experiments
+        make_result(scalar=0),  # no images
+        make_result(scalar=7),  # but seven curated crops
+    ]
+    with pytest.raises(HTTPException) as ei:
+        await mod.delete_protein(3, current_user=SimpleNamespace(id=1), db=mock_db)
+    assert ei.value.status_code == 409
+    assert "7" in ei.value.detail
+    mock_db.delete.assert_not_called()
+
+
+async def test_protein_delete_refuses_when_only_an_experiment_references_it(mock_db):
+    """experiments.map_protein_id is NO ACTION, so this used to be a 500.
+
+    An experiment can carry a protein before any image is uploaded, which slipped
+    past a guard that counted images only.
+    """
+    from routers import proteins as mod
+
+    mock_db.execute.side_effect = [
+        make_result(scalar=SimpleNamespace(id=3, name="MAP7")),
+        make_result(scalar=2),  # two experiments
+        make_result(scalar=0),  # no images
+        make_result(scalar=0),  # no crops
+    ]
+    with pytest.raises(HTTPException) as ei:
+        await mod.delete_protein(3, current_user=SimpleNamespace(id=1), db=mock_db)
+    assert ei.value.status_code == 409
+    assert "2 experiments" in ei.value.detail
+    mock_db.delete.assert_not_called()

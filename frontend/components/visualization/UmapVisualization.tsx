@@ -270,6 +270,11 @@ export function UmapVisualization({
     queryFn: () => api.getUmapData({ umapType: viewMode, selection: effectiveSelection }),
     staleTime: 1000 * 60 * 5, // Cache for 5 minutes
     retry: false,
+    // Keep the previous result on screen while a new filter loads. Without it
+    // every pill click makes `data` undefined for a moment, and the panel is
+    // rendered conditionally on `data` — so it unmounts mid-interaction and
+    // loses its expanded state and any text typed into a facet search.
+    placeholderData: (previous) => previous,
     // New uploads/edits arrive without coordinates; the request that observes
     // that schedules a background re-fit. Poll until those coordinates land.
     refetchInterval: (query) =>

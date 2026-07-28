@@ -98,5 +98,6 @@ backups/
 # Playwright run output (report, traces, last-run status)
 frontend/test-results/
 frontend/playwright-report/
+frontend/e2e/test-results/
 frontend/e2e/playwright-report/
 frontend/e2e/.auth/
