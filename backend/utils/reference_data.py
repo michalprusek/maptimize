@@ -41,10 +41,11 @@ async def count_referencing(
 ) -> int:
     """Count rows whose foreign key points at ``obj_id``.
 
-    The FROM clause is inferred from the column itself, so callers pass e.g.
-    ``Experiment.microscope_id`` and get the number of experiments using it.
-    Counting the FK column rather than ``*`` is what lets the FROM be inferred;
-    the ``WHERE`` already excludes the NULLs that ``count(col)`` would skip.
+    Callers pass e.g. ``Experiment.microscope_id`` and get the number of
+    experiments using it; the FROM clause comes from the column, so no explicit
+    ``select_from`` is needed. ``count(col)`` skips NULLs, which is harmless here
+    only because the ``WHERE`` has already excluded them — do not lift this into
+    a helper that drops the predicate.
     """
     result = await db.execute(
         select(func.count(fk_column)).where(fk_column == obj_id)
@@ -73,7 +74,9 @@ async def ensure_name_unique(
 ) -> None:
     """Raise 400 if another row of this model already has ``name``."""
     query = select(model).where(model.name == name)
-    if exclude_id:
+    # `is not None`, not truthiness: id 0 is the one value that must not be
+    # read as "no exclusion" in a codebase where 0 is a live sentinel elsewhere.
+    if exclude_id is not None:
         query = query.where(model.id != exclude_id)
     result = await db.execute(query)
     if result.scalar_one_or_none():
@@ -91,8 +94,12 @@ async def pick_color(db: AsyncSession, model: Type[T]) -> str:
     duplicate legend colour, while a unique constraint on colour would reject
     perfectly legitimate user-chosen values.
 
-    Colours are unique per table only, so a PTM and a microscope may share a hex.
-    Nothing plots both dimensions at once, so they never collide on screen.
+    ⚠️ Colours are unique per table only, and because each table seeds from the
+    front of the shared palette, the first protein, microscope and PTM all end up
+    on ``#3b82f6``. The scatter plot colours by one dimension at a time so it
+    never shows the clash, but the dashboard filter panel renders all four facets
+    at once and does. Widening uniqueness across tables would need one shared
+    "colour in use" query, not a change here.
     """
     result = await db.execute(select(model.color).where(model.color.isnot(None)))
     used = {row[0].lower() for row in result.all() if row[0]}

@@ -172,6 +172,137 @@ def test_filtered_view_with_zero_matches_is_allowed():
 
 
 # =============================================================================
+# _load_facets — the summary is a second query, with its own ACL to get right
+# =============================================================================
+
+def _compiled(stmt) -> str:
+    return str(stmt.compile(compile_kwargs={"literal_binds": True}))
+
+
+@pytest.mark.parametrize("umap_type", [mod.UmapType.CROPPED, mod.UmapType.FOV])
+async def test_facet_summary_is_scoped_to_what_the_user_may_read(mock_db, umap_type):
+    """The facet payload carries experiment NAMES and point counts.
+
+    It is a separate query from the points, so the ACL has to be right twice.
+    Asserted on the compiled SQL rather than on the returned rows because a mock
+    cannot enforce a predicate: dropping `experiment_owner_filter` here leaves
+    every other test in the suite green while the filter panel starts listing
+    other groups' experiment names.
+    """
+    mock_db.execute.return_value = make_result(fetchall=[])
+    await mod._load_facets(umap_type, user_id=7, group_id=None, db=mock_db)
+
+    sql = _compiled(mock_db.execute.await_args.args[0])
+    assert "experiments.user_id = 7" in sql
+    assert "cell_crops.embedding IS NOT NULL" in sql or "images.embedding IS NOT NULL" in sql
+
+
+@pytest.mark.parametrize("umap_type", [mod.UmapType.CROPPED, mod.UmapType.FOV])
+async def test_facet_summary_widens_to_the_group_but_no_further(mock_db, umap_type):
+    # Group sharing is an OR on top of ownership, never a replacement for it —
+    # swapping the two would hand every group's data to anyone in any group.
+    mock_db.execute.return_value = make_result(fetchall=[])
+    await mod._load_facets(umap_type, user_id=7, group_id=3, db=mock_db)
+
+    sql = _compiled(mock_db.execute.await_args.args[0])
+    assert "experiments.user_id = 7" in sql
+    assert "experiments.group_id = 3" in sql
+    assert " OR " in sql
+
+
+async def test_facet_summary_ignores_the_active_selection(mock_db):
+    # The panel must keep offering a value after you untick it, and must show how
+    # many points each *other* value would bring back. Filtering the summary by
+    # the current selection would make both impossible.
+    mock_db.execute.return_value = make_result(fetchall=[])
+    await mod._load_facets(mod.UmapType.CROPPED, user_id=7, group_id=None, db=mock_db)
+
+    sql = _compiled(mock_db.execute.await_args.args[0])
+    assert "ptm_id IN" not in sql
+    assert "microscope_id IN" not in sql
+
+
+# =============================================================================
+# The filter is actually wired into the endpoint
+#
+# Every test above exercises the helpers in isolation. That leaves the one
+# mistake that matters most completely uncovered: the endpoint not calling them.
+# Deleting the `_apply_facets` call from either corpus used to leave the whole
+# suite green while the plot silently ignored every filter the user ticked.
+# =============================================================================
+
+async def _point_query(umap_type, selection, mock_db):
+    """Run one corpus and hand back the compiled SQL of its point query."""
+    mock_db.execute.return_value = make_result(scalars_all=[], fetchall=[])
+    runner = (
+        mod._get_fov_umap if umap_type is mod.UmapType.FOV else mod._get_cropped_umap
+    )
+    await runner(selection, user(), None, MagicMock(), mock_db)
+    return _compiled(mock_db.execute.await_args_list[0].args[0])
+
+
+@pytest.mark.parametrize("umap_type", [mod.UmapType.CROPPED, mod.UmapType.FOV])
+async def test_every_facet_reaches_the_point_query(mock_db, no_group, umap_type):
+    sql = await _point_query(
+        umap_type,
+        mod.FacetSelection(
+            experiment_ids=[1], microscope_ids=[2], protein_ids=[3], ptm_ids=[4]
+        ),
+        mock_db,
+    )
+    assert "experiment_id IN" in sql
+    assert "microscope_id IN" in sql
+    assert "map_protein_id IN" in sql
+    assert "ptm_id IN" in sql
+    # And the ACL is still there alongside them.
+    assert "experiments.user_id" in sql
+
+
+async def test_cropped_filters_on_the_crop_protein(mock_db, no_group):
+    # The point is coloured by the crop's protein, so filtering on the image's
+    # would silently disagree with what the user sees.
+    sql = await _point_query(
+        mod.UmapType.CROPPED, mod.FacetSelection(protein_ids=[3]), mock_db
+    )
+    assert "cell_crops.map_protein_id IN" in sql
+
+
+async def test_fov_filters_on_the_image_protein(mock_db, no_group):
+    sql = await _point_query(
+        mod.UmapType.FOV, mod.FacetSelection(protein_ids=[3]), mock_db
+    )
+    assert "images.map_protein_id IN" in sql
+
+
+@pytest.mark.parametrize("umap_type", [mod.UmapType.CROPPED, mod.UmapType.FOV])
+async def test_unfiltered_query_carries_no_facet_clause(mock_db, no_group, umap_type):
+    # `facet_clause` returns None for an untouched facet, and SQLAlchemy renders
+    # a bare `.where(None)` as `WHERE NULL` — which matches nothing. An empty
+    # selection must therefore add no clause at all, not a null one.
+    with patch.object(mod, "MIN_POINTS_FOR_UMAP", 0):
+        sql = await _point_query(umap_type, mod.FacetSelection(), mock_db)
+    assert "NULL" not in sql.replace("IS NOT NULL", "")
+
+
+async def test_facet_summary_only_counts_rows_that_can_be_plotted(mock_db):
+    # Counting unembedded rows would make the panel promise points the plot
+    # cannot draw, and the mismatch has no error to explain it.
+    mock_db.execute.return_value = make_result(fetchall=[])
+    await mod._load_facets(mod.UmapType.CROPPED, 7, None, mock_db)
+    assert "cell_crops.embedding IS NOT NULL" in _compiled(
+        mock_db.execute.await_args.args[0]
+    )
+
+
+async def test_facet_summary_counts_the_corpus_it_was_asked_for(mock_db):
+    mock_db.execute.return_value = make_result(fetchall=[])
+    await mod._load_facets(mod.UmapType.FOV, 7, None, mock_db)
+    sql = _compiled(mock_db.execute.await_args.args[0])
+    assert "count(images.id)" in sql
+    assert "cell_crops" not in sql
+
+
+# =============================================================================
 # Endpoint wiring
 # =============================================================================
 
@@ -206,7 +337,9 @@ async def test_stale_microscope_id_returns_404(mock_db):
             db=mock_db,
         )
     assert ei.value.status_code == 404
-    assert "Microscope" in ei.value.detail
+    # Exact text, not a substring: the frontend parses this to work out which
+    # facet to prune, so the two literals have to fail together.
+    assert ei.value.detail == "Microscope not found: 999"
 
 
 async def test_stale_ptm_id_returns_404(mock_db):
@@ -219,7 +352,22 @@ async def test_stale_ptm_id_returns_404(mock_db):
             db=mock_db,
         )
     assert ei.value.status_code == 404
-    assert "PTM" in ei.value.detail
+    assert ei.value.detail == "PTM not found: 999"
+
+
+async def test_stale_protein_id_returns_404(mock_db):
+    # The protein facet had no endpoint-level coverage: dropping MapProtein from
+    # the validation list left the whole suite green.
+    mock_db.execute.return_value = make_result(scalars_all=[])
+    with pytest.raises(HTTPException) as ei:
+        await mod.get_umap_visualization(
+            selection=mod.FacetSelection(protein_ids=[999]),
+            background_tasks=MagicMock(),
+            current_user=user(),
+            db=mock_db,
+        )
+    assert ei.value.status_code == 404
+    assert ei.value.detail == "MAP protein not found: 999"
 
 
 async def test_unassigned_only_selection_needs_no_reference_lookup(mock_db, no_group):

@@ -141,20 +141,25 @@ SERVER_INSTRUCTIONS = (
     "figure/table illegible at full-page scale). find_documents filters by metadata.\n\n"
     "B) Application control: list/create/update/delete experiments; upload_image then "
     "process_images to run YOLO cell detection; read results with list_cell_crops; "
-    "manage proteins (list/create/update/delete) and assign them to experiments; "
+    "manage the shared reference data — proteins, microscopes and PTMs (microtubule "
+    "post-translational modifications) — and assign them to experiments; "
     "query_database runs a READ-ONLY SQL SELECT over your data. A typical pipeline is "
     "create_experiment → upload_image → process_images → list_cell_crops. Image "
     "processing runs in the background, so poll get_image / list_fov_images for status.\n\n"
     "Access control mirrors the UI exactly: reads are group-shared (you see your own "
-    "data plus your group's), writes are OWNER-ONLY (you can only change or delete your "
-    "own experiments/images), and query_database injects a per-user filter so you never "
-    "see other users' private rows. Proteins are shared reference data. Deletes are "
-    "IRREVERSIBLE and cascade (deleting an experiment deletes its images and cell crops)."
+    "data plus your group's), and query_database injects a per-user filter so you never "
+    "see other users' private rows. Writes to experiments and images are OWNER-ONLY, "
+    "with three deliberate exceptions any group member may perform on a colleague's "
+    "experiment: correcting cell crops, assign_experiment_microscope, and "
+    "assign_experiment_ptm — these are shared acquisition and sample-prep metadata the "
+    "lab backfills collectively. Proteins, microscopes and PTMs are themselves shared "
+    "reference data anyone may edit. Deletes are IRREVERSIBLE and cascade (deleting an "
+    "experiment deletes its images and cell crops)."
 )
 
 # Bumped when the tool contract or capabilities change (see MCP versioning).
-# 2.1.0: added application-control tools (experiments, images + cell detection,
-# proteins) and a read-only query_database SQL tool alongside the document DB.
+# The pinning tests in tests/test_registry.py and tests/test_protocol.py are the
+# authoritative record of what each version exposes — update them with the bump.
 SERVER_VERSION = "2.4.0"
 
 

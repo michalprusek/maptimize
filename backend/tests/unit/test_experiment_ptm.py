@@ -172,3 +172,19 @@ def test_ptm_widening_did_not_leak_into_the_owner_only_handlers():
         "the PTM assignment is group-writable on purpose; an owner re-check here "
         "would make the facet unusable"
     )
+
+
+def test_ptm_column_is_added_to_existing_databases():
+    """`create_all` builds the new `ptms` table but never the new column.
+
+    A fresh database (every test run, every dev machine) gets
+    `experiments.ptm_id` from `create_all`, so omitting the
+    `ensure_schema_updates` entry is invisible everywhere except production —
+    where the column simply never appears and every experiment query fails.
+    """
+    import inspect
+
+    import database
+
+    source = inspect.getsource(database.ensure_schema_updates)
+    assert '("experiments", "ptm_id", "INTEGER REFERENCES ptms(id)")' in source

@@ -405,7 +405,7 @@ autorizovaného obrázku. **Kdyby ten pin kdokoliv odstranil, je to okamžitě I
 
 `PATCH /api/experiments/{id}/microscope` (`update_experiment_microscope`) je
 **skupinový zápis**: `get_experiment_for_user` + **žádný** owner re-check. Mikroskop je
-sdílená akviziční metadata (`microscopes` nemá `user_id`) a v produkci patří **31 z 37
+sdílená akviziční metadata (`microscopes` nemá `user_id`) a v produkci patří **40 ze 46
 experimentů** anotátorovi — owner-only přiřazení by nechalo filtr mikroskopu na
 dashboard UMAP pokrývat 6 experimentů, tedy prakticky nic.
 
@@ -466,8 +466,9 @@ id jsou SERIAL od 1. Bez toho by byla facета PTM od začátku k ničemu — v
 startují nepřiřazené. `real_ids()` sentinel odstraní **před** ověřováním existence, jinak
 by každý filtr obsahující „Unassigned" vrátil 404.
 
-⚠️ **`MIN_POINTS_FOR_UMAP` (400) smí padnout JEN u nefiltrovaného pohledu**
-(`_guard_enough_points`). Práh chrání **fitování**, ne čtení: souřadnice pocházejí
+⚠️ **`MIN_POINTS_FOR_UMAP` (10, viz `services/umap_service.py`) smí shodit request JEN
+u nefiltrovaného pohledu** (`_guard_enough_points`; odpověď je HTTP 400 — nepleť si to
+s hodnotou prahu). Práh chrání **fitování**, ne čtení: souřadnice pocházejí
 z jednoho sdíleného fitu, který už proběhl, takže zobrazit tři filtrované body je správná
 odpověď. Dřív filtr mikroskopu na úzký výběr vracel „Need at least N crops" — chyba tam,
 kam patří prázdný graf.

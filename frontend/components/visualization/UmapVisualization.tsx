@@ -234,21 +234,25 @@ export function UmapVisualization({
     );
   }, [selection, syncsUrl]);
 
-  const { data: microscopes } = useQuery({
+  // These three supply every name and colour on the plot. If one fails to load,
+  // its points silently render as "Unassigned" in the default grey — which looks
+  // exactly like a lost backfill — so the failure has to be said out loud.
+  const { data: microscopes, isError: microscopesFailed } = useQuery({
     queryKey: ["microscopes"],
     queryFn: () => api.getMicroscopes(),
     staleTime: 1000 * 60 * 5,
   });
-  const { data: proteins } = useQuery({
+  const { data: proteins, isError: proteinsFailed } = useQuery({
     queryKey: ["proteins"],
     queryFn: () => api.getProteins(),
     staleTime: 1000 * 60 * 5,
   });
-  const { data: ptms } = useQuery({
+  const { data: ptms, isError: ptmsFailed } = useQuery({
     queryKey: ["ptms"],
     queryFn: () => api.getPtms(),
     staleTime: 1000 * 60 * 5,
   });
+  const referencesFailed = microscopesFailed || proteinsFailed || ptmsFailed;
 
   // An experimentId prop scopes the plot; the user filters within it.
   const effectiveSelection = useMemo(
@@ -274,11 +278,19 @@ export function UmapVisualization({
   // data is shared), and the backend then 404s the whole request. Drop only the
   // ids the error names, rather than leaving the plot stuck behind an error it
   // cannot explain — or throwing away the facets that are still valid.
+  //
+  // Say so when it happens. Repairing the filter silently would also erase it
+  // from the URL, so someone opening a shared link to a filtered view could end
+  // up looking at a wider selection believing it is the one they were sent.
+  const [prunedFilterNotice, setPrunedFilterNotice] = useState<string | null>(null);
   useEffect(() => {
     const detail = error instanceof Error ? error.message : "";
     if (!detail) return;
     const pruned = selectionWithoutDeadIds(selection, detail);
-    if (pruned) setSelection(pruned);
+    if (!pruned) return;
+    console.warn("[UmapVisualization] dropped filter values the backend rejected:", detail);
+    setPrunedFilterNotice(detail);
+    setSelection(pruned);
   }, [error, selection]);
 
   const isRecomputing = data?.is_stale ?? false;
@@ -349,7 +361,9 @@ export function UmapVisualization({
       return {
         experimentName: meta?.name ?? `#${point.experiment_id}`,
         microscopeName: microscope?.name ?? null,
-        ptmName: ptm?.abbreviation || ptm?.name || null,
+        // Full name, matching the legend: an abbreviation here and a name
+        // there reads as two different PTMs on the same plot.
+        ptmName: ptm?.name ?? null,
       };
     },
     [experimentMeta, microscopeById, ptmById]
@@ -504,7 +518,11 @@ export function UmapVisualization({
     if (!data || data.points.length === 0) {
       // The filter excluded everything. Saying "upload and process images" here
       // would send the user to fix a problem they do not have.
-      if (data && !isSelectionEmpty(selection)) {
+      //
+      // Checked AFTER isRecomputing: matching crops that have embeddings but no
+      // coordinates yet also yield zero points, and blaming the filter for that
+      // invites the user to throw away a filter that was never the problem.
+      if (data && !isRecomputing && !isSelectionEmpty(selection)) {
         return (
           <div
             className="flex flex-col items-center justify-center text-center"
@@ -526,7 +544,7 @@ export function UmapVisualization({
       }
 
       // Nothing to plot yet, but a re-fit is running — the data is on its way,
-      // so don't claim there are no embeddings.
+      // so don't claim there are no embeddings (nor blame the filter).
       if (isRecomputing) {
         return (
           <div
@@ -733,6 +751,32 @@ export function UmapVisualization({
           </button>
         </div>
       </div>
+
+      {/* A reference list failed to load, so names and colours are wrong rather
+          than missing — the plot looks like a lost backfill if we stay quiet. */}
+      {referencesFailed && (
+        <div className="flex items-center gap-2 mb-3 px-3 py-2 rounded-md bg-accent-amber/10 border border-accent-amber/30">
+          <AlertCircle className="w-4 h-4 text-accent-amber flex-shrink-0" />
+          <span className="text-xs text-text-secondary">{t("referencesFailed")}</span>
+        </div>
+      )}
+
+      {/* Filter values were dropped for us; say which, so a shared link that
+          quietly widened is not mistaken for the view it was sent as. */}
+      {prunedFilterNotice && (
+        <div className="flex items-center gap-2 mb-3 px-3 py-2 rounded-md bg-accent-amber/10 border border-accent-amber/30">
+          <FilterX className="w-4 h-4 text-accent-amber flex-shrink-0" />
+          <span className="text-xs text-text-secondary flex-1">
+            {t("filterValuesDropped", { detail: prunedFilterNotice })}
+          </span>
+          <button
+            onClick={() => setPrunedFilterNotice(null)}
+            className="text-xs underline text-text-secondary hover:text-text-primary"
+          >
+            {t("dismiss")}
+          </button>
+        </div>
+      )}
 
       {/* Advanced filter — needs the facet summary, which arrives with the data */}
       {data && (

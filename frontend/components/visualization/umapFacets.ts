@@ -22,12 +22,14 @@ export interface FacetSelection {
   ptm: number[];
 }
 
-export const EMPTY_SELECTION: FacetSelection = {
+// Frozen because it is exported and shared: every consumer spread-copies it
+// today, but one in-place push would corrupt the "no filter" value everywhere.
+export const EMPTY_SELECTION: FacetSelection = Object.freeze({
   experiment: [],
   microscope: [],
   protein: [],
   ptm: [],
-};
+}) as FacetSelection;
 
 export interface FacetOption {
   id: number;
@@ -218,6 +220,11 @@ export function selectionFromQuery(search: string): FacetSelection {
     if (!raw) continue;
     selection[facet] = raw
       .split(",")
+      // Drop blanks BEFORE Number(): `Number("")` is 0, which is the
+      // "unassigned" sentinel, so a stray comma in a hand-edited or shared URL
+      // would silently widen the filter instead of being ignored.
+      .map((value) => value.trim())
+      .filter((value) => value !== "")
       .map((value) => Number(value))
       .filter((value) => Number.isInteger(value) && value >= 0);
   }

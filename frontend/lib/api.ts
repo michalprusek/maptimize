@@ -676,13 +676,18 @@ class ApiClient {
     selection?: UmapFacetSelection;
   } = {}): Promise<UmapDataResponse | UmapFovDataResponse> {
     const params = new URLSearchParams({ umap_type: umapType });
-    const facetParams: Array<[keyof UmapFacetSelection, string]> = [
-      ["experiment", "experiment_id"],
-      ["microscope", "microscope_id"],
-      ["protein", "protein_id"],
-      ["ptm", "ptm_id"],
-    ];
-    for (const [facet, param] of facetParams) {
+    // A Record, not an array of pairs: it is exhaustive over the facet keys, so
+    // adding a facet without wiring it here fails to compile instead of silently
+    // dropping that filter from the request while the UI still shows it ticked.
+    const facetParams: Record<keyof UmapFacetSelection, string> = {
+      experiment: "experiment_id",
+      microscope: "microscope_id",
+      protein: "protein_id",
+      ptm: "ptm_id",
+    };
+    for (const [facet, param] of Object.entries(facetParams) as Array<
+      [keyof UmapFacetSelection, string]
+    >) {
       for (const id of selection?.[facet] ?? []) {
         params.append(param, id.toString());
       }

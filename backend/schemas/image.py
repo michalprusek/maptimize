@@ -5,9 +5,10 @@ from typing import Optional, List, Literal
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from models.image import UploadStatus
+from schemas.reference import ReferenceCreate, ReferenceUpdate
 
 
-class MapProteinCreate(BaseModel):
+class MapProteinCreate(ReferenceCreate):
     """Schema for creating a MAP protein."""
     name: str = Field(..., min_length=1, max_length=100)
     full_name: Optional[str] = None
@@ -20,7 +21,7 @@ class MapProteinCreate(BaseModel):
     organism: Optional[str] = Field(None, max_length=100)
 
 
-class MapProteinUpdate(BaseModel):
+class MapProteinUpdate(ReferenceUpdate):
     """Schema for updating a MAP protein."""
     name: Optional[str] = Field(None, min_length=1, max_length=100)
     full_name: Optional[str] = None

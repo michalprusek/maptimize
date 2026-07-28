@@ -105,7 +105,7 @@ async def test_assign_microscope_with_valid_microscope(mock_db):
 async def test_group_member_may_assign_microscope_to_another_users_experiment(mock_db):
     """The reason this endpoint exists.
 
-    31 of 37 experiments in production belong to the lab's annotator, so an
+    40 of 46 experiments in production belong to the lab's annotator, so an
     owner-only assignment would leave the dashboard's microscope filter covering
     almost nothing. `get_experiment_for_user` is group-scoped and there is
     deliberately NO owner re-check after it -- unlike `update_experiment`.

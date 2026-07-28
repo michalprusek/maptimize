@@ -39,7 +39,7 @@ recorded nowhere, so the dashboard cannot separate a MAP effect from a lattice e
 3. **Assignment is group-writable** — `PATCH /api/experiments/{id}/ptm` is a dedicated
    endpoint with `get_experiment_for_user` and **no owner re-check**, exactly like
    `update_experiment_microscope`. Same reasoning as CLAUDE.md records for microscopes:
-   Theo owns 31 of 46 experiments, so an owner-only assignment would leave the PTM facet
+   Theo owns 40 of 46 experiments, so an owner-only assignment would leave the PTM facet
    covering almost nothing and make the filter useless. It stays a **separate endpoint,
    not a field on `ExperimentUpdate`** — one field must not have two ACLs.
 4. **No denormalization onto images/crops.** PTM lives on `Experiment` only. The UMAP

@@ -4,8 +4,10 @@ from typing import Optional
 
 from pydantic import BaseModel, Field
 
+from schemas.reference import ReferenceCreate, ReferenceUpdate
 
-class PTMCreate(BaseModel):
+
+class PTMCreate(ReferenceCreate):
     """Schema for creating a PTM."""
     name: str = Field(..., min_length=1, max_length=100)
     abbreviation: Optional[str] = Field(None, max_length=50)
@@ -15,7 +17,7 @@ class PTMCreate(BaseModel):
     color: Optional[str] = Field(None, pattern=r"^#[0-9A-Fa-f]{6}$")
 
 
-class PTMUpdate(BaseModel):
+class PTMUpdate(ReferenceUpdate):
     """Schema for updating a PTM (all optional)."""
     name: Optional[str] = Field(None, min_length=1, max_length=100)
     abbreviation: Optional[str] = Field(None, max_length=50)

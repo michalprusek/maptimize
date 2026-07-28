@@ -32,8 +32,11 @@ class UmapFacetRow(BaseModel):
     are applied, so unticking a facet value never makes it disappear from the
     panel.
 
-    A null id means the experiment has nothing assigned for that facet; the
-    client offers those buckets as the "Unassigned" option.
+    A null id means nothing is assigned, and the client offers those buckets as
+    the "Unassigned" option — but note the two grains: a null microscope or PTM
+    is a property of the experiment, while a null protein is a property of these
+    points only, so one experiment can have both a null-protein bucket and
+    assigned ones.
     """
 
     experiment_id: int = Field(..., description="Experiment these points belong to")

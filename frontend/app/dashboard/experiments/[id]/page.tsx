@@ -193,6 +193,7 @@ export default function ExperimentDetailPage(): JSX.Element {
   });
 
   const assignPtmMutation = useAssignPtm({
+    fallbackMessage: t("assignPtmError"),
     onError: setMutationError,
     onSuccess: () => {
       setMutationError(null);

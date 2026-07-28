@@ -225,24 +225,24 @@ export default function PtmsPage(): JSX.Element {
           <div>
             <label className="block text-sm font-medium text-text-secondary mb-2">{t("name")} *</label>
             <input type="text" value={formData.name} onChange={(e) => setFormData({ ...formData, name: e.target.value })}
-              className="input-field" placeholder="e.g., Polyglutamylation" required />
+              className="input-field" placeholder={t("namePlaceholder")} required />
           </div>
           <div className="grid grid-cols-2 gap-4">
             <div>
               <label className="block text-sm font-medium text-text-secondary mb-2">{t("abbreviation")}</label>
               <input type="text" value={formData.abbreviation} onChange={(e) => setFormData({ ...formData, abbreviation: e.target.value })}
-                className="input-field" placeholder="e.g., polyE" />
+                className="input-field" placeholder={t("abbreviationPlaceholder")} />
             </div>
             <div>
               <label className="block text-sm font-medium text-text-secondary mb-2">{t("modifiedResidue")}</label>
               <input type="text" value={formData.modified_residue} onChange={(e) => setFormData({ ...formData, modified_residue: e.target.value })}
-                className="input-field" placeholder="e.g., Glutamate (E) in C-terminal tail" />
+                className="input-field" placeholder={t("modifiedResiduePlaceholder")} />
             </div>
           </div>
           <div>
             <label className="block text-sm font-medium text-text-secondary mb-2">{t("enzyme")}</label>
             <input type="text" value={formData.enzyme} onChange={(e) => setFormData({ ...formData, enzyme: e.target.value })}
-              className="input-field" placeholder="e.g., TTLL1 / CCP1" />
+              className="input-field" placeholder={t("enzymePlaceholder")} />
           </div>
           <div>
             <label className="block text-sm font-medium text-text-secondary mb-2">{t("description")}</label>

@@ -54,7 +54,10 @@ DEFAULT_PTMS = [
         "name": "Detyrosination",
         "abbreviation": "deTyr",
         "modified_residue": "α-tubulin C-terminal tyrosine",
-        "enzyme": "VASH1/VASH2-SVBP, MATCAP (erasers) / TTL (writer)",
+        # Writer/eraser are named relative to THIS row's state, not to
+        # tyrosination: the vasohibins and MATCAP create the detyrosinated
+        # lattice, and TTL is what reverses it.
+        "enzyme": "VASH1/VASH2-SVBP, MATCAP (writers) / TTL (eraser)",
         "description": "Removal of the C-terminal tyrosine, exposing glutamate (Glu-tubulin). Marks long-lived microtubules.",
         "color": "#ef4444",
     },
