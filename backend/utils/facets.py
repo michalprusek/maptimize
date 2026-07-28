@@ -18,6 +18,16 @@ from sqlalchemy.sql.elements import ColumnElement
 UNASSIGNED_FACET_ID = 0
 
 
+def real_ids(ids: Optional[Sequence[int]]) -> list[int]:
+    """The ids in a facet selection that refer to actual rows.
+
+    Also the existence-check input for a selection: the unassigned sentinel must
+    never be looked up in the reference table, or every filter including
+    "Unassigned" would 404.
+    """
+    return [i for i in (ids or []) if i != UNASSIGNED_FACET_ID]
+
+
 def facet_clause(
     column: ColumnElement, ids: Optional[Sequence[int]]
 ) -> Optional[ColumnElement]:
@@ -32,23 +42,13 @@ def facet_clause(
     if not ids:
         return None
 
-    real_ids = [i for i in ids if i != UNASSIGNED_FACET_ID]
+    selected = real_ids(ids)
     clauses = []
-    if real_ids:
-        clauses.append(column.in_(real_ids))
+    if selected:
+        clauses.append(column.in_(selected))
     if UNASSIGNED_FACET_ID in ids:
         clauses.append(column.is_(None))
 
     if len(clauses) == 1:
         return clauses[0]
     return or_(*clauses)
-
-
-def real_ids(ids: Optional[Sequence[int]]) -> list[int]:
-    """The ids in a facet selection that refer to actual rows.
-
-    Used for existence-checking a selection: the unassigned sentinel must never
-    be looked up in the reference table, or every filter including "Unassigned"
-    would 404.
-    """
-    return [i for i in (ids or []) if i != UNASSIGNED_FACET_ID]

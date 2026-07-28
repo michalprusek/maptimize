@@ -33,6 +33,7 @@ import routers.bug_reports as bug_r
 from models.user import UserRole
 from models.experiment import ExperimentStatus
 from utils.colors import COLOR_PALETTE
+from utils.reference_data import ensure_name_unique, get_or_404, pick_color
 
 
 # --------------------------------------------------------------------------- #
@@ -790,29 +791,37 @@ def protein(id=1, name="PRC1", embedding=None, umap_x=None, umap_y=None):
     )
 
 
+# Proteins share `utils.reference_data` with microscopes and PTMs. These pin the
+# protein-facing behaviour of that shared code — including the wording of the two
+# errors, which is all the client has to tell the failures apart.
 async def test_prot_get_or_404_found(mock_db):
     p = protein()
     mock_db.execute.return_value = make_result(scalar=p)
-    assert await prot_r.get_protein_or_404(1, mock_db) is p
+    assert await get_or_404(mock_db, prot_r.MapProtein, 1, prot_r.LABEL) is p
 
 
 async def test_prot_get_or_404_not_found(mock_db):
     mock_db.execute.return_value = make_result(scalar=None)
     with pytest.raises(HTTPException) as e:
-        await prot_r.get_protein_or_404(1, mock_db)
+        await get_or_404(mock_db, prot_r.MapProtein, 1, prot_r.LABEL)
     assert e.value.status_code == 404
+    assert e.value.detail == "Protein not found"
 
 
 async def test_prot_check_name_unique_conflict(mock_db):
     mock_db.execute.return_value = make_result(scalar=protein())
     with pytest.raises(HTTPException) as e:
-        await prot_r.check_protein_name_unique("PRC1", mock_db)
+        await ensure_name_unique(mock_db, prot_r.MapProtein, "PRC1", prot_r.LABEL)
     assert e.value.status_code == 400
+    assert e.value.detail == "Protein with this name already exists"
 
 
 async def test_prot_check_name_unique_ok_with_exclude(mock_db):
     mock_db.execute.return_value = make_result(scalar=None)
-    await prot_r.check_protein_name_unique("New", mock_db, exclude_id=5)  # no raise
+    # no raise
+    await ensure_name_unique(
+        mock_db, prot_r.MapProtein, "New", prot_r.LABEL, exclude_id=5
+    )
 
 
 async def test_prot_list_existing(mock_db):
@@ -916,20 +925,20 @@ async def test_prot_create_keeps_explicit_colour(mock_db):
 async def test_pick_colour_skips_used_case_insensitively(mock_db):
     used = [(c.upper(),) for c in COLOR_PALETTE[:3]]
     mock_db.execute.return_value = make_result(fetchall=used)
-    assert await prot_r.pick_protein_color(mock_db) == COLOR_PALETTE[3]
+    assert await pick_color(mock_db, prot_r.MapProtein) == COLOR_PALETTE[3]
 
 
 async def test_pick_colour_generates_one_when_palette_exhausted(mock_db):
     used = [(c,) for c in COLOR_PALETTE]
     mock_db.execute.return_value = make_result(fetchall=used)
-    colour = await prot_r.pick_protein_color(mock_db)
+    colour = await pick_color(mock_db, prot_r.MapProtein)
     assert re.fullmatch(r"#[0-9a-fA-F]{6}", colour)
     assert colour.lower() not in {c.lower() for c in COLOR_PALETTE}
 
 
 async def test_pick_colour_ignores_null_colours(mock_db):
     mock_db.execute.return_value = make_result(fetchall=[(None,)])
-    assert await prot_r.pick_protein_color(mock_db) == COLOR_PALETTE[0]
+    assert await pick_color(mock_db, prot_r.MapProtein) == COLOR_PALETTE[0]
 
 
 async def test_generated_colours_differ_from_each_other(mock_db):
@@ -945,7 +954,7 @@ async def test_generated_colours_differ_from_each_other(mock_db):
         mock_db.execute.return_value = make_result(
             fetchall=[(c,) for c in used]
         )
-        colour = await prot_r.pick_protein_color(mock_db)
+        colour = await pick_color(mock_db, prot_r.MapProtein)
         picked.append(colour)
         used.add(colour.lower())
     assert len(set(picked)) == 5

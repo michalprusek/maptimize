@@ -156,11 +156,9 @@ async def create_experiment(
                 detail="MAP protein not found"
             )
 
-    # Verify microscope exists if provided
     if data.microscope_id is not None:
         await _verify_microscope_exists(data.microscope_id, db)
 
-    # Verify PTM exists if provided
     if data.ptm_id is not None:
         await _verify_ptm_exists(data.ptm_id, db)
 

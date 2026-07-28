@@ -274,42 +274,32 @@ async def _load_facets(
         protein_col = Image.map_protein_id
         count_col = Image.id
         embedded = Image.embedding.isnot(None)
-        source = select(
-            Experiment.id,
-            Experiment.name,
-            Experiment.microscope_id,
-            Experiment.ptm_id,
-            protein_col,
-            func.count(count_col),
-        ).join(Experiment, Image.experiment_id == Experiment.id)
+        joins = [(Experiment, Image.experiment_id == Experiment.id)]
     else:
         protein_col = CellCrop.map_protein_id
         count_col = CellCrop.id
         embedded = CellCrop.embedding.isnot(None)
-        source = (
-            select(
-                Experiment.id,
-                Experiment.name,
-                Experiment.microscope_id,
-                Experiment.ptm_id,
-                protein_col,
-                func.count(count_col),
-            )
-            .join(Image, CellCrop.image_id == Image.id)
-            .join(Experiment, Image.experiment_id == Experiment.id)
-        )
+        joins = [
+            (Image, CellCrop.image_id == Image.id),
+            (Experiment, Image.experiment_id == Experiment.id),
+        ]
+
+    buckets = (
+        Experiment.id,
+        Experiment.name,
+        Experiment.microscope_id,
+        Experiment.ptm_id,
+        protein_col,
+    )
+    source = select(*buckets, func.count(count_col))
+    for target, onclause in joins:
+        source = source.join(target, onclause)
 
     result = await db.execute(
         source.where(
             experiment_owner_filter(user_id, group_id),
             embedded,
-        ).group_by(
-            Experiment.id,
-            Experiment.name,
-            Experiment.microscope_id,
-            Experiment.ptm_id,
-            protein_col,
-        )
+        ).group_by(*buckets)
     )
 
     return [
@@ -505,7 +495,6 @@ async def _get_fov_umap(
     computed_times = [img.umap_computed_at for img in images_with_umap if img.umap_computed_at]
     computed_at = min(computed_times) if computed_times else None
 
-    # Build response
     points = [
         UmapFovPointResponse(
             image_id=image.id,
