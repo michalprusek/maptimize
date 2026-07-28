@@ -234,9 +234,11 @@ export function UmapVisualization({
     );
   }, [selection, syncsUrl]);
 
-  // These three supply every name and colour on the plot. If one fails to load,
-  // its points silently render as "Unassigned" in the default grey — which looks
-  // exactly like a lost backfill — so the failure has to be said out loud.
+  // These name the filter pills and the tooltip rows, and — for microscope and
+  // PTM — colour the points whenever colour-by is set to them. A failure leaves
+  // pills reading "#4" in grey and drops tooltip rows silently, which looks like
+  // a lost backfill, so it has to be said out loud. (Protein points are
+  // unaffected: they carry their own name and colour in the payload.)
   const { data: microscopes, isError: microscopesFailed } = useQuery({
     queryKey: ["microscopes"],
     queryFn: () => api.getMicroscopes(),
@@ -289,7 +291,9 @@ export function UmapVisualization({
     const pruned = selectionWithoutDeadIds(selection, detail);
     if (!pruned) return;
     console.warn("[UmapVisualization] dropped filter values the backend rejected:", detail);
-    setPrunedFilterNotice(detail);
+    setPrunedFilterNotice((seen) =>
+      seen?.includes(detail) ? seen : [seen, detail].filter(Boolean).join("; ")
+    );
     setSelection(pruned);
   }, [error, selection]);
 
@@ -519,7 +523,7 @@ export function UmapVisualization({
       // The filter excluded everything. Saying "upload and process images" here
       // would send the user to fix a problem they do not have.
       //
-      // Checked AFTER isRecomputing: matching crops that have embeddings but no
+      // Gated on !isRecomputing: matching crops that have embeddings but no
       // coordinates yet also yield zero points, and blaming the filter for that
       // invites the user to throw away a filter that was never the problem.
       if (data && !isRecomputing && !isSelectionEmpty(selection)) {
@@ -534,7 +538,10 @@ export function UmapVisualization({
             </h3>
             <p className="text-text-secondary max-w-md mb-4">{t("noMatchingPointsHint")}</p>
             <button
-              onClick={() => setSelection(EMPTY_SELECTION)}
+              onClick={() => {
+                setSelection(EMPTY_SELECTION);
+                setPrunedFilterNotice(null);
+              }}
               className="btn-secondary inline-flex items-center gap-2"
             >
               {t("clearAll")}
@@ -740,7 +747,15 @@ export function UmapVisualization({
 
           {/* Refresh button */}
           <button
-            onClick={() => refetch()}
+            onClick={() => {
+              refetch();
+              // Also the reference lists: the referencesFailed banner tells the
+              // user to refresh, and refetching only the plot leaves the names
+              // it complains about exactly as wrong as they were.
+              queryClient.invalidateQueries({ queryKey: ["microscopes"] });
+              queryClient.invalidateQueries({ queryKey: ["proteins"] });
+              queryClient.invalidateQueries({ queryKey: ["ptms"] });
+            }}
             disabled={isFetching}
             className="p-2 hover:bg-white/5 rounded-lg transition-colors disabled:opacity-50"
             title={t("refresh")}

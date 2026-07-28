@@ -38,6 +38,11 @@ def facet_clause(
     untouched filter control means. Including ``UNASSIGNED_FACET_ID`` widens the
     clause to also match rows where the column is NULL, which is the only way the
     PTM facet is usable at all before the lab has backfilled it.
+
+    ⚠️ Meaningful for microscope, protein and PTM only. The experiment facet
+    filters a NOT NULL column, so ``IS NULL`` there can never match; the client
+    does not offer the option and `_verify_experiments_visible` rejects a stray 0
+    rather than stripping it.
     """
     if not ids:
         return None

@@ -95,6 +95,7 @@
     "assignMicroscope": "Microscope",
     "unassignedMicroscope": "No microscope",
     "experimentPtmHint": "The tubulin PTM this experiment probes",
+    "assignMicroscopeError": "Failed to assign the microscope. Please try again.",
     "assignPtmError": "Failed to assign the PTM. Please try again.",
     "assignPtm": "PTM",
     "unassignedPtm": "No PTM",

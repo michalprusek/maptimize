@@ -4,6 +4,8 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/api";
 
 interface UseAssignMicroscopeOptions {
+  /** Shown when the request fails without a message of its own. */
+  fallbackMessage: string;
   /** Reported to the user; the caller owns how errors are surfaced. */
   onError: (message: string) => void;
   /** Extra invalidations the calling screen needs (e.g. a single experiment). */
@@ -19,7 +21,7 @@ interface UseAssignMicroscopeOptions {
  * points go stale the moment an assignment changes. Duplicating that knowledge
  * per screen is how one of them silently starts showing a stale plot.
  */
-export function useAssignMicroscope({ onError, onSuccess }: UseAssignMicroscopeOptions) {
+export function useAssignMicroscope({ fallbackMessage, onError, onSuccess }: UseAssignMicroscopeOptions) {
   const queryClient = useQueryClient();
 
   return useMutation({
@@ -37,7 +39,7 @@ export function useAssignMicroscope({ onError, onSuccess }: UseAssignMicroscopeO
     },
     onError: (err: Error) => {
       console.error("Failed to assign microscope:", err);
-      onError(err.message || "Failed to assign microscope. Please try again.");
+      onError(err.message || fallbackMessage);
     },
   });
 }

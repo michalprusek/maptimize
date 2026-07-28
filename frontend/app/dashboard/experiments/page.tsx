@@ -107,6 +107,7 @@ export default function ExperimentsPage(): JSX.Element {
   });
 
   const assignMicroscopeMutation = useAssignMicroscope({
+    fallbackMessage: t("assignMicroscopeError"),
     onError: setError,
     onSuccess: () => setError(null),
   });

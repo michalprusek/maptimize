@@ -94,12 +94,12 @@ async def pick_color(db: AsyncSession, model: Type[T]) -> str:
     duplicate legend colour, while a unique constraint on colour would reject
     perfectly legitimate user-chosen values.
 
-    ⚠️ Colours are unique per table only, and because each table seeds from the
-    front of the shared palette, the first protein, microscope and PTM all end up
-    on ``#3b82f6``. The scatter plot colours by one dimension at a time so it
-    never shows the clash, but the dashboard filter panel renders all four facets
-    at once and does. Widening uniqueness across tables would need one shared
-    "colour in use" query, not a change here.
+    ⚠️ Colours are unique per table only, so a protein, a microscope and a PTM
+    can share a hex — in production ``#3b82f6`` is MAP9, 3D SIM and Tyrosination
+    at once. The scatter plot colours by one dimension at a time and never shows
+    the clash; the dashboard filter panel renders all four facets together and
+    does. Widening uniqueness across tables would need one shared "colour in use"
+    query, not a change here.
     """
     result = await db.execute(select(model.color).where(model.color.isnot(None)))
     used = {row[0].lower() for row in result.all() if row[0]}

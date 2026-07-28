@@ -16,6 +16,7 @@ import {
   totalPoints,
   type FacetSelection,
 } from "../../components/visualization/umapFacets";
+import { describeApiError } from "../../lib/api";
 import type { UmapFacetRow } from "../../lib/api";
 
 /**
@@ -154,6 +155,22 @@ test.describe("URL round-trip", () => {
   test("ignores malformed ids rather than sending them to the backend", () => {
     expect(selectionFromQuery("?ptm=3,abc,-1,4").ptm).toEqual([3, 4]);
   });
+
+  test("a blank segment is dropped, not read as the unassigned sentinel", () => {
+    // Number("") is 0, which IS the sentinel — a stray comma in a hand-edited or
+    // shared URL would otherwise silently widen the filter to everything
+    // unassigned.
+    expect(selectionFromQuery("?ptm=3,,4").ptm).toEqual([3, 4]);
+    expect(selectionFromQuery("?ptm=3,").ptm).toEqual([3]);
+    expect(selectionFromQuery("?ptm=%20").ptm).toEqual([]);
+  });
+
+  test("the unassigned sentinel is not accepted for experiments", () => {
+    // experiment_id is NOT NULL, so 0 there can only produce a 404 the client
+    // then has to undo.
+    expect(selectionFromQuery("?experiment=0,7").experiment).toEqual([7]);
+    expect(selectionFromQuery("?ptm=0").ptm).toEqual([0]);
+  });
 });
 
 test.describe("selectionWithoutDeadIds", () => {
@@ -191,5 +208,36 @@ test.describe("totalPoints", () => {
   test("adds up the whole scope, before filtering", () => {
     expect(totalPoints(ROWS)).toBe(11);
     expect(totalPoints([])).toBe(0);
+  });
+});
+
+
+test.describe("describeApiError", () => {
+  test("renders FastAPI's 422 list as text a user can act on", () => {
+    // The body is a LIST, and `new Error(list)` stringifies to "[object Object]"
+    // — which is also truthy, so it defeats every `err.message || fallback`.
+    expect(
+      describeApiError([
+        { loc: ["body", "abbrevation"], msg: "Extra inputs are not permitted" },
+      ])
+    ).toBe("abbrevation: Extra inputs are not permitted");
+  });
+
+  test("joins several issues", () => {
+    expect(
+      describeApiError([
+        { loc: ["body", "name"], msg: "cannot be null" },
+        { loc: ["body", "color"], msg: "bad pattern" },
+      ])
+    ).toBe("name: cannot be null; color: bad pattern");
+  });
+
+  test("passes a plain HTTPException detail straight through", () => {
+    expect(describeApiError("PTM not found: 999")).toBe("PTM not found: 999");
+  });
+
+  test("returns empty for shapes it cannot describe, so the caller can fall back", () => {
+    expect(describeApiError([])).toBe("");
+    expect(describeApiError([{}])).toBe("");
   });
 });

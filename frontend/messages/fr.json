@@ -95,6 +95,7 @@
     "assignMicroscope": "Microscope",
     "unassignedMicroscope": "Aucun microscope",
     "experimentPtmHint": "La PTM de la tubuline etudiee par cette experience",
+    "assignMicroscopeError": "Echec de l'attribution du microscope. Veuillez reessayer.",
     "assignPtmError": "Echec de l'attribution de la PTM. Veuillez reessayer.",
     "assignPtm": "PTM",
     "unassignedPtm": "Aucune PTM",

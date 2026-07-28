@@ -14,8 +14,38 @@ import type { SAMEmbeddingStatus, SegmentClickPoint } from "@/lib/editor/types";
 
 export const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
+/** One entry of FastAPI's 422 body: which field, and what is wrong with it. */
+interface ValidationIssue {
+  loc?: (string | number)[];
+  msg?: string;
+}
+
 interface ApiError {
-  detail: string;
+  /**
+   * A string for `HTTPException`, but a LIST of issues for a 422.
+   *
+   * Typing it as `string` was a lie that only surfaced once a schema started
+   * rejecting input: `new Error([{...}])` stringifies to "[object Object]", and
+   * because that is truthy it also defeats every `err.message || fallback`.
+   */
+  detail: string | ValidationIssue[];
+}
+
+/** Render an error body as something a user can act on. */
+export function describeApiError(detail: ApiError["detail"]): string {
+  if (typeof detail === "string") return detail;
+  if (!Array.isArray(detail)) return "";
+
+  return detail
+    .map((issue) => {
+      // Drop the leading "body"/"query" locator — the field name is the part the
+      // user can do anything about.
+      const field = (issue.loc ?? []).slice(1).join(".");
+      const message = issue.msg ?? "";
+      return field ? `${field}: ${message}`.trim() : message;
+    })
+    .filter(Boolean)
+    .join("; ");
 }
 
 class ApiClient {
@@ -80,7 +110,9 @@ class ApiClient {
       let errorDetail: string;
       try {
         const error: ApiError = await response.json();
-        errorDetail = error.detail;
+        errorDetail =
+          describeApiError(error.detail) ||
+          `Request failed: ${response.status} ${response.statusText}`;
       } catch {
         // Response wasn't JSON - log for debugging
         let rawBody = "";
@@ -679,6 +711,8 @@ class ApiClient {
     // A Record, not an array of pairs: it is exhaustive over the facet keys, so
     // adding a facet without wiring it here fails to compile instead of silently
     // dropping that filter from the request while the UI still shows it ticked.
+    // umapFacets.ts aliases its FacetSelection to this type, so the keys are
+    // declared once and this guard covers the caller too.
     const facetParams: Record<keyof UmapFacetSelection, string> = {
       experiment: "experiment_id",
       microscope: "microscope_id",

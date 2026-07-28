@@ -8,6 +8,7 @@ from models.experiment import ExperimentStatus
 from schemas.image import MapProteinResponse
 from schemas.microscope import MicroscopeResponse
 from schemas.ptm import PTMResponse
+from schemas.reference import RejectsNullName
 
 
 class ExperimentCreate(BaseModel):
@@ -20,7 +21,7 @@ class ExperimentCreate(BaseModel):
     fasta_sequence: Optional[str] = None
 
 
-class ExperimentUpdate(BaseModel):
+class ExperimentUpdate(RejectsNullName):
     """Schema for updating an experiment.
 
     No `microscope_id` and no `ptm_id` on purpose: both are assigned through
@@ -28,6 +29,9 @@ class ExperimentUpdate(BaseModel):
     `.../ptm`), which any group member may call. Accepting them here too would
     give one field two endpoints with two different ACLs -- and the wider one
     would be reachable by mistake.
+
+    `RejectsNullName` because `experiments.name` is NOT NULL: an explicit
+    `{"name": null}` otherwise reaches the UPDATE and returns 500, not 422.
     """
     model_config = ConfigDict(extra="forbid")
 

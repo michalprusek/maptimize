@@ -65,7 +65,7 @@ DEFAULT_PTMS = [
         "name": "Δ2-tubulin",
         "abbreviation": "Δ2",
         "modified_residue": "α-tubulin C-terminal glutamate",
-        "enzyme": "CCP1, CCP5",
+        "enzyme": "CCP1, CCP4, CCP6",
         "description": "Further loss of the penultimate glutamate. Irreversible — cannot be re-tyrosinated.",
         "color": "#00d4aa",
     },

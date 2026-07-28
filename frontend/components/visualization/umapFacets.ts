@@ -7,29 +7,30 @@
  * need is derived from that summary here, so the two cannot disagree about how
  * many points a value has.
  */
-import type { UmapFacetRow } from "@/lib/api";
+import type { UmapFacetRow, UmapFacetSelection } from "@/lib/api";
 
 /** Reserved id for "this facet is not assigned". Mirrors UNASSIGNED_FACET_ID. */
 export const UNASSIGNED_ID = 0;
 
-/** The four dimensions the plot can be filtered and coloured by. */
-export type FacetKey = "experiment" | "microscope" | "protein" | "ptm";
+/**
+ * The four dimensions the plot can be filtered and coloured by.
+ *
+ * Aliased to the request type rather than re-declared: this used to be a third,
+ * independent copy, and structural typing meant adding a facet here alone still
+ * compiled — the pill showed ticked and the filter never reached the wire.
+ */
+export type FacetSelection = UmapFacetSelection;
+export type FacetKey = keyof UmapFacetSelection;
 
-export interface FacetSelection {
-  experiment: number[];
-  microscope: number[];
-  protein: number[];
-  ptm: number[];
-}
-
-// Frozen because it is exported and shared: every consumer spread-copies it
-// today, but one in-place push would corrupt the "no filter" value everywhere.
+// Frozen down to the arrays, because it is exported and shared: a shallow freeze
+// blocks only `EMPTY_SELECTION.ptm = [...]`, while the realistic corruption is
+// `EMPTY_SELECTION.ptm.push(...)` on the value every consumer starts from.
 export const EMPTY_SELECTION: FacetSelection = Object.freeze({
-  experiment: [],
-  microscope: [],
-  protein: [],
-  ptm: [],
-}) as FacetSelection;
+  experiment: Object.freeze([]) as unknown as number[],
+  microscope: Object.freeze([]) as unknown as number[],
+  protein: Object.freeze([]) as unknown as number[],
+  ptm: Object.freeze([]) as unknown as number[],
+});
 
 export interface FacetOption {
   id: number;
@@ -218,6 +219,9 @@ export function selectionFromQuery(search: string): FacetSelection {
   for (const facet of Object.keys(FACET_PARAMS) as FacetKey[]) {
     const raw = params.get(FACET_PARAMS[facet]);
     if (!raw) continue;
+    // The unassigned sentinel is meaningless for experiments: that column is NOT
+    // NULL, so a stray 0 there only produces a 404 the client then has to undo.
+    const lowest = facet === "experiment" ? 1 : 0;
     selection[facet] = raw
       .split(",")
       // Drop blanks BEFORE Number(): `Number("")` is 0, which is the
@@ -226,7 +230,7 @@ export function selectionFromQuery(search: string): FacetSelection {
       .map((value) => value.trim())
       .filter((value) => value !== "")
       .map((value) => Number(value))
-      .filter((value) => Number.isInteger(value) && value >= 0);
+      .filter((value) => Number.isInteger(value) && value >= lowest);
   }
 
   return selection;
