@@ -12,6 +12,7 @@ from models.user import User
 from models.experiment import Experiment
 from models.image import Image, MapProtein
 from models.microscope import Microscope
+from models.ptm import PTM
 from models.cell_crop import CellCrop
 from schemas.experiment import (
     ExperimentCreate,
@@ -19,6 +20,7 @@ from schemas.experiment import (
     ExperimentResponse,
     ExperimentDetailResponse,
 )
+from utils.reference_data import get_or_404
 from utils.security import get_current_user
 from utils.groups import experiment_owner_filter, get_user_group_id
 
@@ -44,7 +46,11 @@ async def load_experiment_response(
     """
     result = await db.execute(
         select(Experiment)
-        .options(selectinload(Experiment.map_protein), selectinload(Experiment.microscope))
+        .options(
+            selectinload(Experiment.map_protein),
+            selectinload(Experiment.microscope),
+            selectinload(Experiment.ptm),
+        )
         .where(Experiment.id == experiment_id)
     )
     return ExperimentResponse.model_validate(result.scalar_one())
@@ -75,14 +81,12 @@ async def get_experiment_for_user(
 
 async def _verify_microscope_exists(microscope_id: int, db: AsyncSession) -> None:
     """Raise 404 if no microscope has this id."""
-    result = await db.execute(
-        select(Microscope).where(Microscope.id == microscope_id)
-    )
-    if result.scalar_one_or_none() is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Microscope not found"
-        )
+    await get_or_404(db, Microscope, microscope_id, "Microscope")
+
+
+async def _verify_ptm_exists(ptm_id: int, db: AsyncSession) -> None:
+    """Raise 404 if no PTM has this id."""
+    await get_or_404(db, PTM, ptm_id, "PTM")
 
 
 @router.get("", response_model=List[ExperimentResponse])
@@ -106,7 +110,11 @@ async def list_experiments(
             func.count(distinct(Image.id)).filter(Image.sum_path.isnot(None)).label("sum_count"),
             User.name.label("creator_name")
         )
-        .options(selectinload(Experiment.map_protein), selectinload(Experiment.microscope))
+        .options(
+            selectinload(Experiment.map_protein),
+            selectinload(Experiment.microscope),
+            selectinload(Experiment.ptm),
+        )
         .outerjoin(Image, Experiment.id == Image.experiment_id)
         .outerjoin(CellCrop, Image.id == CellCrop.image_id)
         .join(User, Experiment.user_id == User.id)
@@ -152,6 +160,10 @@ async def create_experiment(
     if data.microscope_id is not None:
         await _verify_microscope_exists(data.microscope_id, db)
 
+    # Verify PTM exists if provided
+    if data.ptm_id is not None:
+        await _verify_ptm_exists(data.ptm_id, db)
+
     group_id = await get_user_group_id(current_user.id, db)
 
     experiment = Experiment(
@@ -161,6 +173,7 @@ async def create_experiment(
         group_id=group_id,
         map_protein_id=data.map_protein_id,
         microscope_id=data.microscope_id,
+        ptm_id=data.ptm_id,
         fasta_sequence=data.fasta_sequence,
     )
     db.add(experiment)
@@ -188,6 +201,7 @@ async def get_experiment(
             selectinload(Experiment.images),
             selectinload(Experiment.map_protein),
             selectinload(Experiment.microscope),
+            selectinload(Experiment.ptm),
             selectinload(Experiment.user)
         )
         .where(
@@ -289,6 +303,40 @@ async def update_experiment_microscope(
     logger.info(
         f"User {current_user.id} set microscope for experiment {experiment_id} "
         f"to {microscope_id}"
+    )
+
+    return await load_experiment_response(db, experiment_id)
+
+
+@router.patch("/{experiment_id}/ptm", response_model=ExperimentResponse)
+async def update_experiment_ptm(
+    experiment_id: int,
+    ptm_id: Optional[int] = Query(
+        default=None, description="PTM ID to assign; omit to clear the assignment"
+    ),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Assign the microtubule post-translational modification (owner OR group member).
+
+    Group-writable for the same reason as the microscope endpoint: the PTM is
+    shared sample-preparation metadata (`ptms` has no `user_id`), and the lab has
+    to backfill it across everyone's experiments before the dashboard PTM filter
+    covers anything -- every experiment starts unassigned. Keeping it a separate
+    endpoint from the owner-only `PATCH /{experiment_id}` is deliberate: one
+    field must not have two paths with two different ACLs.
+    """
+    experiment = await get_experiment_for_user(db, experiment_id, current_user.id)
+
+    if ptm_id is not None:
+        await _verify_ptm_exists(ptm_id, db)
+
+    experiment.ptm_id = ptm_id
+    await db.commit()
+
+    logger.info(
+        f"User {current_user.id} set PTM for experiment {experiment_id} to {ptm_id}"
     )
 
     return await load_experiment_response(db, experiment_id)

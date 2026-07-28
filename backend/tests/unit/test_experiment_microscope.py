@@ -155,7 +155,12 @@ def test_writes_rebuild_the_response_by_reselecting_the_row():
     import inspect
 
     source = inspect.getsource(mod)
-    for handler in ("create_experiment", "update_experiment", "update_experiment_microscope"):
+    for handler in (
+        "create_experiment",
+        "update_experiment",
+        "update_experiment_microscope",
+        "update_experiment_ptm",
+    ):
         body = source.split(f"async def {handler}(", 1)[1].split("\n@router", 1)[0]
         assert "load_experiment_response" in body, (
             f"{handler} must build its response via load_experiment_response"

@@ -7,6 +7,7 @@ from .images import router as images_router
 from .ranking import router as ranking_router
 from .proteins import router as proteins_router
 from .microscopes import router as microscopes_router
+from .ptms import router as ptms_router
 from .metrics import router as metrics_router
 from .embeddings import router as embeddings_router
 from .settings import router as settings_router
@@ -28,6 +29,7 @@ api_router.include_router(images_router, prefix="/images", tags=["Images"])
 api_router.include_router(ranking_router, prefix="/ranking", tags=["Ranking"])
 api_router.include_router(proteins_router, prefix="/proteins", tags=["Proteins"])
 api_router.include_router(microscopes_router, prefix="/microscopes", tags=["Microscopes"])
+api_router.include_router(ptms_router, prefix="/ptms", tags=["PTMs"])
 api_router.include_router(metrics_router, prefix="/metrics", tags=["Metrics"])
 api_router.include_router(embeddings_router, prefix="/embeddings", tags=["Embeddings"])
 api_router.include_router(settings_router, prefix="/settings", tags=["Settings"])
