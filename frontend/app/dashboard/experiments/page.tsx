@@ -106,6 +106,22 @@ export default function ExperimentsPage(): JSX.Element {
     },
   });
 
+  const assignProteinMutation = useMutation({
+    mutationFn: ({ experimentId, proteinId }: { experimentId: number; proteinId: number | null }) =>
+      api.updateExperimentProtein(experimentId, proteinId),
+    onSuccess: () => {
+      setError(null);
+      // The protein cascades onto images and crops, so the plots that colour by
+      // it go stale too — not just the experiment list.
+      queryClient.invalidateQueries({ queryKey: ["experiments"] });
+      queryClient.invalidateQueries({ queryKey: ["umap"] });
+    },
+    onError: (err: Error) => {
+      console.error("Failed to assign protein:", err);
+      setError(err.message || t("assignProteinError"));
+    },
+  });
+
   const assignMicroscopeMutation = useAssignMicroscope({
     fallbackMessage: t("assignMicroscopeError"),
     onError: setError,
@@ -260,6 +276,20 @@ export default function ExperimentsPage(): JSX.Element {
 
                 <div className="flex items-center justify-between gap-2 mt-4 pt-4 border-t border-white/5">
                   <div className="flex items-center gap-2 min-w-0">
+                    <ColorTagSelect
+                      options={proteinOptions}
+                      value={exp.map_protein?.id ?? null}
+                      onChange={(proteinId) =>
+                        assignProteinMutation.mutate({ experimentId: exp.id, proteinId })
+                      }
+                      onOpenChange={(open) =>
+                        setOpenMenuCardId(open ? exp.id : null)
+                      }
+                      placeholder={t("assignProtein")}
+                      hint={t("experimentProteinHint")}
+                      variant="chip"
+                      size="sm"
+                    />
                     <ColorTagSelect
                       options={microscopeOptions}
                       value={exp.microscope?.id ?? null}
