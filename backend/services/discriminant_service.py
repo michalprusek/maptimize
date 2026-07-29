@@ -55,6 +55,9 @@ N_PERMUTATIONS = 20
 MIN_POINTS = 50
 MIN_CLASSES = 2
 MIN_GROUPS = N_SPLITS
+# A class needs two experiments to be scoreable at all — one to train on and one
+# to be tested in. See scoreable_mask.
+MIN_GROUPS_PER_CLASS = 2
 
 
 class NotEnoughDataError(ValueError):
@@ -92,6 +95,9 @@ class DiscriminantResult:
     n_experiments: int
     # (protein, out-of-fold recall, crops scored) — see score_projection.
     per_class: tuple[tuple[str, float, int], ...] = ()
+    # Proteins on the plot but absent from the score: only one experiment each,
+    # so grouped CV cannot test them. See scoreable_mask.
+    unscoreable_proteins: tuple[str, ...] = ()
     # Identity of the corpus this was fitted on, so a later read can tell it has
     # gone stale instead of serving old coordinates beside fresh labels.
     fingerprint: str = ""
@@ -169,6 +175,27 @@ def fit_projection(embeddings: np.ndarray, labels: np.ndarray) -> np.ndarray:
     if projected.shape[1] == 1:
         projected = np.column_stack([projected[:, 0], np.zeros(len(projected))])
     return projected[:, :2]
+
+
+def scoreable_mask(labels: np.ndarray, groups: np.ndarray) -> np.ndarray:
+    """Rows whose protein appears in at least two experiments.
+
+    ⚠️ A protein confined to ONE experiment cannot be scored by a split that
+    holds experiments out: the only fold that tests it is the fold that removed
+    every one of its crops from training, so the classifier has never seen the
+    class and its recall is 0 by construction — not by measurement.
+
+    Left in, such a class drags balanced accuracy down by 1/n_classes and the
+    result reads as "these proteins are indistinguishable". Found in production:
+    a user scoped to their own 6 experiments, each carrying a different protein,
+    scored exactly 0.000 against a chance of 0.167. Every one of those zeros was
+    arithmetic, not biology.
+
+    Such classes still contribute to the FIT (their points are on the plot); they
+    are only excluded from the score and the null, which must agree on a corpus.
+    """
+    counts = {c: len(np.unique(groups[labels == c])) for c in np.unique(labels)}
+    return np.array([counts[c] >= MIN_GROUPS_PER_CLASS for c in labels])
 
 
 def score_projection(
@@ -303,9 +330,30 @@ def compute_discriminant(
         )
 
     corrected = centre_per_microscope(embeddings, microscope_ids)
+    # The plot shows everything; the score and its null share a smaller corpus.
     coords = fit_projection(corrected, labels)
-    accuracy, n_scored, per_class = score_projection(corrected, labels, groups)
-    null = permutation_null(corrected, labels, groups, n_permutations)
+
+    keep = scoreable_mask(labels, groups)
+    dropped = tuple(sorted({str(c) for c in np.unique(labels[~keep])}))
+    if len(np.unique(labels[keep])) < MIN_CLASSES:
+        raise NotEnoughDataError(
+            "cannot score this selection: "
+            + (
+                "every protein here appears in a single experiment"
+                if len(dropped) == n_classes
+                else f"only {len(np.unique(labels[keep]))} protein(s) appear in "
+                "more than one experiment"
+            )
+            + ", and a split that holds whole experiments out can never test a "
+            "protein it was not trained on. Add an experiment for a protein you "
+            "already have, or widen the selection."
+        )
+    accuracy, n_scored, per_class = score_projection(
+        corrected[keep], labels[keep], groups[keep]
+    )
+    null = permutation_null(
+        corrected[keep], labels[keep], groups[keep], n_permutations
+    )
 
     logger.info(
         f"discriminant: {len(labels)} crops, {n_classes} proteins, "
@@ -334,6 +382,7 @@ def compute_discriminant(
         n_proteins=n_scored,
         n_experiments=n_groups,
         per_class=per_class,
+        unscoreable_proteins=dropped,
         fingerprint=fingerprint,
     )
 

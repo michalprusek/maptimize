@@ -40,6 +40,7 @@ function metrics(over: Partial<DiscriminantMetrics> = {}): DiscriminantMetrics {
       { protein: "CLIP170", recall: 0.79, n_crops: 96 },
       { protein: "PRC1", recall: 0.07, n_crops: 41 },
     ],
+    unscoreable_proteins: [],
     n_permutations: 20,
     n_proteins: 14,
     n_experiments: 46,

@@ -383,6 +383,7 @@
     "shuffledLabels": "etiquettes melangees",
     "metricCaption": "Geometrie calculee sur toutes les donnees ; le score est valide par validation croisee par experience.",
     "perProteinRecall": "Par protéine :",
+    "unscoreableProteins": "Affichées mais non évaluées — {proteins} : une seule expérience chacune, donc l'exclusion des expériences ne laisse rien pour les tester.",
     "pValueTooltip": "Proportion des tirages à étiquettes permutées ayant atteint ce score. Borné par le nombre de permutations : la plus petite valeur affichable est 1/(permutations+1).",
     "metricDetail": "{proteins} protéines sur {experiments} expériences · {permutations} permutations d'étiquettes, 95e centile {nullP95}",
     "metricsComputing": "Calcul de la projection et de son score de validation croisee ; cela prend une minute.",

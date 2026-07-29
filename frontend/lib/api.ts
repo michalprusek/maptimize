@@ -2082,6 +2082,8 @@ export interface DiscriminantMetrics {
   p_value: number | null;
   /** Out-of-fold recall per protein — the headline is only their mean. */
   per_class: DiscriminantClassScore[];
+  /** Plotted but not scored: only one experiment each, so CV cannot test them. */
+  unscoreable_proteins: string[];
   n_permutations: number;
   n_proteins: number;
   n_experiments: number;

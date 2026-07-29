@@ -56,6 +56,7 @@ def result(n=3, fingerprint="fp"):
         null_mean=0.054,
         null_max=0.078,
         null_p95=0.076,
+        unscoreable_proteins=("MAP7",),
         p_value=1 / 21,
         n_permutations=20,
         n_proteins=14,

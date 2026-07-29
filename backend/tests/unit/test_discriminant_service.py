@@ -16,6 +16,7 @@ from services.discriminant_service import (
     fit_projection,
     permutation_null,
     score_projection,
+    scoreable_mask,
 )
 
 
@@ -343,3 +344,67 @@ def test_the_microscope_offset_is_removed_before_fitting():
     assert out.balanced_accuracy < 0.75, (
         "the instrument offset was read as protein signal — centering did not run"
     )
+
+
+# =============================================================================
+# Classes that grouped CV cannot score at all
+# =============================================================================
+
+def _one_experiment_each(n_proteins=6, per_experiment=40, dims=30):
+    """Every protein confined to a single experiment — the degenerate corpus.
+
+    This is not hypothetical: a user scoped to their own six experiments, each
+    carrying a different protein, hit exactly this in production.
+    """
+    rng = np.random.default_rng(3)
+    X, y, groups = [], [], []
+    for exp in range(n_proteins):
+        centre = np.zeros(dims)
+        centre[exp] = 6.0
+        X.append(rng.normal(0, 1, (per_experiment, dims)) + centre)
+        y += [exp + 1] * per_experiment
+        groups += [exp] * per_experiment
+    return np.vstack(X), np.array(y), np.array(groups)
+
+
+def test_a_protein_in_one_experiment_can_never_be_scored():
+    X, y, groups = _one_experiment_each()
+    assert not scoreable_mask(y, groups).any()
+
+
+def test_a_corpus_of_single_experiment_proteins_refuses_instead_of_scoring_zero():
+    """The failure this guard exists for, and it is a SILENT one.
+
+    Holding an experiment out removes every crop of its protein from training, so
+    the classifier cannot predict that class and its recall is 0 by arithmetic.
+    Without the guard the whole corpus scores exactly 0.000 against a chance of
+    0.167 and the UI reports "no separation" — a measurement-shaped statement
+    about data that was never measurable.
+    """
+    X, y, groups = _one_experiment_each()
+
+    with pytest.raises(NotEnoughDataError, match="single experiment"):
+        compute_discriminant(X, y, groups, [1] * len(y), n_permutations=0)
+
+
+def test_proteins_that_cannot_be_scored_are_named_not_silently_dropped():
+    # Mixed corpus: proteins 1 and 2 span two experiments each, protein 3 sits in
+    # one. The score must come from the first two, and the third must be reported
+    # rather than quietly folded into a lower number.
+    rng = np.random.default_rng(4)
+    X, y, groups = [], [], []
+    for exp, protein in enumerate([1, 1, 2, 2, 1, 2, 3]):
+        centre = np.zeros(30)
+        centre[protein] = 6.0
+        X.append(rng.normal(0, 1, (40, 30)) + centre)
+        y += [protein] * 40
+        groups += [exp] * 40
+    X, y, groups = np.vstack(X), np.array(y), np.array(groups)
+
+    result = compute_discriminant(X, y, groups, [1] * len(y), n_permutations=0)
+
+    assert result.unscoreable_proteins == ("3",)
+    assert result.n_proteins == 2, "the excluded protein must leave the denominator too"
+    assert {name for name, _, _ in result.per_class} == {"1", "2"}
+    # Its points are still plotted — the projection is fitted on everything.
+    assert len(result.coords) == len(y)

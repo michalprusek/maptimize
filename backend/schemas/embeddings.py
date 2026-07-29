@@ -212,6 +212,15 @@ class DiscriminantMetrics(BaseModel):
             "separates every MAP equally."
         ),
     )
+    unscoreable_proteins: List[str] = Field(
+        default_factory=list,
+        description=(
+            "Proteins drawn on the plot but absent from the score: each occurs "
+            "in only one experiment, so a split that holds experiments out can "
+            "never test them. Left in the score they would contribute a recall "
+            "of 0 by arithmetic and read as 'indistinguishable'."
+        ),
+    )
     n_permutations: int = Field(..., description="Shuffles behind the null")
     n_proteins: int = Field(..., description="Proteins being separated")
     n_experiments: int = Field(..., description="Experiments the split had to work with")

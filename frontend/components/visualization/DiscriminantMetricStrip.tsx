@@ -146,6 +146,16 @@ export function DiscriminantMetricStrip({
             .join(" · ")}
         </p>
       )}
+      {metrics.unscoreable_proteins.length > 0 && (
+        // Named, not omitted: these proteins ARE on the plot, so a reader who
+        // sees their colour in the legend and not in the recall list would
+        // otherwise conclude the model failed on them.
+        <p className="text-[11px] text-accent-amber mt-1 leading-relaxed">
+          {t("unscoreableProteins", {
+            proteins: metrics.unscoreable_proteins.join(", "),
+          })}
+        </p>
+      )}
     </Shell>
   );
 }

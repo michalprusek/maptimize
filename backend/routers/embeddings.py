@@ -240,6 +240,7 @@ async def get_discriminant_visualization(
         null_mean=result.null_mean,
         null_max=result.null_max,
         null_p95=result.null_p95,
+        unscoreable_proteins=list(result.unscoreable_proteins),
         p_value=result.p_value,
         per_class=[
             DiscriminantClassScore(protein=name, recall=recall, n_crops=n)

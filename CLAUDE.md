@@ -538,6 +538,15 @@ nespojuje **žádné** zarovnání (naměřené hlavní úhly 1,3° a 67°, druh
 In-sample fit klasifikuje 0,76 proti poctivým 0,26, takže obrázek vypadá 3× lépe
 než skóre vedle něj; popisek v UI to říká.
 
+⚠️ **Protein v JEDINÉM experimentu nejde oskórovat vůbec.** Dělení po experimentech
+mu odebere z tréninku všechny cropy, takže recall je 0 aritmeticky, ne měřením.
+`scoreable_mask` takové třídy vyřadí ze **skóre i nullu** (do fitu a na graf jdou
+dál) a vrátí je jako `unscoreable_proteins`; když nezbydou aspoň dvě, endpoint
+odmítne s vysvětlením. Nalezeno v produkci: uživatel se 6 vlastními experimenty,
+každý s jiným proteinem, dostal **přesně 0,000** proti náhodě 0,167 — a UI to
+hlásilo jako „žádná separace". Skupinový korpus je v pořádku (každý protein má
+≥ 2 experimenty), past je v úzkých výběrech a ve vlastním scope.
+
 ⚠️ **Filtr vybírá, které body se vrátí, nikdy které se fitují.** Přefitování podle
 filtru by dalo dvěma filtrovaným pohledům neporovnatelné souřadnice a osy by měnily
 význam podle klikání.

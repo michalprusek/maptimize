@@ -383,6 +383,7 @@
     "shuffledLabels": "shuffled labels",
     "metricCaption": "Geometry from all data; the score is cross-validated by experiment.",
     "perProteinRecall": "Per protein:",
+    "unscoreableProteins": "Plotted but not scored — {proteins}: only one experiment each, so holding experiments out leaves nothing to test them against.",
     "pValueTooltip": "Fraction of shuffled-label runs that reached this score. Floored by the number of shuffles, so the smallest value it can show is 1/(shuffles+1).",
     "metricDetail": "{proteins} proteins across {experiments} experiments · {permutations} label shuffles, 95th percentile {nullP95}",
     "metricsComputing": "Computing the projection and its cross-validated score; this takes a minute.",
