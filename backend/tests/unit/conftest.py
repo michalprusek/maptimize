@@ -26,6 +26,14 @@ import pytest
 for _name in ("torch", "torchvision", "cv2", "ultralytics"):
     sys.modules.setdefault(_name, MagicMock(name=_name))
 
+# scipy's array-API shim asks `issubclass(cls, torch.Tensor)` whenever torch is
+# importable, and a MagicMock attribute is not a class — so every scikit-learn
+# call raises `TypeError: issubclass() arg 2 must be a class`. Handing the mock a
+# real (empty) class satisfies the check and keeps the answer False, which is
+# correct: nothing here is a torch tensor.
+if isinstance(sys.modules["torch"], MagicMock):
+    sys.modules["torch"].Tensor = type("Tensor", (), {})
+
 
 def make_result(*, scalar=None, scalars_all=None, first=None, fetchall=None,
                 rowcount=None):

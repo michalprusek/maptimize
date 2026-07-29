@@ -23,11 +23,15 @@ import {
 } from "lucide-react";
 import { ExportModal, ImportModal } from "@/components/export";
 import { useAssignMicroscope, useAssignPtm } from "@/hooks";
+import { useAuthStore } from "@/stores/authStore";
 
 export default function ExperimentsPage(): JSX.Element {
   const t = useTranslations("experiments");
   const tCommon = useTranslations("common");
   const tProteins = useTranslations("proteins");
+  // Protein assignment is owner-only server-side (unlike microscope and PTM,
+  // which are deliberate group-writable exceptions), so the chip has to know.
+  const currentUserId = useAuthStore((state) => state.user?.id);
   const tExportImport = useTranslations("exportImport");
   const tGroups = useTranslations("groups");
   const [showCreateModal, setShowCreateModal] = useState(false);
@@ -103,6 +107,22 @@ export default function ExperimentsPage(): JSX.Element {
       console.error("Failed to delete experiment:", err);
       setError(err.message || "Failed to delete experiment. Please try again.");
       setExperimentToDelete(null);
+    },
+  });
+
+  const assignProteinMutation = useMutation({
+    mutationFn: ({ experimentId, proteinId }: { experimentId: number; proteinId: number | null }) =>
+      api.updateExperimentProtein(experimentId, proteinId),
+    onSuccess: () => {
+      setError(null);
+      // The protein cascades onto images and crops, so the plots that colour by
+      // it go stale too — not just the experiment list.
+      queryClient.invalidateQueries({ queryKey: ["experiments"] });
+      queryClient.invalidateQueries({ queryKey: ["umap"] });
+    },
+    onError: (err: Error) => {
+      console.error("Failed to assign protein:", err);
+      setError(err.message || t("assignProteinError"));
     },
   });
 
@@ -255,11 +275,42 @@ export default function ExperimentsPage(): JSX.Element {
                       <Layers className="w-4 h-4" />
                       <span>{exp.cell_count} {t("crops")}</span>
                     </div>
+                    {/* Sits here rather than beside the chips: three assignment
+                        chips fill that row, and the date was being overlapped. */}
+                    <span className="ml-auto text-xs">
+                      {new Date(exp.created_at).toLocaleDateString()}
+                    </span>
                   </div>
                 </Link>
 
                 <div className="flex items-center justify-between gap-2 mt-4 pt-4 border-t border-white/5">
-                  <div className="flex items-center gap-2 min-w-0">
+                  <div className="flex items-center gap-2 min-w-0 flex-wrap">
+                    <ColorTagSelect
+                      options={proteinOptions}
+                      value={exp.map_protein?.id ?? null}
+                      onChange={(proteinId) =>
+                        assignProteinMutation.mutate({ experimentId: exp.id, proteinId })
+                      }
+                      onOpenChange={(open) =>
+                        setOpenMenuCardId(open ? exp.id : null)
+                      }
+                      placeholder={t("assignProtein")}
+                      // Without this the clear row reads "Assign MAP Protein",
+                      // so clicking it on a card that HAS one silently unassigns
+                      // and cascades NULL to every image and crop.
+                      clearLabel={tCommon("none")}
+                      // Disabled rather than hidden: the assigned protein is the
+                      // label every plot colours by, so it must stay visible on a
+                      // colleague's card even when it cannot be changed there.
+                      disabled={exp.user_id !== currentUserId}
+                      hint={
+                        exp.user_id === currentUserId
+                          ? t("experimentProteinHint")
+                          : t("proteinOwnerOnly", { owner: exp.creator_name ?? "" })
+                      }
+                      variant="chip"
+                      size="sm"
+                    />
                     <ColorTagSelect
                       options={microscopeOptions}
                       value={exp.microscope?.id ?? null}
@@ -293,10 +344,7 @@ export default function ExperimentsPage(): JSX.Element {
                   {/* Deliberately NOT a second <Link>: the card would then expose
                       two anchors to the same href, and the e2e suite counts cards
                       by `a[href*="/experiments/"]`. The body Link above navigates. */}
-                  <div className="flex items-center gap-2 flex-shrink-0">
-                    <span className="text-xs text-text-muted">
-                      {new Date(exp.created_at).toLocaleDateString()}
-                    </span>
+                  <div className="flex items-center flex-shrink-0">
                     <ArrowRight className="w-5 h-5 text-text-muted group-hover:text-primary-400 group-hover:translate-x-1 transition-all" />
                   </div>
                 </div>

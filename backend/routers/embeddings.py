@@ -18,6 +18,10 @@ from models.microscope import Microscope
 from models.ptm import PTM
 from models.user import User
 from schemas.embeddings import (
+    DiscriminantDataResponse,
+    DiscriminantClassScore,
+    DiscriminantMetrics,
+    DiscriminantPointResponse,
     FeatureExtractionStatus,
     FeatureExtractionTriggerResponse,
     UmapDataResponse,
@@ -27,6 +31,7 @@ from schemas.embeddings import (
     UmapPointResponse,
     UmapType,
 )
+from services import discriminant_service
 from utils.facets import facet_clause, real_ids
 from services.umap_service import (
     MIN_POINTS_FOR_UMAP,
@@ -144,6 +149,178 @@ async def get_umap_visualization(
     return await _get_cropped_umap(
         selection, current_user, group_id, background_tasks, db
     )
+
+
+@router.get("/discriminant", response_model=DiscriminantDataResponse)
+async def get_discriminant_visualization(
+    selection: FacetSelection = Depends(facet_selection),
+    include_points: bool = Query(
+        True,
+        description=(
+            "Set false for the metrics only. The point list runs to thousands of "
+            "rows, which is useful to a plot and useless to a reader."
+        ),
+    ),
+    background_tasks: BackgroundTasks = BackgroundTasks(),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> DiscriminantDataResponse:
+    """
+    Supervised projection that maximally separates the MAP proteins.
+
+    Unlike the UMAP this is fitted against the protein labels, so it always looks
+    separated — the `metrics` block is what says whether that separation means
+    anything, and the client renders it beside the plot rather than on demand.
+
+    Fitting takes minutes (a grouped cross-validation plus a permutation null),
+    so it runs in the background and the first call returns `is_computing`. The
+    projection is cached per scope; group members share one.
+
+    ⚠️ The filter chooses which points come back, never which are fitted. Refitting
+    per filter would put two filtered views in incomparable coordinate systems
+    and silently change what the axes mean as the user clicks.
+    """
+    await _verify_reference_ids(db, Microscope, selection.microscope_ids, "Microscope")
+    await _verify_reference_ids(db, MapProtein, selection.protein_ids, "MAP protein")
+    await _verify_reference_ids(db, PTM, selection.ptm_ids, "PTM")
+
+    group_id = await get_user_group_id(current_user.id, db)
+    if selection.experiment_ids:
+        await _verify_experiments_visible(
+            selection.experiment_ids, current_user.id, group_id, db
+        )
+
+    facets = await _load_facets(UmapType.CROPPED, current_user.id, group_id, db)
+    key = discriminant_service.scope_key(current_user.id, group_id)
+    cached = discriminant_service.cached(key)
+
+    if cached is None:
+        # A recorded failure describes the corpus at one instant. If the lab has
+        # since fixed exactly what it was told to fix, retire the message rather
+        # than serving it forever.
+        discriminant_service.clear_failure_if_corpus_moved(
+            key, await discriminant_service.current_fingerprint(current_user.id, group_id, db)
+        )
+        error = discriminant_service.compute_error(key)
+        if error is None and not discriminant_service.is_computing(key):
+            background_tasks.add_task(
+                discriminant_service.refresh_discriminant_scope,
+                current_user.id,
+                group_id,
+            )
+        return DiscriminantDataResponse(
+            points=[],
+            total_crops=0,
+            facets=facets,
+            metrics=None,
+            is_computing=error is None,
+            compute_error=error,
+        )
+
+    result = cached
+    coords = result.coords_by_id()
+
+    # The fit is a snapshot; the labels and colours below are read live. If the
+    # corpus has moved on, a re-annotated crop would be drawn at its OLD
+    # coordinate in its NEW colour — a point sitting in the wrong cluster wearing
+    # the right label, under a score cross-validated against labels that no
+    # longer exist. Say so, and schedule the refit that the code used to claim
+    # would happen by itself.
+    is_stale = result.fingerprint != await discriminant_service.current_fingerprint(
+        current_user.id, group_id, db
+    )
+    if is_stale and not discriminant_service.is_computing(key):
+        background_tasks.add_task(
+            discriminant_service.refresh_discriminant_scope, current_user.id, group_id
+        )
+
+    metrics = DiscriminantMetrics(
+        balanced_accuracy=result.balanced_accuracy,
+        chance=result.chance,
+        null_mean=result.null_mean,
+        null_max=result.null_max,
+        null_p95=result.null_p95,
+        unscoreable_proteins=list(result.unscoreable_proteins),
+        p_value=result.p_value,
+        per_class=[
+            DiscriminantClassScore(protein=name, recall=recall, n_crops=n)
+            for name, recall, n in result.per_class
+        ],
+        n_permutations=result.n_permutations,
+        n_proteins=result.n_proteins,
+        n_experiments=result.n_experiments,
+    )
+
+    if not include_points:
+        return DiscriminantDataResponse(
+            points=[], total_crops=len(coords), facets=facets, metrics=metrics,
+            is_computing=False, is_stale=is_stale, compute_error=None,
+        )
+
+    # Same corpus the projection was fitted on, narrowed by the filter. Ordered
+    # by id so the payload does not reshuffle between polls.
+    query = (
+        select(CellCrop)
+        .join(Image, CellCrop.image_id == Image.id)
+        .join(Experiment, Image.experiment_id == Experiment.id)
+        .options(selectinload(CellCrop.map_protein), selectinload(CellCrop.image))
+        .where(
+            experiment_owner_filter(current_user.id, group_id),
+            CellCrop.embedding.isnot(None),
+            CellCrop.map_protein_id.isnot(None),
+        )
+    )
+    query = _apply_facets(query, selection, CellCrop.map_protein_id)
+    crops = (await db.execute(query.order_by(CellCrop.id))).scalars().all()
+
+    points = [
+        DiscriminantPointResponse(
+            crop_id=crop.id,
+            image_id=crop.image_id,
+            experiment_id=crop.image.experiment_id,
+            x=coords[crop.id][0],
+            y=coords[crop.id][1],
+            protein_name=crop.map_protein.name if crop.map_protein else None,
+            protein_color=crop.map_protein.color if crop.map_protein else "#888888",
+            thumbnail_url=f"/api/images/crops/{crop.id}/image?type=mip",
+            bundleness_score=crop.bundleness_score,
+        )
+        # A crop added since the fit has no coordinates. Skip it rather than
+        # invent one — placing an unseen crop somewhere would fabricate a data
+        # point — but the count below reports every matching crop, so the gap is
+        # visible rather than silently shrinking the total to what got drawn.
+        for crop in crops
+        if crop.id in coords
+    ]
+
+    return DiscriminantDataResponse(
+        points=points,
+        # Every crop the filter matched, including any the fit has not seen yet.
+        # Reporting len(points) instead would make an out-of-date projection look
+        # like a smaller corpus.
+        total_crops=len(crops),
+        facets=facets,
+        metrics=metrics,
+        is_computing=False,
+        is_stale=is_stale or len(points) < len(crops),
+        compute_error=None,
+    )
+
+
+@router.post("/discriminant/recompute")
+async def trigger_discriminant_recomputation(
+    background_tasks: BackgroundTasks = BackgroundTasks(),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Refit this scope's projection, clearing any recorded failure."""
+    group_id = await get_user_group_id(current_user.id, db)
+    key = discriminant_service.scope_key(current_user.id, group_id)
+    discriminant_service.invalidate(key)
+    background_tasks.add_task(
+        discriminant_service.refresh_discriminant_scope, current_user.id, group_id
+    )
+    return {"message": "Discriminant projection scheduled"}
 
 
 def _take_precomputed(

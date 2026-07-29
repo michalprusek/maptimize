@@ -1166,6 +1166,51 @@ tools:
         type: integer
         required: true
 
+  # -- Analysis --------------------------------------------------------------
+  - name: get_protein_separation
+    annotations: {readOnlyHint: true, openWorldHint: false}
+    description: >
+      How well the MAP proteins separate in image-embedding space, as a single
+      cross-validated number with the null it must be read against.
+
+      A supervised projection (LDA) is fitted to the protein labels after
+      subtracting each microscope's mean, then scored by cross-validation that
+      holds whole EXPERIMENTS out. Each experiment carries one protein and one set
+      of acquisition conditions, so any split that puts an experiment on both sides
+      lets the model read the label off the batch and reports its own leakage
+      (0.68 where the honest answer is 0.30). `balanced_accuracy` is that score;
+      `chance` is 1/proteins; shuffling the labels between experiments gives
+      `null_mean`, `null_p95`, `null_max` and `p_value`.
+
+      ⚠️ Read the score against the NULL, not against chance, and say so when you
+      report it. Use `p_value` and `null_p95`: `null_max` is the maximum of a
+      small sample, and 17.5% of individual shuffles exceed the max of the 20 that
+      run, so a ratio quoted against it overstates the evidence. `p_value` is
+      floored at 1/(n_permutations+1) — 0.048 here — so report it as "p ≤" and
+      never claim p < 0.01. A score the shuffles reached is NO evidence of
+      separation however large it looks.
+
+      ⚠️ `balanced_accuracy` is a MEAN over proteins and hides its own shape —
+      two proteins carry most of it while several sit at chance. Quote `per_class`
+      before saying "the proteins separate"; naming which ones do is the useful
+      answer.
+
+      The first call returns is_computing=true and schedules the fit (minutes);
+      poll until it clears. Returns metrics only — the point cloud belongs to the
+      dashboard plot, not to a conversation.
+    handler: http_json
+    method: GET
+    path: /api/embeddings/discriminant
+    params:
+      - name: include_points
+        in: query
+        type: boolean
+        default: false
+        description: >
+          Leave false. Without an explicit default the param is omitted from the
+          request, the backend's own default (true) applies, and thousands of
+          plot coordinates land in the conversation.
+
   # -- Database (read-only) --------------------------------------------------
   - name: query_database
     annotations: {readOnlyHint: true, openWorldHint: false}

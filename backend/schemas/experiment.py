@@ -69,6 +69,13 @@ class ExperimentResponse(BaseModel):
     cell_count: int = Field(default=0, ge=0, description="Number of cells (non-negative)")
     has_sum_projections: bool = False
     creator_name: Optional[str] = None
+    # Owner id, so the client can tell which controls will actually work.
+    # Reads are group-shared but most WRITES are owner-only, and the UI cannot
+    # derive that from `creator_name` (names are not identities). Without it the
+    # protein selector on a colleague's card looks live and 403s on click — on
+    # this corpus that is 40 of 46 experiments. Microscope and PTM are the
+    # deliberate group-writable exceptions and stay enabled for everyone.
+    user_id: int
 
     class Config:
         from_attributes = True

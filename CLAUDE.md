@@ -484,6 +484,89 @@ Parametry chodí do handleru jako jedna FastAPI dependency (`facet_selection` �
 s defaultem `Query(...)`, který test nepředá, doteče do těla jako objekt `Query` — ne
 `None`. Se čtyřmi filtry by to byla čtyřnásobná mina.
 
+### Diskriminační projekce (LDA) — od 2026-07-29
+
+`GET /api/embeddings/discriminant` promítá cropy tak, aby **maximálně separovala
+proteiny**. Na rozdíl od UMAPu je fitovaná na štítky, takže **vypadá separovaně
+vždycky** — proto se s body vrací i `metrics` a klient je vykresluje vedle grafu.
+Odpověď s body bez skóre není výsledek.
+
+Naměřeno na produkčním korpusu (balanced accuracy, 14 proteinů, náhoda 0,071):
+
+| dělení CV | surové | po korekci na mikroskop |
+|-----------|--------|--------------------------|
+| náhodně po cropech | 0,679 | 0,665 |
+| po obrázcích | 0,653 | 0,655 |
+| **po experimentech** | **0,183** | **0,300** |
+
+Uniformní priors, 20 promíchání: null mean 0,061, p95 0,080, max 0,081, **p = 0,048**
+(podlaha), poměr 3,75× vůči p95. Měřeno na živém nasazení 2026-07-29.
+
+⚠️ **Křížová validace MUSÍ dělit po experimentech** (`StratifiedGroupKFold` na
+`Experiment.id`). ⚠️ **Únik je na úrovni EXPERIMENTU, ne obrázku** — seskupení po
+obrázcích uzavře jen 0,026 z propasti 0,493 (~5 %), protože 40 % obrázků nese
+jediný crop. Uniká to, že každý experiment nese jeden protein a jednu sadu
+akvizičních podmínek: jakékoli dělení, které nechá experiment na obou stranách,
+umožní přečíst štítek z dávky. Proto **dělení po obrázcích nestačí** ani zdaleka.
+
+⚠️ **Permutační null míchá štítky mezi EXPERIMENTY, ne po cropech.** Míchání po
+cropech rozbije seskupení, na kterém dělení stojí, stlačí null pod náhodu a udělá
+signifikantní jakékoli skóre.
+
+⚠️ **`null_max` NENÍ strop a nesmí se z něj počítat poměr.** Je to maximum malého
+vzorku: na produkčním korpusu **17,5 % jednotlivých promíchání překročí maximum
+z těch 20**, která se počítají, takže „3,3× strop nullu" byl zamrzlý šťastný los
+seedu (poctivě ~2,4×). Hlásí se proto **p-hodnota** `(1 + #{null ≥ skóre}) / (n+1)`
+a 95. percentil. ⚠️ p má **podlahu 1/(n+1) = 0,048** při 20 promícháních — tenhle
+korpus umí doložit „mimo null", nikdy „p < 0,01".
+
+⚠️ **Souhrnné číslo schovává, jak nerovnoměrný ten signál je.** Naměřeno živě:
+CLIP170 0,79 a TRIM46 0,47 nahoře, ale MAP2d 0,05 (167 cropů!) a EML3 0,07 dole —
+rozptyl 0,05 až 0,79 kolem průměru 0,30. Proto se vrací i `per_class` a UI ho
+vypisuje; průměr je tu špatný souhrn. ⚠️ `per_class` musí nést **jména**, ne
+`map_protein_id` — proto `label_names` protéká až z dotazu do `compute_discriminant`.
+
+⚠️ **LDA dostává uniformní priors.** Skóre je balanced accuracy, která váží všech
+14 tříd stejně; s empirickými priors klasifikátor upřednostní velké třídy a stojí
+to 0,04 (0,260 → 0,300 naměřeno na živém nasazení). Metrika a klasifikátor musí
+mít stejný cíl.
+
+⚠️ **Per-microscope centering běží před fitem.** Dva proteiny existují jen na
+AeryScanu, takže bez korekce se oddělí podle přístroje a vypadá to jako biologie.
+Korekce zároveň skóre *zvyšuje* (0,183 → 0,300): mikroskop byl confounder, ne zdroj
+signálu. Dekódovatelnost mikroskopu spadne 0,551 → 0,117 (náhoda pro 4 třídy je 0,25).
+Střed se počítá na všech datech, tedy technicky mimo CV smyčku; naměřený dopad je
++0,004, což je pod šumem CV — vědomě ponecháno, ale při přepisu to nezhoršuj.
+
+⚠️ **Geometrie grafu je in-sample, číslo je out-of-fold.** Osy jednotlivých foldů
+nespojuje **žádné** zarovnání (naměřené hlavní úhly 1,3° a 67°, druhá osa se liší
+10,7× v měřítku) — vykreslit je společně nedává smysl a Procrustes to nespraví.
+In-sample fit klasifikuje 0,76 proti poctivým 0,26, takže obrázek vypadá 3× lépe
+než skóre vedle něj; popisek v UI to říká.
+
+⚠️ **Protein v JEDINÉM experimentu nejde oskórovat vůbec.** Dělení po experimentech
+mu odebere z tréninku všechny cropy, takže recall je 0 aritmeticky, ne měřením.
+`scoreable_mask` takové třídy vyřadí ze **skóre i nullu** (do fitu a na graf jdou
+dál) a vrátí je jako `unscoreable_proteins`; když nezbydou aspoň dvě, endpoint
+odmítne s vysvětlením. Nalezeno v produkci: uživatel se 6 vlastními experimenty,
+každý s jiným proteinem, dostal **přesně 0,000** proti náhodě 0,167 — a UI to
+hlásilo jako „žádná separace". Skupinový korpus je v pořádku (každý protein má
+≥ 2 experimenty), past je v úzkých výběrech a ve vlastním scope.
+
+⚠️ **Filtr vybírá, které body se vrátí, nikdy které se fitují.** Přefitování podle
+filtru by dalo dvěma filtrovaným pohledům neporovnatelné souřadnice a osy by měnily
+význam podle klikání.
+
+Fit trvá minuty, takže běží na pozadí a cachuje se v procesu podle scope
+(`u{user}` / `g{group}`), ne v DB — je to analýza scope, ne atribut cropu. První
+volání vrací `is_computing`; selhání se zaznamená a **nepřeplánovává** se, jinak
+by každý poll spouštěl další odsouzený výpočet.
+
+Testy (`tests/unit/test_discriminant_service.py`) pinují všechny tři vědecké volby
+perturbačně. ⚠️ Syntetický fixture dává každému experimentu **velký** offset
+schválně: s malým procházely testy se seskupením i bez něj, takže ta nejdůležitější
+pojistka byla neúčinná.
+
 ### ⚠️ `MissingGreenlet` po zápisu: NIKDY neserializuj objekt ze session
 
 **Po `db.commit()` si odpověď načti novým SELECTem** — `load_experiment_response()`

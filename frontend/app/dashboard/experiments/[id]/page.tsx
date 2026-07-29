@@ -691,7 +691,10 @@ export default function ExperimentDetailPage(): JSX.Element {
           </button>
         </div>
 
-        {/* Experiment protein + microscope + PTM assignment */}
+        {/* Grouped, not siblings of the toggle: `justify-between` on the row
+            would otherwise spread all four children evenly across the full
+            width, leaving the three related chips scattered. */}
+        <div className="flex items-center gap-2 flex-wrap justify-end">
         <ColorTagSelect
           options={toColorTagOptions(proteins)}
           value={experiment.map_protein?.id ?? null}
@@ -726,6 +729,7 @@ export default function ExperimentDetailPage(): JSX.Element {
           variant="chip"
           align="right"
         />
+        </div>
       </div>
 
       {/* Error notification */}
