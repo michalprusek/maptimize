@@ -6,7 +6,7 @@ import Link from "next/link";
 import { motion, AnimatePresence } from "framer-motion";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useTranslations } from "next-intl";
-import { api, CellCropGallery, FOVImage } from "@/lib/api";
+import { api, cropImageVersion, CellCropGallery, FOVImage } from "@/lib/api";
 import {
   staggerContainerVariants,
   staggerItemVariants,
@@ -470,7 +470,7 @@ export default function ExperimentDetailPage(): JSX.Element {
   const previewImages: PreviewImage[] = useMemo(() => {
     return paginatedCrops.map((crop) => ({
       id: crop.id,
-      src: api.getCropImageUrl(crop.id, "mip"),
+      src: api.getCropImageUrl(crop.id, "mip", cropImageVersion(crop)),
       alt: `${crop.parent_filename} - Cell ${crop.id}`,
     }));
   }, [paginatedCrops]);
@@ -868,7 +868,7 @@ export default function ExperimentDetailPage(): JSX.Element {
                       onClick={() => handleOpenEditorFromCrop(crop)}
                     >
                       <MicroscopyImage
-                        src={api.getCropImageUrl(crop.id, "mip")}
+                        src={api.getCropImageUrl(crop.id, "mip", cropImageVersion(crop))}
                         alt={`Cell from ${crop.parent_filename}`}
                         className="w-full h-full object-cover"
                         onError={(e) => {

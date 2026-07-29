@@ -649,8 +649,26 @@ class ApiClient {
     return this.buildAuthenticatedUrl(`/api/metrics/${metricId}/images/${imageId}/file`);
   }
 
-  getCropImageUrl(cropId: number, type: "mip" | "sum" = "mip"): string {
-    return this.buildAuthenticatedUrl(`/api/images/crops/${cropId}/image`, { type });
+  /**
+   * URL of a crop's rendered image.
+   *
+   * ⚠️ Pass `version` (see {@link cropImageVersion}) wherever the crop's geometry
+   * is known. The path identifies only WHICH crop, not which version of it, and a
+   * re-cut crop is rewritten behind that same path — so with a constant URL an
+   * `<img>` already in the DOM never re-requests anything and keeps showing the
+   * pre-edit cell. Cache headers cannot fix that: `must-revalidate` decides what
+   * happens when a request is made, it does not cause one. The version makes the
+   * URL a function of the pixels, so React swaps the `src` and the browser fetches.
+   */
+  getCropImageUrl(
+    cropId: number,
+    type: "mip" | "sum" = "mip",
+    version?: string
+  ): string {
+    return this.buildAuthenticatedUrl(`/api/images/crops/${cropId}/image`, {
+      type,
+      ...(version ? { v: version } : {}),
+    });
   }
 
   async getCellCrops(experimentId: number, excludeExcluded = true) {
@@ -1824,6 +1842,25 @@ export interface CellCropGallery {
   created_at: string;
   map_protein_name?: string;
   map_protein_color?: string;
+}
+
+/**
+ * Cache-busting token for a crop's image: changes whenever the crop is re-cut.
+ *
+ * The crop file is rewritten in place behind a URL keyed only by crop id, so
+ * without this an already-rendered <img> keeps its pre-edit pixels. The angle is
+ * rounded to 2 decimals so float noise does not churn the URL while any real
+ * rotation still changes it.
+ */
+export function cropImageVersion(crop: {
+  bbox_x: number;
+  bbox_y: number;
+  bbox_w: number;
+  bbox_h: number;
+  bbox_angle?: number | null;
+}): string {
+  const angle = Math.round((crop.bbox_angle ?? 0) * 100);
+  return `${crop.bbox_x}-${crop.bbox_y}-${crop.bbox_w}-${crop.bbox_h}-${angle}`;
 }
 
 export interface PairResponse {

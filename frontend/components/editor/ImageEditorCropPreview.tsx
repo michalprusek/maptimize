@@ -18,7 +18,7 @@ import {
   calculateObjectCoverTransform,
   buildPolygonSvgPath,
 } from "@/lib/editor/geometry";
-import { api, type DisplayMode } from "@/lib/api";
+import { api, cropImageVersion, type DisplayMode } from "@/lib/api";
 import { extractCropFromImage } from "@/lib/editor/canvasUtils";
 import { CropPolygonOverlay } from "./SegmentationOverlay";
 
@@ -230,9 +230,20 @@ export function ImageEditorCropPreview({
     if (livePreviews[bbox.id]) {
       return livePreviews[bbox.id];
     }
-    // Priority 2: API image for existing unmodified crops
+    // Priority 2: API image for existing unmodified crops. Versioned by geometry so
+    // a crop re-cut in an earlier session is re-fetched rather than read from cache.
     if (bbox.cropId && !bbox.isModified) {
-      return api.getCropImageUrl(bbox.cropId, "mip");
+      return api.getCropImageUrl(
+        bbox.cropId,
+        "mip",
+        cropImageVersion({
+          bbox_x: bbox.x,
+          bbox_y: bbox.y,
+          bbox_w: bbox.width,
+          bbox_h: bbox.height,
+          bbox_angle: bbox.angle,
+        })
+      );
     }
     return null;
   };
