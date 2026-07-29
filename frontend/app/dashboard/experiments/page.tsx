@@ -271,11 +271,16 @@ export default function ExperimentsPage(): JSX.Element {
                       <Layers className="w-4 h-4" />
                       <span>{exp.cell_count} {t("crops")}</span>
                     </div>
+                    {/* Sits here rather than beside the chips: three assignment
+                        chips fill that row, and the date was being overlapped. */}
+                    <span className="ml-auto text-xs">
+                      {new Date(exp.created_at).toLocaleDateString()}
+                    </span>
                   </div>
                 </Link>
 
                 <div className="flex items-center justify-between gap-2 mt-4 pt-4 border-t border-white/5">
-                  <div className="flex items-center gap-2 min-w-0">
+                  <div className="flex items-center gap-2 min-w-0 flex-wrap">
                     <ColorTagSelect
                       options={proteinOptions}
                       value={exp.map_protein?.id ?? null}
@@ -323,10 +328,7 @@ export default function ExperimentsPage(): JSX.Element {
                   {/* Deliberately NOT a second <Link>: the card would then expose
                       two anchors to the same href, and the e2e suite counts cards
                       by `a[href*="/experiments/"]`. The body Link above navigates. */}
-                  <div className="flex items-center gap-2 flex-shrink-0">
-                    <span className="text-xs text-text-muted">
-                      {new Date(exp.created_at).toLocaleDateString()}
-                    </span>
+                  <div className="flex items-center flex-shrink-0">
                     <ArrowRight className="w-5 h-5 text-text-muted group-hover:text-primary-400 group-hover:translate-x-1 transition-all" />
                   </div>
                 </div>
