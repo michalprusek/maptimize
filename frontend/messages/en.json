@@ -373,6 +373,8 @@
     "ldaComputing": "Computing discriminant projection...",
     "ldaComputingHint": "This takes a minute. The projection appears once the fit and its cross-validated score are ready.",
     "ldaComputingPartial": "The projection is being recomputed, so the points and the score shown may still change.",
+    "ldaComputeFailed": "Could Not Compute Projection",
+    "ldaComputeFailedHint": "The discriminant fit failed, so there is nothing to plot. Use Retry above to run it again.",
     "ldaNoProjection": "No Discriminant Projection",
     "ldaNoProjectionHint": "A supervised projection needs cell crops from at least two proteins. Assign proteins to experiments and process images to produce one.",
     "separation": "Separation",

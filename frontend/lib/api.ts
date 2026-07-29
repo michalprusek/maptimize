@@ -783,6 +783,20 @@ class ApiClient {
    * Force a UMAP re-fit. Reads schedule this automatically when coordinates are
    * missing, so this is only needed to re-fit already-complete coordinates.
    */
+  /**
+   * Refit the discriminant projection for this scope.
+   *
+   * Needed, not optional: the backend records a failed fit and deliberately does
+   * NOT reschedule it, so a plain refetch returns the same recorded error
+   * forever. This clears it and queues the work.
+   */
+  async triggerDiscriminantRecomputation() {
+    return this.request<{ message: string }>(
+      "/api/embeddings/discriminant/recompute",
+      { method: "POST" }
+    );
+  }
+
   async triggerUmapRecomputation(umapType: UmapType) {
     const params = new URLSearchParams({ umap_type: umapType });
     return this.request<{ message: string }>(

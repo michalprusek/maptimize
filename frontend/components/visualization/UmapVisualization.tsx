@@ -186,14 +186,17 @@ export function UmapVisualization({
   const computeError = view?.computeError ?? null;
   const copy = panelCopy(projection, viewMode);
 
-  // The fit failed, so coordinates will never arrive on their own. For UMAP the
-  // backend records the failure and stops rescheduling, so it has to be asked
-  // explicitly; the discriminant only needs the request repeated.
+  // The fit failed, so coordinates will never arrive on their own. BOTH backends
+  // record the failure and stop rescheduling precisely so a poll cannot restart a
+  // doomed multi-minute computation on a loop — which means a plain refetch
+  // returns the recorded error forever and the button does nothing. Each has to
+  // be asked explicitly.
   const [isRetrying, setIsRetrying] = useState(false);
   const handleRetryRefresh = useCallback(async () => {
     setIsRetrying(true);
     try {
       if (projection === "lda") {
+        await api.triggerDiscriminantRecomputation();
         await queryClient.invalidateQueries({ queryKey: ["discriminant"] });
       } else {
         await api.triggerUmapRecomputation(viewMode);
@@ -414,13 +417,32 @@ export function UmapVisualization({
     }
 
     if (!view || view.points.length === 0) {
+      // The LDA fit failed and produced no geometry. The metric strip above is
+      // the one place that carries the detail and the retry, so this only has
+      // to explain why the chart is empty — attributing it to "no proteins
+      // assigned" below would send the user to fix a problem they do not have.
+      if (isLda && computeError) {
+        return (
+          <div
+            className="flex flex-col items-center justify-center text-center"
+            style={{ height: height - 100 }}
+          >
+            <AlertCircle className="w-12 h-12 text-accent-red mb-4" />
+            <h3 className="text-lg font-semibold text-text-primary mb-2">
+              {t("ldaComputeFailed")}
+            </h3>
+            <p className="text-text-secondary max-w-md">{t("ldaComputeFailedHint")}</p>
+          </div>
+        );
+      }
+
       // The filter excluded everything. Saying "upload and process images" here
       // would send the user to fix a problem they do not have.
       //
       // Gated on !isRecomputing: matching crops that have embeddings but no
       // coordinates yet also yield zero points, and blaming the filter for that
       // invites the user to throw away a filter that was never the problem.
-      if (view && !isRecomputing && !computeError && !isSelectionEmpty(selection)) {
+      if (view && !isRecomputing && !isSelectionEmpty(selection)) {
         return (
           <div
             className="flex flex-col items-center justify-center text-center"

@@ -373,6 +373,8 @@
     "ldaComputing": "Calcul de la projection discriminante...",
     "ldaComputingHint": "Cela prend une minute. La projection apparait des que le calcul et son score de validation croisee sont prets.",
     "ldaComputingPartial": "La projection est en cours de recalcul ; les points et le score affiches peuvent encore changer.",
+    "ldaComputeFailed": "Impossible de calculer la projection",
+    "ldaComputeFailedHint": "Le calcul discriminant a echoue, il n'y a donc rien a afficher. Utilisez Reessayer ci-dessus pour relancer.",
     "ldaNoProjection": "Aucune projection discriminante",
     "ldaNoProjectionHint": "Une projection supervisee necessite des cellules decoupees d'au moins deux proteines. Assignez des proteines aux experiences et traitez des images pour en produire une.",
     "separation": "Separation",

@@ -219,6 +219,8 @@ test.describe("discriminant translations", () => {
     "ldaComputing",
     "ldaComputingHint",
     "ldaComputingPartial",
+    "ldaComputeFailed",
+    "ldaComputeFailedHint",
     "ldaNoProjection",
     "ldaNoProjectionHint",
     "separation",
