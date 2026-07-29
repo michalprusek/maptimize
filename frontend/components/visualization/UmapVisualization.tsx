@@ -13,18 +13,9 @@ import {
   ResponsiveContainer,
   Cell,
   Tooltip,
-  TooltipProps,
 } from "recharts";
-import {
-  api,
-  UmapPoint,
-  UmapFovPoint,
-  UmapDataResponse,
-  UmapFovDataResponse,
-  UmapType,
-  API_URL,
-} from "@/lib/api";
-import { Spinner, MicroscopyImage } from "@/components/ui";
+import { api, UmapType } from "@/lib/api";
+import { Spinner } from "@/components/ui";
 import { RefreshCw, Info, AlertCircle, Grid, Layers, FilterX } from "lucide-react";
 import {
   DEFAULT_POINT_COLOR,
@@ -32,18 +23,25 @@ import {
   UMAP_AXIS_DOMAIN,
   UMAP_TOOLTIP_CURSOR,
   UMAP_SCATTER_ANIMATION,
-  UMAP_STALE_POLL_MS,
   formatAxisTick,
   getSilhouetteScoreStyle,
 } from "./chartConfig";
 import { UmapFilterPanel, type ColorBy } from "./UmapFilterPanel";
+import { DiscriminantMetricStrip } from "./DiscriminantMetricStrip";
+import {
+  CroppedTooltip,
+  FovTooltip,
+  ProjectionLegend,
+  type PointContext,
+  type ProjectionPoint,
+} from "./projectionShared";
+import { useProjectionData, type Projection } from "./useProjectionData";
 import {
   EMPTY_SELECTION,
   experimentColor,
   experimentMetaById,
   isSelectionEmpty,
   selectionFromQuery,
-  selectionKey,
   selectionToQuery,
   selectionWithoutDeadIds,
   totalPoints,
@@ -57,147 +55,36 @@ interface UmapVisualizationProps {
   preferFovMode?: boolean;
 }
 
-/** Build authenticated URL by appending token as query parameter */
-function buildAuthenticatedUrl(thumbnailUrl: string): string {
-  const token = api.getToken();
-  const separator = thumbnailUrl.includes("?") ? "&" : "?";
-  return `${API_URL}${thumbnailUrl}${separator}token=${token}`;
-}
-
-/** Hide element on image load error */
-function hideOnError(e: React.SyntheticEvent<HTMLImageElement>): void {
-  e.currentTarget.style.display = "none";
-}
-
-/** The acquisition context of a point, resolved from the facet summary. */
-interface PointContext {
-  experimentName: string;
-  microscopeName: string | null;
-  ptmName: string | null;
-}
-
-/** The rows shared by both tooltips: where this point came from. */
-function ContextRows({
-  context,
-  t,
-}: {
-  context: PointContext;
-  t: (key: string, values?: Record<string, string | number>) => string;
-}): JSX.Element {
-  return (
-    <>
-      <div className="text-xs text-text-secondary truncate">{context.experimentName}</div>
-      {context.microscopeName && (
-        <div className="text-xs text-text-muted truncate">
-          {t("facetMicroscope")}: {context.microscopeName}
-        </div>
-      )}
-      {context.ptmName && (
-        <div className="text-xs text-text-muted truncate">
-          {t("facetPtm")}: {context.ptmName}
-        </div>
-      )}
-    </>
-  );
-}
-
-// Tooltip for cropped cell view
-interface CroppedTooltipProps extends TooltipProps<number, string> {
-  t: (key: string, values?: Record<string, string | number>) => string;
-  contextOf: (point: UmapPoint | UmapFovPoint) => PointContext;
-}
-
-function CroppedTooltip({
-  active,
-  payload,
-  t,
-  contextOf,
-}: CroppedTooltipProps): JSX.Element | null {
-  if (!active || !payload || !payload.length) return null;
-
-  const point = payload[0].payload as UmapPoint;
-
-  return (
-    <div className="bg-bg-elevated border border-white/10 rounded-lg shadow-xl p-3 max-w-[220px]">
-      <MicroscopyImage
-        src={buildAuthenticatedUrl(point.thumbnail_url)}
-        alt="Cell crop"
-        className="w-full h-32 object-contain rounded mb-2 bg-black/50"
-        onError={hideOnError}
-      />
-      <div className="space-y-1">
-        <div
-          className="font-medium text-text-primary flex items-center gap-2"
-          style={{ color: point.protein_color }}
-        >
-          <span
-            className="w-2.5 h-2.5 rounded-full flex-shrink-0"
-            style={{ backgroundColor: point.protein_color }}
-          />
-          {point.protein_name || t("unassigned")}
-        </div>
-        <ContextRows context={contextOf(point)} t={t} />
-        {point.bundleness_score !== null && (
-          <div className="text-xs text-text-secondary">
-            {t("bundleness")}: {point.bundleness_score.toFixed(2)}
-          </div>
-        )}
-        <div className="text-xs text-text-muted">{t("cropId", { id: point.crop_id })}</div>
-      </div>
-    </div>
-  );
-}
-
-// Tooltip for FOV view
-interface FovTooltipProps extends TooltipProps<number, string> {
-  t: (key: string, values?: Record<string, string | number>) => string;
-  contextOf: (point: UmapPoint | UmapFovPoint) => PointContext;
-}
-
-function FovTooltip({
-  active,
-  payload,
-  t,
-  contextOf,
-}: FovTooltipProps): JSX.Element | null {
-  if (!active || !payload || !payload.length) return null;
-
-  const point = payload[0].payload as UmapFovPoint;
-
-  return (
-    <div className="bg-bg-elevated border border-white/10 rounded-lg shadow-xl p-3 max-w-[250px]">
-      <MicroscopyImage
-        src={buildAuthenticatedUrl(point.thumbnail_url)}
-        alt="FOV thumbnail"
-        className="w-full h-40 object-contain rounded mb-2 bg-black/50"
-        onError={hideOnError}
-      />
-      <div className="space-y-1">
-        <div className="font-medium text-text-primary truncate text-sm">
-          {point.original_filename}
-        </div>
-        <div
-          className="text-sm flex items-center gap-2"
-          style={{ color: point.protein_color }}
-        >
-          <span
-            className="w-2.5 h-2.5 rounded-full flex-shrink-0"
-            style={{ backgroundColor: point.protein_color }}
-          />
-          {point.protein_name || t("unassigned")}
-        </div>
-        <ContextRows context={contextOf(point)} t={t} />
-        <div className="text-xs text-text-muted">{t("imageId", { id: point.image_id })}</div>
-      </div>
-    </div>
-  );
-}
-
-// Type guard to check if response is FOV type
-function isFovResponse(
-  data: UmapDataResponse | UmapFovDataResponse
-): data is UmapFovDataResponse {
-  return "total_images" in data;
+/**
+ * Which message names each state, per projection.
+ *
+ * The two projections fail and wait for different reasons — UMAP re-fits after
+ * an upload, the discriminant runs a minutes-long supervised fit — so the copy
+ * is picked up front rather than branched at each of the five render sites.
+ */
+function panelCopy(projection: Projection, viewMode: UmapType) {
+  if (projection === "lda") {
+    return {
+      title: "ldaTitle",
+      loading: "ldaLoading",
+      loadingHint: "ldaLoadingHint",
+      computing: "ldaComputing",
+      computingHint: "ldaComputingHint",
+      computingPartial: "ldaComputingPartial",
+      empty: "ldaNoProjection",
+      emptyHint: "ldaNoProjectionHint",
+    };
+  }
+  return {
+    title: "title",
+    loading: "loading",
+    loadingHint: "loadingHint",
+    computing: "computing",
+    computingHint: "computingHint",
+    computingPartial: "computingPartial",
+    empty: "noEmbeddings",
+    emptyHint: viewMode === "fov" ? "noEmbeddingsFov" : "noEmbeddingsCrops",
+  };
 }
 
 export function UmapVisualization({
@@ -207,8 +94,10 @@ export function UmapVisualization({
 }: UmapVisualizationProps): JSX.Element {
   const t = useTranslations("umap");
   const router = useRouter();
+  const [projection, setProjection] = useState<Projection>("umap");
   const [viewMode, setViewMode] = useState<UmapType>(preferFovMode ? "fov" : "cropped");
   const [colorBy, setColorBy] = useState<ColorBy>("protein");
+  const isLda = projection === "lda";
 
   // Only the dashboard's global plot round-trips its filter through the URL, so
   // a filtered view can be shared. On an experiment page the scope is the route
@@ -265,20 +154,11 @@ export function UmapVisualization({
     [selection, experimentId]
   );
 
-  const { data, isLoading, error, refetch, isFetching } = useQuery({
-    queryKey: ["umap", experimentId, viewMode, selectionKey(effectiveSelection)],
-    queryFn: () => api.getUmapData({ umapType: viewMode, selection: effectiveSelection }),
-    staleTime: 1000 * 60 * 5, // Cache for 5 minutes
-    retry: false,
-    // Keep the previous result on screen while a new filter loads. Without it
-    // every pill click makes `data` undefined for a moment, and the panel is
-    // rendered conditionally on `data` — so it unmounts mid-interaction and
-    // loses its expanded state and any text typed into a facet search.
-    placeholderData: (previous) => previous,
-    // New uploads/edits arrive without coordinates; the request that observes
-    // that schedules a background re-fit. Poll until those coordinates land.
-    refetchInterval: (query) =>
-      query.state.data?.is_stale ? UMAP_STALE_POLL_MS : false,
+  const { view, isLoading, isFetching, error, refetch } = useProjectionData({
+    projection,
+    viewMode,
+    selection: effectiveSelection,
+    experimentId,
   });
 
   // A reference value the user has ticked can be deleted by anyone (reference
@@ -302,26 +182,32 @@ export function UmapVisualization({
     setSelection(pruned);
   }, [error, selection]);
 
-  const isRecomputing = data?.is_stale ?? false;
-  const refreshError = data?.refresh_error ?? null;
+  const isRecomputing = view?.isComputing ?? false;
+  const computeError = view?.computeError ?? null;
+  const copy = panelCopy(projection, viewMode);
 
-  // The re-fit failed, so coordinates will never arrive on their own. Ask the
-  // backend to retry (which clears the recorded failure) and resume polling.
+  // The fit failed, so coordinates will never arrive on their own. For UMAP the
+  // backend records the failure and stops rescheduling, so it has to be asked
+  // explicitly; the discriminant only needs the request repeated.
   const [isRetrying, setIsRetrying] = useState(false);
   const handleRetryRefresh = useCallback(async () => {
     setIsRetrying(true);
     try {
-      await api.triggerUmapRecomputation(viewMode);
-      await queryClient.invalidateQueries({ queryKey: ["umap"] });
+      if (projection === "lda") {
+        await queryClient.invalidateQueries({ queryKey: ["discriminant"] });
+      } else {
+        await api.triggerUmapRecomputation(viewMode);
+        await queryClient.invalidateQueries({ queryKey: ["umap"] });
+      }
     } catch (e) {
-      console.error("[UmapVisualization] Failed to trigger UMAP recomputation:", e);
+      console.error("[UmapVisualization] Failed to trigger recomputation:", e);
     } finally {
       setIsRetrying(false);
     }
-  }, [viewMode, queryClient]);
+  }, [projection, viewMode, queryClient]);
 
-  // Handle click on UMAP point - navigate to editor
-  const handleChartClick = useCallback((state: { activePayload?: Array<{ payload: UmapPoint | UmapFovPoint }> } | null) => {
+  // Handle click on a point - navigate to editor
+  const handleChartClick = useCallback((state: { activePayload?: Array<{ payload: ProjectionPoint }> } | null) => {
     // Early return if click missed a point (expected behavior)
     if (!state?.activePayload?.[0]?.payload) return;
 
@@ -347,15 +233,15 @@ export function UmapVisualization({
   // which is exactly the granularity that makes this a filter and not a second
   // request.
   const facetRows = useMemo(() => {
-    const rows = data?.facets ?? [];
+    const rows = view?.facets ?? [];
     return experimentId === undefined
       ? rows
       : rows.filter((row) => row.experiment_id === experimentId);
-  }, [data?.facets, experimentId]);
+  }, [view?.facets, experimentId]);
 
   // Microscope and PTM live on the experiment, so points carry only
   // experiment_id and the rest is looked up here.
-  const experimentMeta = useMemo(() => experimentMetaById(data?.facets ?? []), [data?.facets]);
+  const experimentMeta = useMemo(() => experimentMetaById(view?.facets ?? []), [view?.facets]);
   const microscopeById = useMemo(
     () => new Map((microscopes ?? []).map((m) => [m.id, m])),
     [microscopes]
@@ -363,7 +249,7 @@ export function UmapVisualization({
   const ptmById = useMemo(() => new Map((ptms ?? []).map((p) => [p.id, p])), [ptms]);
 
   const contextOf = useCallback(
-    (point: UmapPoint | UmapFovPoint): PointContext => {
+    (point: ProjectionPoint): PointContext => {
       const meta = experimentMeta.get(point.experiment_id);
       const microscope = meta?.microscopeId ? microscopeById.get(meta.microscopeId) : undefined;
       const ptm = meta?.ptmId ? ptmById.get(meta.ptmId) : undefined;
@@ -380,7 +266,7 @@ export function UmapVisualization({
 
   /** The label and colour a point takes under the current colour-by dimension. */
   const styleOf = useCallback(
-    (point: UmapPoint | UmapFovPoint): { name: string; color: string } => {
+    (point: ProjectionPoint): { name: string; color: string } => {
       const meta = experimentMeta.get(point.experiment_id);
 
       switch (colorBy) {
@@ -419,32 +305,31 @@ export function UmapVisualization({
   // Legend groups, derived from the same styleOf as the points themselves so a
   // swatch can never disagree with what is drawn.
   const legendGroups = useMemo(() => {
-    if (!data?.points) return [];
+    if (!view?.points) return [];
 
     const groups = new Map<string, { name: string; color: string; count: number }>();
-    data.points.forEach((point) => {
+    view.points.forEach((point) => {
       const { name, color } = styleOf(point);
       if (!groups.has(name)) groups.set(name, { name, color, count: 0 });
       groups.get(name)!.count++;
     });
 
     return Array.from(groups.values()).sort((a, b) => b.count - a.count);
-  }, [data?.points, styleOf]);
+  }, [view?.points, styleOf]);
 
-  // Prepare data for rendering (may be null/undefined)
-  const isFov = data ? isFovResponse(data) : viewMode === "fov";
-  const totalCount = data
-    ? (isFovResponse(data) ? data.total_images : data.total_crops)
-    : 0;
-  const silhouetteScore = data?.silhouette_score ?? null;
+  const isFov = view?.isFov ?? (!isLda && viewMode === "fov");
+  const totalCount = view?.totalCount ?? 0;
+  const silhouetteScore = view?.silhouetteScore ?? null;
+  const axisPrefix = isLda ? "LDA" : "UMAP";
 
   // Error message parsing
   const errorMessage = error instanceof Error ? error.message : error ? t("unknownError") : null;
   const isNotEnoughData = errorMessage?.includes("Need at least") ?? false;
+  const hasHardError = Boolean(error) && !view;
 
   // Log non-expected errors for debugging
   if (error && !isNotEnoughData) {
-    console.error("[UmapVisualization] Failed to fetch UMAP data:", error);
+    console.error("[UmapVisualization] Failed to fetch projection data:", error);
   }
 
   // Render content based on state
@@ -457,10 +342,10 @@ export function UmapVisualization({
         >
           <Spinner size="lg" />
           <span className="mt-3 text-text-secondary">
-            {t("loading")}
+            {t(copy.loading)}
           </span>
           <span className="text-xs text-text-muted mt-1">
-            {t("loadingHint")}
+            {t(copy.loadingHint)}
           </span>
         </div>
       );
@@ -468,7 +353,7 @@ export function UmapVisualization({
 
     // Only take over the panel when there is nothing to show. A transient error
     // mid-poll must not blank a chart the user is already looking at.
-    if (error && !data) {
+    if (hasHardError) {
       return (
         <div
           className="flex flex-col items-center justify-center text-center"
@@ -501,7 +386,11 @@ export function UmapVisualization({
     // The background re-fit failed: nothing is coming, so say so instead of
     // spinning forever. Retry goes through the backend, which clears the
     // recorded failure and lets reads schedule refreshes again.
-    if (refreshError && !data?.points.length) {
+    //
+    // UMAP only: in LDA mode the metric strip above the plot is already the one
+    // place that reports the failure and offers the retry, and repeating it
+    // here would give the same error two voices.
+    if (!isLda && computeError && !view?.points.length) {
       return (
         <div
           className="flex flex-col items-center justify-center text-center"
@@ -524,14 +413,14 @@ export function UmapVisualization({
       );
     }
 
-    if (!data || data.points.length === 0) {
+    if (!view || view.points.length === 0) {
       // The filter excluded everything. Saying "upload and process images" here
       // would send the user to fix a problem they do not have.
       //
       // Gated on !isRecomputing: matching crops that have embeddings but no
       // coordinates yet also yield zero points, and blaming the filter for that
       // invites the user to throw away a filter that was never the problem.
-      if (data && !isRecomputing && !isSelectionEmpty(selection)) {
+      if (view && !isRecomputing && !computeError && !isSelectionEmpty(selection)) {
         return (
           <div
             className="flex flex-col items-center justify-center text-center"
@@ -555,7 +444,7 @@ export function UmapVisualization({
         );
       }
 
-      // Nothing to plot yet, but a re-fit is running — the data is on its way,
+      // Nothing to plot yet, but a fit is running — the data is on its way,
       // so don't claim there are no embeddings (nor blame the filter).
       if (isRecomputing) {
         return (
@@ -565,9 +454,9 @@ export function UmapVisualization({
           >
             <Spinner size="lg" />
             <h3 className="mt-3 text-lg font-semibold text-text-primary">
-              {t("computing")}
+              {t(copy.computing)}
             </h3>
-            <p className="text-text-secondary max-w-md">{t("computingHint")}</p>
+            <p className="text-text-secondary max-w-md">{t(copy.computingHint)}</p>
           </div>
         );
       }
@@ -579,13 +468,9 @@ export function UmapVisualization({
         >
           <Info className="w-12 h-12 text-text-muted mb-4" />
           <h3 className="text-lg font-semibold text-text-primary mb-2">
-            {t("noEmbeddings")}
+            {t(copy.empty)}
           </h3>
-          <p className="text-text-secondary max-w-md">
-            {viewMode === "fov"
-              ? t("noEmbeddingsFov")
-              : t("noEmbeddingsCrops")}
-          </p>
+          <p className="text-text-secondary max-w-md">{t(copy.emptyHint)}</p>
         </div>
       );
     }
@@ -598,12 +483,13 @@ export function UmapVisualization({
           <div className="flex items-center gap-2 mb-3 px-3 py-2 rounded-md bg-accent-amber/10 border border-accent-amber/30">
             <Spinner size="sm" />
             <span className="text-xs text-text-secondary">
-              {t("computingPartial")}
+              {t(copy.computingPartial)}
             </span>
           </div>
         )}
-        {/* Points are plotted, but the re-fit for the newer ones failed. */}
-        {refreshError && (
+        {/* Points are plotted, but the re-fit for the newer ones failed. In LDA
+            mode the metric strip already carries this. */}
+        {!isLda && computeError && (
           <div className="flex items-center gap-2 mb-3 px-3 py-2 rounded-md bg-accent-red/10 border border-accent-red/30">
             <AlertCircle className="w-4 h-4 text-accent-red flex-shrink-0" />
             <span className="text-xs text-text-secondary flex-1">
@@ -627,7 +513,7 @@ export function UmapVisualization({
               <XAxis
                 type="number"
                 dataKey="x"
-                name="UMAP 1"
+                name={`${axisPrefix} 1`}
                 tick={UMAP_AXIS_STYLE.tick}
                 axisLine={UMAP_AXIS_STYLE.axisLine}
                 tickLine={UMAP_AXIS_STYLE.tickLine}
@@ -637,7 +523,7 @@ export function UmapVisualization({
               <YAxis
                 type="number"
                 dataKey="y"
-                name="UMAP 2"
+                name={`${axisPrefix} 2`}
                 tick={UMAP_AXIS_STYLE.tick}
                 axisLine={UMAP_AXIS_STYLE.axisLine}
                 tickLine={UMAP_AXIS_STYLE.tickLine}
@@ -656,10 +542,10 @@ export function UmapVisualization({
                 cursor={UMAP_TOOLTIP_CURSOR}
               />
               <Scatter
-                data={data.points}
+                data={view.points}
                 {...UMAP_SCATTER_ANIMATION}
               >
-                {data.points.map((point, index) => (
+                {view.points.map((point, index) => (
                   <Cell
                     key={`cell-${index}`}
                     fill={styleOf(point).color}
@@ -674,24 +560,7 @@ export function UmapVisualization({
           </ResponsiveContainer>
         </div>
 
-        {/* Legend */}
-        <div className="flex flex-wrap gap-3 mt-4 pt-4 border-t border-white/5">
-          {legendGroups.map((group) => (
-            <div
-              key={group.name}
-              className="flex items-center gap-1.5 px-2 py-1 rounded bg-white/5"
-            >
-              <div
-                className="w-3 h-3 rounded-full"
-                style={{ backgroundColor: group.color }}
-              />
-              <span className="text-xs text-text-secondary">
-                {group.name}{" "}
-                <span className="text-text-muted">({group.count})</span>
-              </span>
-            </div>
-          ))}
-        </div>
+        <ProjectionLegend groups={legendGroups} />
       </>
     );
   };
@@ -702,14 +571,14 @@ export function UmapVisualization({
       <div className="flex items-center justify-between mb-4">
         <div>
           <h3 className="font-display font-semibold text-text-primary">
-            {t("title")}
+            {t(copy.title)}
           </h3>
-          {data && (
+          {view && (
             <div className="flex items-center gap-3 text-sm text-text-secondary">
               <span>
                 {totalCount.toLocaleString()} {isFov ? t("fovImages") : t("cellCrops")}
               </span>
-              {silhouetteScore !== null && (
+              {!isLda && silhouetteScore !== null && (
                 <span
                   className={`px-2 py-0.5 rounded text-xs font-mono ${getSilhouetteScoreStyle(silhouetteScore)}`}
                   title={t("silhouetteTooltip")}
@@ -722,33 +591,62 @@ export function UmapVisualization({
         </div>
 
         <div className="flex items-center gap-3">
-          {/* Toggle Buttons */}
+          {/* Which projection: unsupervised UMAP or supervised discriminant */}
           <div className="flex items-center bg-bg-secondary rounded-lg p-1">
             <button
-              onClick={() => setViewMode("fov")}
-              className={`px-3 py-1.5 rounded-md text-sm font-medium transition-colors flex items-center gap-1.5 ${
-                viewMode === "fov"
+              onClick={() => setProjection("umap")}
+              className={`px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${
+                !isLda
                   ? "bg-primary-500 text-white"
                   : "text-text-secondary hover:text-text-primary"
               }`}
-              title={t("fovTooltip")}
+              title={t("umapModeTooltip")}
             >
-              <Grid className="w-4 h-4" />
-              {t("fov")}
+              {t("umapMode")}
             </button>
             <button
-              onClick={() => setViewMode("cropped")}
-              className={`px-3 py-1.5 rounded-md text-sm font-medium transition-colors flex items-center gap-1.5 ${
-                viewMode === "cropped"
+              onClick={() => setProjection("lda")}
+              className={`px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${
+                isLda
                   ? "bg-primary-500 text-white"
                   : "text-text-secondary hover:text-text-primary"
               }`}
-              title={t("croppedTooltip")}
+              title={t("ldaModeTooltip")}
             >
-              <Layers className="w-4 h-4" />
-              {t("cropped")}
+              {t("ldaMode")}
             </button>
           </div>
+
+          {/* FOV/Cropped. Hidden for LDA: its labels are per-crop protein
+              assignments, so there is no FOV-level projection to show. */}
+          {!isLda && (
+            <div className="flex items-center bg-bg-secondary rounded-lg p-1">
+              <button
+                onClick={() => setViewMode("fov")}
+                className={`px-3 py-1.5 rounded-md text-sm font-medium transition-colors flex items-center gap-1.5 ${
+                  viewMode === "fov"
+                    ? "bg-primary-500 text-white"
+                    : "text-text-secondary hover:text-text-primary"
+                }`}
+                title={t("fovTooltip")}
+              >
+                <Grid className="w-4 h-4" />
+                {t("fov")}
+              </button>
+              <button
+                onClick={() => setViewMode("cropped")}
+                className={`px-3 py-1.5 rounded-md text-sm font-medium transition-colors flex items-center gap-1.5 ${
+                  viewMode === "cropped"
+                    ? "bg-primary-500 text-white"
+                    : "text-text-secondary hover:text-text-primary"
+                }`}
+                title={t("croppedTooltip")}
+              >
+                <Layers className="w-4 h-4" />
+                {t("cropped")}
+              </button>
+            </div>
+          )}
 
           {/* Refresh button */}
           <button
@@ -799,7 +697,7 @@ export function UmapVisualization({
       )}
 
       {/* Advanced filter — needs the facet summary, which arrives with the data */}
-      {data && (
+      {view && (
         <UmapFilterPanel
           rows={facetRows}
           selection={selection}
@@ -810,8 +708,22 @@ export function UmapVisualization({
           proteins={proteins}
           ptms={ptms}
           showExperimentFacet={experimentId === undefined}
-          shownCount={data.points.length}
+          shownCount={view.points.length}
           totalCount={totalPoints(facetRows)}
+        />
+      )}
+
+      {/* The honesty numbers. Unconditional in LDA mode — the separation must
+          never be visible without them — and suppressed only when the request
+          itself failed, where the panel below carries the whole message. */}
+      {isLda && !hasHardError && (
+        <DiscriminantMetricStrip
+          metrics={view?.metrics ?? null}
+          isComputing={view ? view.isComputing : isLoading}
+          computeError={computeError}
+          onRetry={handleRetryRefresh}
+          isRetrying={isRetrying}
+          t={t}
         />
       )}
 

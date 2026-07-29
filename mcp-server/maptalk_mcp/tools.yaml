@@ -1166,6 +1166,37 @@ tools:
         type: integer
         required: true
 
+  # -- Analysis --------------------------------------------------------------
+  - name: get_protein_separation
+    annotations: {readOnlyHint: true, openWorldHint: false}
+    description: >
+      How well the MAP proteins separate in image-embedding space, as a single
+      cross-validated number with the null it must be read against.
+
+      A supervised projection (LDA) is fitted to the protein labels after
+      subtracting each microscope's mean, then scored by cross-validation that
+      holds whole EXPERIMENTS out — crops from one image are near-duplicates, so
+      any other split reports its own leakage (0.68 where the honest answer is
+      0.26). `balanced_accuracy` is that score; `chance` is 1/proteins; the label
+      shuffle gives `null_mean` and `null_max`.
+
+      ⚠️ Read the score against null_max, not against chance, and say so when you
+      report it. A score at or below null_max is NO evidence of separation
+      however large it looks. Do not describe the proteins as separable without
+      quoting both numbers.
+
+      The first call returns is_computing=true and schedules the fit (minutes);
+      poll until it clears. Returns metrics only — the point cloud belongs to the
+      dashboard plot, not to a conversation.
+    handler: http_json
+    method: GET
+    path: /api/embeddings/discriminant
+    params:
+      - name: include_points
+        in: query
+        type: boolean
+        description: Leave false; true returns thousands of plot coordinates.
+
   # -- Database (read-only) --------------------------------------------------
   - name: query_database
     annotations: {readOnlyHint: true, openWorldHint: false}

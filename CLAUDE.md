@@ -484,6 +484,54 @@ Parametry chodí do handleru jako jedna FastAPI dependency (`facet_selection` �
 s defaultem `Query(...)`, který test nepředá, doteče do těla jako objekt `Query` — ne
 `None`. Se čtyřmi filtry by to byla čtyřnásobná mina.
 
+### Diskriminační projekce (LDA) — od 2026-07-29
+
+`GET /api/embeddings/discriminant` promítá cropy tak, aby **maximálně separovala
+proteiny**. Na rozdíl od UMAPu je fitovaná na štítky, takže **vypadá separovaně
+vždycky** — proto se s body vrací i `metrics` a klient je vykresluje vedle grafu.
+Odpověď s body bez skóre není výsledek.
+
+Naměřeno na produkčním korpusu (balanced accuracy, 14 proteinů, náhoda 0,071):
+
+| dělení CV | surové | po korekci na mikroskop |
+|-----------|--------|--------------------------|
+| náhodně po cropech | 0,679 | 0,665 |
+| po obrázcích | 0,653 | 0,655 |
+| **po experimentech** | **0,186** | **0,259** |
+
+⚠️ **Křížová validace MUSÍ dělit po experimentech** (`StratifiedGroupKFold` na
+`Experiment.id`). Cropy z jednoho obrázku jsou skoro duplikáty a každý experiment
+nese jeden protein, takže náhodné dělení nechá příbuzného skoro každého testovacího
+cropu v tréninku a hlásí 0,68 tam, kde je pravda 0,26. **Dělení po obrázcích
+nestačí** — sourozenecké obrázky sdílejí podmínky experimentu.
+
+⚠️ **Permutační null míchá štítky mezi EXPERIMENTY, ne po cropech.** Míchání po
+cropech rozbije seskupení, na kterém dělení stojí, stlačí null pod náhodu a udělá
+signifikantní jakékoli skóre.
+
+⚠️ **Per-microscope centering běží před fitem.** Dva proteiny existují jen na
+AeryScanu, takže bez korekce se oddělí podle přístroje a vypadá to jako biologie.
+Korekce zároveň skóre *zvyšuje* (0,186 → 0,259): mikroskop byl confounder, ne zdroj
+signálu. Dekódovatelnost mikroskopu spadne 0,551 → 0,117 (náhoda pro 4 třídy je 0,25).
+
+⚠️ **Geometrie grafu je in-sample, číslo je out-of-fold.** Out-of-fold souřadnice
+pocházejí z různých fitů, jejichž osy se liší o libovolnou rotaci a znaménko —
+vykreslené společně nedávají smysl. Popisek v UI to říká.
+
+⚠️ **Filtr vybírá, které body se vrátí, nikdy které se fitují.** Přefitování podle
+filtru by dalo dvěma filtrovaným pohledům neporovnatelné souřadnice a osy by měnily
+význam podle klikání.
+
+Fit trvá minuty, takže běží na pozadí a cachuje se v procesu podle scope
+(`u{user}` / `g{group}`), ne v DB — je to analýza scope, ne atribut cropu. První
+volání vrací `is_computing`; selhání se zaznamená a **nepřeplánovává** se, jinak
+by každý poll spouštěl další odsouzený výpočet.
+
+Testy (`tests/unit/test_discriminant_service.py`) pinují všechny tři vědecké volby
+perturbačně. ⚠️ Syntetický fixture dává každému experimentu **velký** offset
+schválně: s malým procházely testy se seskupením i bez něj, takže ta nejdůležitější
+pojistka byla neúčinná.
+
 ### ⚠️ `MissingGreenlet` po zápisu: NIKDY neserializuj objekt ze session
 
 **Po `db.commit()` si odpověď načti novým SELECTem** — `load_experiment_response()`

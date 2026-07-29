@@ -153,6 +153,13 @@ async def get_umap_visualization(
 @router.get("/discriminant", response_model=DiscriminantDataResponse)
 async def get_discriminant_visualization(
     selection: FacetSelection = Depends(facet_selection),
+    include_points: bool = Query(
+        True,
+        description=(
+            "Set false for the metrics only. The point list runs to thousands of "
+            "rows, which is useful to a plot and useless to a reader."
+        ),
+    ),
     background_tasks: BackgroundTasks = BackgroundTasks(),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
@@ -204,6 +211,21 @@ async def get_discriminant_visualization(
         )
 
     coords, result = cached
+    metrics = DiscriminantMetrics(
+        balanced_accuracy=result.balanced_accuracy,
+        chance=result.chance,
+        null_mean=result.null_mean,
+        null_max=result.null_max,
+        n_permutations=result.n_permutations,
+        n_proteins=result.n_proteins,
+        n_experiments=result.n_experiments,
+    )
+
+    if not include_points:
+        return DiscriminantDataResponse(
+            points=[], total_crops=len(coords), facets=facets, metrics=metrics,
+            is_computing=False, compute_error=None,
+        )
 
     # Same corpus the projection was fitted on, narrowed by the filter. Ordered
     # by id so the payload does not reshuffle between polls.
@@ -244,15 +266,7 @@ async def get_discriminant_visualization(
         points=points,
         total_crops=len(points),
         facets=facets,
-        metrics=DiscriminantMetrics(
-            balanced_accuracy=result.balanced_accuracy,
-            chance=result.chance,
-            null_mean=result.null_mean,
-            null_max=result.null_max,
-            n_permutations=result.n_permutations,
-            n_proteins=result.n_proteins,
-            n_experiments=result.n_experiments,
-        ),
+        metrics=metrics,
         is_computing=False,
         compute_error=None,
     )
