@@ -1177,3 +1177,133 @@ async def test_run_embedding_extraction_task_propagates_system_exit(mock_db):
                new=AsyncMock(side_effect=KeyboardInterrupt())):
         with pytest.raises(KeyboardInterrupt):
             await crop_svc.run_embedding_extraction_task(10)
+
+
+# ============================================================================
+# The angle actually reaching the pixels
+# ============================================================================
+# ⚠️ bbox_angle travels through ~15 call sites between the request and the file on
+# disk, and every one of them could be deleted individually while the whole suite
+# stayed green: the de-rotation was only ever tested on the leaf function in
+# isolation, never from the production path. These tests connect a crop's stored
+# angle to the bytes written for it -- which is the entire feature, and which also
+# feeds mean_intensity, the DINOv3 embedding, the UMAP and the LDA.
+
+
+def _asymmetric_mip(path: Path, shape=(100, 100)):
+    """A MIP with a bright corner, so a de-rotated crop is distinguishable from an
+    axis-aligned one (a mirror-symmetric feature is not: it survives a sign flip)."""
+    arr = np.zeros(shape, dtype=np.uint8)
+    arr[10:40, 10:20] = 200          # off-centre bar
+    arr[45:55, 60:90] = 255          # second, differently-oriented bar
+    PILImage.fromarray(arr).save(path)
+    return path
+
+
+def _saved(path_str) -> np.ndarray:
+    return np.array(PILImage.open(path_str))
+
+
+async def test_regenerate_writes_a_DEROTATED_mip_for_a_rotated_crop(mock_db, tmp_path):
+    mip_path = _asymmetric_mip(tmp_path / "mip.png")
+    mip = np.array(PILImage.open(mip_path))
+    image = MagicMock(
+        width=100, height=100, file_path=str(tmp_path / "f.png"), sum_path=None, id=21
+    )
+    crop = MagicMock(
+        bbox_x=30, bbox_y=30, bbox_w=40, bbox_h=40, bbox_angle=90.0,
+        mip_path=None, sum_crop_path=None,
+    )
+
+    with patch("services.umap_service.invalidate_crop_umap", new=AsyncMock()), \
+         patch.object(crop_svc, "get_mip_source_path", return_value=str(mip_path)):
+        out = await crop_svc.regenerate_crop_features(crop, image, mock_db)
+
+    assert out["success"] is True
+    written = _saved(crop.mip_path)
+    expected = crop_svc.normalize_image(
+        crop_svc.extract_crop_from_projection(mip, 30, 30, 40, 40, 90.0)
+    )
+    axis = crop_svc.normalize_image(
+        crop_svc.extract_crop_from_projection(mip, 30, 30, 40, 40, 0.0)
+    )
+    assert np.array_equal(written, expected), "stored crop is not the de-rotated one"
+    assert not np.array_equal(written, axis), "stored crop is the axis-aligned slice"
+    # mean_intensity is derived from those same pixels, so it must follow the angle
+    assert crop.mean_intensity == pytest.approx(
+        float(np.mean(crop_svc.extract_crop_from_projection(mip, 30, 30, 40, 40, 90.0)))
+    )
+
+
+async def test_regenerate_derotates_the_SUM_projection_too(mock_db, tmp_path):
+    """SUM de-rotation was completely unexercised: dropping the angle from the SUM
+    extraction alone left the suite green, so a rotated crop could carry a
+    de-rotated MIP next to an axis-aligned SUM."""
+    mip_path = _asymmetric_mip(tmp_path / "mip.png")
+    sum_path = _asymmetric_mip(tmp_path / "sum.png")
+    sum_arr = np.array(PILImage.open(sum_path))
+    image = MagicMock(
+        width=100, height=100, file_path=str(tmp_path / "f.png"),
+        sum_path=str(sum_path), id=22,
+    )
+    crop = MagicMock(
+        bbox_x=30, bbox_y=30, bbox_w=40, bbox_h=40, bbox_angle=90.0,
+        mip_path=None, sum_crop_path=None,
+    )
+
+    with patch("services.umap_service.invalidate_crop_umap", new=AsyncMock()), \
+         patch.object(crop_svc, "get_mip_source_path", return_value=str(mip_path)):
+        out = await crop_svc.regenerate_crop_features(crop, image, mock_db)
+
+    assert out["success"] is True and crop.sum_crop_path
+    written = _saved(crop.sum_crop_path)
+    expected = crop_svc.normalize_image(
+        crop_svc.extract_crop_from_projection(sum_arr, 30, 30, 40, 40, 90.0)
+    )
+    axis = crop_svc.normalize_image(
+        crop_svc.extract_crop_from_projection(sum_arr, 30, 30, 40, 40, 0.0)
+    )
+    assert np.array_equal(written, expected)
+    assert not np.array_equal(written, axis)
+
+
+async def test_manual_crop_persists_the_angle_and_derotates_its_files(mock_db, tmp_path):
+    """`bbox_angle=None` on the created crop also left the suite green, so drawing a
+    rotated box could store NULL and silently revert to axis-aligned on the next
+    regenerate."""
+    mip_path = _asymmetric_mip(tmp_path / "mip.png")
+    mip = np.array(PILImage.open(mip_path))
+    sum_path = _asymmetric_mip(tmp_path / "sum.png")
+    image = MagicMock(
+        id=23, width=100, height=100, file_path=str(tmp_path / "f.png"),
+        sum_path=str(sum_path), map_protein_id=None,
+    )
+
+    with patch.object(crop_svc, "get_mip_source_path", return_value=str(mip_path)):
+        crop, err = await crop_svc.create_manual_crop(
+            image, 30, 30, 40, 40, mock_db, map_protein_id=None, bbox_angle=30.0
+        )
+
+    assert err is None and crop is not None
+    assert crop.bbox_angle == 30.0, "the angle was not persisted on the new crop"
+    written = _saved(crop.mip_path)
+    expected = crop_svc.normalize_image(
+        crop_svc.extract_crop_from_projection(mip, 30, 30, 40, 40, 30.0)
+    )
+    assert np.array_equal(written, expected)
+
+
+async def test_manual_crop_collapses_a_zero_angle_to_null(mock_db, tmp_path):
+    """NULL and 0 are the same crop; storing 0.0 would make every axis-aligned box
+    look rotated to `if bbox_angle` and take the interpolating slow path."""
+    mip_path = _asymmetric_mip(tmp_path / "mip.png")
+    image = MagicMock(
+        id=24, width=100, height=100, file_path=str(tmp_path / "f.png"),
+        sum_path=None, map_protein_id=None,
+    )
+    with patch.object(crop_svc, "get_mip_source_path", return_value=str(mip_path)):
+        crop, err = await crop_svc.create_manual_crop(
+            image, 30, 30, 40, 40, mock_db, map_protein_id=None, bbox_angle=0.0
+        )
+    assert err is None
+    assert crop.bbox_angle is None

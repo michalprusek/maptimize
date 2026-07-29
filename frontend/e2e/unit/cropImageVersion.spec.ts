@@ -1,6 +1,6 @@
 import { expect, test } from "@playwright/test";
 
-import { cropImageVersion } from "../../lib/api";
+import { api, cropImageVersion } from "../../lib/api";
 
 /**
  * A crop's image lives behind /crops/{id}/image, a URL that says WHICH crop but
@@ -65,4 +65,26 @@ test("negative and positive rotations are distinct", () => {
   expect(cropImageVersion({ ...base, bbox_angle: -45 })).not.toBe(
     cropImageVersion({ ...base, bbox_angle: 45 })
   );
+});
+
+
+/**
+ * ⚠️ The version token being correct is worthless if it never reaches the URL, and
+ * that one line — `...(version ? { v: version } : {})` in getCropImageUrl — is the
+ * entire fix. Deleting it left every frontend test green.
+ */
+test("the version reaches the query string, and is omitted when absent", () => {
+  const withVersion = api.getCropImageUrl(7, "mip", cropImageVersion(base));
+  expect(withVersion).toContain(`v=${cropImageVersion(base)}`);
+  expect(withVersion).toContain("type=mip");
+
+  // The ranking page legitimately has no geometry to version by and relies on
+  // must-revalidate instead, so the parameter must stay optional.
+  expect(api.getCropImageUrl(7, "mip")).not.toContain("v=");
+});
+
+test("a rotation changes the URL, not just the token", () => {
+  const flat = api.getCropImageUrl(7, "mip", cropImageVersion(base));
+  const turned = api.getCropImageUrl(7, "mip", cropImageVersion({ ...base, bbox_angle: 30 }));
+  expect(turned).not.toBe(flat);
 });

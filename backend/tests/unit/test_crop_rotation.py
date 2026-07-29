@@ -108,3 +108,55 @@ def test_validate_rotated_min_size():
 def test_rotated_corners_at_zero_angle_are_the_axis_corners():
     corners = _rotated_corners(10, 20, 30, 40, 0.0)
     assert (10.0, 20.0) in corners and (40.0, 60.0) in corners
+
+
+# ----- the de-rotation DIRECTION -------------------------------------------
+# ⚠️ The existing edge test uses a mirror-symmetric feature, so it holds for +90
+# and -90 alike: negating theta in extract_crop_from_projection leaves it green.
+# The sign is the contract with the canvas preview (ctx.rotate(+angleRad)) and with
+# _rotated_corners, which are three INDEPENDENT copies of the same rotation.
+
+
+def test_derotation_maps_the_rotated_top_left_corner_to_output_origin():
+    """Pins the sign of the rotation, which a symmetric test cannot.
+
+    ⚠️ Assert on the VALUE at (0, 0), not argmax: with the sign flipped the crop
+    comes out all zeros, and argmax of an all-zero array is also (0, 0) -- an
+    argmax assertion would pass under the very perturbation it exists to catch.
+    """
+    for angle in (30.0, 90.0, -45.0):
+        p = np.zeros((200, 200), dtype=np.float32)
+        # The analytic top-left corner of the rotated box, from the shared helper.
+        corners = _rotated_corners(60, 60, 40, 30, angle)
+        cx, cy = corners[0]  # (u, v) = (-w/2, -h/2) -> the box's own top-left
+        p[int(round(cy)), int(round(cx))] = 255.0
+
+        out = extract_crop_from_projection(p, 60, 60, 40, 30, angle)
+        assert out.shape == (30, 40)
+        # Bilinear sampling spreads the delta, so the corner pixel is < 255 but
+        # must be clearly non-zero. A sign flip samples the far side: all zeros.
+        assert out[0, 0] > 0.0, f"angle {angle}: corner did not land at the origin"
+        assert out.max() > 0.0
+
+
+# ----- bounds: the far edge and the shrinking case -------------------------
+
+
+def test_rotated_corner_past_the_far_edge_is_rejected():
+    """Mirror of the existing < 0 test. Without the upper-bound check the crop
+    would be silently padded with a black wedge (cval=0.0), diluting
+    mean_intensity and the embedding with no error anywhere."""
+    # Fits exactly when axis-aligned...
+    assert validate_bbox_within_image(60, 60, 40, 40, 100, 100) == (True, None)
+    # ...but at 45 degrees its corners reach ~108, past the far edge.
+    ok, err = validate_bbox_within_image(60, 60, 40, 40, 100, 100, 45.0)
+    assert not ok
+    assert "108" in err or "bottom-right" in err or "top-right" in err
+
+
+def test_rotation_can_also_make_an_overflowing_box_fit():
+    """Rotation shrinks the footprint on one axis, so the implication runs both
+    ways -- a box that fails axis-aligned can pass rotated. Guards against
+    'rotated is always stricter' creeping into the validator."""
+    assert validate_bbox_within_image(70, 45, 39, 10, 100, 100)[0] is False
+    assert validate_bbox_within_image(70, 45, 39, 10, 100, 100, 90.0) == (True, None)

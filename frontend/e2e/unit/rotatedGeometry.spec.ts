@@ -3,6 +3,7 @@ import { expect, test } from "@playwright/test";
 import {
   bboxCenter,
   clampRotatedCentre,
+  getHandlePositions,
   getRotationHandlePosition,
   isPointInBbox,
   isPointInRotationHandle,
@@ -166,4 +167,27 @@ test("the rotation handle is hit-testable exactly where it is drawn", () => {
     expect(isPointInRotationHandle(p, b, 1)).toBe(true);
     expect(isPointInRotationHandle({ x: p.x + 60, y: p.y + 60 }, b, 1)).toBe(false);
   }
+});
+
+test("the resize handles sit on the box's rotated corners", () => {
+  // Cross-check against an independent corner computation. If the handle POSITIONS
+  // did not rotate, grabbing the visible corner would resize from the wrong anchor
+  // and the box would jump under the cursor.
+  //
+  // (My first attempt asserted that at 90 degrees `nw` lands where `ne` was -- which
+  // is only true for a SQUARE box, and this one is 100x20.)
+  const b: Rect = { x: 100, y: 100, width: 100, height: 20, angle: 37 };
+  const h = getHandlePositions(b);
+  const near = (a: { x: number; y: number }, e: { x: number; y: number }) => {
+    expect(a.x).toBeCloseTo(e.x, 6);
+    expect(a.y).toBeCloseTo(e.y, 6);
+  };
+  near(h.nw, corner(b, -1, -1));
+  near(h.ne, corner(b, 1, -1));
+  near(h.sw, corner(b, -1, 1));
+  near(h.se, corner(b, 1, 1));
+
+  // Rotation cannot move the centre of the handle ring.
+  const mid = (g: typeof h) => ({ x: (g.nw.x + g.se.x) / 2, y: (g.nw.y + g.se.y) / 2 });
+  near(mid(h), mid(getHandlePositions({ ...b, angle: 0 })));
 });

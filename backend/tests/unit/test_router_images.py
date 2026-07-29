@@ -14,6 +14,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from pydantic import ValidationError
 from fastapi import BackgroundTasks, HTTPException, UploadFile
 
 import routers.images as r
@@ -680,10 +681,13 @@ async def test_crop_etag_changes_when_the_file_is_rewritten(
 ):
     """The actual guard: re-cutting a crop must invalidate the cached image."""
     p = tmp_path / "crop.png"
-    p.write_bytes(b"axis-aligned")
+    # ⚠️ Same byte COUNT on purpose: with different lengths the assertion passes for
+    # an ETag built on st_size alone, leaving the mtime half unpinned -- and a
+    # de-rotated PNG of identical dimensions is exactly the same-size case.
+    p.write_bytes(b"axis-aligned--")
     before = (await _crop_image(mock_db, p)).headers["etag"]
 
-    p.write_bytes(b"de-rotated bytes")  # what regenerate_crop_features does
+    p.write_bytes(b"de-rotated!!!!")  # what regenerate_crop_features does
     after = (await _crop_image(mock_db, p)).headers["etag"]
     assert before != after
 
@@ -1758,3 +1762,75 @@ async def test_batch_redetect_success_and_skip(mock_db, no_group):
     out = await r.batch_redetect_cells(req, bt, current_user=fake_user(), db=mock_db)
     assert out.processed_count == 1  # skipped one
     assert len(bt.tasks) == 1
+
+
+# --- the angle crossing the router boundary ----------------------------------
+# The batch endpoint is not used by the UI (it calls updateCropBbox) but is open to
+# MCP and API clients, and every angle hop in it could be deleted while the suite
+# stayed green.
+
+
+async def test_batch_update_reads_and_persists_the_angle(mock_db):
+    crop = fake_crop()
+    img = fake_image()
+    req = CropBatchUpdateRequest(changes=[
+        CropBatchUpdateItem(id=200, action="update", bbox_angle=30.0)
+    ])
+    bt = BackgroundTasks()
+    with patch("routers.images.get_image_for_curation", new=AsyncMock(return_value=img)), \
+         patch("services.crop_editor_service.validate_bbox_within_image",
+               return_value=(True, None)), \
+         patch("services.umap_service.invalidate_crop_umap", new=AsyncMock()), \
+         patch("ml.features.extract_features_for_crops", new=AsyncMock()):
+        mock_db.execute.return_value = make_result(scalar=crop)
+        await r.batch_update_crops(
+            100, req, background_tasks=bt, current_user=fake_user(), db=mock_db
+        )
+    assert crop.bbox_angle == 30.0
+
+
+async def test_batch_update_zero_angle_unrotates_but_omitted_keeps_it(mock_db):
+    """`null` means "leave the rotation alone", `0` means "un-rotate" -- only the
+    schema tells them apart, so both directions need pinning."""
+    bt = BackgroundTasks()
+    with patch("routers.images.get_image_for_curation",
+               new=AsyncMock(return_value=fake_image())), \
+         patch("services.crop_editor_service.validate_bbox_within_image",
+               return_value=(True, None)), \
+         patch("services.umap_service.invalidate_crop_umap", new=AsyncMock()), \
+         patch("ml.features.extract_features_for_crops", new=AsyncMock()):
+        rotated = fake_crop()
+        rotated.bbox_angle = 44.0
+        mock_db.execute.return_value = make_result(scalar=rotated)
+        await r.batch_update_crops(
+            100,
+            CropBatchUpdateRequest(changes=[
+                CropBatchUpdateItem(id=200, action="update", bbox_angle=0.0)
+            ]),
+            background_tasks=bt, current_user=fake_user(), db=mock_db,
+        )
+        assert rotated.bbox_angle is None  # 0 collapses to NULL
+
+        kept = fake_crop()
+        kept.bbox_angle = 44.0
+        mock_db.execute.return_value = make_result(scalar=kept)
+        await r.batch_update_crops(
+            100,
+            CropBatchUpdateRequest(changes=[
+                CropBatchUpdateItem(id=200, action="update", bbox_x=1)
+            ]),
+            background_tasks=bt, current_user=fake_user(), db=mock_db,
+        )
+        assert kept.bbox_angle == 44.0  # omitted -> untouched
+
+
+def test_request_schemas_reject_an_out_of_range_angle():
+    """The bound is the contract with the frontend's [-180, 180) normalisation; an
+    angle outside it would still work numerically, so nothing else would complain."""
+    for bad in (180.1, -180.1, 270.0, float("nan"), float("inf")):
+        with pytest.raises(ValidationError):
+            CropBboxUpdateRequest(bbox_x=0, bbox_y=0, bbox_w=20, bbox_h=20, bbox_angle=bad)
+    # the endpoints themselves are accepted
+    assert CropBboxUpdateRequest(
+        bbox_x=0, bbox_y=0, bbox_w=20, bbox_h=20, bbox_angle=-180.0
+    ).bbox_angle == -180.0
