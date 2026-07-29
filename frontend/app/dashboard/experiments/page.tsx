@@ -29,8 +29,9 @@ export default function ExperimentsPage(): JSX.Element {
   const t = useTranslations("experiments");
   const tCommon = useTranslations("common");
   const tProteins = useTranslations("proteins");
-  // Protein assignment is owner-only server-side (unlike microscope and PTM,
-  // which are deliberate group-writable exceptions), so the chip has to know.
+  // Deleting an experiment is owner-only server-side; protein, microscope and
+  // PTM are the deliberate group-writable exceptions. The card offers all four,
+  // so it has to know which one needs the owner.
   const currentUserId = useAuthStore((state) => state.user?.id);
   const tExportImport = useTranslations("exportImport");
   const tGroups = useTranslations("groups");
@@ -236,17 +237,25 @@ export default function ExperimentsPage(): JSX.Element {
                     <div className="p-3 bg-primary-500/10 rounded-xl">
                       <FolderOpen className="w-6 h-6 text-primary-400" />
                     </div>
-                    <button
-                      onClick={(e) => {
-                        e.preventDefault();
-                        e.stopPropagation();
-                        setExperimentToDelete({ id: exp.id, name: exp.name });
-                      }}
-                      className="p-1.5 hover:bg-accent-red/20 text-text-muted hover:text-accent-red rounded-lg transition-colors opacity-0 group-hover:opacity-100"
-                      title="Delete experiment"
-                    >
-                      <Trash2 className="w-4 h-4" />
-                    </button>
+                    {/* Hidden, not disabled, on a colleague's card: deleting an
+                        experiment is owner-only server-side and cascades to every
+                        image and crop, so offering the button to the 40 of 46
+                        cards that would 403 is worse than not showing it. The
+                        protein chip below is the opposite case -- group-writable,
+                        so it stays live for everyone. */}
+                    {exp.user_id === currentUserId && (
+                      <button
+                        onClick={(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          setExperimentToDelete({ id: exp.id, name: exp.name });
+                        }}
+                        className="p-1.5 hover:bg-accent-red/20 text-text-muted hover:text-accent-red rounded-lg transition-colors opacity-0 group-hover:opacity-100"
+                        title={tCommon("delete")}
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    )}
                   </div>
 
                   <h3 className="font-display font-semibold text-lg text-text-primary mb-1 group-hover:text-primary-400 transition-colors">
@@ -299,15 +308,7 @@ export default function ExperimentsPage(): JSX.Element {
                       // so clicking it on a card that HAS one silently unassigns
                       // and cascades NULL to every image and crop.
                       clearLabel={tCommon("none")}
-                      // Disabled rather than hidden: the assigned protein is the
-                      // label every plot colours by, so it must stay visible on a
-                      // colleague's card even when it cannot be changed there.
-                      disabled={exp.user_id !== currentUserId}
-                      hint={
-                        exp.user_id === currentUserId
-                          ? t("experimentProteinHint")
-                          : t("proteinOwnerOnly", { owner: exp.creator_name ?? "" })
-                      }
+                      hint={t("experimentProteinHint")}
                       variant="chip"
                       size="sm"
                     />

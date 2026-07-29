@@ -149,10 +149,10 @@ SERVER_INSTRUCTIONS = (
     "Access control mirrors the UI exactly: reads are group-shared (you see your own "
     "data plus your group's), and query_database injects a per-user filter so you never "
     "see other users' private rows. Writes to experiments and images are OWNER-ONLY, "
-    "with two deliberate exceptions any group member may perform on a colleague's "
-    "experiment: assign_experiment_microscope and assign_experiment_ptm — these are "
-    "shared acquisition and sample-prep metadata the "
-    "lab backfills collectively. Proteins, microscopes and PTMs are themselves shared "
+    "with three deliberate exceptions any group member may perform on a colleague's "
+    "experiment: assign_experiment_protein, assign_experiment_microscope and "
+    "assign_experiment_ptm — these are shared labelling, acquisition and sample-prep "
+    "metadata the lab curates collectively. Proteins, microscopes and PTMs are themselves shared "
     "reference data anyone may edit. Deletes are IRREVERSIBLE and cascade (deleting an "
     "experiment deletes its images and cell crops)."
 )
@@ -160,7 +160,7 @@ SERVER_INSTRUCTIONS = (
 # Bumped when the tool contract or capabilities change (see MCP versioning).
 # The pinning tests in tests/test_registry.py and tests/test_protocol.py record
 # what THIS version exposes — update them with the bump.
-SERVER_VERSION = "2.5.0"
+SERVER_VERSION = "2.6.0"
 
 
 def build_server(registry: ToolRegistry) -> Server:

@@ -46,13 +46,12 @@ connector projde. Endpoint chráněný `require_interactive_user` do MCP nepatř
 **ACL se propisuje samo.** MCP je čistý HTTP klient; token protéká do backendu, kde
 platí stejná pravidla jako pro člověka: **čtení skupinově sdílené**
 (`experiment_owner_filter`, SSOT `utils/groups.py`), **zápisy do experimentů/obrázků
-owner-only** (re-check `obj.user_id == current_user.id` → 403). ⚠️ **Dvě výjimky
-od 2026-07-26: cropy a přiřazení mikroskopu smí měnit celá skupina** (viz
+owner-only** (re-check `obj.user_id == current_user.id` → 403). ⚠️ **Čtyři výjimky:
+cropy, mikroskop, PTM a protein smí měnit celá skupina** (viz
 „Kurátorování cropů" níže). ⚠️ **Proteiny jsou
 sdílená referenční data** — `MapProtein` nemá `user_id`, takže je smí měnit/mazat
 kdokoliv přihlášený (není to bug). Když přidáš write endpoint, zkontroluj, že re-check
-vlastníka SKUTEČNĚ je v handleru — `update_experiment_protein` ho omylem neměl a šel
-přes něj group-write (opraveno v PR #43). Maže se kaskádově (experiment → obrázky →
+vlastníka SKUTEČNĚ je v handleru. Maže se kaskádově (experiment → obrázky →
 cropy) a nevratně — proto destruktivní tooly nesou `destructiveHint`.
 
 ### query_database — read-only SQL (SSOT `services/sql_query_service.py`)
@@ -443,6 +442,29 @@ slovník kratší.
 Reálně schéma aplikuje `create_all` (nové tabulky) + `ensure_schema_updates()` (nové
 sloupce do existujících tabulek) při startu. Vynechání té prostřední nohy je tichá past:
 na čisté DB projde přes `create_all`, v produkci sloupec nikdy nevznikne.
+
+#### Přiřazení proteinu — čtvrtá výjimka (od 2026-07-29)
+
+`PATCH /api/experiments/{id}/protein` (`update_experiment_protein`) je **skupinový
+zápis** ze stejného důvodu jako mikroskop a PTM: `map_proteins` nemá `user_id` a
+**40 ze 46 experimentů patří anotátorovi**. Owner-only přiřazení znamenalo, že chip
+na kartě experimentu vracel 403 na 87 % karet.
+
+⚠️ **Historie: tenhle endpoint owner re-check kdysi neměl, v PR #43 mu byl přidán,
+a 2026-07-29 zase odebrán.** Není to kolotoč — v PR #43 byl group-write *nezáměrný*
+(nikdo ho nezvážil), teď je *zvolený*. Nevracej ho zpátky jako „zapomenutou kontrolu".
+
+⚠️ **Váží víc než ostatní tři.** Protein je štítek, na kterém je fitovaná
+diskriminační projekce a podle kterého barví každý graf, a kaskáduje na všechny
+obrázky a cropy. Proto to endpoint loguje a MCP popis toolu říká, ať se přiřazení
+na cizím experimentu nejdřív potvrdí.
+
+`test_exp_update_protein_is_group_writable` a
+`test_exp_generic_update_and_delete_stay_owner_only` v `tests/unit/test_router_misc.py`
+zamykají **obě** strany hranice. ⚠️ **Smazání experimentu i přejmenování zůstávají
+owner-only** — kontejner patří tomu, kdo ho nahrál. Karta experimentu proto tlačítko
+smazat na cizím experimentu **nezobrazuje** (dřív ho nabízela všem a 403 přišla až po
+kliknutí); chip proteinu naopak zůstává aktivní pro celou skupinu.
 
 #### Sdílená referenční data: proteiny / mikroskopy / PTM
 
