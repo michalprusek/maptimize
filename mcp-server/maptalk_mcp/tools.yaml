@@ -1195,7 +1195,11 @@ tools:
       - name: include_points
         in: query
         type: boolean
-        description: Leave false; true returns thousands of plot coordinates.
+        default: false
+        description: >
+          Leave false. Without an explicit default the param is omitted from the
+          request, the backend's own default (true) applies, and thousands of
+          plot coordinates land in the conversation.
 
   # -- Database (read-only) --------------------------------------------------
   - name: query_database
