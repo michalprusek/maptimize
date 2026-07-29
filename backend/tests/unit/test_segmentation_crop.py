@@ -915,7 +915,7 @@ async def test_regenerate_mip_load_fails(mock_db):
 async def test_regenerate_invalid_bbox(mock_db, tmp_path):
     mip = _write_png(tmp_path / "mip.png", (100, 100))
     image = MagicMock(width=100, height=100, file_path=str(tmp_path / "f.png"))
-    crop = MagicMock(bbox_x=90, bbox_y=0, bbox_w=50, bbox_h=50)  # exceeds width
+    crop = MagicMock(bbox_x=90, bbox_y=0, bbox_w=50, bbox_h=50, bbox_angle=None)  # exceeds width
     with patch("services.umap_service.invalidate_crop_umap", new=AsyncMock()), \
          patch.object(crop_svc, "get_mip_source_path", return_value=str(mip)):
         out = await crop_svc.regenerate_crop_features(crop, image, mock_db)
@@ -932,7 +932,7 @@ async def test_regenerate_success_with_sum(mock_db, tmp_path):
         sum_path=str(sum_path),
         id=7,
     )
-    crop = MagicMock(bbox_x=10, bbox_y=10, bbox_w=30, bbox_h=30)
+    crop = MagicMock(bbox_x=10, bbox_y=10, bbox_w=30, bbox_h=30, bbox_angle=None)
     with patch("services.umap_service.invalidate_crop_umap", new=AsyncMock()) as inv, \
          patch.object(crop_svc, "get_mip_source_path", return_value=str(mip)):
         out = await crop_svc.regenerate_crop_features(crop, image, mock_db)
@@ -956,7 +956,7 @@ async def test_regenerate_sum_extract_fails(mock_db, tmp_path):
         sum_path=str(bad_sum),
         id=8,
     )
-    crop = MagicMock(bbox_x=10, bbox_y=10, bbox_w=30, bbox_h=30)
+    crop = MagicMock(bbox_x=10, bbox_y=10, bbox_w=30, bbox_h=30, bbox_angle=None)
     with patch("services.umap_service.invalidate_crop_umap", new=AsyncMock()), \
          patch.object(crop_svc, "get_mip_source_path", return_value=str(mip)):
         out = await crop_svc.regenerate_crop_features(crop, image, mock_db)
@@ -972,7 +972,7 @@ async def test_regenerate_umap_invalidation_fails(mock_db, tmp_path):
         sum_path=None,
         id=9,
     )
-    crop = MagicMock(bbox_x=10, bbox_y=10, bbox_w=30, bbox_h=30)
+    crop = MagicMock(bbox_x=10, bbox_y=10, bbox_w=30, bbox_h=30, bbox_angle=None)
     with patch("services.umap_service.invalidate_crop_umap",
                new=AsyncMock(side_effect=RuntimeError("db down"))), \
          patch.object(crop_svc, "get_mip_source_path", return_value=str(mip)):

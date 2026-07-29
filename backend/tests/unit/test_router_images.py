@@ -746,7 +746,6 @@ async def test_update_crop_bbox_success(mock_db):
 async def test_update_crop_bbox_persists_angle(mock_db):
     req = CropBboxUpdateRequest(bbox_x=5, bbox_y=6, bbox_w=20, bbox_h=22, bbox_angle=30.0)
     crop = fake_crop()
-    img = fake_image()
     captured = {}
 
     def _record_validate(*args):
@@ -754,8 +753,8 @@ async def test_update_crop_bbox_persists_angle(mock_db):
         return (True, None)
 
     with patch(
-        "services.crop_editor_service.get_crop_with_ownership_check",
-        new=AsyncMock(return_value=(crop, img, None)),
+        "routers.images.get_crop_for_curation",
+        new=AsyncMock(return_value=crop),
     ), patch(
         "services.crop_editor_service.validate_bbox_within_image",
         side_effect=_record_validate,
@@ -770,8 +769,8 @@ async def test_update_crop_bbox_zero_angle_stored_as_none(mock_db):
     req = CropBboxUpdateRequest(bbox_x=5, bbox_y=6, bbox_w=20, bbox_h=22, bbox_angle=0.0)
     crop = fake_crop()
     with patch(
-        "services.crop_editor_service.get_crop_with_ownership_check",
-        new=AsyncMock(return_value=(crop, fake_image(), None)),
+        "routers.images.get_crop_for_curation",
+        new=AsyncMock(return_value=crop),
     ), patch(
         "services.crop_editor_service.validate_bbox_within_image",
         return_value=(True, None),
