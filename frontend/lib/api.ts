@@ -1572,6 +1572,12 @@ export interface Experiment {
   has_sum_projections: boolean;
   group_id?: number | null;
   creator_name?: string | null;
+  /**
+   * Owner. Reads are group-shared but most writes are owner-only, so controls
+   * that mutate the experiment must compare this against the logged-in user —
+   * `creator_name` is a display name, not an identity.
+   */
+  user_id: number;
 }
 
 // Group types

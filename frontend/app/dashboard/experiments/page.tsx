@@ -23,11 +23,15 @@ import {
 } from "lucide-react";
 import { ExportModal, ImportModal } from "@/components/export";
 import { useAssignMicroscope, useAssignPtm } from "@/hooks";
+import { useAuthStore } from "@/stores/authStore";
 
 export default function ExperimentsPage(): JSX.Element {
   const t = useTranslations("experiments");
   const tCommon = useTranslations("common");
   const tProteins = useTranslations("proteins");
+  // Protein assignment is owner-only server-side (unlike microscope and PTM,
+  // which are deliberate group-writable exceptions), so the chip has to know.
+  const currentUserId = useAuthStore((state) => state.user?.id);
   const tExportImport = useTranslations("exportImport");
   const tGroups = useTranslations("groups");
   const [showCreateModal, setShowCreateModal] = useState(false);
@@ -295,7 +299,15 @@ export default function ExperimentsPage(): JSX.Element {
                       // so clicking it on a card that HAS one silently unassigns
                       // and cascades NULL to every image and crop.
                       clearLabel={tCommon("none")}
-                      hint={t("experimentProteinHint")}
+                      // Disabled rather than hidden: the assigned protein is the
+                      // label every plot colours by, so it must stay visible on a
+                      // colleague's card even when it cannot be changed there.
+                      disabled={exp.user_id !== currentUserId}
+                      hint={
+                        exp.user_id === currentUserId
+                          ? t("experimentProteinHint")
+                          : t("proteinOwnerOnly", { owner: exp.creator_name ?? "" })
+                      }
                       variant="chip"
                       size="sm"
                     />
