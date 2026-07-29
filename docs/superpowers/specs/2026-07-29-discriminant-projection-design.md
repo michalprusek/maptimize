@@ -25,7 +25,7 @@ chance = 0.071):
 |---|---|---|
 | random over crops | 0.679 | 0.665 |
 | grouped by image | 0.653 | 0.655 |
-| **grouped by experiment** | **0.183** | **0.260** |
+| **grouped by experiment** | **0.183** | **0.300** |
 
 Permutation null under the experiment split: mean 0.055, 95th percentile 0.076,
 max 0.078 over the 20 shuffles that ship. ⚠️ Over 200 shuffles the max reaches
@@ -41,13 +41,14 @@ Three findings drive the whole design:
    set of acquisition conditions, so any split that puts an experiment on both
    sides lets the model read the label off the batch. The honest split is by
    **experiment**, and it costs a factor of 2.5.
-2. **The signal is real but modest, and unevenly spread.** 0.260 sits outside
-   the permutation null (~2.4× its 95th percentile, p = 0.005 measured over 200
-   shuffles) — not the "almost perfect" separation the leaky split implied. And
-   the mean hides its own shape: CLIP170 reaches 0.79 and TRIM46 0.52, while PRC1
-   and MAP2d sit at chance. The response therefore carries per-class recall, and
-   the UI prints every protein rather than a headline.
-3. **Microscope correction helps.** 0.183 → 0.260 under the honest split, while
+2. **The signal is real but modest, and unevenly spread.** 0.300 sits outside
+   the permutation null (3.75× its 95th percentile, p = 0.048 which is the floor
+   at 20 shuffles) — not the "almost perfect" separation the leaky split implied.
+   And the mean hides its own shape: measured live, CLIP170 reaches 0.79 and
+   TRIM46 0.47, while MAP2d manages 0.05 across 167 crops. The response therefore
+   carries per-class recall, and the UI prints every protein rather than a
+   headline.
+3. **Microscope correction helps.** 0.183 → 0.300 under the honest split, while
    microscope decodability falls 0.548 → 0.116 (chance is 0.25 for four
    microscopes, so it is removed outright). Subtracting the batch offset removes
    a confounder that was actively hurting generalisation across experiments.
@@ -144,9 +145,9 @@ FOV mode is not offered for LDA: the labels are per-crop protein assignments.
 
 The metric strip reads, e.g.:
 
-> **Separation 0.26** · chance 0.07 · shuffled labels 0.05 · p ≤ 0.048
+> **Separation 0.30** · chance 0.07 · shuffled labels 0.06 · p ≤ 0.048
 > Geometry from all data; the score is cross-validated by experiment.
-> Per protein: CLIP170 0.79 · TRIM46 0.52 · … · PRC1 0.07
+> Per protein: CLIP170 0.79 · TRIM46 0.47 · … · MAP2d 0.05
 
 The verdict badge is driven by the p-value, not by the ratio: a ratio against the
 null depends on the class count, so 1.1× can be decisive with two proteins and

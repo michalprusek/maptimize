@@ -497,7 +497,10 @@ Naměřeno na produkčním korpusu (balanced accuracy, 14 proteinů, náhoda 0,0
 |-----------|--------|--------------------------|
 | náhodně po cropech | 0,679 | 0,665 |
 | po obrázcích | 0,653 | 0,655 |
-| **po experimentech** | **0,183** | **0,260** |
+| **po experimentech** | **0,183** | **0,300** |
+
+Uniformní priors, 20 promíchání: null mean 0,061, p95 0,080, max 0,081, **p = 0,048**
+(podlaha), poměr 3,75× vůči p95. Měřeno na živém nasazení 2026-07-29.
 
 ⚠️ **Křížová validace MUSÍ dělit po experimentech** (`StratifiedGroupKFold` na
 `Experiment.id`). ⚠️ **Únik je na úrovni EXPERIMENTU, ne obrázku** — seskupení po
@@ -517,17 +520,20 @@ seedu (poctivě ~2,4×). Hlásí se proto **p-hodnota** `(1 + #{null ≥ skóre}
 a 95. percentil. ⚠️ p má **podlahu 1/(n+1) = 0,048** při 20 promícháních — tenhle
 korpus umí doložit „mimo null", nikdy „p < 0,01".
 
-⚠️ **Souhrnné číslo schovává, že polovina proteinů je na náhodě.** 0,26 táhne
-CLIP170 (0,79) a TRIM46 (0,52), zatímco PRC1 a MAP2d sedí na 0,07. Proto se vrací
-i `per_class` (recall na protein) a UI ho vypisuje — průměr je tu špatný souhrn.
+⚠️ **Souhrnné číslo schovává, jak nerovnoměrný ten signál je.** Naměřeno živě:
+CLIP170 0,79 a TRIM46 0,47 nahoře, ale MAP2d 0,05 (167 cropů!) a EML3 0,07 dole —
+rozptyl 0,05 až 0,79 kolem průměru 0,30. Proto se vrací i `per_class` a UI ho
+vypisuje; průměr je tu špatný souhrn. ⚠️ `per_class` musí nést **jména**, ne
+`map_protein_id` — proto `label_names` protéká až z dotazu do `compute_discriminant`.
 
 ⚠️ **LDA dostává uniformní priors.** Skóre je balanced accuracy, která váží všech
 14 tříd stejně; s empirickými priors klasifikátor upřednostní velké třídy a stojí
-to 0,04 (0,260 → 0,300 naměřeno). Metrika a klasifikátor musí mít stejný cíl.
+to 0,04 (0,260 → 0,300 naměřeno na živém nasazení). Metrika a klasifikátor musí
+mít stejný cíl.
 
 ⚠️ **Per-microscope centering běží před fitem.** Dva proteiny existují jen na
 AeryScanu, takže bez korekce se oddělí podle přístroje a vypadá to jako biologie.
-Korekce zároveň skóre *zvyšuje* (0,183 → 0,260): mikroskop byl confounder, ne zdroj
+Korekce zároveň skóre *zvyšuje* (0,183 → 0,300): mikroskop byl confounder, ne zdroj
 signálu. Dekódovatelnost mikroskopu spadne 0,551 → 0,117 (náhoda pro 4 třídy je 0,25).
 Střed se počítá na všech datech, tedy technicky mimo CV smyčku; naměřený dopad je
 +0,004, což je pod šumem CV — vědomě ponecháno, ale při přepisu to nezhoršuj.

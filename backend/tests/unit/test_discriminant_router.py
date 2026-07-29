@@ -348,10 +348,13 @@ async def _run_refresh(rows, monkeypatch, user_id=7, group_id=None):
 
     seen = {}
 
-    def fake_compute(embeddings, labels, groups, microscopes, n_perm, crop_ids, fp):
+    def fake_compute(
+        embeddings, labels, groups, microscopes, n_perm, crop_ids, fp, names
+    ):
         seen.update(
             labels=list(labels), groups=list(groups),
             microscopes=list(microscopes), crop_ids=list(crop_ids), fingerprint=fp,
+            label_names=names,
         )
         return result(n=len(labels))
 
@@ -369,14 +372,14 @@ async def test_the_background_fit_is_scoped_to_what_the_user_may_read(monkeypatc
     caller cannot see — a scientific claim about someone else's data, rendered in
     green. Asserted on the compiled SQL because a mock cannot enforce a predicate.
     """
-    db, _ = await _run_refresh([(1, [0.0, 1.0], 5, 9, 2)], monkeypatch, user_id=7)
+    db, _ = await _run_refresh([(1, [0.0, 1.0], 5, 9, 2, "MAP7")], monkeypatch, user_id=7)
 
     sql = str(db.execute.await_args.args[0].compile(compile_kwargs={"literal_binds": True}))
     assert "experiments.user_id = 7" in sql
 
 
 async def test_the_background_fit_widens_to_the_group(monkeypatch):
-    db, _ = await _run_refresh([(1, [0.0, 1.0], 5, 9, 2)], monkeypatch, user_id=7, group_id=3)
+    db, _ = await _run_refresh([(1, [0.0, 1.0], 5, 9, 2, "MAP7")], monkeypatch, user_id=7, group_id=3)
 
     sql = str(db.execute.await_args.args[0].compile(compile_kwargs={"literal_binds": True}))
     assert "experiments.user_id = 7" in sql
@@ -386,7 +389,7 @@ async def test_the_background_fit_widens_to_the_group(monkeypatch):
 async def test_the_background_fit_only_takes_labelled_embedded_crops(monkeypatch):
     # An unlabelled crop has no class to be fitted to; feeding NULL labels in
     # either crashes the fit or invents a "protein" made of unassigned crops.
-    db, _ = await _run_refresh([(1, [0.0, 1.0], 5, 9, 2)], monkeypatch)
+    db, _ = await _run_refresh([(1, [0.0, 1.0], 5, 9, 2, "MAP7")], monkeypatch)
 
     sql = str(db.execute.await_args.args[0].compile(compile_kwargs={"literal_binds": True}))
     assert "cell_crops.embedding IS NOT NULL" in sql
@@ -396,7 +399,10 @@ async def test_the_background_fit_only_takes_labelled_embedded_crops(monkeypatch
 async def test_the_background_fit_passes_the_right_columns_through(monkeypatch):
     # Transposing any of these silently fits on the wrong thing: groups drive the
     # leak-free split, microscopes drive the centering.
-    rows = [(11, [0.0, 1.0], 5, 90, 2), (12, [1.0, 0.0], 6, 91, 3)]
+    rows = [
+        (11, [0.0, 1.0], 5, 90, 2, "CLIP170"),
+        (12, [1.0, 0.0], 6, 91, 3, "TRIM46"),
+    ]
     _, seen = await _run_refresh(rows, monkeypatch)
 
     assert seen["crop_ids"] == [11, 12]
@@ -404,6 +410,9 @@ async def test_the_background_fit_passes_the_right_columns_through(monkeypatch):
     assert seen["groups"] == [90, 91]
     assert seen["microscopes"] == [2, 3]
     assert seen["fingerprint"]
+    # Protein ids are what the model is fitted on, but names are what the metrics
+    # report. Without the map the strip prints "5 0.79" at a biologist.
+    assert seen["label_names"] == {5: "CLIP170", 6: "TRIM46"}
 
 
 async def test_an_empty_corpus_is_recorded_rather_than_left_spinning(monkeypatch):
@@ -417,7 +426,7 @@ async def test_a_degenerate_corpus_records_why_instead_of_polling_forever(monkey
     import contextlib
 
     db = AsyncMock()
-    db.execute.return_value = make_result(fetchall=[(1, [0.0], 5, 9, 2)])
+    db.execute.return_value = make_result(fetchall=[(1, [0.0], 5, 9, 2, "MAP7")])
 
     @contextlib.asynccontextmanager
     async def session():
@@ -440,7 +449,7 @@ async def test_the_scope_is_released_even_when_the_fit_explodes(monkeypatch):
     import contextlib
 
     db = AsyncMock()
-    db.execute.return_value = make_result(fetchall=[(1, [0.0], 5, 9, 2)])
+    db.execute.return_value = make_result(fetchall=[(1, [0.0], 5, 9, 2, "MAP7")])
 
     @contextlib.asynccontextmanager
     async def session():

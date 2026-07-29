@@ -1178,7 +1178,7 @@ tools:
       holds whole EXPERIMENTS out. Each experiment carries one protein and one set
       of acquisition conditions, so any split that puts an experiment on both sides
       lets the model read the label off the batch and reports its own leakage
-      (0.68 where the honest answer is 0.26). `balanced_accuracy` is that score;
+      (0.68 where the honest answer is 0.30). `balanced_accuracy` is that score;
       `chance` is 1/proteins; shuffling the labels between experiments gives
       `null_mean`, `null_p95`, `null_max` and `p_value`.
 

@@ -10,7 +10,7 @@ proteins, chance 0.071, on the production corpus of 1277 crops):
     split                      raw     microscope-centred
     random over crops         0.679          0.665
     grouped by image          0.653          0.655
-    grouped by experiment     0.186          0.260
+    grouped by experiment     0.183          0.300
 
 Permutation null under the experiment split: mean 0.055, max 0.078, over 20 shuffles.
 
@@ -21,13 +21,13 @@ minor contributor. What leaks is that each experiment carries one protein and on
 set of acquisition conditions, so any split that puts an experiment on both sides
 lets the model recover the label from the batch.
 
-Centering per microscope *raises* the honest score (0.186 -> 0.260), because the
+Centering per microscope *raises* the honest score (0.183 -> 0.300), because the
 instrument was a confounder hurting generalisation across experiments rather than
 a source of signal.
 """
 import logging
 from dataclasses import dataclass, field
-from typing import List, Optional, Sequence
+from typing import List, Mapping, Optional, Sequence
 
 import numpy as np
 
@@ -198,17 +198,30 @@ def scoreable_mask(labels: np.ndarray, groups: np.ndarray) -> np.ndarray:
     return np.array([counts[c] >= MIN_GROUPS_PER_CLASS for c in labels])
 
 
+def _name(label, names: Optional[Mapping]) -> str:
+    """Display name for a class label.
+
+    ⚠️ Labels are `map_protein_id` INTEGERS. Without this the metrics reach the
+    UI as "7 0.79" — a table of database ids the reader cannot act on, and the
+    per-class breakdown exists precisely so they can see WHICH proteins separate.
+    """
+    return str((names or {}).get(label, label))
+
+
 def score_projection(
     embeddings: np.ndarray,
     labels: np.ndarray,
     groups: np.ndarray,
-) -> tuple[float, int]:
-    """Balanced accuracy, and how many classes it was actually averaged over.
+    label_names: Optional[Mapping] = None,
+) -> tuple[float, int, tuple[tuple[str, float, int], ...]]:
+    """Balanced accuracy, how many classes it covered, and the per-class recall.
 
-    Grouping is the whole point. Crops from one image are near-duplicates and
-    sibling images share their experiment's conditions, so a random split leaves
-    a relative of nearly every test crop in the training set and reports 0.68
-    where the truth is 0.26.
+    Grouping is the whole point, and the leak it closes is at the EXPERIMENT
+    level: each experiment carries one protein and one set of acquisition
+    conditions, so any split that puts an experiment on both sides lets the model
+    read the label off the batch and reports 0.68 where the truth is 0.30.
+    Grouping by image instead closes almost none of that gap — 40% of images hold
+    a single crop.
     """
     from sklearn.metrics import balanced_accuracy_score
     from sklearn.model_selection import StratifiedGroupKFold
@@ -241,11 +254,15 @@ def score_projection(
     # the two was never tested.
     truth, guess = labels[scored], predicted[scored]
     # Per-class recall, because balanced accuracy is their mean and a mean is the
-    # wrong summary here: measured on the real corpus, 0.26 is carried by CLIP170
-    # (0.79) and TRIM46 (0.52) while PRC1 and MAP2d sit at chance. "The model
-    # separates the MAPs at 0.26" invites reading that as 0.26 for each of them.
+    # wrong summary here: measured live, CLIP170 reaches 0.79 and TRIM46 0.47
+    # while MAP2d manages 0.05 across 167 crops. "The model separates the MAPs at
+    # 0.30" invites reading that as 0.30 for each of them.
     per_class = tuple(
-        (str(c), float(np.mean(guess[truth == c] == c)), int(np.sum(truth == c)))
+        (
+            _name(c, label_names),
+            float(np.mean(guess[truth == c] == c)),
+            int(np.sum(truth == c)),
+        )
         for c in np.unique(truth)
     )
     return (
@@ -310,6 +327,7 @@ def compute_discriminant(
     n_permutations: int = N_PERMUTATIONS,
     crop_ids: Optional[Sequence[int]] = None,
     fingerprint: str = "",
+    label_names: Optional[Mapping] = None,
 ) -> DiscriminantResult:
     """The whole analysis: correct, project, score, and score the null."""
     n_classes = len(np.unique(labels))
@@ -334,7 +352,7 @@ def compute_discriminant(
     coords = fit_projection(corrected, labels)
 
     keep = scoreable_mask(labels, groups)
-    dropped = tuple(sorted({str(c) for c in np.unique(labels[~keep])}))
+    dropped = tuple(sorted({_name(c, label_names) for c in np.unique(labels[~keep])}))
     if len(np.unique(labels[keep])) < MIN_CLASSES:
         raise NotEnoughDataError(
             "cannot score this selection: "
@@ -349,7 +367,7 @@ def compute_discriminant(
             "already have, or widen the selection."
         )
     accuracy, n_scored, per_class = score_projection(
-        corrected[keep], labels[keep], groups[keep]
+        corrected[keep], labels[keep], groups[keep], label_names
     )
     null = permutation_null(
         corrected[keep], labels[keep], groups[keep], n_permutations
@@ -526,7 +544,7 @@ async def refresh_discriminant_scope(user_id: int, group_id: Optional[int]) -> N
     from database import async_session_maker
     from models.cell_crop import CellCrop
     from models.experiment import Experiment
-    from models.image import Image
+    from models.image import Image, MapProtein
     from utils.groups import experiment_owner_filter
 
     key = scope_key(user_id, group_id)
@@ -544,9 +562,11 @@ async def refresh_discriminant_scope(user_id: int, group_id: Optional[int]) -> N
                         CellCrop.map_protein_id,
                         Experiment.id,
                         Experiment.microscope_id,
+                        MapProtein.name,
                     )
                     .join(Image, CellCrop.image_id == Image.id)
                     .join(Experiment, Image.experiment_id == Experiment.id)
+                    .join(MapProtein, CellCrop.map_protein_id == MapProtein.id)
                     .where(
                         experiment_owner_filter(user_id, group_id),
                         CellCrop.embedding.isnot(None),
@@ -582,6 +602,9 @@ async def refresh_discriminant_scope(user_id: int, group_id: Optional[int]) -> N
             N_PERMUTATIONS,
             crop_ids,
             corpus_fingerprint([(r[0], r[2], r[4]) for r in rows]),
+            # protein id -> name, so the per-class recall names proteins rather
+            # than printing database ids at a biologist.
+            {r[2]: r[5] for r in rows},
         )
         store(key, result, gen)
     except NotEnoughDataError as e:

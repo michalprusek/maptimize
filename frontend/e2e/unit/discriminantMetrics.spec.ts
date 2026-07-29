@@ -23,18 +23,18 @@ import type { DiscriminantMetrics, UmapFacetSelection } from "../../lib/api";
  * and manufactures a finding. That is why this logic is pure and pinned here
  * rather than inlined in the component.
  *
- * The defaults below are the real corpus measured before the feature was
- * designed: balanced accuracy 0.260 over 14 proteins and 46 experiments,
- * against a permutation null of mean 0.055 / 95th percentile 0.076 over 20
- * shuffles, chance 0.071, no shuffle reaching the score (so p at its floor).
+ * The defaults below are the live corpus measured on the deployed pipeline:
+ * balanced accuracy 0.300 over 14 proteins and 46 experiments, against a
+ * permutation null of mean 0.061 / 95th percentile 0.080 over 20 shuffles,
+ * chance 0.071, no shuffle reaching the score (so p sits at its floor, 1/21).
  */
 function metrics(over: Partial<DiscriminantMetrics> = {}): DiscriminantMetrics {
   return {
-    balanced_accuracy: 0.26,
+    balanced_accuracy: 0.3,
     chance: 0.071,
-    null_mean: 0.055,
-    null_max: 0.078,
-    null_p95: 0.076,
+    null_mean: 0.061,
+    null_max: 0.081,
+    null_p95: 0.08,
     p_value: 1 / 21,
     per_class: [
       { protein: "CLIP170", recall: 0.79, n_crops: 96 },
@@ -50,7 +50,7 @@ function metrics(over: Partial<DiscriminantMetrics> = {}): DiscriminantMetrics {
     // below-null score with a significant p, which is an impossible payload —
     // and a verdict tested only on impossible payloads proves nothing.
     ...(over.balanced_accuracy !== undefined && over.p_value === undefined
-      ? { p_value: over.balanced_accuracy > 0.078 ? 1 / 21 : 6 / 21 }
+      ? { p_value: over.balanced_accuracy > 0.081 ? 1 / 21 : 6 / 21 }
       : {}),
     ...over,
   };
@@ -83,7 +83,7 @@ test.describe("formatMetricValue", () => {
 
 test.describe("nullCeiling", () => {
   test("is the highest bar on offer", () => {
-    expect(nullCeiling(metrics())).toBeCloseTo(0.076, 10);
+    expect(nullCeiling(metrics())).toBeCloseTo(0.08, 10);
   });
 
   test("falls back to chance when the permutation null came back empty", () => {
@@ -102,9 +102,10 @@ test.describe("nullCeiling", () => {
 
 test.describe("separationRatio", () => {
   test("reports how many times the null ceiling the score reaches", () => {
-    // 0.26 / 0.076 = 3.42 — the figure the tooltip quotes. Against the null's
-    // 95th percentile, not its max: the max is a lucky draw of the seed.
-    expect(separationRatio(metrics())!).toBeCloseTo(3.421, 2);
+    // 0.30 / 0.080 = 3.75 — the figure the tooltip quotes, and the one the
+    // deployed pipeline reports. Against the null's 95th percentile, not its
+    // max: the max is a lucky draw of the seed.
+    expect(separationRatio(metrics())!).toBeCloseTo(3.75, 2);
   });
 
   test("is null when there is no ceiling to divide by", () => {
@@ -128,8 +129,8 @@ test.describe("discriminantVerdict", () => {
   test("a score exactly at the null ceiling is still no evidence", () => {
     // The boundary is the case that matters: a score shuffled labels reached is
     // not a finding, however far above chance it sits. It is the p-value that
-    // says so — the ratio alone puts 0.078/0.076 above 1 and would say "weak".
-    expect(discriminantVerdict(metrics({ balanced_accuracy: 0.078 }))).toBe("none");
+    // says so — the ratio alone puts 0.081/0.080 above 1 and would say "weak".
+    expect(discriminantVerdict(metrics({ balanced_accuracy: 0.081 }))).toBe("none");
     expect(
       discriminantVerdict(metrics({ balanced_accuracy: 0.5, p_value: 4 / 21 }))
     ).toBe("none");
@@ -141,10 +142,10 @@ test.describe("discriminantVerdict", () => {
     ).toBe("weak");
     // Exactly CLEAR_RATIO times the ceiling is the last weak value.
     expect(
-      discriminantVerdict(metrics({ balanced_accuracy: 0.076 * CLEAR_RATIO }))
+      discriminantVerdict(metrics({ balanced_accuracy: 0.08 * CLEAR_RATIO }))
     ).toBe("weak");
     expect(
-      discriminantVerdict(metrics({ balanced_accuracy: 0.076 * CLEAR_RATIO + 0.001 }))
+      discriminantVerdict(metrics({ balanced_accuracy: 0.08 * CLEAR_RATIO + 0.001 }))
     ).toBe("clear");
   });
 
@@ -170,7 +171,7 @@ test.describe("getDiscriminantScoreStyle", () => {
   test("a score that shuffled labels already reach is never green", () => {
     // The load-bearing assertion of the whole strip: green next to a null
     // result is the one failure mode that turns nothing into a discovery.
-    for (const accuracy of [0, 0.01, 0.054, 0.071, 0.0779, 0.078]) {
+    for (const accuracy of [0, 0.01, 0.06, 0.071, 0.0809, 0.081]) {
       const style = getDiscriminantScoreStyle(metrics({ balanced_accuracy: accuracy }));
       expect(style, `balanced_accuracy=${accuracy}`).not.toContain("green");
       expect(style, `balanced_accuracy=${accuracy}`).toContain("red");
