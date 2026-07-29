@@ -138,6 +138,69 @@ class UmapFovDataResponse(BaseModel):
     )
 
 
+class DiscriminantPointResponse(BaseModel):
+    """One crop in the supervised projection."""
+
+    crop_id: int = Field(..., description="Cell crop ID")
+    image_id: int = Field(..., description="Parent image ID")
+    experiment_id: int = Field(..., description="Experiment ID for navigation")
+    x: float = Field(..., description="First discriminant coordinate")
+    y: float = Field(..., description="Second discriminant coordinate")
+    protein_name: Optional[str] = Field(None, description="MAP protein name")
+    protein_color: str = Field("#888888", description="Hex color for visualization")
+    thumbnail_url: str = Field(..., description="URL to crop thumbnail")
+    bundleness_score: Optional[float] = Field(None, description="Bundleness metric")
+
+
+class DiscriminantMetrics(BaseModel):
+    """What the separation on screen is actually worth.
+
+    Never optional in the UI: a supervised projection always looks separated, so
+    the picture without these numbers is not a result. `balanced_accuracy` is
+    cross-validated with experiments held out whole, while the plotted geometry
+    comes from a fit on everything — the two answer different questions and the
+    client says so.
+    """
+
+    balanced_accuracy: float = Field(
+        ..., description="Out-of-fold balanced accuracy, grouped by experiment"
+    )
+    chance: float = Field(..., description="1 / number of proteins")
+    null_mean: float = Field(..., description="Mean score with labels shuffled between experiments")
+    null_max: float = Field(..., description="Highest score the shuffled labels reached")
+    n_permutations: int = Field(..., description="Shuffles behind the null")
+    n_proteins: int = Field(..., description="Proteins being separated")
+    n_experiments: int = Field(..., description="Experiments the split had to work with")
+
+
+class DiscriminantDataResponse(BaseModel):
+    """Supervised (LDA) projection of cell crops by MAP protein."""
+
+    points: List[DiscriminantPointResponse] = Field(..., description="Projected crops")
+    total_crops: int = Field(..., description="Crops in the filtered view")
+    facets: List[UmapFacetRow] = Field(
+        default_factory=list,
+        description="Filter options with counts, over the scope before facet filters",
+    )
+    metrics: Optional[DiscriminantMetrics] = Field(
+        None, description="Null until the projection has been computed"
+    )
+    is_computing: bool = Field(
+        False,
+        description=(
+            "The projection is being fitted in the background (minutes, not "
+            "seconds). Poll until this clears."
+        ),
+    )
+    compute_error: Optional[str] = Field(
+        None,
+        description=(
+            "The computation failed and will not retry on its own — stop polling "
+            "and show this."
+        ),
+    )
+
+
 class FeatureExtractionTriggerResponse(BaseModel):
     """Response for feature extraction trigger."""
 

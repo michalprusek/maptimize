@@ -234,3 +234,136 @@ def compute_discriminant(
         n_proteins=n_classes,
         n_experiments=n_groups,
     )
+
+
+# =============================================================================
+# Scope cache
+#
+# One fit is ~20 s and the permutation null is minutes, so this never runs inside
+# a request. Same shape as umap_service's refresh bookkeeping: module-level state
+# keyed by scope, an in-flight set so a group's dashboards do not each kick off
+# the same computation, and a recorded failure so a doomed run is not rescheduled
+# on every poll.
+#
+# Cached in process rather than in the database on purpose: this is a scope-level
+# analysis, not a per-crop attribute, the metrics have nowhere natural to live in
+# the schema, and a restart simply recomputes.
+# =============================================================================
+
+# scope key -> (crop_id -> (x, y)), plus the metrics that must be read with it
+_projections: dict[str, tuple[dict[int, tuple[float, float]], DiscriminantResult]] = {}
+_inflight: set[str] = set()
+_failed: dict[str, str] = {}
+
+
+def scope_key(user_id: int, group_id: Optional[int]) -> str:
+    """Group members share a corpus, so they share a cached projection.
+
+    Prefixed because user ids and group ids share this key space: group 2 and
+    user 2 must not collide.
+    """
+    return f"g{group_id}" if group_id is not None else f"u{user_id}"
+
+
+def cached(key: str):
+    """The scope's projection, or None if it has not been computed yet."""
+    return _projections.get(key)
+
+
+def compute_error(key: str) -> Optional[str]:
+    """Why this scope's last computation failed, or None if it did not."""
+    return _failed.get(key)
+
+
+def is_computing(key: str) -> bool:
+    return key in _inflight
+
+
+def store(key: str, crop_ids: Sequence[int], result: DiscriminantResult) -> None:
+    coords = {int(cid): (float(x), float(y)) for cid, (x, y) in zip(crop_ids, result.coords)}
+    _projections[key] = (coords, result)
+    _failed.pop(key, None)
+
+
+def record_failure(key: str, reason: str) -> None:
+    _failed[key] = reason
+
+
+def invalidate(key: Optional[str] = None) -> None:
+    """Drop a scope's projection (or every scope) so the next read recomputes."""
+    if key is None:
+        _projections.clear()
+        _failed.clear()
+        return
+    _projections.pop(key, None)
+    _failed.pop(key, None)
+
+
+async def refresh_discriminant_scope(user_id: int, group_id: Optional[int]) -> None:
+    """Compute and cache one scope's projection. Safe to call from a BackgroundTask.
+
+    Deduped through `_inflight`, so a group whose members all open the dashboard
+    at once computes once. Never raises: a background task that throws is
+    swallowed by the runtime, so the reason is recorded for the next poll to
+    report instead of the client spinning forever.
+    """
+    import asyncio
+
+    from sqlalchemy import select
+
+    from database import async_session_maker
+    from models.cell_crop import CellCrop
+    from models.experiment import Experiment
+    from models.image import Image
+    from utils.groups import experiment_owner_filter
+
+    key = scope_key(user_id, group_id)
+    if key in _inflight:
+        return
+    _inflight.add(key)
+    try:
+        async with async_session_maker() as db:
+            rows = (
+                await db.execute(
+                    select(
+                        CellCrop.id,
+                        CellCrop.embedding,
+                        CellCrop.map_protein_id,
+                        Experiment.id,
+                        Experiment.microscope_id,
+                    )
+                    .join(Image, CellCrop.image_id == Image.id)
+                    .join(Experiment, Image.experiment_id == Experiment.id)
+                    .where(
+                        experiment_owner_filter(user_id, group_id),
+                        CellCrop.embedding.isnot(None),
+                        CellCrop.map_protein_id.isnot(None),
+                    )
+                    .order_by(CellCrop.id)
+                )
+            ).all()
+
+        if not rows:
+            record_failure(key, "No crops with both an embedding and a protein assignment")
+            return
+
+        crop_ids = [r[0] for r in rows]
+        embeddings = np.asarray([r[1] for r in rows], dtype=np.float64)
+        labels = np.asarray([r[2] for r in rows])
+        groups = np.asarray([r[3] for r in rows])
+        microscopes = [r[4] for r in rows]
+
+        # sklearn is synchronous and this takes minutes; keep it off the loop or
+        # every other request on this worker stalls behind it.
+        result = await asyncio.to_thread(
+            compute_discriminant, embeddings, labels, groups, microscopes
+        )
+        store(key, crop_ids, result)
+    except NotEnoughDataError as e:
+        logger.info(f"discriminant scope {key}: {e}")
+        record_failure(key, str(e))
+    except Exception as e:
+        logger.error(f"discriminant scope {key} failed: {e}", exc_info=True)
+        record_failure(key, f"Projection failed: {e}")
+    finally:
+        _inflight.discard(key)
