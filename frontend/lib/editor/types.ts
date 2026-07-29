@@ -397,8 +397,18 @@ export interface Rect {
   y: number;
   width: number;
   height: number;
-  /** Rotation in degrees about the rect centre (0 = axis-aligned) */
-  angle?: number;
+  /**
+   * Rotation in degrees about the rect centre (0 = axis-aligned).
+   *
+   * ⚠️ REQUIRED, deliberately. While it was optional, TypeScript's spread typing
+   * computed `{...bbox, ...rect}.angle` as `number` even when the Rect genuinely
+   * omitted it, so a producer that forgot the field wrote `undefined` into a
+   * required slot with no error — and two hand-rolled geometry restores silently
+   * kept a stale angle instead. Making it required turns that whole class into a
+   * compile error. Use `?? 0` only at the API boundary, where NULL legitimately
+   * arrives from the nullable column.
+   */
+  angle: number;
 }
 
 /**

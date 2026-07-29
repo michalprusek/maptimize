@@ -85,7 +85,14 @@ def test_validate_rotated_corner_out_of_bounds():
     # flush in the corner: fine axis-aligned, but a 45° spin pushes a corner < 0
     assert validate_bbox_within_image(0, 0, 40, 40, 100, 100) == (True, None)
     ok, err = validate_bbox_within_image(0, 0, 40, 40, 100, 100, 45.0)
-    assert not ok and "Rotated bbox exceeds" in err
+    # Assert the message is ACTIONABLE rather than pinning its wording: it must name
+    # the offending corner, where it landed, and the image it left. The old text said
+    # only "Rotated bbox exceeds image bounds", which told the user neither which
+    # edge nor by how much.
+    assert not ok
+    assert any(c in err for c in ("top-left", "top-right", "bottom-left", "bottom-right"))
+    assert "100x100" in err
+    assert "-8.3" in err or "-8." in err
 
 
 def test_validate_rotated_within_bounds():

@@ -111,6 +111,7 @@ def make_crop(
     bbox_y=6,
     bbox_w=20,
     bbox_h=10,
+    bbox_angle=None,
     confidence=0.9,
     map_protein=None,
     embedding=None,
@@ -124,6 +125,7 @@ def make_crop(
         bbox_y=bbox_y,
         bbox_w=bbox_w,
         bbox_h=bbox_h,
+        bbox_angle=bbox_angle,
         detection_confidence=confidence,
         map_protein=map_protein,
         bundleness_score=0.5,
@@ -228,13 +230,13 @@ async def test_export_experiment_xlsx_empty(mock_db, patch_export_dir):
 
 async def test_export_cell_crops_with_rows(mock_db, patch_export_dir):
     rows = [
-        _row(id=100, bbox_x=5, bbox_y=6, bbox_w=20, bbox_h=10,
+        _row(id=100, bbox_x=5, bbox_y=6, bbox_w=20, bbox_h=10, bbox_angle=None,
              detection_confidence=0.9, mean_intensity=42.0,
              created_at=datetime(2024, 1, 1), image_id=10,
              image_filename="img.tiff", experiment_id=1,
              experiment_name="Exp A", protein_name="PRC1"),
         # bbox_w None → area branch returns None and created_at None branch
-        _row(id=101, bbox_x=0, bbox_y=0, bbox_w=None, bbox_h=10,
+        _row(id=101, bbox_x=0, bbox_y=0, bbox_w=None, bbox_h=10, bbox_angle=None,
              detection_confidence=None, mean_intensity=None,
              created_at=None, image_id=10, image_filename="img.tiff",
              experiment_id=1, experiment_name="Exp A", protein_name=None),

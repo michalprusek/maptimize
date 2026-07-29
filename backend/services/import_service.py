@@ -799,6 +799,7 @@ class ImportService(BaseJobManager[ImportJobData]):
                 bbox_y=crop_meta.get("bbox_y", 0),
                 bbox_w=crop_meta.get("bbox_w", 0),
                 bbox_h=crop_meta.get("bbox_h", 0),
+                bbox_angle=crop_meta.get("bbox_angle"),
                 detection_confidence=crop_meta.get("detection_confidence"),
                 map_protein_id=map_protein_id,
                 bundleness_score=crop_meta.get("bundleness_score"),
@@ -995,6 +996,7 @@ class ImportService(BaseJobManager[ImportJobData]):
                 bbox_y=crop_data.bbox_y,
                 bbox_w=crop_data.bbox_w,
                 bbox_h=crop_data.bbox_h,
+                bbox_angle=crop_data.bbox_angle,
                 detection_confidence=crop_data.confidence,
                 map_protein_id=map_protein_id,
             )

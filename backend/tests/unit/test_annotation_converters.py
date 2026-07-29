@@ -37,12 +37,13 @@ class FakeImage:
 
 class FakeCrop:
     def __init__(self, image_id, bbox_x=10, bbox_y=20, bbox_w=30, bbox_h=40,
-                 detection_confidence=None, map_protein=None):
+                 detection_confidence=None, map_protein=None, bbox_angle=None):
         self.image_id = image_id
         self.bbox_x = bbox_x
         self.bbox_y = bbox_y
         self.bbox_w = bbox_w
         self.bbox_h = bbox_h
+        self.bbox_angle = bbox_angle
         self.detection_confidence = detection_confidence
         self.map_protein = map_protein
 
@@ -303,9 +304,9 @@ def test_to_csv_basic_rows():
                     detection_confidence=0.5, map_protein=FakeProtein("PRC1"))
     out = ac.to_csv([img], [crop])
     rows = list(csv.reader(io.StringIO(out)))
-    assert rows[0] == ["image_id", "filename", "x", "y", "width", "height",
+    assert rows[0] == ["image_id", "filename", "x", "y", "width", "height", "angle",
                        "class", "confidence"]
-    assert rows[1] == ["1", "a.tif", "10", "20", "30", "40", "PRC1", "0.5"]
+    assert rows[1] == ["1", "a.tif", "10", "20", "30", "40", "", "PRC1", "0.5"]
 
 
 def test_to_csv_no_confidence_blank_and_default_class():
@@ -943,3 +944,72 @@ def test_round_trip_yolo_export_then_import():
     c = crops[0]
     # YOLO is lossy through normalization but should reconstruct exactly here.
     assert (c.bbox_x, c.bbox_y, c.bbox_w, c.bbox_h) == (10, 20, 30, 40)
+
+
+# ============================================================================
+# Rotated crops in annotation exports
+# ============================================================================
+# ⚠️ bbox_x/y/w/h describe the box BEFORE rotation, so writing them straight out
+# names a region the curator never drew. COCO/YOLO/VOC have no rotated-box form, so
+# exports carry the rotated box's AABB instead; CSV additionally keeps the angle.
+
+
+def test_export_bbox_leaves_an_unrotated_crop_alone():
+    crop = FakeCrop(1, bbox_x=10, bbox_y=20, bbox_w=30, bbox_h=40, bbox_angle=None)
+    assert ac.export_bbox(crop) == (10, 20, 30, 40)
+    # 0 must behave like NULL, or every unrotated crop would shift on export
+    assert ac.export_bbox(FakeCrop(1, bbox_x=10, bbox_y=20, bbox_w=30, bbox_h=40,
+                                   bbox_angle=0)) == (10, 20, 30, 40)
+
+
+def test_export_bbox_of_a_rotated_crop_is_the_containing_aabb():
+    # A 40x40 box turned 45 degrees spans 40*sqrt(2) ~= 56.6 on both axes, about the
+    # same centre. Anything smaller would crop the cell the curator annotated.
+    crop = FakeCrop(1, bbox_x=100, bbox_y=100, bbox_w=40, bbox_h=40, bbox_angle=45)
+    x, y, w, h = ac.export_bbox(crop)
+    assert w == h == 57                                 # 40*sqrt(2), rounded
+    assert abs(x + w / 2 - 120) <= 0.5                  # centre preserved
+    assert abs(y + h / 2 - 120) <= 0.5
+    assert w > 40 and h > 40                            # strictly contains the box
+
+
+def test_rotated_crop_exports_the_aabb_in_coco_yolo_and_voc():
+    img = FakeImage(1, original_filename="a.tif")
+    crop = FakeCrop(1, bbox_x=100, bbox_y=100, bbox_w=40, bbox_h=40, bbox_angle=45)
+    expected = ac.export_bbox(crop)
+
+    coco = ac.to_coco([img], [crop])
+    if isinstance(coco, (str, bytes)):
+        coco = json.loads(coco)
+    assert coco["annotations"][0]["bbox"] == list(expected)
+
+    voc = ac.to_voc(img, [crop])
+    assert f"<xmin>{expected[0]}</xmin>" in voc
+    assert f"<xmax>{expected[0] + expected[2]}</xmax>" in voc
+
+    # YOLO is normalised centre/size, so compare against the AABB's centre
+    line = ac.to_yolo(img, [crop], ["cell"]).strip().split()
+    assert float(line[1]) == (expected[0] + expected[2] / 2) / img.width
+    assert float(line[3]) == expected[2] / img.width
+
+
+def test_csv_round_trip_preserves_the_rotation():
+    img = FakeImage(1, original_filename="a.tif")
+    crop = FakeCrop(1, bbox_x=100, bbox_y=100, bbox_w=40, bbox_h=40, bbox_angle=-30.5)
+    out = ac.to_csv([img], [crop])
+    assert "-30.5" in out
+
+    parsed, errors, _ = ac.from_csv(out.encode(), {"a.tif": "a.tif"})
+    assert not errors
+    assert parsed[0].bbox_angle == -30.5
+
+
+def test_csv_import_ignores_an_unparsable_angle_instead_of_failing():
+    csv_text = (
+        "filename,x,y,width,height,angle\n"
+        "a.tif,10,20,30,40,not-a-number\n"
+    )
+    parsed, errors, warnings = ac.from_csv(csv_text.encode(), {"a.tif": "a.tif"})
+    assert not errors                      # the row is still importable
+    assert parsed[0].bbox_angle is None    # just without a rotation
+    assert any("angle" in w for w in warnings)

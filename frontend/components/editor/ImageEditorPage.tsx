@@ -711,7 +711,10 @@ export function ImageEditorPage({
         setBboxes((prev) =>
           prev.map((b) => (b.id === id ? previousState : b))
         );
-        showError(t("updateError"));
+        // Show what the server actually said. The validator explains which corner
+        // left the image and by how much; collapsing that to "Failed to update
+        // cell" left the user with no idea that the fix is to move the box inward.
+        showError(error instanceof Error && error.message ? error.message : t("updateError"));
       }
     },
     [bboxes, handleBboxUpdate, handleRegenerateFeatures, onDataChanged, undoHistory, showError, t]

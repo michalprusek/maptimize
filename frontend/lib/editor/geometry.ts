@@ -177,6 +177,52 @@ export function findBboxAtPosition(
 }
 
 /**
+ * Half-extents of the axis-aligned box that CONTAINS a rect once rotated.
+ *
+ * Mirrors the backend's `_rotated_corners` (crop_editor_service.py): a rotated box's
+ * footprint is |w/2·cos| + |h/2·sin| per axis, which is larger than w/2 × h/2. At
+ * angle 0 it reduces exactly to (w/2, h/2), so the same clamp serves both branches.
+ */
+export function rotatedHalfExtents(
+  width: number,
+  height: number,
+  angle: number
+): Point {
+  const t = (angle * Math.PI) / 180;
+  const c = Math.abs(Math.cos(t));
+  const sn = Math.abs(Math.sin(t));
+  return { x: (width / 2) * c + (height / 2) * sn, y: (width / 2) * sn + (height / 2) * c };
+}
+
+/**
+ * Clamp a rect's CENTRE so every rotated corner stays inside the image.
+ *
+ * ⚠️ Clamping x to [0, imageWidth - width] -- the axis-aligned rule -- is simply the
+ * wrong constraint once the box is tilted: its corners reach further than w/2. Boxes
+ * that passed that clamp were rejected by the backend on save with a message the UI
+ * then discarded, so dragging or resizing a rotated cell near the FOV edge failed
+ * with "Failed to update cell" and no cause. When the box cannot fit at this angle
+ * at all, centre it on that axis and let the backend explain why.
+ */
+export function clampRotatedCentre(
+  cx: number,
+  cy: number,
+  width: number,
+  height: number,
+  angle: number,
+  imageWidth: number,
+  imageHeight: number
+): Point {
+  const e = rotatedHalfExtents(width, height, angle);
+  const fit = (v: number, lo: number, hi: number) =>
+    lo > hi ? (lo + hi) / 2 : Math.max(lo, Math.min(hi, v));
+  return {
+    x: fit(cx, e.x, imageWidth - e.x),
+    y: fit(cy, e.y, imageHeight - e.y),
+  };
+}
+
+/**
  * Calculate new bbox dimensions after resizing from a handle.
  */
 export function resizeBbox(
@@ -190,9 +236,9 @@ export function resizeBbox(
   const angle = original.angle ?? 0;
 
   // Rotated: resize in the box's LOCAL frame (anchor = opposite corner/edge), then
-  // map the resulting centre shift back to image space. Reduces to the axis path at
-  // angle 0. Bounds-clamping only clamps the centre (the axis clamp below doesn't
-  // apply to a tilted rect); the backend validates the rotated corners on save.
+  // map the resulting centre shift back to image space. The SIZING arithmetic
+  // reduces to the axis path at angle 0; the bounds handling does not, so the
+  // rotated footprint is clamped explicitly via clampRotatedCentre.
   if (angle) {
     const localDelta = rotateVec(delta.x, delta.y, -angle);
     const dlx = localDelta.x / scale;
@@ -208,11 +254,14 @@ export function resizeBbox(
       (hy * (newH - original.height)) / 2,
       angle
     );
-    const cx = Math.max(0, Math.min(imageWidth, original.x + original.width / 2 + shift.x));
-    const cy = Math.max(0, Math.min(imageHeight, original.y + original.height / 2 + shift.y));
+    const centre = clampRotatedCentre(
+      original.x + original.width / 2 + shift.x,
+      original.y + original.height / 2 + shift.y,
+      newW, newH, angle, imageWidth, imageHeight
+    );
     return {
-      x: Math.round(cx - newW / 2),
-      y: Math.round(cy - newH / 2),
+      x: Math.round(centre.x - newW / 2),
+      y: Math.round(centre.y - newH / 2),
       width: Math.round(newW),
       height: Math.round(newH),
       angle,
@@ -282,11 +331,21 @@ export function resizeBbox(
   width = Math.min(width, imageWidth - x);
   height = Math.min(height, imageHeight - y);
 
-  return { x: Math.round(x), y: Math.round(y), width: Math.round(width), height: Math.round(height) };
+  return {
+    x: Math.round(x),
+    y: Math.round(y),
+    width: Math.round(width),
+    height: Math.round(height),
+    angle: 0,
+  };
 }
 
 /**
  * Calculate new bbox position after moving.
+ *
+ * Clamps the ROTATED footprint (clampRotatedCentre), not the axis-aligned one: a
+ * tilted box reaches further than w/2, so the old axis clamp let its corners leave
+ * the image and the save then failed server-side. At angle 0 the two are identical.
  */
 export function moveBbox(
   original: Rect,
@@ -298,16 +357,17 @@ export function moveBbox(
   const dx = delta.x / scale;
   const dy = delta.y / scale;
 
-  let x = original.x + dx;
-  let y = original.y + dy;
-
-  // Clamp to image bounds
-  x = Math.max(0, Math.min(x, imageWidth - original.width));
-  y = Math.max(0, Math.min(y, imageHeight - original.height));
+  // Clamp the rotated footprint, not the axis-aligned one. At angle 0 this is
+  // exactly the old clamp (rotatedHalfExtents reduces to w/2, h/2).
+  const centre = clampRotatedCentre(
+    original.x + original.width / 2 + dx,
+    original.y + original.height / 2 + dy,
+    original.width, original.height, original.angle, imageWidth, imageHeight
+  );
 
   return {
-    x: Math.round(x),
-    y: Math.round(y),
+    x: Math.round(centre.x - original.width / 2),
+    y: Math.round(centre.y - original.height / 2),
     width: original.width,
     height: original.height,
     angle: original.angle,
@@ -355,6 +415,7 @@ export function createBboxFromCorners(
     y: Math.round(y),
     width: Math.round(clampedWidth),
     height: Math.round(clampedHeight),
+    angle: 0,
   };
 }
 

@@ -18,6 +18,7 @@ import {
   getCursorForHandle,
   isPointInRotationHandle,
   bboxCenter,
+  clampRotatedCentre,
 } from "@/lib/editor/geometry";
 import { MIN_BBOX_SIZE, ROTATION_SNAP_DEGREES } from "@/lib/editor/constants";
 
@@ -34,7 +35,7 @@ type InteractionState =
 function angleFromPointer(pointer: Point, center: Point, snap: boolean): number {
   const raw = (Math.atan2(pointer.y - center.y, pointer.x - center.x) * 180) / Math.PI + 90;
   const snapped = snap ? Math.round(raw / ROTATION_SNAP_DEGREES) * ROTATION_SNAP_DEGREES : raw;
-  // normalise to (-180, 180]
+  // normalise to [-180, 180) -- exactly 180 stores as -180
   return (((snapped + 180) % 360) + 360) % 360 - 180;
 }
 
@@ -272,8 +273,33 @@ export function useBboxInteraction(
       if (interaction.type === "rotating") {
         const pointer = { x: pos.x - panOffset.x, y: pos.y - panOffset.y };
         const angle = angleFromPointer(pointer, interaction.center, e.shiftKey);
-        setLiveBboxRect({ ...interaction.originalBbox, angle });
-        onBboxChange(interaction.bboxId, { angle, isModified: true });
+        // Turning a box widens its footprint, so a cell flush against the FOV edge
+        // can rotate its corners out of the image. Slide the centre back in as it
+        // turns rather than letting the backend reject the save afterwards -- edge
+        // cells are common here, and the toast could not say why.
+        const orig = interaction.originalBbox;
+        const centre = clampRotatedCentre(
+          orig.x + orig.width / 2,
+          orig.y + orig.height / 2,
+          orig.width,
+          orig.height,
+          angle,
+          imageWidth,
+          imageHeight
+        );
+        const next = {
+          ...orig,
+          angle,
+          x: Math.round(centre.x - orig.width / 2),
+          y: Math.round(centre.y - orig.height / 2),
+        };
+        setLiveBboxRect(next);
+        onBboxChange(interaction.bboxId, {
+          angle,
+          x: next.x,
+          y: next.y,
+          isModified: true,
+        });
         return;
       }
 

@@ -135,7 +135,7 @@ async def provision_new_user_data(new_user_id: int, db: AsyncSession) -> None:
                 text("""
                     INSERT INTO cell_crops (
                         image_id, map_protein_id,
-                        bbox_x, bbox_y, bbox_w, bbox_h, detection_confidence,
+                        bbox_x, bbox_y, bbox_w, bbox_h, bbox_angle, detection_confidence,
                         mip_path, sum_crop_path, std_path,
                         bundleness_score, mean_intensity, skewness, kurtosis,
                         embedding, embedding_model, embedding_status, embedding_error,
@@ -144,7 +144,7 @@ async def provision_new_user_data(new_user_id: int, db: AsyncSession) -> None:
                     )
                     SELECT
                         :new_img_id, map_protein_id,
-                        bbox_x, bbox_y, bbox_w, bbox_h, detection_confidence,
+                        bbox_x, bbox_y, bbox_w, bbox_h, bbox_angle, detection_confidence,
                         mip_path, sum_crop_path, std_path,
                         bundleness_score, mean_intensity, skewness, kurtosis,
                         embedding, embedding_model, embedding_status, embedding_error,

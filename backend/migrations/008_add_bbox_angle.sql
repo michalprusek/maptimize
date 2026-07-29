@@ -1,7 +1,9 @@
 -- Migration: Add bbox_angle column to cell_crops for rotated bounding boxes.
 -- The crop is extracted de-rotated (the cell appears upright); NULL means the
 -- box is axis-aligned, so existing rows need no backfill.
--- Also applied at runtime by database.ensure_schema_updates() (ADD COLUMN IF NOT EXISTS).
+-- This file is DOCUMENTATION ONLY -- nothing executes backend/migrations/*.sql.
+-- The authoritative path is database.ensure_schema_updates() at startup
+-- (ADD COLUMN IF NOT EXISTS), which is where this column actually comes from.
 
 ALTER TABLE cell_crops ADD COLUMN IF NOT EXISTS bbox_angle FLOAT;
 

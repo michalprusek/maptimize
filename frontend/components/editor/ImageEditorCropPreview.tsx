@@ -17,6 +17,7 @@ import { getDisplayModeFilter } from "@/lib/editor/display";
 import {
   calculateObjectCoverTransform,
   buildPolygonSvgPath,
+  rotateVec,
 } from "@/lib/editor/geometry";
 import { api, cropImageVersion, type DisplayMode } from "@/lib/api";
 import { extractCropFromImage } from "@/lib/editor/canvasUtils";
@@ -86,19 +87,41 @@ const THUMBNAIL_SIZE = 256; // w-64 = 16rem = 256px
 /**
  * Clip a polygon to a bounding box using Sutherland-Hodgman algorithm.
  * Returns polygon points relative to the bbox origin (for thumbnail display).
+ *
+ * ⚠️ Honours `bbox.angle`. The thumbnail under this overlay is the DE-ROTATED crop,
+ * so the polygon has to be carried into the box's local frame before clipping.
+ * Clipping a rotated crop against its axis-aligned rect keeps the wrong region and
+ * then draws the mask un-rotated over rotated pixels, so it visibly slides off the
+ * cell -- which reads as "segmentation broke" rather than "the overlay is missing a
+ * transform". Uses the same rotation as the image: local = R(-angle)(p - centre).
  */
 function clipPolygonToBbox(
   polygon: [number, number][],
-  bbox: { x: number; y: number; width: number; height: number }
+  bbox: { x: number; y: number; width: number; height: number; angle?: number }
 ): [number, number][] {
   if (!polygon || polygon.length < 3) return [];
 
-  const { x, y, width, height } = bbox;
+  const angle = bbox.angle ?? 0;
+  let pts: [number, number][] = polygon;
+  let { x, y } = bbox;
+  const { width, height } = bbox;
+
+  if (angle) {
+    const cx = bbox.x + width / 2;
+    const cy = bbox.y + height / 2;
+    pts = polygon.map(([px, py]) => {
+      const v = rotateVec(px - cx, py - cy, -angle);
+      return [v.x + width / 2, v.y + height / 2] as [number, number];
+    });
+    x = 0;
+    y = 0;  // clip against the local rect the de-rotated crop actually covers
+  }
+
   const minX = x, maxX = x + width;
   const minY = y, maxY = y + height;
 
   // Sutherland-Hodgman clipping against each edge
-  let output = [...polygon];
+  let output = [...pts];
 
   // Clip against left edge
   output = clipAgainstEdge(output, minX, null, true);
@@ -332,10 +355,29 @@ export function ImageEditorCropPreview({
                   // First check for crop-specific segmentation mask
                   const cropPolygon = savedPolygons.find(p => p.cropId === bbox.cropId);
                   if (cropPolygon && cropPolygon.points.length >= 3) {
+                    // CropPolygonOverlay only TRANSLATES by the bbox origin, so a
+                    // rotated crop needs its polygon carried into the box's local
+                    // frame first -- reusing the same transform as the FOV path
+                    // rather than writing a second rotation. Axis-aligned crops keep
+                    // the original image-space path untouched.
+                    const local = bbox.angle
+                      ? clipPolygonToBbox(cropPolygon.points, {
+                          x: bbox.x,
+                          y: bbox.y,
+                          width: bbox.width,
+                          height: bbox.height,
+                          angle: bbox.angle,
+                        })
+                      : cropPolygon.points;
+                    if (local.length < 3) return null;
                     return (
                       <CropPolygonOverlay
-                        polygon={cropPolygon.points}
-                        bbox={{ x: bbox.x, y: bbox.y, width: bbox.width, height: bbox.height }}
+                        polygon={local}
+                        bbox={
+                          bbox.angle
+                            ? { x: 0, y: 0, width: bbox.width, height: bbox.height }
+                            : { x: bbox.x, y: bbox.y, width: bbox.width, height: bbox.height }
+                        }
                         thumbnailSize={THUMBNAIL_SIZE}
                       />
                     );
@@ -351,6 +393,7 @@ export function ImageEditorCropPreview({
                           y: bbox.y,
                           width: bbox.width,
                           height: bbox.height,
+                          angle: bbox.angle,
                         });
                         if (clipped.length >= 3) {
                           clippedPolygons.push(clipped);
@@ -402,7 +445,7 @@ export function ImageEditorCropPreview({
                     // Check if any FOV mask polygon clips to this bbox
                     const hasFOVMask = fovMaskPolygons && fovMaskPolygons.some(fovPoly =>
                       fovPoly && fovPoly.length >= 3 &&
-                      clipPolygonToBbox(fovPoly, { x: bbox.x, y: bbox.y, width: bbox.width, height: bbox.height }).length >= 3
+                      clipPolygonToBbox(fovPoly, { x: bbox.x, y: bbox.y, width: bbox.width, height: bbox.height, angle: bbox.angle }).length >= 3
                     );
 
                     if (hasCropMask) {

@@ -205,6 +205,16 @@ class CropImportData(BaseModel):
     bbox_y: int = Field(ge=0, description="Bounding box Y coordinate (non-negative)")
     bbox_w: int = Field(gt=0, description="Bounding box width (positive)")
     bbox_h: int = Field(gt=0, description="Bounding box height (positive)")
+    bbox_angle: Optional[float] = Field(
+        default=None,
+        ge=-180.0,
+        le=180.0,
+        description=(
+            "Rotation in degrees about the box centre; None/0 = axis-aligned. "
+            "Without this, an export/import round-trip silently de-rotated every "
+            "curated box."
+        ),
+    )
     class_name: Optional[str] = None
     confidence: Optional[float] = Field(
         default=None,

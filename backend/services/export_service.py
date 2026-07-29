@@ -482,6 +482,7 @@ class ExportService(BaseJobManager[ExportJobData]):
             "bbox_y": crop.bbox_y,
             "bbox_w": crop.bbox_w,
             "bbox_h": crop.bbox_h,
+            "bbox_angle": crop.bbox_angle,
             "detection_confidence": crop.detection_confidence,
             "map_protein": {
                 "id": crop.map_protein.id,

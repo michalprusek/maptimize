@@ -76,9 +76,21 @@ def validate_bbox_within_image(
         # centre being inside is not enough.
         if bbox_w < 10 or bbox_h < 10:
             return False, "Bbox dimensions must be at least 10 pixels"
-        for px, py in _rotated_corners(bbox_x, bbox_y, bbox_w, bbox_h, bbox_angle):
+        # Name the offending corner and where it landed. The axis-aligned branch
+        # below reports numbers; this one used to say only "exceeds image bounds",
+        # which told the user neither which edge nor by how much -- and the client
+        # discarded even that, showing a bare "Failed to update cell".
+        names = ("top-left", "bottom-left", "top-right", "bottom-right")
+        for name, (px, py) in zip(
+            names, _rotated_corners(bbox_x, bbox_y, bbox_w, bbox_h, bbox_angle)
+        ):
             if px < 0 or py < 0 or px > image_width or py > image_height:
-                return False, "Rotated bbox exceeds image bounds"
+                return False, (
+                    f"Rotated box leaves the image: its {name} corner is at "
+                    f"({px:.1f}, {py:.1f}) but the image is "
+                    f"{image_width}x{image_height}. Move the box toward the centre "
+                    f"or make it smaller."
+                )
         return True, None
 
     # Axis-aligned: keep the original checks (order + messages) unchanged.
@@ -121,6 +133,10 @@ def extract_crop_from_projection(
         bbox_x/bbox_y: top-left of the axis-aligned box (before rotation)
         bbox_w/bbox_h: box size
         bbox_angle: rotation in degrees about the box centre
+
+    ⚠️ The frontend mirrors this GEOMETRY in
+    ``frontend/lib/editor/canvasUtils.ts::extractCropFromImage`` for the live
+    preview. Change the rotation map here and that must change too.
 
     Returns:
         Cropped numpy array of shape (bbox_h, bbox_w[, C])
@@ -420,6 +436,9 @@ async def create_manual_crop(
         bbox_h: Bounding box height
         db: Database session
         map_protein_id: Optional MAP protein ID (defaults to image's protein)
+        bbox_angle: Rotation in degrees about the box centre (0 = axis-aligned).
+            The crop is extracted de-rotated, and validation checks the ROTATED
+            corners, so a box that fits axis-aligned may still be rejected.
 
     Returns:
         Tuple of (CellCrop or None, error message or None)

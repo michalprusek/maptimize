@@ -18,6 +18,7 @@ import logging
 import os
 import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
+import math
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from xml.dom import minidom
@@ -32,6 +33,34 @@ logger = logging.getLogger(__name__)
 # ============================================================================
 # Shared Helpers (DRY)
 # ============================================================================
+
+
+def export_bbox(crop) -> Tuple[int, int, int, int]:
+    """The axis-aligned box to write into an annotation file, as (x, y, w, h).
+
+    ⚠️ For a ROTATED crop, ``bbox_x/y/w/h`` describe the box *before* rotation, so
+    writing them out names a region the curator never drew. COCO, YOLO and Pascal
+    VOC have no rotated-box representation, so this returns the rotated box's
+    bounding AABB: the smallest axis-aligned rectangle that actually contains the
+    annotated cell. Orientation is lost -- that is inherent to those formats -- but
+    the exported region is correct rather than merely plausible, which matters if
+    these files ever train a detector. The CSV export additionally carries
+    ``bbox_angle`` so the rotation survives a round-trip there.
+    """
+    angle = getattr(crop, "bbox_angle", None)
+    if not angle:
+        return crop.bbox_x, crop.bbox_y, crop.bbox_w, crop.bbox_h
+
+    t = math.radians(angle)
+    c, sn = abs(math.cos(t)), abs(math.sin(t))
+    ex = (crop.bbox_w / 2) * c + (crop.bbox_h / 2) * sn
+    ey = (crop.bbox_w / 2) * sn + (crop.bbox_h / 2) * c
+    cx = crop.bbox_x + crop.bbox_w / 2
+    cy = crop.bbox_y + crop.bbox_h / 2
+    return (
+        int(round(cx - ex)), int(round(cy - ey)),
+        int(round(2 * ex)), int(round(2 * ey)),
+    )
 
 
 def get_display_filename(image: Any) -> str:
@@ -63,6 +92,7 @@ def create_crop_import_data(
     confidence: Optional[float],
     warnings: List[str],
     context: str,
+    bbox_angle: Optional[float] = None,
 ) -> Optional[CropImportData]:
     """
     Create CropImportData with ValidationError handling.
@@ -72,6 +102,8 @@ def create_crop_import_data(
         bbox_x, bbox_y, bbox_w, bbox_h: Bounding box values (should be pre-normalized)
         class_name: Optional class name
         confidence: Optional detection confidence
+        bbox_angle: Optional rotation in degrees about the box centre (CSV only --
+            COCO/YOLO/VOC cannot express it)
         warnings: List to append warnings to
         context: Context string for error messages (e.g., "Row 5", "annotation 123")
 
@@ -86,7 +118,8 @@ def create_crop_import_data(
             bbox_w=bbox_w,
             bbox_h=bbox_h,
             class_name=class_name,
-            confidence=confidence
+            confidence=confidence,
+            bbox_angle=bbox_angle
         )
     except ValidationError as e:
         warnings.append(f"{context}: invalid bbox - {e.errors()[0]['msg']}")
@@ -157,9 +190,10 @@ def to_coco(
         img_crops = crops_by_image.get(img.id, [])
 
         for crop in img_crops:
-            # COCO bbox: [x, y, width, height]
-            bbox = [crop.bbox_x, crop.bbox_y, crop.bbox_w, crop.bbox_h]
-            area = crop.bbox_w * crop.bbox_h
+            # COCO bbox: [x, y, width, height] -- rotated crops export their AABB
+            bx, by, bw, bh = export_bbox(crop)
+            bbox = [bx, by, bw, bh]
+            area = bw * bh
 
             annotation = {
                 "id": annotation_id,
@@ -226,10 +260,11 @@ def to_yolo(
     lines = []
     for crop in crops:
         # Calculate center and normalize
-        x_center = (crop.bbox_x + crop.bbox_w / 2) / img_w
-        y_center = (crop.bbox_y + crop.bbox_h / 2) / img_h
-        width = crop.bbox_w / img_w
-        height = crop.bbox_h / img_h
+        bx, by, bw, bh = export_bbox(crop)
+        x_center = (bx + bw / 2) / img_w
+        y_center = (by + bh / 2) / img_h
+        width = bw / img_w
+        height = bh / img_h
 
         # Determine class ID
         protein_name = get_class_name(crop)
@@ -303,10 +338,11 @@ def to_voc(
         ET.SubElement(obj, "difficult").text = "0"
 
         bndbox = ET.SubElement(obj, "bndbox")
-        ET.SubElement(bndbox, "xmin").text = str(crop.bbox_x)
-        ET.SubElement(bndbox, "ymin").text = str(crop.bbox_y)
-        ET.SubElement(bndbox, "xmax").text = str(crop.bbox_x + crop.bbox_w)
-        ET.SubElement(bndbox, "ymax").text = str(crop.bbox_y + crop.bbox_h)
+        bx, by, bw, bh = export_bbox(crop)
+        ET.SubElement(bndbox, "xmin").text = str(bx)
+        ET.SubElement(bndbox, "ymin").text = str(by)
+        ET.SubElement(bndbox, "xmax").text = str(bx + bw)
+        ET.SubElement(bndbox, "ymax").text = str(by + bh)
 
         # Optional confidence score
         if crop.detection_confidence is not None:
@@ -339,7 +375,8 @@ def to_csv(
 
     # Header
     writer.writerow([
-        "image_id", "filename", "x", "y", "width", "height", "class", "confidence"
+        "image_id", "filename", "x", "y", "width", "height", "angle",
+        "class", "confidence"
     ])
 
     # Build image lookup
@@ -350,13 +387,17 @@ def to_csv(
         if not img:
             continue
 
+        # x/y/width/height are the AABB (so they name the right region even when
+        # rotated); `angle` keeps the orientation that COCO/YOLO/VOC cannot express.
+        bx, by, bw, bh = export_bbox(crop)
         writer.writerow([
             img.id,
             get_display_filename(img),
-            crop.bbox_x,
-            crop.bbox_y,
-            crop.bbox_w,
-            crop.bbox_h,
+            bx,
+            by,
+            bw,
+            bh,
+            crop.bbox_angle if crop.bbox_angle else "",
             get_class_name(crop),
             crop.detection_confidence or ""
         ])
@@ -657,7 +698,7 @@ def from_csv(
     """
     Parse CSV format annotations.
 
-    Expected columns: image_id, filename, x, y, width, height, class, confidence
+    Expected columns: image_id, filename, x, y, width, height, angle, class, confidence
     Or minimal: filename, x, y, width, height
 
     Args:
@@ -688,6 +729,7 @@ def from_csv(
     h_col = next((f for f in fieldnames if f.lower() in ("height", "h", "bbox_h")), None)
     class_col = next((f for f in fieldnames if f.lower() in ("class", "class_name", "category", "label")), None)
     conf_col = next((f for f in fieldnames if f.lower() in ("confidence", "score", "conf")), None)
+    angle_col = next((f for f in fieldnames if f.lower() in ("angle", "bbox_angle", "rotation")), None)
 
     if not all([filename_col, x_col, y_col, w_col, h_col]):
         errors.append(f"Missing required columns. Found: {fieldnames}")
@@ -713,6 +755,15 @@ def from_csv(
             except ValueError:
                 pass
 
+        # CSV is the one export format that can carry the rotation, so read it back
+        # -- otherwise a CSV round-trip silently de-rotates every curated box.
+        bbox_angle = None
+        if angle_col and row.get(angle_col):
+            try:
+                bbox_angle = float(row[angle_col])
+            except ValueError:
+                warnings.append(f"Row {row_num}: ignoring unparsable angle {row[angle_col]!r}")
+
         bbox_x, bbox_y, bbox_w, bbox_h = normalize_bbox(x, y, w, h)
 
         crop = create_crop_import_data(
@@ -723,6 +774,7 @@ def from_csv(
             bbox_h=bbox_h,
             class_name=class_name or "cell",
             confidence=confidence,
+            bbox_angle=bbox_angle,
             warnings=warnings,
             context=f"Row {row_num}",
         )
