@@ -1495,15 +1495,43 @@ async def test_exp_update_protein_with_protein_no_images(mock_db):
     assert out["map_protein_color"] == "#00d4aa"
 
 
-async def test_exp_update_protein_not_owner(mock_db):
-    # protein reassignment is owner-only (cascades to images/crops); a group member
-    # who can READ the experiment must not be able to change its protein.
+async def test_exp_update_protein_is_group_writable(mock_db):
+    """The fourth deliberate exception to "writes are owner-only".
+
+    Protein is shared reference data (`map_proteins` has no `user_id`) and in
+    production 40 of 46 experiments belong to the annotator, so an owner-only
+    assignment leaves the label unmaintainable by the people who curate it.
+    Whoever can READ an experiment may say which protein it carries.
+    """
     exp = _exp(user_id=99)  # owned by someone else, visible via group
     with patch.object(exp_r, "get_experiment_for_user", new=AsyncMock(return_value=exp)):
-        with pytest.raises(HTTPException) as e:
-            await exp_r.update_experiment_protein(1, map_protein_id=5,
-                                                  current_user=user(id=1), db=mock_db)
-    assert e.value.status_code == 403
+        out = await exp_r.update_experiment_protein(
+            1, map_protein_id=None, current_user=user(id=1), db=mock_db
+        )
+    assert out["id"] == 1
+    mock_db.commit.assert_awaited()
+
+
+async def test_exp_generic_update_and_delete_stay_owner_only(mock_db):
+    """The other side of the boundary, which the widening must NOT cross.
+
+    Group members may set the protein, the microscope and the PTM. They may not
+    rename an experiment or delete it -- the container still belongs to whoever
+    uploaded it. Pinned here because the four exceptions sit in the same file and
+    "tidying" them onto one helper would hand the whole group a delete button.
+    """
+    exp = _exp(user_id=99)
+    with patch.object(exp_r, "get_experiment_for_user", new=AsyncMock(return_value=exp)):
+        for call in (
+            lambda: exp_r.update_experiment(
+                1, exp_r.ExperimentUpdate(name="renamed"),
+                current_user=user(id=1), db=mock_db,
+            ),
+            lambda: exp_r.delete_experiment(1, current_user=user(id=1), db=mock_db),
+        ):
+            with pytest.raises(HTTPException) as e:
+                await call()
+            assert e.value.status_code == 403
 
 
 async def test_exp_update_protein_db_error_rolls_back(mock_db):

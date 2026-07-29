@@ -348,17 +348,27 @@ async def update_experiment_protein(
     db: AsyncSession = Depends(get_db)
 ):
     """
-    Update the MAP protein assignment for an experiment (owner only).
+    Assign the MAP protein to an experiment (owner OR group member).
 
-    This cascades the protein assignment to all images and cell crops in the experiment.
+    The fourth deliberate group-writable exception, after the microscope and the
+    PTM, and for the same reason: `map_proteins` has no `user_id`, and in
+    production 40 of 46 experiments belong to the annotator, so an owner-only
+    assignment would leave the label unmaintainable by the people who curate it.
+    Theo uploads the batch, Michal corrects it -- whoever can SEE an experiment
+    may say which protein it carries.
+
+    ⚠️ Weightier than the other three: this label is what the discriminant
+    projection is fitted on and what every plot colours by, so a wrong edit
+    propagates into the science rather than into a facet. It also cascades to
+    every image and cell crop below. That is a reason to log it, not a reason to
+    lock the annotator out of their own data.
+
+    ⚠️ Separate endpoint from the owner-only `PATCH /{experiment_id}` on purpose:
+    one field must not have two paths with two different ACLs, or the narrower
+    one gets reached by accident. `ExperimentUpdate` forbids extras, so an old
+    client sending `map_protein_id` there gets 422 rather than a silent no-op.
     """
     experiment = await get_experiment_for_user(db, experiment_id, current_user.id)
-    if experiment.user_id != current_user.id:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Only the experiment owner can change its protein",
-        )
-
     # Verify protein exists if provided
     protein = None
     if map_protein_id is not None:

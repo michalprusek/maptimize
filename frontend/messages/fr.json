@@ -91,7 +91,6 @@
     "deleteConfirm": "Etes-vous sur de vouloir supprimer cette experience ? Toutes les images et decoupages seront definitivement supprimes.",
     "assignProtein": "Assigner une protéine MAP",
     "experimentProteinHint": "Appliqué à toutes les images de cette expérience",
-    "proteinOwnerOnly": "Seul·e {owner} peut modifier la protéine de cette expérience",
     "experimentMicroscopeHint": "Le microscope utilisé pour cette expérience",
     "assignMicroscope": "Microscope",
     "unassignedMicroscope": "Aucun microscope",
