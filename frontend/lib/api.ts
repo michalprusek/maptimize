@@ -2058,17 +2058,34 @@ export interface DiscriminantPoint {
  * A supervised projection always looks separated — that is what supervising it
  * does — so these travel with the plot and are rendered beside it rather than
  * hidden in a tooltip. `balanced_accuracy` is out-of-fold under a split grouped
- * by experiment; `null_mean`/`null_max` are the same score with the labels
- * shuffled at experiment level, which is the bar a real signal has to clear.
+ * by experiment; the null fields are the same score with the labels shuffled at
+ * experiment level, which is the bar a real signal has to clear.
  */
 export interface DiscriminantMetrics {
   balanced_accuracy: number;
   chance: number;
   null_mean: number;
+  /**
+   * ⚠️ The max of a small sample, not a ceiling — on this corpus 17.5% of
+   * individual shuffles exceed the max of the 20 that run. Read `null_p95`.
+   */
   null_max: number;
+  /** 95th percentile of the null: the stable bar. */
+  null_p95: number | null;
+  /** Floored at 1/(n_permutations + 1); 0.048 at the shipped 20 shuffles. */
+  p_value: number | null;
+  /** Out-of-fold recall per protein — the headline is only their mean. */
+  per_class: DiscriminantClassScore[];
   n_permutations: number;
   n_proteins: number;
   n_experiments: number;
+}
+
+/** How well one protein is recovered, out of fold. */
+export interface DiscriminantClassScore {
+  protein: string;
+  recall: number;
+  n_crops: number;
 }
 
 export interface DiscriminantDataResponse {

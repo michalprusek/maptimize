@@ -114,6 +114,15 @@ export function DiscriminantMetricStrip({
         <span className="text-xs text-text-muted">
           {t("shuffledLabels")} {formatMetricValue(metrics.null_mean)}
         </span>
+        {metrics.p_value !== null && metrics.p_value !== undefined && (
+          // "p ≤ 0.05", never "p = 0.05": the value is floored at
+          // 1/(n_permutations + 1), so the smallest number this can print is a
+          // limit of the shuffle count rather than a measurement.
+          <span className="text-xs text-text-muted" title={t("pValueTooltip")}>
+            p {metrics.p_value <= 1 / (metrics.n_permutations + 1) ? "≤" : "="}{" "}
+            {metrics.p_value.toFixed(3)}
+          </span>
+        )}
         {isComputing && <Spinner size="sm" />}
       </div>
       <p className="text-xs text-text-muted mt-1">{t("metricCaption")}</p>
@@ -122,9 +131,21 @@ export function DiscriminantMetricStrip({
           proteins: metrics.n_proteins,
           experiments: metrics.n_experiments,
           permutations: metrics.n_permutations,
-          nullMax: formatMetricValue(metrics.null_max),
+          nullP95: formatMetricValue(metrics.null_p95 ?? metrics.null_max),
         })}
       </p>
+      {metrics.per_class.length > 0 && (
+        // The mean hides that the corpus is a couple of separable proteins and a
+        // tail at chance. Sorted worst-last so the eye lands on what does work,
+        // but every protein is listed — a "top 3" would recreate the problem.
+        <p className="text-[11px] text-text-muted mt-1 leading-relaxed">
+          <span className="text-text-secondary">{t("perProteinRecall")}</span>{" "}
+          {[...metrics.per_class]
+            .sort((a, b) => b.recall - a.recall)
+            .map((c) => `${c.protein} ${c.recall.toFixed(2)}`)
+            .join(" · ")}
+        </p>
+      )}
     </Shell>
   );
 }

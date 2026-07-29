@@ -19,6 +19,7 @@ from models.ptm import PTM
 from models.user import User
 from schemas.embeddings import (
     DiscriminantDataResponse,
+    DiscriminantClassScore,
     DiscriminantMetrics,
     DiscriminantPointResponse,
     FeatureExtractionStatus,
@@ -194,6 +195,12 @@ async def get_discriminant_visualization(
     cached = discriminant_service.cached(key)
 
     if cached is None:
+        # A recorded failure describes the corpus at one instant. If the lab has
+        # since fixed exactly what it was told to fix, retire the message rather
+        # than serving it forever.
+        discriminant_service.clear_failure_if_corpus_moved(
+            key, await discriminant_service.current_fingerprint(current_user.id, group_id, db)
+        )
         error = discriminant_service.compute_error(key)
         if error is None and not discriminant_service.is_computing(key):
             background_tasks.add_task(
@@ -210,12 +217,34 @@ async def get_discriminant_visualization(
             compute_error=error,
         )
 
-    coords, result = cached
+    result = cached
+    coords = result.coords_by_id()
+
+    # The fit is a snapshot; the labels and colours below are read live. If the
+    # corpus has moved on, a re-annotated crop would be drawn at its OLD
+    # coordinate in its NEW colour — a point sitting in the wrong cluster wearing
+    # the right label, under a score cross-validated against labels that no
+    # longer exist. Say so, and schedule the refit that the code used to claim
+    # would happen by itself.
+    is_stale = result.fingerprint != await discriminant_service.current_fingerprint(
+        current_user.id, group_id, db
+    )
+    if is_stale and not discriminant_service.is_computing(key):
+        background_tasks.add_task(
+            discriminant_service.refresh_discriminant_scope, current_user.id, group_id
+        )
+
     metrics = DiscriminantMetrics(
         balanced_accuracy=result.balanced_accuracy,
         chance=result.chance,
         null_mean=result.null_mean,
         null_max=result.null_max,
+        null_p95=result.null_p95,
+        p_value=result.p_value,
+        per_class=[
+            DiscriminantClassScore(protein=name, recall=recall, n_crops=n)
+            for name, recall, n in result.per_class
+        ],
         n_permutations=result.n_permutations,
         n_proteins=result.n_proteins,
         n_experiments=result.n_experiments,
@@ -224,7 +253,7 @@ async def get_discriminant_visualization(
     if not include_points:
         return DiscriminantDataResponse(
             points=[], total_crops=len(coords), facets=facets, metrics=metrics,
-            is_computing=False, compute_error=None,
+            is_computing=False, is_stale=is_stale, compute_error=None,
         )
 
     # Same corpus the projection was fitted on, narrowed by the filter. Ordered
@@ -256,18 +285,23 @@ async def get_discriminant_visualization(
             bundleness_score=crop.bundleness_score,
         )
         # A crop added since the fit has no coordinates. Skip it rather than
-        # invent one: the projection is a fixed frame, and the next refresh picks
-        # it up.
+        # invent one — placing an unseen crop somewhere would fabricate a data
+        # point — but the count below reports every matching crop, so the gap is
+        # visible rather than silently shrinking the total to what got drawn.
         for crop in crops
         if crop.id in coords
     ]
 
     return DiscriminantDataResponse(
         points=points,
-        total_crops=len(points),
+        # Every crop the filter matched, including any the fit has not seen yet.
+        # Reporting len(points) instead would make an out-of-date projection look
+        # like a smaller corpus.
+        total_crops=len(crops),
         facets=facets,
         metrics=metrics,
         is_computing=False,
+        is_stale=is_stale or len(points) < len(crops),
         compute_error=None,
     )
 

@@ -1175,15 +1175,25 @@ tools:
 
       A supervised projection (LDA) is fitted to the protein labels after
       subtracting each microscope's mean, then scored by cross-validation that
-      holds whole EXPERIMENTS out — crops from one image are near-duplicates, so
-      any other split reports its own leakage (0.68 where the honest answer is
-      0.26). `balanced_accuracy` is that score; `chance` is 1/proteins; the label
-      shuffle gives `null_mean` and `null_max`.
+      holds whole EXPERIMENTS out. Each experiment carries one protein and one set
+      of acquisition conditions, so any split that puts an experiment on both sides
+      lets the model read the label off the batch and reports its own leakage
+      (0.68 where the honest answer is 0.26). `balanced_accuracy` is that score;
+      `chance` is 1/proteins; shuffling the labels between experiments gives
+      `null_mean`, `null_p95`, `null_max` and `p_value`.
 
-      ⚠️ Read the score against null_max, not against chance, and say so when you
-      report it. A score at or below null_max is NO evidence of separation
-      however large it looks. Do not describe the proteins as separable without
-      quoting both numbers.
+      ⚠️ Read the score against the NULL, not against chance, and say so when you
+      report it. Use `p_value` and `null_p95`: `null_max` is the maximum of a
+      small sample, and 17.5% of individual shuffles exceed the max of the 20 that
+      run, so a ratio quoted against it overstates the evidence. `p_value` is
+      floored at 1/(n_permutations+1) — 0.048 here — so report it as "p ≤" and
+      never claim p < 0.01. A score the shuffles reached is NO evidence of
+      separation however large it looks.
+
+      ⚠️ `balanced_accuracy` is a MEAN over proteins and hides its own shape —
+      two proteins carry most of it while several sit at chance. Quote `per_class`
+      before saying "the proteins separate"; naming which ones do is the useful
+      answer.
 
       The first call returns is_computing=true and schedules the fit (minutes);
       poll until it clears. Returns metrics only — the point cloud belongs to the

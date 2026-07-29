@@ -152,6 +152,14 @@ class DiscriminantPointResponse(BaseModel):
     bundleness_score: Optional[float] = Field(None, description="Bundleness metric")
 
 
+class DiscriminantClassScore(BaseModel):
+    """How well one protein is recovered, out of fold."""
+
+    protein: str = Field(..., description="Protein name as labelled")
+    recall: float = Field(..., description="Out-of-fold recall for this protein")
+    n_crops: int = Field(..., description="Crops of this protein that were scored")
+
+
 class DiscriminantMetrics(BaseModel):
     """What the separation on screen is actually worth.
 
@@ -166,8 +174,44 @@ class DiscriminantMetrics(BaseModel):
         ..., description="Out-of-fold balanced accuracy, grouped by experiment"
     )
     chance: float = Field(..., description="1 / number of proteins")
-    null_mean: float = Field(..., description="Mean score with labels shuffled between experiments")
-    null_max: float = Field(..., description="Highest score the shuffled labels reached")
+    null_mean: Optional[float] = Field(
+        None,
+        description=(
+            "Mean score with labels shuffled between experiments. Null when no "
+            "shuffle survived — NOT 0.0, which would read as the strongest "
+            "possible evidence for the score beside it."
+        ),
+    )
+    null_max: Optional[float] = Field(
+        None,
+        description=(
+            "Highest score the shuffled labels reached. ⚠️ NOT a ceiling: it is "
+            "the max of a small sample, and on this corpus 17.5% of individual "
+            "shuffles exceed the max of the 20 that run. Compare against "
+            "`null_p95` and read `p_value`; quoting a ratio against this number "
+            "overstates the evidence by whatever the seed happened to draw."
+        ),
+    )
+    null_p95: Optional[float] = Field(
+        None,
+        description="95th percentile of the null — the stable bar to read the score against",
+    )
+    p_value: Optional[float] = Field(
+        None,
+        description=(
+            "(1 + #{null >= score}) / (n + 1). Floored at 1/(n_permutations + 1), "
+            "so with 20 shuffles the smallest attainable value is 0.048: this can "
+            "show a score sits outside the null, never that p < 0.01."
+        ),
+    )
+    per_class: List["DiscriminantClassScore"] = Field(
+        default_factory=list,
+        description=(
+            "Out-of-fold recall per protein. The headline is their mean, and the "
+            "spread is wide — read this before concluding the projection "
+            "separates every MAP equally."
+        ),
+    )
     n_permutations: int = Field(..., description="Shuffles behind the null")
     n_proteins: int = Field(..., description="Proteins being separated")
     n_experiments: int = Field(..., description="Experiments the split had to work with")
@@ -190,6 +234,16 @@ class DiscriminantDataResponse(BaseModel):
         description=(
             "The projection is being fitted in the background (minutes, not "
             "seconds). Poll until this clears."
+        ),
+    )
+    is_stale: bool = Field(
+        False,
+        description=(
+            "The corpus changed since this projection was fitted — crops added, "
+            "proteins reassigned, a microscope changed. The points shown still "
+            "carry their OLD coordinates while their labels and colours are "
+            "current, so treat the picture and the score as provisional. A "
+            "refit is already scheduled; poll until this clears."
         ),
     )
     compute_error: Optional[str] = Field(

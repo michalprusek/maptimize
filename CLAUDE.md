@@ -497,26 +497,46 @@ Naměřeno na produkčním korpusu (balanced accuracy, 14 proteinů, náhoda 0,0
 |-----------|--------|--------------------------|
 | náhodně po cropech | 0,679 | 0,665 |
 | po obrázcích | 0,653 | 0,655 |
-| **po experimentech** | **0,186** | **0,259** |
+| **po experimentech** | **0,183** | **0,260** |
 
 ⚠️ **Křížová validace MUSÍ dělit po experimentech** (`StratifiedGroupKFold` na
-`Experiment.id`). Cropy z jednoho obrázku jsou skoro duplikáty a každý experiment
-nese jeden protein, takže náhodné dělení nechá příbuzného skoro každého testovacího
-cropu v tréninku a hlásí 0,68 tam, kde je pravda 0,26. **Dělení po obrázcích
-nestačí** — sourozenecké obrázky sdílejí podmínky experimentu.
+`Experiment.id`). ⚠️ **Únik je na úrovni EXPERIMENTU, ne obrázku** — seskupení po
+obrázcích uzavře jen 0,026 z propasti 0,493 (~5 %), protože 40 % obrázků nese
+jediný crop. Uniká to, že každý experiment nese jeden protein a jednu sadu
+akvizičních podmínek: jakékoli dělení, které nechá experiment na obou stranách,
+umožní přečíst štítek z dávky. Proto **dělení po obrázcích nestačí** ani zdaleka.
 
 ⚠️ **Permutační null míchá štítky mezi EXPERIMENTY, ne po cropech.** Míchání po
 cropech rozbije seskupení, na kterém dělení stojí, stlačí null pod náhodu a udělá
 signifikantní jakékoli skóre.
 
+⚠️ **`null_max` NENÍ strop a nesmí se z něj počítat poměr.** Je to maximum malého
+vzorku: na produkčním korpusu **17,5 % jednotlivých promíchání překročí maximum
+z těch 20**, která se počítají, takže „3,3× strop nullu" byl zamrzlý šťastný los
+seedu (poctivě ~2,4×). Hlásí se proto **p-hodnota** `(1 + #{null ≥ skóre}) / (n+1)`
+a 95. percentil. ⚠️ p má **podlahu 1/(n+1) = 0,048** při 20 promícháních — tenhle
+korpus umí doložit „mimo null", nikdy „p < 0,01".
+
+⚠️ **Souhrnné číslo schovává, že polovina proteinů je na náhodě.** 0,26 táhne
+CLIP170 (0,79) a TRIM46 (0,52), zatímco PRC1 a MAP2d sedí na 0,07. Proto se vrací
+i `per_class` (recall na protein) a UI ho vypisuje — průměr je tu špatný souhrn.
+
+⚠️ **LDA dostává uniformní priors.** Skóre je balanced accuracy, která váží všech
+14 tříd stejně; s empirickými priors klasifikátor upřednostní velké třídy a stojí
+to 0,04 (0,260 → 0,300 naměřeno). Metrika a klasifikátor musí mít stejný cíl.
+
 ⚠️ **Per-microscope centering běží před fitem.** Dva proteiny existují jen na
 AeryScanu, takže bez korekce se oddělí podle přístroje a vypadá to jako biologie.
-Korekce zároveň skóre *zvyšuje* (0,186 → 0,259): mikroskop byl confounder, ne zdroj
+Korekce zároveň skóre *zvyšuje* (0,183 → 0,260): mikroskop byl confounder, ne zdroj
 signálu. Dekódovatelnost mikroskopu spadne 0,551 → 0,117 (náhoda pro 4 třídy je 0,25).
+Střed se počítá na všech datech, tedy technicky mimo CV smyčku; naměřený dopad je
++0,004, což je pod šumem CV — vědomě ponecháno, ale při přepisu to nezhoršuj.
 
-⚠️ **Geometrie grafu je in-sample, číslo je out-of-fold.** Out-of-fold souřadnice
-pocházejí z různých fitů, jejichž osy se liší o libovolnou rotaci a znaménko —
-vykreslené společně nedávají smysl. Popisek v UI to říká.
+⚠️ **Geometrie grafu je in-sample, číslo je out-of-fold.** Osy jednotlivých foldů
+nespojuje **žádné** zarovnání (naměřené hlavní úhly 1,3° a 67°, druhá osa se liší
+10,7× v měřítku) — vykreslit je společně nedává smysl a Procrustes to nespraví.
+In-sample fit klasifikuje 0,76 proti poctivým 0,26, takže obrázek vypadá 3× lépe
+než skóre vedle něj; popisek v UI to říká.
 
 ⚠️ **Filtr vybírá, které body se vrátí, nikdy které se fitují.** Přefitování podle
 filtru by dalo dvěma filtrovaným pohledům neporovnatelné souřadnice a osy by měnily

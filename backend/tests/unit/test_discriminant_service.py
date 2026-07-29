@@ -101,19 +101,19 @@ def test_a_planted_signal_is_found():
     # the spread between experiments is not recoverable ACROSS experiments, which
     # is precisely why the real corpus scores 0.26 and not 0.9.
     X, y, groups, _ = synthetic(separation=8.0, experiment_offset=1.0)
-    assert score_projection(X, y, groups) > 0.8
+    assert score_projection(X, y, groups)[0] > 0.8
 
 
 def test_labels_that_mean_nothing_score_at_chance():
     # The load-bearing assertion. If this ever passes with a high score, the
     # pipeline is reading something other than the labels.
     X, y, groups, _ = synthetic(separation=0.0)
-    assert score_projection(X, y, groups) < 0.55  # chance is 1/3
+    assert score_projection(X, y, groups)[0] < 0.55  # chance is 1/3
 
 
 def test_a_meaningless_score_sits_inside_its_own_null():
     X, y, groups, _ = synthetic(separation=0.0)
-    score = score_projection(X, y, groups)
+    score = score_projection(X, y, groups)[0]
     null = permutation_null(X, y, groups, n_permutations=5)
     assert null
     assert score <= max(null) + 0.15
@@ -121,7 +121,7 @@ def test_a_meaningless_score_sits_inside_its_own_null():
 
 def test_a_real_signal_sits_outside_its_null():
     X, y, groups, _ = synthetic(separation=8.0, experiment_offset=1.0)
-    score = score_projection(X, y, groups)
+    score = score_projection(X, y, groups)[0]
     null = permutation_null(X, y, groups, n_permutations=5)
     assert score > max(null) + 0.2
 
@@ -135,7 +135,7 @@ def test_an_experiment_level_confound_does_not_read_as_protein_signal():
     carry nothing.
     """
     X, y, groups, _ = synthetic(separation=0.0, dims=60, seed=7)
-    assert score_projection(X, y, groups) < 0.6
+    assert score_projection(X, y, groups)[0] < 0.6
 
 
 def test_ignoring_the_grouping_would_report_a_signal_that_is_not_there():
@@ -152,12 +152,14 @@ def test_ignoring_the_grouping_would_report_a_signal_that_is_not_there():
     splitter = StratifiedKFold(n_splits=5, shuffle=True, random_state=0)
     predicted = np.empty(len(y), dtype=y.dtype)
     for train, test in splitter.split(X, y):
-        pipe = mod._pipeline(mod._components_for(len(train), X.shape[1]))
+        pipe = mod._pipeline(
+            mod._components_for(len(train), X.shape[1]), len(np.unique(y[train]))
+        )
         pipe.fit(X[train], y[train])
         predicted[test] = pipe.predict(X[test])
     leaky = balanced_accuracy_score(y, predicted)
 
-    honest = score_projection(X, y, groups)
+    honest = score_projection(X, y, groups)[0]
     assert leaky > 0.9, "the fixture no longer reproduces the leak it is here to model"
     assert honest < 0.6
     assert leaky - honest > 0.3
@@ -194,21 +196,52 @@ def test_the_null_shuffles_labels_between_experiments_not_within_them():
     assert seen and all(seen)
 
 
-def test_the_null_keeps_the_label_distribution():
-    # Shuffling must permute the labels, not resample them: a null built from a
-    # different class balance is not comparable to the real score.
-    X, y, groups, _ = synthetic(separation=1.0)
-    counts = sorted(np.bincount(y)[1:])
+def _null_labels(X, y, groups, n=3):
+    """Labels the null actually hands the scorer, without running the scorer."""
     seen = []
-
     real_score = mod.score_projection
-    mod.score_projection = lambda e, labels, g: (seen.append(sorted(np.bincount(labels)[1:])), 0.5)[1]
+    mod.score_projection = lambda e, labels, g: (seen.append(labels.copy()), (0.5, 3, ()))[1]
     try:
-        permutation_null(X, y, groups, n_permutations=3)
+        permutation_null(X, y, groups, n_permutations=n)
     finally:
         mod.score_projection = real_score
+    return seen
 
-    assert seen and all(c == counts for c in seen)
+
+def test_the_null_permutes_the_experiment_to_protein_map():
+    # The invariant the null actually has: the multiset of labels OVER
+    # EXPERIMENTS is preserved, because it permutes that map. Shuffling must not
+    # resample — a null drawn from a different class balance is not comparable to
+    # the real score.
+    X, y, groups, _ = synthetic(separation=1.0)
+    by_experiment = sorted(y[groups == g][0] for g in np.unique(groups))
+
+    seen = _null_labels(X, y, groups)
+
+    assert seen
+    for labels in seen:
+        assert sorted(labels[groups == g][0] for g in np.unique(groups)) == by_experiment
+
+
+def test_the_null_does_not_preserve_the_per_crop_class_balance():
+    # ⚠️ Documented, not lamented. Moving a label from a 5-crop experiment to a
+    # 50-crop one changes how many CROPS carry it, so the null's balanced
+    # accuracy is computed over a different class balance than the real score.
+    #
+    # This test exists because its predecessor asserted the opposite and passed:
+    # `synthetic()` gives every experiment the same size, which makes crop counts
+    # invariant for free. On the production corpus experiments range from 5 to 87
+    # crops, so the property was never true where it mattered — a green test
+    # pinning a guarantee the code does not make. Unequal sizes here on purpose.
+    X, y, groups, _ = synthetic(separation=1.0)
+    keep = np.ones(len(y), dtype=bool)
+    keep[np.flatnonzero(groups == np.unique(groups)[0])[:-3]] = False  # starve one
+    X, y, groups = X[keep], y[keep], groups[keep]
+
+    seen = _null_labels(X, y, groups, n=8)
+    crop_counts = {tuple(np.bincount(labels, minlength=4)[1:]) for labels in seen}
+
+    assert len(crop_counts) > 1, "unequal experiments must move the crop-level balance"
 
 
 # =============================================================================

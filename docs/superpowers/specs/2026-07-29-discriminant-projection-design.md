@@ -25,21 +25,30 @@ chance = 0.071):
 |---|---|---|
 | random over crops | 0.679 | 0.665 |
 | grouped by image | 0.653 | 0.655 |
-| **grouped by experiment** | **0.186** | **0.259** |
+| **grouped by experiment** | **0.183** | **0.260** |
 
-Permutation null under the experiment split: mean 0.054, max 0.078 over 10 runs.
+Permutation null under the experiment split: mean 0.055, 95th percentile 0.076,
+max 0.078 over the 20 shuffles that ship. ⚠️ Over 200 shuffles the max reaches
+0.140 and 17.5% of individual draws clear 0.078 — the max of a small sample is a
+draw, not a ceiling. The honest statement is p = 0.005 at 200 shuffles; the
+shipped 20 can only report p ≤ 0.048.
 
 Three findings drive the whole design:
 
-1. **Random and image-grouped splits leak.** Crops from one image are near
-   duplicates, and several images share an experiment's conditions, so a sibling
-   of nearly every test crop sits in the training set. The honest split is by
+1. **The leak is experiment-level, not image-level.** Grouping by image recovers
+   only 0.026 of the 0.493 gap — about 5% — because 40% of images hold a single
+   crop. What actually leaks is that each experiment carries one protein and one
+   set of acquisition conditions, so any split that puts an experiment on both
+   sides lets the model read the label off the batch. The honest split is by
    **experiment**, and it costs a factor of 2.5.
-2. **The signal is real but modest.** 0.259 against a permutation null whose
-   maximum over ten runs is 0.078 — outside the null, roughly 3.6× chance. Not
-   the "almost perfect" separation the leaky split implied.
-3. **Microscope correction helps.** 0.186 → 0.259 under the honest split, while
-   microscope decodability falls 0.551 → 0.117 (chance is 0.25 for four
+2. **The signal is real but modest, and unevenly spread.** 0.260 sits outside
+   the permutation null (~2.4× its 95th percentile, p = 0.005 measured over 200
+   shuffles) — not the "almost perfect" separation the leaky split implied. And
+   the mean hides its own shape: CLIP170 reaches 0.79 and TRIM46 0.52, while PRC1
+   and MAP2d sit at chance. The response therefore carries per-class recall, and
+   the UI prints every protein rather than a headline.
+3. **Microscope correction helps.** 0.183 → 0.260 under the honest split, while
+   microscope decodability falls 0.548 → 0.116 (chance is 0.25 for four
    microscopes, so it is removed outright). Subtracting the batch offset removes
    a confounder that was actively hurting generalisation across experiments.
 
@@ -54,13 +63,16 @@ Three findings drive the whole design:
    uncorrected projection would separate them partly by instrument and present it
    as biology.
 3. **PCA to 50 components before LDA.** 1024 features on 1277 samples is
-   guaranteed overfitting; LDA also needs a non-singular within-class scatter.
+   guaranteed overfitting — LDA reaches 0.998 training accuracy on the raw
+   features. Not about singularity: the default svd solver never inverts the
+   within-class scatter.
 4. **Group-aware cross-validation by experiment** (`StratifiedGroupKFold`) for
    every reported number. Any other split reports leakage.
 5. **The plot's geometry comes from the full-data fit; the numbers come from
    cross-validation.** Out-of-fold coordinates originate in different LDA fits,
-   whose axes are related by an arbitrary rotation and sign — plotting them
-   together produces a scatter that means nothing. Showing the in-sample geometry
+   whose axes are related by no alignment at all (measured across folds: principal
+   angles 1.3° and 67°, second axis 10.7× different in scale) — plotting them
+   together produces a scatter that means nothing, and no Procrustes fixes it. Showing the in-sample geometry
    next to an out-of-fold score is what a careful paper does, and the caption
    says exactly that.
 6. **The headline number is always on screen.** Balanced accuracy, chance, and
@@ -83,12 +95,14 @@ Pure functions plus the same scope/refresh bookkeeping `umap_service` uses.
   experiment level**, so the null respects the grouping instead of being
   trivially destroyed by it.
 
-`MIN_POINTS_FOR_DISCRIMINANT` and `MIN_CLASSES` guard degenerate corpora: LDA
-needs at least two proteins and more samples than classes.
+`MIN_POINTS` (50), `MIN_CLASSES` (2) and `MIN_GROUPS` (5) guard degenerate
+corpora: too few crops to fit, too few proteins to separate, too few experiments
+to cross-validate across.
 
 ### Caching and the compute path
 
-One fit is ~20 s and a permutation null is minutes, so this never runs inside a
+One cross-validation is ~28 s and the whole computation runs 21 of them — roughly
+ten minutes — so this never runs inside a
 request. It mirrors `umap_service`'s existing pattern rather than inventing one:
 module-level dicts keyed by scope (`u{user}` / `g{group}`), an in-flight set to
 dedupe concurrent dashboards, and a recorded failure so a doomed computation is
@@ -107,9 +121,12 @@ same ACL. Returns:
 - `points` — `crop_id`, `image_id`, `experiment_id`, `x`, `y`, `protein_name`,
   `protein_color`, `thumbnail_url`
 - `metrics` — `balanced_accuracy`, `chance`, `null_mean`, `null_max`,
-  `n_permutations`, `n_experiments`, `n_proteins`
+  `null_p95`, `p_value`, `per_class`, `n_permutations`, `n_experiments`,
+  `n_proteins`
 - `facets` — reused unchanged, so the filter panel needs no special case
-- `is_computing` / `compute_error` — the same polling contract as `is_stale`
+- `is_computing` / `is_stale` / `compute_error` — the same polling contract as the
+  UMAP endpoint, including staleness: the fit is a snapshot while the labels beside
+  it are read live, so a changed corpus is reported rather than silently mixed
 
 ⚠️ **The filter selects which points are returned, never which are fitted.** The
 projection is fitted once per scope; filtering refits nothing. Otherwise two
@@ -127,8 +144,13 @@ FOV mode is not offered for LDA: the labels are per-crop protein assignments.
 
 The metric strip reads, e.g.:
 
-> **Separation 0.26** · chance 0.07 · shuffled labels 0.05
+> **Separation 0.26** · chance 0.07 · shuffled labels 0.05 · p ≤ 0.048
 > Geometry from all data; the score is cross-validated by experiment.
+> Per protein: CLIP170 0.79 · TRIM46 0.52 · … · PRC1 0.07
+
+The verdict badge is driven by the p-value, not by the ratio: a ratio against the
+null depends on the class count, so 1.1× can be decisive with two proteins and
+meaningless with fourteen.
 
 ## Testing
 

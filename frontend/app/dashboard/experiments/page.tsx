@@ -291,6 +291,10 @@ export default function ExperimentsPage(): JSX.Element {
                         setOpenMenuCardId(open ? exp.id : null)
                       }
                       placeholder={t("assignProtein")}
+                      // Without this the clear row reads "Assign MAP Protein",
+                      // so clicking it on a card that HAS one silently unassigns
+                      // and cascades NULL to every image and crop.
+                      clearLabel={tCommon("none")}
                       hint={t("experimentProteinHint")}
                       variant="chip"
                       size="sm"
