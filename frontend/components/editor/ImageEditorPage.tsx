@@ -32,6 +32,7 @@ import type {
 import {
   cropToEditorBbox,
   generateTempId,
+  withGeometryFrom,
 } from "@/lib/editor/types";
 import {
   DEFAULT_FILTERS,
@@ -684,14 +685,9 @@ export function ImageEditorPage({
       const bbox = bboxes.find((b) => b.id === id);
       if (!bbox?.cropId) return;
 
-      // Store previous state for undo
-      const previousState: EditorBbox = {
-        ...bbox,
-        x: originalBbox.x,
-        y: originalBbox.y,
-        width: originalBbox.width,
-        height: originalBbox.height,
-      };
+      // Store previous state for undo (every geometry field from originalBbox --
+      // `bbox` already carries the new values by the time the drag completes)
+      const previousState = withGeometryFrom(bbox, originalBbox);
 
       // Call API to update
       try {
@@ -911,12 +907,9 @@ export function ImageEditorPage({
     async (bbox: EditorBbox) => {
       if (!bbox.original) return;
 
+      // Geometry (including angle) from `original`; see withGeometryFrom.
       const resetBbox: EditorBbox = {
-        ...bbox,
-        x: bbox.original.x,
-        y: bbox.original.y,
-        width: bbox.original.width,
-        height: bbox.original.height,
+        ...withGeometryFrom(bbox, bbox.original),
         isModified: false,
       };
 

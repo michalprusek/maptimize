@@ -691,6 +691,36 @@ async def test_crop_etag_changes_when_the_file_is_rewritten(
     assert (await _crop_image(mock_db, p, if_none_match=before)).status_code != 304
 
 
+async def test_get_crop_image_404s_when_the_file_vanishes_before_the_stat(
+    mock_db, no_group, tmp_path
+):
+    """A crop unlinked by a concurrent regenerate must 404, not 500.
+
+    `must-revalidate` made this race far easier to hit -- every gallery render now
+    issues a conditional request per crop instead of reading from cache -- and a
+    bare os.stat in file_etag turned a losable race into an opaque 500 while the
+    neighbouring branch returned a clean 404 for the very same missing file.
+    """
+    p = tmp_path / "crop.png"
+    p.write_bytes(b"about to vanish")
+    crop = fake_crop(mip_path=str(p))
+    mock_db.execute.return_value = make_result(scalar=crop)
+    # Patch file_etag, NOT os.stat: os.path.exists is built on os.stat and swallows
+    # OSError, so patching os.stat makes the earlier exists() check fail instead and
+    # the test passes without ever reaching the ETag path. (It did; perturbation
+    # caught it.) The file stays on disk so only the None-etag branch can 404 here.
+    with patch("routers.images.decode_token", return_value=token_payload()), \
+         patch("routers.images.file_etag", return_value=None):
+        with pytest.raises(HTTPException) as exc:
+            await r.get_crop_image(200, type="mip", token="t", db=mock_db)
+    assert exc.value.status_code == 404
+    assert p.exists()  # proves the 404 came from the etag, not a missing file
+
+
+def test_file_etag_returns_none_rather_than_raising(tmp_path):
+    assert r.file_etag(str(tmp_path / "nope.png")) is None
+
+
 def test_non_crop_images_keep_the_long_lived_cache(tmp_path):
     """Boundary: FOV/metric images are not rewritten under a stable URL, so the
     revalidation must NOT leak onto them (they are large and load in bulk)."""

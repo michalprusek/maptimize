@@ -58,18 +58,37 @@ settings = get_settings()
 IMAGE_CACHE_HEADERS = {"Cache-Control": "private, max-age=3600"}
 
 # Cache policy for image bytes that are rewritten IN PLACE under a stable URL.
-# ⚠️ Crop files are named cell_{bbox_x}_{bbox_y}_{suffix}.png and are served as
-# /crops/{id}/image, so neither the path nor the URL changes when a crop is edited
-# -- and rotating a box never moves its origin at all. Under max-age=3600 the
-# browser therefore kept showing the pre-edit crop for an hour, which looked
-# exactly like "rotation did not cut a new crop" even though the file on disk was
-# already the de-rotated one. Revalidation is what makes an edit visible.
+# ⚠️ Crop files are named cell_{bbox_x}_{bbox_y}_{suffix}.png and served as
+# /crops/{id}/image, so the URL never changes when a crop is edited; because the
+# name tracks only the origin, a rotation -- which never moves the origin at all --
+# additionally rewrites the very same path. Under max-age=3600 the browser
+# therefore kept showing the pre-edit crop for an hour, which looked exactly like
+# "rotation did not cut a new crop" even though the file on disk was already the
+# de-rotated one. Revalidation is what makes an edit visible.
+#
+# The long cache below is KEPT on FOV and metric images -- not because they are
+# immutable (POST /{id}/reprocess rewrites {stem}_mip.png at its own stable URL, so
+# they have the same staleness window), but because they are large and load in bulk,
+# and a stale FOV is not the surface a curator judges a cell on. If that trade ever
+# stops holding, they need this treatment too.
 MUTABLE_IMAGE_CACHE_HEADERS = {"Cache-Control": "private, max-age=0, must-revalidate"}
 
 
-def file_etag(file_path: str) -> str:
-    """Validator for a file served under a stable URL: changes when the bytes do."""
-    st = os.stat(file_path)
+def file_etag(file_path: str) -> Optional[str]:
+    """Validator for a file served under a stable URL: changes when the bytes do.
+
+    Returns None when the file cannot be stat'ed. A crop can be unlinked by a
+    concurrent regenerate between the caller's exists() check and this stat(), and
+    `must-revalidate` made that race far easier to hit: every gallery render now
+    issues a conditional request per crop instead of reading from cache. Raising
+    here turned a benign race into a 500 while the neighbouring branch returned a
+    clean 404 for the same missing file.
+    """
+    try:
+        st = os.stat(file_path)
+    except OSError as e:
+        logger.warning(f"Cannot stat crop file {file_path} for ETag: {e}")
+        return None
     return f'"{st.st_mtime_ns:x}-{st.st_size:x}"'
 
 
@@ -699,8 +718,17 @@ async def get_crop_image(
             detail=f"Crop image file not found ({type})"
         )
 
-    headers = {**MUTABLE_IMAGE_CACHE_HEADERS, "ETag": file_etag(file_path)}
-    if if_none_match == headers["ETag"]:
+    etag = file_etag(file_path)
+    if etag is None:
+        # Vanished between the exists() check above and the stat -- same outcome as
+        # a file that was already gone, rather than a 500 for a losable race.
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Crop image file not found ({type})"
+        )
+
+    headers = {**MUTABLE_IMAGE_CACHE_HEADERS, "ETag": etag}
+    if if_none_match == etag:
         return Response(status_code=status.HTTP_304_NOT_MODIFIED, headers=headers)
 
     return serve_image_file(file_path, headers=headers)
@@ -1166,8 +1194,28 @@ async def batch_update_crops(
                         )
                         crop = result.scalar_one_or_none()
                         if crop:
-                            await do_regen(crop, crop.image, task_db)
-                            successful_crop_ids.append(crop_id)
+                            # ⚠️ Check the contract. regenerate_crop_features
+                            # reports a failed re-cut as {"success": False}, and on
+                            # every such path the file on disk is still the PRE-edit
+                            # crop while the DB already holds the new geometry.
+                            # Appending regardless meant the embedding was computed
+                            # from stale pixels and then marked "ready" -- silently
+                            # wrong data feeding the UMAP and the LDA, with no log
+                            # line anywhere.
+                            regen = await do_regen(crop, crop.image, task_db)
+                            if regen.get("success"):
+                                successful_crop_ids.append(crop_id)
+                            else:
+                                err = regen.get("error", "regeneration failed")
+                                logger.error(
+                                    "Batch re-cut of crop %s (fov %s) failed: %s — "
+                                    "crop image left at its pre-edit pixels, "
+                                    "skipping embedding so it is not marked ready",
+                                    crop_id, fov_id, err,
+                                )
+                                await update_crop_embedding_status(
+                                    task_db, crop_id, "error", err
+                                )
                         else:
                             # Crop was deleted between status update and processing
                             logger.warning(f"Crop {crop_id} not found during regeneration - may have been deleted")

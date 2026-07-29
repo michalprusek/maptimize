@@ -981,6 +981,63 @@ async def test_regenerate_umap_invalidation_fails(mock_db, tmp_path):
     assert out["umap_invalidated"] is False
 
 
+async def test_regenerate_keeps_the_old_crop_file_when_the_recut_fails(mock_db, tmp_path):
+    """A failed re-cut must not leave the row pointing at a deleted file.
+
+    The old files used to be unlinked BEFORE the new pixels were written, and the
+    write was not guarded. On failure the session rolled back (so the DB kept the
+    old path) while the unlink did not, and the crop's thumbnail 404'd forever --
+    repairable only by the call that had just failed. Rotation makes this the
+    common case: the filename tracks only the box origin, which a rotation never
+    moves, so the delete and the rewrite target the very same path.
+    """
+    mip = _write_png(tmp_path / "mip.png", (100, 100))
+    crops_dir = tmp_path / "crops"
+    crops_dir.mkdir()
+    old_mip = _write_png(crops_dir / "cell_10_10_mip.png", (30, 30))
+    image = MagicMock(
+        width=100, height=100, file_path=str(tmp_path / "f.png"), sum_path=None, id=11
+    )
+    crop = MagicMock(
+        bbox_x=10, bbox_y=10, bbox_w=30, bbox_h=30, bbox_angle=44.0,
+        mip_path=str(old_mip), sum_crop_path=None,
+    )
+
+    with patch("services.umap_service.invalidate_crop_umap", new=AsyncMock()), \
+         patch.object(crop_svc, "get_mip_source_path", return_value=str(mip)), \
+         patch.object(crop_svc, "save_crop_image",
+                      side_effect=OSError("No space left on device")):
+        out = await crop_svc.regenerate_crop_features(crop, image, mock_db)
+
+    assert out["success"] is False              # reported, not raised past the router
+    assert "re-cut" in out["error"]
+    assert old_mip.exists(), "the pre-edit crop file was destroyed"
+    assert crop.mip_path == str(old_mip)        # row still matches what is on disk
+
+
+async def test_regenerate_deletes_a_superseded_file_but_not_the_new_one(mock_db, tmp_path):
+    """Moving the box renames the file; rotating it in place does not."""
+    mip = _write_png(tmp_path / "mip.png", (100, 100))
+    crops_dir = tmp_path / "crops"
+    crops_dir.mkdir()
+    stale = _write_png(crops_dir / "cell_5_5_mip.png", (30, 30))  # previous origin
+    image = MagicMock(
+        width=100, height=100, file_path=str(tmp_path / "f.png"), sum_path=None, id=12
+    )
+    crop = MagicMock(
+        bbox_x=10, bbox_y=10, bbox_w=30, bbox_h=30, bbox_angle=None,
+        mip_path=str(stale), sum_crop_path=None,
+    )
+
+    with patch("services.umap_service.invalidate_crop_umap", new=AsyncMock()), \
+         patch.object(crop_svc, "get_mip_source_path", return_value=str(mip)):
+        out = await crop_svc.regenerate_crop_features(crop, image, mock_db)
+
+    assert out["success"] is True
+    assert not stale.exists(), "the superseded file should be cleaned up"
+    assert Path(crop.mip_path).exists(), "the new crop file must survive the cleanup"
+
+
 # ============================================================================
 # create_manual_crop
 # ============================================================================

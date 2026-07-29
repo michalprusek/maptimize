@@ -1237,8 +1237,9 @@ tools:
       images(id, experiment_id, map_protein_id, original_filename, width, height,
       z_slices, file_size, status, created_at, processed_at);
       cell_crops(id, image_id, map_protein_id, bbox_x, bbox_y, bbox_w, bbox_h,
-      detection_confidence, bundleness_score, mean_intensity, skewness, kurtosis,
-      excluded, created_at);
+      bbox_angle, detection_confidence, bundleness_score, mean_intensity, skewness,
+      kurtosis, excluded, created_at);  -- bbox_angle: degrees about the box
+      centre, NULL = axis-aligned;
       map_proteins(id, name, full_name, uniprot_id, gene_name, organism,
       sequence_length) [shared, no user filter];
       microscopes(id, name, manufacturer, model, objective, magnification)

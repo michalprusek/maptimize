@@ -287,20 +287,41 @@ async def regenerate_crop_features(
     if not is_valid:
         return {"success": False, "error": error}
 
-    # Delete old crop files
-    delete_crop_files(crop)
-
     # Determine crops directory
     upload_dir = Path(image.file_path).parent
     crops_dir = upload_dir / "crops"
 
-    # Extract and save new MIP crop (de-rotated when bbox_angle is set)
-    mip_crop = extract_crop_from_projection(
-        mip, crop.bbox_x, crop.bbox_y, crop.bbox_w, crop.bbox_h, crop.bbox_angle or 0.0
-    )
-    crop.mip_path = str(
-        save_crop_image(mip_crop, crops_dir, crop.bbox_x, crop.bbox_y, "mip")
-    )
+    old_paths = (crop.mip_path, crop.sum_crop_path)
+    sum_error: Optional[str] = None
+
+    # Extract and save the new MIP crop (de-rotated when bbox_angle is set).
+    #
+    # ⚠️ This MUST come BEFORE the old files are removed, and it MUST return the
+    # service's {"success": False} contract rather than raise. Deleting first left
+    # the row pointing at a file that no longer existed whenever this failed
+    # (ENOSPC, a mkdir/save PermissionError on ./data, a corrupt source): the
+    # session rolls back so the DB keeps the old path, but the unlink does not roll
+    # back. The thumbnail then 404s forever, and the only repair is the very call
+    # that just failed. A raise also escaped `if not result["success"]` in the
+    # router and surfaced as an opaque 500.
+    try:
+        mip_crop = extract_crop_from_projection(
+            mip, crop.bbox_x, crop.bbox_y, crop.bbox_w, crop.bbox_h,
+            crop.bbox_angle or 0.0,
+        )
+        new_mip_path = str(
+            save_crop_image(mip_crop, crops_dir, crop.bbox_x, crop.bbox_y, "mip")
+        )
+    except Exception as e:
+        logger.error(
+            "Crop %s re-cut failed; keeping the existing crop files. "
+            "bbox=(%s,%s,%s,%s) angle=%s src=%s",
+            crop.id, crop.bbox_x, crop.bbox_y, crop.bbox_w, crop.bbox_h,
+            crop.bbox_angle, mip_source, exc_info=True,
+        )
+        return {"success": False, "error": f"Could not re-cut the crop: {e}"}
+
+    crop.mip_path = new_mip_path
 
     # Extract and save SUM crop if available
     if image.sum_path and Path(image.sum_path).exists():
@@ -314,8 +335,33 @@ async def regenerate_crop_features(
                 save_crop_image(sum_crop, crops_dir, crop.bbox_x, crop.bbox_y, "sum")
             )
         except Exception as e:
-            logger.warning(f"Failed to extract SUM crop: {e}")
+            # The old SUM file is about to be removed below, so this is a net loss:
+            # the crop had a SUM projection before the edit and has none after.
+            # Log enough to identify which crop, and report it to the caller --
+            # returning 200 with sum_crop_path: null and no warning reads as
+            # "the edit fully succeeded".
+            logger.error(
+                "Crop %s: SUM re-cut failed, crop now has no SUM projection. "
+                "src=%s bbox=(%s,%s,%s,%s) angle=%s",
+                crop.id, image.sum_path, crop.bbox_x, crop.bbox_y,
+                crop.bbox_w, crop.bbox_h, crop.bbox_angle, exc_info=True,
+            )
             crop.sum_crop_path = None
+            sum_error = str(e)
+
+    # The new files are on disk and the row points at them, so the pre-edit files
+    # can go. Skip any path the new crop still uses: a rotation-only edit does not
+    # move the box origin, so it rewrites the very same filename.
+    current = {crop.mip_path, crop.sum_crop_path}
+    for path_str in old_paths:
+        if path_str and path_str not in current:
+            path = Path(path_str)
+            if path.exists():
+                try:
+                    path.unlink()
+                    logger.debug(f"Deleted superseded crop file: {path}")
+                except OSError as e:
+                    logger.warning(f"Failed to delete crop file {path}: {e}")
 
     # Calculate mean intensity from new MIP crop
     crop.mean_intensity = float(np.mean(mip_crop))
@@ -349,6 +395,7 @@ async def regenerate_crop_features(
         "mip_path": crop.mip_path,
         "sum_crop_path": crop.sum_crop_path,
         "mean_intensity": crop.mean_intensity,
+        "sum_error": sum_error,
     }
 
 

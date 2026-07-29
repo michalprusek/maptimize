@@ -436,6 +436,32 @@ export function cropToEditorBbox(crop: CellCropGallery): EditorBbox {
 }
 
 /**
+ * `bbox` with its geometry taken from `from` — used to build an undo snapshot and
+ * to reset a box to its original coordinates.
+ *
+ * ⚠️ EVERY geometry field must come from `from`, never from `bbox`, and that is
+ * why this exists as one function instead of a spread at each call site. The
+ * interaction hooks write each intermediate value onto the live bbox on every
+ * mousemove, so by the time a drag completes `bbox` already holds the NEW
+ * geometry; spreading it and overriding only some fields silently keeps the new
+ * value for the rest. `angle` was missed in both places that did this by hand:
+ * undoing a rotation sent the new angle back and re-cut the crop for nothing, and
+ * "reset to original" restored position and size but left the box rotated. `tsc`
+ * cannot catch either, because `angle` is required on EditorBbox and the spread
+ * satisfies the type whether or not it is overridden.
+ */
+export function withGeometryFrom(bbox: EditorBbox, from: Rect): EditorBbox {
+  return {
+    ...bbox,
+    x: from.x,
+    y: from.y,
+    width: from.width,
+    height: from.height,
+    angle: from.angle ?? 0,
+  };
+}
+
+/**
  * Generate a temporary ID for new bboxes.
  */
 export function generateTempId(): string {
