@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 
 import aiofiles
 from PIL import Image as PILImage
-from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Form, Query, BackgroundTasks
+from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Form, Query, Header, BackgroundTasks
 from fastapi.responses import FileResponse, Response
 from sqlalchemy import select, func, delete, or_, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -56,6 +56,21 @@ settings = get_settings()
 
 # Cache policy for served image bytes (per-user, revalidate after 1h).
 IMAGE_CACHE_HEADERS = {"Cache-Control": "private, max-age=3600"}
+
+# Cache policy for image bytes that are rewritten IN PLACE under a stable URL.
+# ⚠️ Crop files are named cell_{bbox_x}_{bbox_y}_{suffix}.png and are served as
+# /crops/{id}/image, so neither the path nor the URL changes when a crop is edited
+# -- and rotating a box never moves its origin at all. Under max-age=3600 the
+# browser therefore kept showing the pre-edit crop for an hour, which looked
+# exactly like "rotation did not cut a new crop" even though the file on disk was
+# already the de-rotated one. Revalidation is what makes an edit visible.
+MUTABLE_IMAGE_CACHE_HEADERS = {"Cache-Control": "private, max-age=0, must-revalidate"}
+
+
+def file_etag(file_path: str) -> str:
+    """Validator for a file served under a stable URL: changes when the bytes do."""
+    st = os.stat(file_path)
+    return f'"{st.st_mtime_ns:x}-{st.st_size:x}"'
 
 
 # =============================================================================
@@ -251,7 +266,9 @@ def safe_remove_file(path: Optional[str]) -> bool:
     return False
 
 
-def serve_image_file(file_path: str) -> Response | FileResponse:
+def serve_image_file(
+    file_path: str, headers: Optional[dict] = None
+) -> Response | FileResponse:
     """
     Serve an image file, converting TIFF to PNG for browser compatibility.
 
@@ -260,10 +277,13 @@ def serve_image_file(file_path: str) -> Response | FileResponse:
 
     Args:
         file_path: Path to the image file
+        headers: Response headers; defaults to the 1h immutable-ish image cache.
+            Mutable content (crops) passes MUTABLE_IMAGE_CACHE_HEADERS + an ETag.
 
     Returns:
         Response with PNG data or FileResponse for non-TIFF formats
     """
+    headers = headers or IMAGE_CACHE_HEADERS
     file_lower = file_path.lower()
     if file_lower.endswith(('.tif', '.tiff')):
         try:
@@ -293,13 +313,13 @@ def serve_image_file(file_path: str) -> Response | FileResponse:
                 return Response(
                     content=buffer.getvalue(),
                     media_type="image/png",
-                    headers=IMAGE_CACHE_HEADERS,
+                    headers=headers,
                 )
         except Exception as e:
             logger.error(f"Failed to convert TIFF to PNG: {e}")
             # Fall through to return original file if conversion fails
 
-    return FileResponse(file_path, headers=IMAGE_CACHE_HEADERS)
+    return FileResponse(file_path, headers=headers)
 
 
 def validate_image_token(token: Optional[str]) -> TokenPayload:
@@ -653,9 +673,16 @@ async def get_crop_image(
     crop_id: int,
     type: str = Query("mip", enum=["mip", "sum"]),
     token: Optional[str] = Query(None, description="JWT token for image requests"),
+    if_none_match: Optional[str] = Header(None),
     db: AsyncSession = Depends(get_db)
 ):
-    """Get a cell crop image (MIP or SUM projection)."""
+    """Get a cell crop image (MIP or SUM projection).
+
+    Crops are editable, and the URL is keyed by crop id, so the bytes behind a
+    fixed URL change whenever a box is moved, resized, rotated or regenerated.
+    The response therefore revalidates instead of sitting in the browser cache;
+    the ETag keeps the common "nothing changed" case a bodyless 304.
+    """
     payload = validate_image_token(token)
 
     crop = await get_crop_for_read(db, crop_id, payload.sub)
@@ -672,7 +699,11 @@ async def get_crop_image(
             detail=f"Crop image file not found ({type})"
         )
 
-    return serve_image_file(file_path)
+    headers = {**MUTABLE_IMAGE_CACHE_HEADERS, "ETag": file_etag(file_path)}
+    if if_none_match == headers["ETag"]:
+        return Response(status_code=status.HTTP_304_NOT_MODIFIED, headers=headers)
+
+    return serve_image_file(file_path, headers=headers)
 
 
 @router.delete("/crops/{crop_id}", status_code=status.HTTP_204_NO_CONTENT)

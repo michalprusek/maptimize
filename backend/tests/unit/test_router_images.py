@@ -639,6 +639,67 @@ async def test_get_crop_image_success_sum(mock_db, no_group, tmp_path):
     assert out.__class__.__name__ == "FileResponse"
 
 
+# --- crop images are mutable behind a stable URL -----------------------------
+# A crop file is named cell_{bbox_x}_{bbox_y}_*.png and served as /crops/{id}/image,
+# so neither changes when the box is edited -- and rotating never moves the origin.
+# Caching these for an hour made a rotated crop keep rendering its pre-rotation
+# bytes, which read as "rotation did not re-cut the crop" while the file on disk
+# was already de-rotated.
+
+
+async def _crop_image(mock_db, path, **kw):
+    crop = fake_crop(mip_path=str(path))
+    mock_db.execute.return_value = make_result(scalar=crop)
+    with patch("routers.images.decode_token", return_value=token_payload()):
+        return await r.get_crop_image(200, type="mip", token="t", db=mock_db, **kw)
+
+
+async def test_get_crop_image_revalidates_instead_of_caching_for_an_hour(
+    mock_db, no_group, tmp_path
+):
+    p = tmp_path / "crop.png"
+    p.write_bytes(b"rotated")
+    out = await _crop_image(mock_db, p)
+    assert out.headers["cache-control"] == "private, max-age=0, must-revalidate"
+    assert out.headers["etag"]
+
+
+async def test_get_crop_image_returns_304_when_the_etag_still_matches(
+    mock_db, no_group, tmp_path
+):
+    p = tmp_path / "crop.png"
+    p.write_bytes(b"rotated")
+    etag = r.file_etag(str(p))
+    out = await _crop_image(mock_db, p, if_none_match=etag)
+    assert out.status_code == 304
+    assert out.body == b""
+
+
+async def test_crop_etag_changes_when_the_file_is_rewritten(
+    mock_db, no_group, tmp_path
+):
+    """The actual guard: re-cutting a crop must invalidate the cached image."""
+    p = tmp_path / "crop.png"
+    p.write_bytes(b"axis-aligned")
+    before = (await _crop_image(mock_db, p)).headers["etag"]
+
+    p.write_bytes(b"de-rotated bytes")  # what regenerate_crop_features does
+    after = (await _crop_image(mock_db, p)).headers["etag"]
+    assert before != after
+
+    # ...and a client holding the stale validator is no longer told "not modified".
+    assert (await _crop_image(mock_db, p, if_none_match=before)).status_code != 304
+
+
+def test_non_crop_images_keep_the_long_lived_cache(tmp_path):
+    """Boundary: FOV/metric images are not rewritten under a stable URL, so the
+    revalidation must NOT leak onto them (they are large and load in bulk)."""
+    p = tmp_path / "fov.png"
+    p.write_bytes(b"x")
+    out = r.serve_image_file(str(p))
+    assert out.headers["cache-control"] == "private, max-age=3600"
+
+
 # ============================================================================
 # delete_cell_crop
 # ============================================================================
