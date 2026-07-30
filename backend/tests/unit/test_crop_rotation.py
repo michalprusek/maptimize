@@ -62,8 +62,13 @@ def test_rotation_3d_keeps_channels_separate():
     p[:, 50:, 0] = 255.0  # only the red channel has the edge
     out = extract_crop_from_projection(p, 30, 30, 40, 40, 30.0)
     assert out.shape == (40, 40, 3)
-    # green/blue channels stay empty -> rotation didn't mix channels
-    assert out[..., 1].max() == 0 and out[..., 2].max() == 0
+    # Green/blue stay empty -> rotation didn't mix channels. Threshold rather than
+    # exact zero: the cubic spline prefilter leaves ~1e-14 numerical dust in an
+    # all-zero channel. Real channel mixing would leak the red channel's 255s, so
+    # 1e-6 still catches it with eight orders of magnitude to spare -- and it is far
+    # below one uint8 intensity level, which is the smallest difference that can
+    # survive into a stored crop.
+    assert out[..., 1].max() < 1e-6 and out[..., 2].max() < 1e-6
     assert out[..., 0].max() > 0
 
 
@@ -160,3 +165,96 @@ def test_rotation_can_also_make_an_overflowing_box_fit():
     'rotated is always stricter' creeping into the validator."""
     assert validate_bbox_within_image(70, 45, 39, 10, 100, 100)[0] is False
     assert validate_bbox_within_image(70, 45, 39, 10, 100, 100, 90.0) == (True, None)
+
+
+# ----- the interpolation order is a measured choice -------------------------
+# An axis-aligned crop is an exact slice, a rotated one is resampled, so whatever the
+# resampler does to texture becomes a systematic rotated-vs-unrotated difference that
+# the embedding, the UMAP and the discriminant projection can all read. Measured on
+# real production crops: bilinear loses ~40% of Laplacian variance and 12% of mean
+# gradient at 30-45 deg; cubic loses 17.7% and 3.6%. These pin that choice.
+
+
+def _affine_with_order(projection, x, y, w, h, angle, order):
+    """Reference implementation of the SAME map, with the order as a parameter, so
+    the production function can be compared against a bilinear baseline."""
+    from scipy import ndimage
+
+    cx, cy = x + w / 2.0, y + h / 2.0
+    t = np.deg2rad(angle)
+    c, s = np.cos(t), np.sin(t)
+    return ndimage.affine_transform(
+        projection,
+        np.array([[c, s], [-s, c]]),
+        offset=(cy - (h / 2.0) * c - (w / 2.0) * s,
+                cx + (h / 2.0) * s - (w / 2.0) * c),
+        output_shape=(h, w), order=order, mode="constant", cval=0.0,
+    )
+
+
+def _texture(n=160, seed=7) -> np.ndarray:
+    """Fine, high-frequency structure -- what a low-pass filter destroys first and
+    what a bundleness measure is actually looking at."""
+    rng = np.random.default_rng(seed)
+    yy, xx = np.mgrid[0:n, 0:n]
+    base = 120.0 + 100.0 * np.sin(xx * 1.1) * np.cos(yy * 0.9)
+    return np.clip(base + rng.normal(0, 18, (n, n)), 0, 255).astype(np.float32)
+
+
+def _lapvar(a):
+    from scipy import ndimage
+    return float(ndimage.laplace(a.astype(np.float64)).var())
+
+
+def _gradmean(a):
+    gx, gy = np.gradient(a.astype(np.float64))
+    return float(np.hypot(gx, gy).mean())
+
+
+def test_derotation_preserves_texture_better_than_bilinear_would():
+    """The reason for order=3. Reverting to order=1 reds this."""
+    p = _texture()
+    x, y, w, h, angle = 40, 40, 70, 70, 30.0
+    exact = p[y:y + h, x:x + w]
+
+    produced = extract_crop_from_projection(p, x, y, w, h, angle)
+    bilinear = _affine_with_order(p, x, y, w, h, angle, 1)
+
+    # Closeness to the exact slice's texture, as a fraction (1.0 = no loss).
+    for measure in (_lapvar, _gradmean):
+        ref = measure(exact)
+        got_err = abs(measure(produced) - ref) / ref
+        bil_err = abs(measure(bilinear) - ref) / ref
+        assert got_err < bil_err, (
+            f"{measure.__name__}: produced err {got_err:.3f} is not better than "
+            f"bilinear's {bil_err:.3f}"
+        )
+
+
+def test_derotation_does_not_invent_intensities_outside_the_source():
+    """Cubic splines overshoot near sharp edges; unclipped that becomes a halo once
+    the crop is percentile-stretched into uint8."""
+    p = np.zeros((120, 120), dtype=np.float32)
+    p[40:80, 40:80] = 255.0          # a hard-edged square: worst case for ringing
+    out = extract_crop_from_projection(p, 30, 30, 60, 60, 20.0)
+    assert out.min() >= p.min() - 1e-6
+    assert out.max() <= p.max() + 1e-6
+
+    # ...and the unclipped reference really does overshoot, so the clip is load-bearing
+    raw = _affine_with_order(p, 30, 30, 60, 60, 20.0, 3)
+    assert raw.max() > p.max() + 1e-6 or raw.min() < p.min() - 1e-6
+
+
+def test_ninety_degrees_is_an_exact_pixel_permutation():
+    """No resampling is mathematically needed at 90 deg, and none happens: the output
+    is the input permuted, offset one row by the w/2 centre convention that
+    _rotated_corners and the canvas mirror also use."""
+    p = _texture(n=100)
+    side = 40
+    x = y = 30
+    exact = p[y:y + side, x:x + side]
+    out = extract_crop_from_projection(p, x, y, side, side, 90.0)
+    truth = np.rot90(exact, k=1)
+    # interior only: the offset row wraps at the border
+    shifted = np.roll(truth, 1, axis=0)
+    assert np.abs(out[1:-1, 1:-1] - shifted[1:-1, 1:-1]).max() < 1e-3

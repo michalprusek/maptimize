@@ -35,11 +35,15 @@ export function extractCropFromImage(
       // De-rotate: rotate the source about the box centre so the rotated box
       // becomes upright, then the w×h canvas keeps only that region. The GEOMETRY
       // mirrors the backend (crop_editor_service.extract_crop_from_projection).
-      // ⚠️ The PIXELS are not identical: the backend resamples order=1, fills
-      // out-of-frame with black and re-stretches intensity over the crop's own
-      // percentiles, while the canvas uses browser smoothing, leaves out-of-frame
-      // transparent and draws already-normalised bytes. Expect a visible difference
-      // near a FOV edge -- the preview shows the framing, not the tones.
+      // ⚠️ The PIXELS are not identical: the backend resamples with a cubic spline
+      // (order=3, clipped to the source range -- chosen by measurement because
+      // bilinear cost ~40% of the crop's Laplacian variance and that loss is a
+      // confounder for the discriminant projection), whereas the canvas only has
+      // the browser's bilinear-ish smoothing. The backend also fills out-of-frame
+      // with black and re-stretches intensity over the crop's own percentiles,
+      // whereas the canvas leaves out-of-frame transparent and draws bytes that are
+      // already normalised. Expect a visible difference near a FOV edge -- the
+      // preview shows the framing, not the tones.
       const cx = bbox.x + bbox.width / 2;
       const cy = bbox.y + bbox.height / 2;
       cropCtx.save();

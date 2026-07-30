@@ -138,6 +138,37 @@ def extract_crop_from_projection(
     ``frontend/lib/editor/canvasUtils.ts::extractCropFromImage`` for the live
     preview. Change the rotation map here and that must change too.
 
+    ⚠️ **Interpolation order is a scientific choice, not a default.** An axis-aligned
+    crop is an exact slice, a rotated one is resampled, so whatever the resampler
+    does to texture becomes a systematic difference between rotated and unrotated
+    crops -- and that difference is readable by the DINOv3 embedding, the UMAP and the
+    discriminant projection, exactly the way the microscope turned out to be. Measured
+    on six real production crops (HMMR FOVs, 531-689 px boxes), change in texture
+    statistics versus the exact slice at 30 deg / 45 deg:
+
+    ===== =================== ============== ==========================
+    order Laplacian variance  mean gradient  out-of-range
+    ===== =================== ============== ==========================
+    0     **+162% / +216%**   -1.7%          none
+    1     -40% / -38%         -12.0%         none
+    3     **-17.7% / -17.5%** **-3.6%**      2.1% of range, 1.4% of px
+    ===== =================== ============== ==========================
+
+    ``order=0`` is disqualified: nearest-neighbour *manufactures* high-frequency
+    structure, which is the worst possible artifact for a texture measure. ``order=3``
+    halves the texture loss of bilinear and cuts the gradient artifact 3.4x; its only
+    cost is slight spline overshoot, which is clipped to the source range below so the
+    function cannot return intensities the microscope never recorded.
+
+    This reduces the rotated/unrotated asymmetry; it does not remove it. Only
+    resampling BOTH paths identically would, and that would rewrite every stored crop.
+
+    Also measured: at 90 deg the sampling is an exact pixel permutation for every
+    order (verified against ``np.rot90``), offset by one row because the centre
+    convention here is ``w/2`` rather than ``(w-1)/2``. That convention is shared with
+    ``_rotated_corners`` and the canvas mirror, so it is deliberate -- changing it
+    would move every rotated crop by a pixel and desynchronise the three.
+
     Returns:
         Cropped numpy array of shape (bbox_h, bbox_w[, C])
     """
@@ -164,10 +195,14 @@ def extract_crop_from_projection(
     else:
         offset = (row_off, col_off)
         output_shape = (bbox_h, bbox_w)
-    return ndimage.affine_transform(
+    out = ndimage.affine_transform(
         projection, matrix, offset=offset, output_shape=output_shape,
-        order=1, mode="constant", cval=0.0,
+        order=3, mode="constant", cval=0.0,
     )
+    # Cubic splines overshoot near sharp edges. Clip to the source range so a
+    # de-rotated crop can never contain an intensity the source did not, rather than
+    # leaving it to whatever uint8 conversion happens downstream.
+    return np.clip(out, projection.min(), projection.max())
 
 
 def save_crop_image(
