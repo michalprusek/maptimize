@@ -83,26 +83,26 @@ def test_table_references_strips_on_clause_identifiers():
 
 def test_inject_uses_alias_not_table_name():
     out = _inject_user_id_filter(
-        "SELECT * FROM experiments e WHERE e.status = 'active'", "experiments", "e", 3
+        "SELECT * FROM experiments e WHERE e.status = 'active'", "experiments", "e", [3]
     )
     # The predicate must be alias-qualified; the bare table name would be an
     # "invalid reference to FROM-clause entry" in Postgres once aliased.
     assert "e.user_id = :user_id" in out
-    assert "e.group_id = :group_id" in out
+    assert "e.group_id = ANY(:group_ids)" in out
     assert "experiments.user_id" not in out
     # the original WHERE condition is preserved, wrapped in parens
     assert "(e.status = 'active')" in out
 
 
 def test_inject_experiments_without_group_is_owner_only():
-    out = _inject_user_id_filter("SELECT * FROM experiments", "experiments", "experiments", None)
+    out = _inject_user_id_filter("SELECT * FROM experiments", "experiments", "experiments", [])
     assert out.endswith("WHERE experiments.user_id = :user_id")
     assert "group_id" not in out
 
 
 def test_inject_rag_documents_gates_group_on_thread_null():
-    out = _inject_user_id_filter("SELECT * FROM rag_documents d", "rag_documents", "d", 9)
-    assert "d.thread_id IS NULL AND d.group_id = :group_id" in out
+    out = _inject_user_id_filter("SELECT * FROM rag_documents d", "rag_documents", "d", [9])
+    assert "d.thread_id IS NULL AND d.group_id = ANY(:group_ids)" in out
 
 
 def test_inject_preserves_trailing_clause():
@@ -283,20 +283,20 @@ def test_reference_tables_are_readable_and_never_scoped(table):
 async def test_run_query_scopes_group_and_limits():
     db, cap = _capture_db(rows=[(1, "a"), (2, "b")], cols=["id", "name"])
     out = await run_query(
-        "SELECT id, name FROM experiments", user_id=7, group_id=3, db=db
+        "SELECT id, name FROM experiments", user_id=7, group_ids=[3], db=db
     )
     assert out == {"columns": ["id", "name"], "rows": [
         {"id": 1, "name": "a"}, {"id": 2, "name": "b"}], "row_count": 2}
     assert "experiments.user_id = :user_id" in cap["sql"]
-    assert "experiments.group_id = :group_id" in cap["sql"]
+    assert "experiments.group_id = ANY(:group_ids)" in cap["sql"]
     assert "LIMIT :limit_val" in cap["sql"]
-    assert cap["params"]["user_id"] == 7 and cap["params"]["group_id"] == 3
+    assert cap["params"]["user_id"] == 7 and cap["params"]["group_ids"] == [3]
     assert cap["params"]["limit_val"] == 100  # default
 
 
 async def test_run_query_respects_explicit_limit_and_clamps():
     db, cap = _capture_db(rows=[], cols=[])
-    await run_query("SELECT id FROM experiments", user_id=1, group_id=None, db=db, limit=99999)
+    await run_query("SELECT id FROM experiments", user_id=1, group_ids=[], db=db, limit=99999)
     assert cap["params"]["limit_val"] == 1000  # clamped to MAX_ROW_LIMIT
 
 
@@ -305,7 +305,7 @@ async def test_run_query_self_join_binds_both_aliases():
     await run_query(
         "SELECT * FROM comparisons c1 JOIN comparisons c2 ON c1.winner_id = c2.crop_a_id "
         "WHERE c1.undone = false",
-        user_id=5, group_id=None, db=db,
+        user_id=5, group_ids=[], db=db,
     )
     assert "c1.user_id = :user_id" in cap["sql"]
     assert "c2.user_id = :user_id" in cap["sql"]
@@ -314,7 +314,7 @@ async def test_run_query_self_join_binds_both_aliases():
 async def test_run_query_empty_sql_rejected():
     db, _ = _capture_db()
     with pytest.raises(SqlQueryError):
-        await run_query("   ", user_id=1, group_id=None, db=db)
+        await run_query("   ", user_id=1, group_ids=[], db=db)
     db.execute.assert_not_awaited()
 
 
@@ -323,7 +323,7 @@ async def test_run_query_execution_error_rolls_back():
     db.execute = AsyncMock(side_effect=SQLAlchemyError("boom"))
     db.rollback = AsyncMock()
     with pytest.raises(SqlQueryError):
-        await run_query("SELECT id FROM experiments", user_id=1, group_id=None, db=db)
+        await run_query("SELECT id FROM experiments", user_id=1, group_ids=[], db=db)
     db.rollback.assert_awaited_once()
 
 
@@ -333,7 +333,7 @@ async def test_run_query_still_raises_when_rollback_also_fails():
     db.execute = AsyncMock(side_effect=SQLAlchemyError("boom"))
     db.rollback = AsyncMock(side_effect=SQLAlchemyError("rollback boom"))
     with pytest.raises(SqlQueryError):
-        await run_query("SELECT id FROM experiments", user_id=1, group_id=None, db=db)
+        await run_query("SELECT id FROM experiments", user_id=1, group_ids=[], db=db)
 
 
 # ---------------------------------------------------------------------------
@@ -347,7 +347,7 @@ async def test_run_query_injects_correlation_even_when_model_on_is_bogus():
     db, cap = _capture_db(rows=[], cols=[])
     await run_query(
         "SELECT i.id FROM experiments e JOIN images i ON e.id = e.id",
-        user_id=1, group_id=None, db=db,
+        user_id=1, group_ids=[], db=db,
     )
     assert "i.experiment_id = e.id" in cap["sql"]      # injected FK correlation
     assert "experiments.user_id = :user_id" not in cap["sql"]  # aliased, not bare name
@@ -359,11 +359,11 @@ async def test_run_query_join_group_by_scopes_before_group_and_appends_limit():
     await run_query(
         "SELECT status, COUNT(*) FROM images i JOIN experiments e "
         "ON i.experiment_id = e.id GROUP BY status",
-        user_id=7, group_id=3, db=db,
+        user_id=7, group_ids=[3], db=db,
     )
     sql = cap["sql"]
     assert "i.experiment_id = e.id" in sql
-    assert "(e.user_id = :user_id OR e.group_id = :group_id)" in sql
+    assert "(e.user_id = :user_id OR e.group_id = ANY(:group_ids))" in sql
     # ACL/correlation land in a WHERE BEFORE the GROUP BY, LIMIT is appended last
     assert sql.index(":user_id") < sql.index("GROUP BY")
     assert sql.rstrip().endswith("LIMIT :limit_val")
@@ -371,10 +371,10 @@ async def test_run_query_join_group_by_scopes_before_group_and_appends_limit():
 
 async def test_run_query_owner_only_omits_group_term_and_param():
     db, cap = _capture_db(rows=[], cols=[])
-    await run_query("SELECT id FROM experiments", user_id=1, group_id=None, db=db)
+    await run_query("SELECT id FROM experiments", user_id=1, group_ids=[], db=db)
     assert "experiments.user_id = :user_id" in cap["sql"]
     assert "group_id" not in cap["sql"]
-    assert "group_id" not in cap["params"]
+    assert "group_ids" not in cap["params"]
 
 
 # ---------------------------------------------------------------------------

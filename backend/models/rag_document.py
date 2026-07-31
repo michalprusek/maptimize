@@ -1,7 +1,7 @@
 """RAG document models for document indexing and retrieval."""
 from datetime import datetime
 from enum import Enum as PyEnum
-from typing import TYPE_CHECKING, List, Optional
+from typing import TYPE_CHECKING, List, Optional, Sequence
 
 from pgvector.sqlalchemy import Vector
 from sqlalchemy import (
@@ -18,18 +18,21 @@ if TYPE_CHECKING:
     from .user import User
 
 
-def _library_visible(user_id: int, group_id: Optional[int]) -> ColumnElement:
-    """Who may see a LIBRARY document (thread_id IS NULL): owner, or -- when the
-    caller is in a group -- any member of that group. group_id=None -> owner only."""
-    if group_id is None:
+def _library_visible(user_id: int, group_ids: Sequence[int]) -> ColumnElement:
+    """Who may see a LIBRARY document (thread_id IS NULL): the owner, or any member
+    of a group the document is shared with. An empty ``group_ids`` -> owner only."""
+    if not group_ids:
         return RAGDocument.user_id == user_id
-    return or_(RAGDocument.user_id == user_id, RAGDocument.group_id == group_id)
+    return or_(
+        RAGDocument.user_id == user_id,
+        RAGDocument.group_id.in_(list(group_ids)),
+    )
 
 
 def document_scope(
     user_id: int,
     thread_id: Optional[int] = None,
-    group_id: Optional[int] = None,
+    group_ids: Sequence[int] = (),
 ) -> ColumnElement:
     """SSOT for which documents a caller may see in a LISTING or SEARCH.
 
@@ -38,12 +41,12 @@ def document_scope(
 
     ``thread_id=None`` -> the shared library only.
     ``thread_id=N``    -> the shared library PLUS the caller's OWN attachments in N.
-    ``group_id=None``  -> owner-only (fail-closed).
+    ``group_ids=()``   -> owner-only (fail-closed).
 
     Every listing/search query that scopes RAGDocument goes through this. Mirrors
     the ``experiment_owner_filter`` pattern in utils/groups.py.
     """
-    library = and_(RAGDocument.thread_id.is_(None), _library_visible(user_id, group_id))
+    library = and_(RAGDocument.thread_id.is_(None), _library_visible(user_id, group_ids))
     if thread_id is None:
         return library
     own_attachment = and_(
@@ -53,21 +56,21 @@ def document_scope(
     return or_(library, own_attachment)
 
 
-def document_read_scope(user_id: int, group_id: Optional[int] = None) -> ColumnElement:
+def document_read_scope(user_id: int, group_ids: Sequence[int] = ()) -> ColumnElement:
     """SSOT for a single-document FETCH BY ID (serve pdf/pages, read content,
     extract region, cached passage).
 
     The owner may fetch any of their own documents -- including their own chat
     attachments, needed to serve attachment pages in the viewer. A group member
-    may additionally fetch a group-shared LIBRARY document. ``group_id=None`` ->
+    may additionally fetch a group-shared LIBRARY document. ``group_ids=()`` ->
     owner-only (fail-closed). Writes must NOT use this -- they stay owner-only.
     """
     owner = RAGDocument.user_id == user_id
-    if group_id is None:
+    if not group_ids:
         return owner
     shared_library = and_(
         RAGDocument.thread_id.is_(None),
-        RAGDocument.group_id == group_id,
+        RAGDocument.group_id.in_(list(group_ids)),
     )
     return or_(owner, shared_library)
 
@@ -75,7 +78,7 @@ def document_read_scope(user_id: int, group_id: Optional[int] = None) -> ColumnE
 def document_dedupe_scope(
     user_id: int,
     thread_id: Optional[int],
-    group_id: Optional[int],
+    group_ids: Sequence[int] = (),
 ) -> ColumnElement:
     """SSOT for which documents a new upload may be recognised as a duplicate OF.
 
@@ -90,14 +93,14 @@ def document_dedupe_scope(
 
     Library uploads dedupe group-wide, so one lab indexes a paper once. Chat
     attachments dedupe only against the caller's own attachments in the SAME
-    thread, and never widen to a group. ``group_id=None`` -> owner only.
+    thread, and never widen to a group. ``group_ids=()`` -> owner only.
 
     Callers must ALSO exclude ``status == FAILED``; that half of the eligibility
     rule lives at the call site in ``save_uploaded_document``, not here, because
     it is about the document's usefulness rather than its visibility.
     """
     if thread_id is None:
-        return and_(RAGDocument.thread_id.is_(None), _library_visible(user_id, group_id))
+        return and_(RAGDocument.thread_id.is_(None), _library_visible(user_id, group_ids))
     return and_(RAGDocument.user_id == user_id, RAGDocument.thread_id == thread_id)
 
 

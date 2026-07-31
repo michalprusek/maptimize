@@ -20,7 +20,6 @@ from models.cell_crop import CellCrop
 from models.experiment import Experiment
 from models.image import Image, MapProtein
 from schemas.embeddings import UmapType
-from utils.groups import experiment_owner_filter, get_user_group_id
 
 logger = logging.getLogger(__name__)
 
@@ -211,7 +210,6 @@ async def _compute_and_store_umap(
     items: list,
     umap_type: UmapType,
     db: AsyncSession,
-    user_id: int,
 ) -> dict:
     """
     Common helper for computing UMAP and storing coordinates.
@@ -222,7 +220,6 @@ async def _compute_and_store_umap(
         items: List of CellCrop or Image objects with embeddings
         umap_type: Which corpus these items are
         db: AsyncSession database connection
-        user_id: User ID for logging
 
     Returns:
         dict with success count, silhouette score, and computed_at
@@ -256,8 +253,7 @@ async def _compute_and_store_umap(
 
     silhouette_str = f"{silhouette:.3f}" if silhouette else "N/A"
     logger.info(
-        f"Computed {word} UMAP for user {user_id}: "
-        f"{len(items)} {word}, silhouette={silhouette_str}"
+        f"Computed {word} UMAP: {len(items)} {word}, silhouette={silhouette_str}"
     )
 
     return {
@@ -267,73 +263,62 @@ async def _compute_and_store_umap(
     }
 
 
-async def compute_crop_umap(user_id: int, db: AsyncSession) -> dict:
+async def compute_crop_umap(db: AsyncSession) -> dict:
     """
-    Compute UMAP for cell crops and store coordinates in database.
+    Compute UMAP for every cell crop and store the coordinates in the database.
 
-    Always covers everything the user can read (own + group) — see
-    refresh_umap_scope for why a narrower fit would corrupt the shared
-    coordinate space.
+    Fits over ALL crops with an embedding, not the caller's readable subset. The
+    coordinates are one shared projection stored on the crop row, so a per-caller
+    fit is only safe while every caller shares a corpus exactly -- which stopped
+    being true when a user could belong to several groups. Access control applies
+    to what a request RETURNS, never to what is fitted.
 
     Args:
-        user_id: User ID for ownership filtering
         db: AsyncSession database connection
 
     Returns:
         dict with success count, silhouette score, and computed_at
     """
-    group_id = await get_user_group_id(user_id, db)
-
     query = (
         select(CellCrop)
         .join(Image, CellCrop.image_id == Image.id)
         .join(Experiment, Image.experiment_id == Experiment.id)
         .options(selectinload(CellCrop.map_protein))
-        .where(
-            experiment_owner_filter(user_id, group_id),
-            CellCrop.embedding.isnot(None),
-        )
+        .where(CellCrop.embedding.isnot(None))
         .order_by(CellCrop.id)
     )
 
     result = await db.execute(query)
     crops = result.scalars().all()
 
-    return await _compute_and_store_umap(crops, UmapType.CROPPED, db, user_id)
+    return await _compute_and_store_umap(crops, UmapType.CROPPED, db)
 
 
-async def compute_fov_umap(user_id: int, db: AsyncSession) -> dict:
+async def compute_fov_umap(db: AsyncSession) -> dict:
     """
-    Compute UMAP for FOV images and store coordinates in database.
+    Compute UMAP for every FOV image and store the coordinates in the database.
 
-    Always covers everything the user can read (own + group) — see
-    refresh_umap_scope for why a narrower fit would corrupt the shared
-    coordinate space.
+    Fits over ALL images with an embedding -- see compute_crop_umap for why the
+    corpus must not depend on the caller.
 
     Args:
-        user_id: User ID for ownership filtering
         db: AsyncSession database connection
 
     Returns:
         dict with success count, silhouette score, and computed_at
     """
-    group_id = await get_user_group_id(user_id, db)
-
     query = (
         select(Image)
         .join(Experiment, Image.experiment_id == Experiment.id)
         .options(selectinload(Image.map_protein))
-        .where(
-            experiment_owner_filter(user_id, group_id),
-            Image.embedding.isnot(None),
-        )
+        .where(Image.embedding.isnot(None))
         .order_by(Image.id)
     )
 
     result = await db.execute(query)
     images = result.scalars().all()
 
-    return await _compute_and_store_umap(images, UmapType.FOV, db, user_id)
+    return await _compute_and_store_umap(images, UmapType.FOV, db)
 
 
 # =============================================================================
@@ -348,73 +333,53 @@ async def compute_fov_umap(user_id: int, db: AsyncSession) -> dict:
 # process — see the CMD in backend/Dockerfile{,.gpu,.dev}. Adding `--workers N`
 # would silently reduce this to per-worker dedupe, letting N workers fit the same
 # rows concurrently and race their writes.
-_inflight_refreshes: set[tuple[str, str]] = set()
+_inflight_refreshes: set[tuple[str]] = set()
 
 # Scopes whose last refresh raised, with the reason. A read that sees a scope in
 # here stops rescheduling it: without this the client's poll loop would trigger a
 # fresh multi-second fit every few seconds forever, and the failure would stay
 # invisible — the exact silence that hid this bug for months. Cleared on the next
 # success or by an explicit /umap/recompute.
-_failed_refreshes: dict[tuple[str, str], str] = {}
+_failed_refreshes: dict[tuple[str], str] = {}
 
 
-def refresh_scope_key(
-    umap_type: UmapType,
-    user_id: int,
-    group_id: Optional[int],
-) -> tuple[str, str]:
+def refresh_scope_key(umap_type: UmapType) -> tuple[str]:
     """Dedupe key for a refresh.
 
-    Group members share a corpus, so they share a key — otherwise each member's
-    dashboard would kick off its own redundant fit of the same rows. That holds
-    because joining a group adopts the member's group-less experiments
-    (utils.groups.adopt_orphan_experiments), so no member can read an experiment
-    their peers cannot.
-
-    The scope token is prefixed because user ids and group ids share this key
-    space: group 2 and user 2 must not collide.
+    There is one projection per type and it covers every row, so every caller's
+    dashboard shares a key -- otherwise each visitor would kick off a redundant
+    multi-second fit of the same rows. The key stayed a tuple so the in-flight and
+    failure maps did not need reshaping when the user/group token was dropped.
     """
-    scope = f"g{group_id}" if group_id is not None else f"u{user_id}"
-    return (umap_type.value, scope)
+    return (umap_type.value,)
 
 
-def get_refresh_error(
-    umap_type: UmapType,
-    user_id: int,
-    group_id: Optional[int],
-) -> Optional[str]:
-    """Return why this scope's last refresh failed, or None if it didn't."""
-    return _failed_refreshes.get(refresh_scope_key(umap_type, user_id, group_id))
+def get_refresh_error(umap_type: UmapType) -> Optional[str]:
+    """Return why this projection's last refresh failed, or None if it didn't."""
+    return _failed_refreshes.get(refresh_scope_key(umap_type))
 
 
-def clear_refresh_error(
-    umap_type: UmapType,
-    user_id: int,
-    group_id: Optional[int],
-) -> None:
-    """Forget a scope's recorded failure so it will be retried."""
-    _failed_refreshes.pop(refresh_scope_key(umap_type, user_id, group_id), None)
+def clear_refresh_error(umap_type: UmapType) -> None:
+    """Forget a recorded failure so the projection will be retried."""
+    _failed_refreshes.pop(refresh_scope_key(umap_type), None)
 
 
-async def refresh_umap_scope(
-    umap_type: UmapType,
-    user_id: int,
-    group_id: Optional[int] = None,
-) -> None:
+async def refresh_umap_scope(umap_type: UmapType) -> None:
     """
-    Recompute and store UMAP coordinates for a whole scope, at most once at a time.
+    Recompute and store UMAP coordinates for every row, at most once at a time.
 
-    Always covers the full scope rather than a single experiment: coordinates are
-    one shared projection, so fitting a subset would write coordinates from a
-    different space into the same columns and corrupt the combined plot.
+    Always covers the whole corpus rather than a single experiment or a single
+    caller's scope: coordinates are one shared projection, so fitting a subset
+    would write coordinates from a different space into the same columns and
+    corrupt the combined plot.
 
-    Records failures in _failed_refreshes so a permanently broken scope is
+    Records failures in _failed_refreshes so a permanently broken projection is
     reported to the client instead of being retried forever.
 
     Never raises: Starlette awaits this after the response is sent, where an
     escaping exception has nobody to catch it.
     """
-    key = refresh_scope_key(umap_type, user_id, group_id)
+    key = refresh_scope_key(umap_type)
     if key in _inflight_refreshes:
         logger.info(f"UMAP refresh {key} already running - skipping duplicate")
         return
@@ -427,7 +392,7 @@ async def refresh_umap_scope(
             compute = (
                 compute_fov_umap if umap_type is UmapType.FOV else compute_crop_umap
             )
-            result = await compute(user_id, db)
+            result = await compute(db)
 
         if "error" in result:
             logger.warning(f"UMAP refresh {key} skipped: {result['error']}")

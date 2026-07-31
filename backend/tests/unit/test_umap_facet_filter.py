@@ -27,8 +27,8 @@ def user(uid=1):
 
 @pytest.fixture
 def no_group():
-    """Patch get_user_group_id to return None (user belongs to no group)."""
-    with patch.object(mod, "get_user_group_id", new=AsyncMock(return_value=None)):
+    """Patch get_user_group_ids to return None (user belongs to no group)."""
+    with patch.object(mod, "get_user_group_ids", new=AsyncMock(return_value=[])):
         yield
 
 
@@ -190,7 +190,7 @@ async def test_facet_summary_is_scoped_to_what_the_user_may_read(mock_db, umap_t
     other groups' experiment names.
     """
     mock_db.execute.return_value = make_result(fetchall=[])
-    await mod._load_facets(umap_type, user_id=7, group_id=None, db=mock_db)
+    await mod._load_facets(umap_type, user_id=7, group_ids=[], db=mock_db)
 
     sql = _compiled(mock_db.execute.await_args.args[0])
     assert "experiments.user_id = 7" in sql
@@ -202,11 +202,11 @@ async def test_facet_summary_widens_to_the_group_but_no_further(mock_db, umap_ty
     # Group sharing is an OR on top of ownership, never a replacement for it —
     # swapping the two would hand every group's data to anyone in any group.
     mock_db.execute.return_value = make_result(fetchall=[])
-    await mod._load_facets(umap_type, user_id=7, group_id=3, db=mock_db)
+    await mod._load_facets(umap_type, user_id=7, group_ids=[3], db=mock_db)
 
     sql = _compiled(mock_db.execute.await_args.args[0])
     assert "experiments.user_id = 7" in sql
-    assert "experiments.group_id = 3" in sql
+    assert "experiments.group_id IN (3)" in sql
     assert " OR " in sql
 
 
@@ -215,7 +215,7 @@ async def test_facet_summary_ignores_the_active_selection(mock_db):
     # many points each *other* value would bring back. Filtering the summary by
     # the current selection would make both impossible.
     mock_db.execute.return_value = make_result(fetchall=[])
-    await mod._load_facets(mod.UmapType.CROPPED, user_id=7, group_id=None, db=mock_db)
+    await mod._load_facets(mod.UmapType.CROPPED, user_id=7, group_ids=[], db=mock_db)
 
     sql = _compiled(mock_db.execute.await_args.args[0])
     assert "ptm_id IN" not in sql
@@ -259,11 +259,11 @@ async def test_selected_experiments_are_checked_against_the_acl(mock_db):
     docstring claims that cannot happen, so pin the predicate itself.
     """
     mock_db.execute.return_value = make_result(scalars_all=[9])
-    await mod._verify_experiments_visible([9], user_id=7, group_id=3, db=mock_db)
+    await mod._verify_experiments_visible([9], user_id=7, group_ids=[3], db=mock_db)
 
     sql = _compiled(mock_db.execute.await_args.args[0])
     assert "experiments.user_id = 7" in sql
-    assert "experiments.group_id = 3" in sql
+    assert "experiments.group_id IN (3)" in sql
 
 
 # =============================================================================

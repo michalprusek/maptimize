@@ -64,7 +64,7 @@ def test_ptm_is_assignable_at_creation_but_not_via_generic_patch():
 async def test_create_experiment_missing_ptm_404(mock_db, monkeypatch):
     async def fake_group_id(uid, db):
         return None
-    monkeypatch.setattr(mod, "get_user_group_id", fake_group_id)
+    monkeypatch.setattr(mod, "get_user_group_ids", fake_group_id)
     mock_db.execute.return_value = make_result(scalar=None)
     with pytest.raises(HTTPException) as ei:
         await mod.create_experiment(
@@ -79,7 +79,7 @@ async def test_create_experiment_with_valid_ptm(mock_db):
         make_result(scalar=_ptm()),                    # existence check
         make_result(scalar=_experiment(ptm=_ptm())),   # response re-read
     ]
-    with patch.object(mod, "get_user_group_id", new=AsyncMock(return_value=None)):
+    with patch.object(mod, "get_user_group_ids", new=AsyncMock(return_value=[])):
         out = await mod.create_experiment(
             ExperimentCreate(name="E", ptm_id=6), current_user=_user(), db=mock_db
         )

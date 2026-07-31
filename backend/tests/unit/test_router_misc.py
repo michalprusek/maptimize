@@ -467,7 +467,7 @@ async def test_rag_list_documents(mock_db):
     # model_validate must return something that supports attribute assignment
     # (the router sets .is_owner on it) -- a plain dict cannot, a SimpleNamespace
     # models the real pydantic instance closely enough for this test.
-    with patch.object(rag_r, "get_user_group_id", new=AsyncMock(return_value=7)), \
+    with patch.object(rag_r, "get_user_group_ids", new=AsyncMock(return_value=[7])), \
          patch.object(rag_r.RAGDocumentResponse, "model_validate",
                       side_effect=lambda d: SimpleNamespace(id=d.id)):
         out = await rag_r.list_documents(skip=0, limit=10, status_filter="completed",
@@ -543,7 +543,7 @@ async def test_rag_upload_value_error(mock_db):
 async def test_rag_get_document(mock_db):
     # doc.user_id == 7 == current_user.id -> is_owner must be computed True.
     doc = _doc(user_id=7)
-    with patch.object(rag_r, "get_user_group_id", new=AsyncMock(return_value=None)), \
+    with patch.object(rag_r, "get_user_group_ids", new=AsyncMock(return_value=[])), \
          patch.object(rag_r, "get_document_for_user", new=AsyncMock(return_value=doc)), \
          patch.object(rag_r.RAGDocumentResponse, "model_validate",
                       side_effect=lambda d: SimpleNamespace(id=d.id)):
@@ -555,7 +555,7 @@ async def test_rag_get_document(mock_db):
 async def test_rag_get_document_not_owner(mock_db):
     # doc.user_id (9) != current_user.id (7) -> group-shared, is_owner False.
     doc = _doc(user_id=9)
-    with patch.object(rag_r, "get_user_group_id", new=AsyncMock(return_value=3)), \
+    with patch.object(rag_r, "get_user_group_ids", new=AsyncMock(return_value=[3])), \
          patch.object(rag_r, "get_document_for_user", new=AsyncMock(return_value=doc)), \
          patch.object(rag_r.RAGDocumentResponse, "model_validate",
                       side_effect=lambda d: SimpleNamespace(id=d.id)):
@@ -1334,14 +1334,14 @@ def _exp(id=1, user_id=1, group_id=None, name="Exp"):
 async def test_exp_get_for_user_found_with_group(mock_db):
     exp = _exp()
     mock_db.execute.return_value = make_result(scalar=exp)
-    with patch.object(exp_r, "get_user_group_id", new=AsyncMock(return_value=5)):
+    with patch.object(exp_r, "get_user_group_ids", new=AsyncMock(return_value=[5])):
         out = await exp_r.get_experiment_for_user(mock_db, 1, 1)
     assert out is exp
 
 
 async def test_exp_get_for_user_not_found(mock_db):
     mock_db.execute.return_value = make_result(scalar=None)
-    with patch.object(exp_r, "get_user_group_id", new=AsyncMock(return_value=None)):
+    with patch.object(exp_r, "get_user_group_ids", new=AsyncMock(return_value=[])):
         with pytest.raises(HTTPException) as e:
             await exp_r.get_experiment_for_user(mock_db, 1, 1)
     assert e.value.status_code == 404
@@ -1351,7 +1351,7 @@ async def test_exp_list(mock_db):
     exp = _exp()
     rows = [(exp, 3, 5, 2, "Alice")]
     mock_db.execute.return_value = _unique_result(rows)
-    with patch.object(exp_r, "get_user_group_id", new=AsyncMock(return_value=5)):
+    with patch.object(exp_r, "get_user_group_ids", new=AsyncMock(return_value=[5])):
         out = await exp_r.list_experiments(skip=0, limit=50,
                                            current_user=user(id=1), db=mock_db)
     assert len(out) == 1
@@ -1365,7 +1365,7 @@ async def test_exp_list_zero_counts(mock_db):
     exp = _exp()
     rows = [(exp, None, None, 0, None)]  # None counts -> 0, sum 0 -> False
     mock_db.execute.return_value = _unique_result(rows)
-    with patch.object(exp_r, "get_user_group_id", new=AsyncMock(return_value=None)):
+    with patch.object(exp_r, "get_user_group_ids", new=AsyncMock(return_value=[])):
         out = await exp_r.list_experiments(skip=0, limit=50,
                                            current_user=user(id=1), db=mock_db)
     assert out[0].image_count == 0
@@ -1374,7 +1374,7 @@ async def test_exp_list_zero_counts(mock_db):
 
 async def test_exp_create_protein_not_found(mock_db):
     mock_db.execute.return_value = make_result(scalar=None)  # protein lookup fails
-    with patch.object(exp_r, "get_user_group_id", new=AsyncMock(return_value=None)):
+    with patch.object(exp_r, "get_user_group_ids", new=AsyncMock(return_value=[])):
         data = exp_r.ExperimentCreate(name="E", map_protein_id=99)
         with pytest.raises(HTTPException) as e:
             await exp_r.create_experiment(data, current_user=user(id=1), db=mock_db)
@@ -1385,7 +1385,7 @@ async def test_exp_create_success(mock_db):
     # The handler re-reads the committed row to build its response rather than
     # serialising the in-session object (see load_experiment_response).
     mock_db.execute.return_value = make_result(scalar=_exp(id=50))
-    with patch.object(exp_r, "get_user_group_id", new=AsyncMock(return_value=None)):
+    with patch.object(exp_r, "get_user_group_ids", new=AsyncMock(return_value=[])):
         data = exp_r.ExperimentCreate(name="E", description="d")
         out = await exp_r.create_experiment(data, current_user=user(id=1, name="Alice"), db=mock_db)
     assert out.id == 50
@@ -1394,7 +1394,7 @@ async def test_exp_create_success(mock_db):
 
 async def test_exp_get_detail_not_found(mock_db):
     mock_db.execute.return_value = make_result(scalar=None)
-    with patch.object(exp_r, "get_user_group_id", new=AsyncMock(return_value=None)):
+    with patch.object(exp_r, "get_user_group_ids", new=AsyncMock(return_value=[])):
         with pytest.raises(HTTPException) as e:
             await exp_r.get_experiment(1, current_user=user(id=1), db=mock_db)
     assert e.value.status_code == 404
@@ -1410,7 +1410,7 @@ async def test_exp_get_detail_success(mock_db):
         make_result(scalar=7),    # cell count
     ]
     # group_id not None -> exercises the group filter branch
-    with patch.object(exp_r, "get_user_group_id", new=AsyncMock(return_value=5)):
+    with patch.object(exp_r, "get_user_group_ids", new=AsyncMock(return_value=[5])):
         out = await exp_r.get_experiment(1, current_user=user(id=1), db=mock_db)
     assert out.image_count == 1
     assert out.cell_count == 7

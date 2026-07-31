@@ -6,7 +6,7 @@ parent — so documents are never lost.
 """
 import logging
 from datetime import datetime
-from typing import List, Optional
+from typing import List, Optional, Sequence
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
@@ -18,16 +18,19 @@ from database import get_db
 from models.document_folder import DocumentFolder
 from models.rag_document import RAGDocument
 from models.user import User
-from utils.groups import get_user_group_id
+from utils.groups import default_group_id, get_user_group_ids
 from utils.security import get_current_user
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-def _visible(user_id: int, group_id: Optional[int]):
-    if group_id is not None:
-        return or_(DocumentFolder.user_id == user_id, DocumentFolder.group_id == group_id)
+def _visible(user_id: int, group_ids: Sequence[int]):
+    if group_ids:
+        return or_(
+            DocumentFolder.user_id == user_id,
+            DocumentFolder.group_id.in_(list(group_ids)),
+        )
     return DocumentFolder.user_id == user_id
 
 
@@ -51,9 +54,9 @@ class FolderResponse(BaseModel):
         from_attributes = True
 
 
-async def _get_folder(db, folder_id, user_id, group_id) -> DocumentFolder:
+async def _get_folder(db, folder_id, user_id, group_ids) -> DocumentFolder:
     row = (await db.execute(
-        select(DocumentFolder).where(DocumentFolder.id == folder_id, _visible(user_id, group_id))
+        select(DocumentFolder).where(DocumentFolder.id == folder_id, _visible(user_id, group_ids))
     )).scalar_one_or_none()
     if row is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Folder not found")
@@ -78,9 +81,9 @@ async def _is_ancestor(db, ancestor_id: int, node_id: Optional[int]) -> bool:
 async def list_folders(
     current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)
 ):
-    group_id = await get_user_group_id(current_user.id, db)
+    group_ids = await get_user_group_ids(current_user.id, db)
     rows = (await db.execute(
-        select(DocumentFolder).where(_visible(current_user.id, group_id)).order_by(DocumentFolder.name)
+        select(DocumentFolder).where(_visible(current_user.id, group_ids)).order_by(DocumentFolder.name)
     )).scalars().all()
     return list(rows)
 
@@ -91,11 +94,11 @@ async def create_folder(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    group_id = await get_user_group_id(current_user.id, db)
+    group_ids = await get_user_group_ids(current_user.id, db)
     if body.parent_id is not None:
-        await _get_folder(db, body.parent_id, current_user.id, group_id)  # parent must be visible
+        await _get_folder(db, body.parent_id, current_user.id, group_ids)  # parent must be visible
     folder = DocumentFolder(
-        user_id=current_user.id, group_id=group_id,
+        user_id=current_user.id, group_id=default_group_id(group_ids),
         parent_id=body.parent_id, name=body.name.strip(),
     )
     db.add(folder)
@@ -111,8 +114,8 @@ async def update_folder(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    group_id = await get_user_group_id(current_user.id, db)
-    folder = await _get_folder(db, folder_id, current_user.id, group_id)
+    group_ids = await get_user_group_ids(current_user.id, db)
+    folder = await _get_folder(db, folder_id, current_user.id, group_ids)
     if body.name is not None:
         folder.name = body.name.strip()
     if "parent_id" in body.model_fields_set:  # a move (parent_id=null means root)
@@ -120,7 +123,7 @@ async def update_folder(
         if new_parent == folder_id:
             raise HTTPException(status_code=400, detail="A folder cannot be its own parent")
         if new_parent is not None:
-            await _get_folder(db, new_parent, current_user.id, group_id)
+            await _get_folder(db, new_parent, current_user.id, group_ids)
             if await _is_ancestor(db, folder_id, new_parent):
                 raise HTTPException(status_code=400, detail="Cannot move a folder into its own subtree")
         folder.parent_id = new_parent
@@ -133,8 +136,8 @@ async def delete_folder(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    group_id = await get_user_group_id(current_user.id, db)
-    folder = await _get_folder(db, folder_id, current_user.id, group_id)
+    group_ids = await get_user_group_ids(current_user.id, db)
+    folder = await _get_folder(db, folder_id, current_user.id, group_ids)
     # Dissolve: move child folders + documents up to this folder's parent, then delete.
     await db.execute(
         update(DocumentFolder).where(DocumentFolder.parent_id == folder_id).values(parent_id=folder.parent_id)

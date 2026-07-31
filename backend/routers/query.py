@@ -15,7 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from database import get_db
 from models.user import User
 from services.sql_query_service import SqlQueryError, run_query
-from utils.groups import get_user_group_id
+from utils.groups import get_user_group_ids
 from utils.security import get_current_user
 
 logger = logging.getLogger(__name__)
@@ -48,12 +48,12 @@ async def query_database(
     only ever read its own and group-shared rows. Validation/execution failures
     surface as HTTP 400 with a fixable message.
     """
-    group_id = await get_user_group_id(current_user.id, db)
+    group_ids = await get_user_group_ids(current_user.id, db)
     try:
         result = await run_query(
             payload.sql,
             user_id=current_user.id,
-            group_id=group_id,
+            group_ids=group_ids,
             db=db,
             limit=payload.limit,
         )

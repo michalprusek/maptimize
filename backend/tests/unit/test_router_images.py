@@ -137,8 +137,8 @@ def token_payload(sub=1, expired=False):
 
 @pytest.fixture
 def no_group():
-    """get_user_group_id returns None (user is in no group)."""
-    with patch("routers.images.get_user_group_id", new=AsyncMock(return_value=None)):
+    """get_user_group_ids returns None (user is in no group)."""
+    with patch("routers.images.get_user_group_ids", new=AsyncMock(return_value=[])):
         yield
 
 
@@ -156,7 +156,7 @@ async def test_experiment_access_filter_no_group(mock_db, no_group):
 
 
 async def test_experiment_access_filter_with_group(mock_db):
-    with patch("routers.images.get_user_group_id", new=AsyncMock(return_value=7)):
+    with patch("routers.images.get_user_group_ids", new=AsyncMock(return_value=[7])):
         f = await r._experiment_access_filter(1, mock_db)
     sql = str(f.compile(compile_kwargs={"literal_binds": True})).upper()
     # Shared access = own experiments OR the group's, joined by OR (the exact

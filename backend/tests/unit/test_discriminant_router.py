@@ -33,7 +33,7 @@ def clean_cache():
 
 @pytest.fixture
 def no_group():
-    with patch.object(mod, "get_user_group_id", new=AsyncMock(return_value=None)):
+    with patch.object(mod, "get_user_group_ids", new=AsyncMock(return_value=[])):
         yield
 
 
@@ -97,7 +97,7 @@ async def test_first_call_schedules_the_fit_instead_of_running_it(mock_db, no_gr
 
 async def test_a_second_poll_does_not_schedule_a_second_fit(mock_db, no_group):
     mock_db.execute.return_value = make_result(fetchall=[])
-    svc._inflight.add(svc.scope_key(1, None))
+    svc._inflight.add(svc.scope_key(1, []))
     bg = MagicMock()
 
     out = await mod.get_discriminant_visualization(
@@ -115,7 +115,7 @@ async def test_a_failed_fit_is_reported_and_not_rescheduled(mock_db, no_group):
     mock_db.execute.return_value = make_result(fetchall=[])
     # Recorded against the fingerprint the fixture reports, so the failure is
     # still current and must NOT be retired.
-    svc.record_failure(svc.scope_key(1, None), "need at least 5 experiments", None, "fp")
+    svc.record_failure(svc.scope_key(1, []), "need at least 5 experiments", None, "fp")
     bg = MagicMock()
 
     out = await mod.get_discriminant_visualization(
@@ -129,7 +129,7 @@ async def test_a_failed_fit_is_reported_and_not_rescheduled(mock_db, no_group):
 
 
 async def test_recompute_clears_the_failure_and_reschedules(mock_db, no_group):
-    key = svc.scope_key(1, None)
+    key = svc.scope_key(1, [])
     svc.record_failure(key, "boom")
     bg = MagicMock()
 
@@ -146,7 +146,7 @@ async def test_recompute_clears_the_failure_and_reschedules(mock_db, no_group):
 # =============================================================================
 
 async def test_a_cached_projection_returns_points_and_metrics_together(mock_db, no_group):
-    key = svc.scope_key(1, None)
+    key = svc.scope_key(1, [])
     svc.store(key, result(), svc.generation(key))
     protein = SimpleNamespace(name="MAP7", color="#abc")
     mock_db.execute.side_effect = [
@@ -172,7 +172,7 @@ async def test_a_cached_projection_returns_points_and_metrics_together(mock_db, 
 async def test_a_crop_added_since_the_fit_is_skipped_not_invented(mock_db, no_group):
     # The projection is a fixed frame. Placing a crop it never saw at an
     # arbitrary coordinate would be a fabricated data point on a scientific plot.
-    svc.store(svc.scope_key(1, None), result(n=2), svc.generation(svc.scope_key(1, None)))
+    svc.store(svc.scope_key(1, []), result(n=2), svc.generation(svc.scope_key(1, [])))
     mock_db.execute.side_effect = [
         make_result(fetchall=[]),
         make_result(scalars_all=[crop(1), crop(2), crop(99)]),
@@ -192,7 +192,7 @@ async def test_the_filter_narrows_the_points_but_never_refits(mock_db, no_group)
     The cached projection must be reused verbatim, so a filtered point keeps the
     coordinate it had in the unfiltered view.
     """
-    svc.store(svc.scope_key(1, None), result(), svc.generation(svc.scope_key(1, None)))
+    svc.store(svc.scope_key(1, []), result(), svc.generation(svc.scope_key(1, [])))
     mock_db.execute.side_effect = [
         make_result(scalars_all=[4]),   # PTM 4 exists
         make_result(fetchall=[]),        # facet summary
@@ -209,7 +209,7 @@ async def test_the_filter_narrows_the_points_but_never_refits(mock_db, no_group)
 
 
 async def test_the_point_query_carries_the_acl_and_the_facets(mock_db, no_group):
-    svc.store(svc.scope_key(1, None), result(n=1), svc.generation(svc.scope_key(1, None)))
+    svc.store(svc.scope_key(1, []), result(n=1), svc.generation(svc.scope_key(1, [])))
     mock_db.execute.side_effect = [
         make_result(scalars_all=[3]),   # microscope 3 exists
         make_result(fetchall=[]),        # facet summary
@@ -245,11 +245,23 @@ async def test_a_stale_reference_id_is_404(mock_db):
     assert ei.value.detail == "PTM not found: 999"
 
 
-async def test_the_scope_key_separates_users_from_groups():
-    # Group members share a corpus and therefore a cached fit; a user id and a
-    # group id with the same number must not collide.
-    assert svc.scope_key(2, None) != svc.scope_key(1, 2)
-    assert svc.scope_key(7, 3) == svc.scope_key(9, 3)
+async def test_the_scope_key_is_the_corpus_identity():
+    """The cache key must change whenever the fitted corpus can.
+
+    It used to be the group id alone, on the assumption that joining a group
+    adopted the joiner's group-less work, so members read identical corpora.
+    Adoption is gone and membership is many-to-many, so neither half holds: two
+    members of one group differ by their unshared experiments, and a member of
+    {2, 5} reads strictly more than a member of {2}. The key therefore carries
+    the user AND the sorted group set. Sharing a cached fit across users would
+    report a balanced accuracy computed on a corpus the caller cannot see.
+    """
+    assert svc.scope_key(7, [2]) != svc.scope_key(9, [2])
+    assert svc.scope_key(7, [2]) != svc.scope_key(7, [2, 5])
+    # Order of membership rows must not create two keys for one corpus.
+    assert svc.scope_key(7, [5, 2]) == svc.scope_key(7, [2, 5])
+    # A user id and a group id sharing an integer must not collide.
+    assert svc.scope_key(2, []) != svc.scope_key(1, [2])
 
 
 # =============================================================================
@@ -264,7 +276,7 @@ async def test_a_moved_corpus_is_reported_stale_and_refitted(mock_db, no_group):
     right label, under a score cross-validated against labels that no longer
     exist.
     """
-    svc.store(svc.scope_key(1, None), result(), svc.generation(svc.scope_key(1, None)))
+    svc.store(svc.scope_key(1, []), result(), svc.generation(svc.scope_key(1, [])))
     bg = MagicMock()
     mock_db.execute.side_effect = [
         make_result(fetchall=[]),                       # facet summary
@@ -282,7 +294,7 @@ async def test_a_moved_corpus_is_reported_stale_and_refitted(mock_db, no_group):
 
 
 async def test_an_unchanged_corpus_is_not_stale_and_schedules_nothing(mock_db, no_group):
-    svc.store(svc.scope_key(1, None), result(), svc.generation(svc.scope_key(1, None)))
+    svc.store(svc.scope_key(1, []), result(), svc.generation(svc.scope_key(1, [])))
     bg = MagicMock()
     mock_db.execute.side_effect = [
         make_result(fetchall=[]),
@@ -301,7 +313,7 @@ async def test_crops_the_fit_never_saw_are_counted_even_though_they_cannot_be_dr
 ):
     # Reporting only what was plotted would make an out-of-date projection look
     # like a smaller corpus — the mismatch UMAP's own code comment forbids.
-    svc.store(svc.scope_key(1, None), result(n=2), svc.generation(svc.scope_key(1, None)))
+    svc.store(svc.scope_key(1, []), result(n=2), svc.generation(svc.scope_key(1, [])))
     mock_db.execute.side_effect = [
         make_result(fetchall=[]),
         make_result(scalars_all=[crop(1), crop(2), crop(99)]),
@@ -322,7 +334,7 @@ async def test_a_fit_superseded_while_it_ran_is_discarded(mock_db):
     guard the older fit writes its stale result back afterwards AND clears the
     failure flag, marking it fresh.
     """
-    key = svc.scope_key(1, None)
+    key = svc.scope_key(1, [])
     gen = svc.generation(key)
     svc.invalidate(key)                       # the user pressed Retry
     svc.store(key, result(), gen)             # the older fit finishes late
@@ -335,7 +347,7 @@ async def test_a_fit_superseded_while_it_ran_is_discarded(mock_db):
 # suite green before these tests existed.
 # =============================================================================
 
-async def _run_refresh(rows, monkeypatch, user_id=7, group_id=None):
+async def _run_refresh(rows, monkeypatch, user_id=7, group_ids=()):
     """Drive the background fit with a stubbed session and a stubbed compute."""
     import contextlib
 
@@ -360,7 +372,7 @@ async def _run_refresh(rows, monkeypatch, user_id=7, group_id=None):
 
     monkeypatch.setattr("database.async_session_maker", session)
     monkeypatch.setattr(svc, "compute_discriminant", fake_compute)
-    await svc.refresh_discriminant_scope(user_id, group_id)
+    await svc.refresh_discriminant_scope(user_id, group_ids)
     return db, seen
 
 
@@ -379,11 +391,11 @@ async def test_the_background_fit_is_scoped_to_what_the_user_may_read(monkeypatc
 
 
 async def test_the_background_fit_widens_to_the_group(monkeypatch):
-    db, _ = await _run_refresh([(1, [0.0, 1.0], 5, 9, 2, "MAP7")], monkeypatch, user_id=7, group_id=3)
+    db, _ = await _run_refresh([(1, [0.0, 1.0], 5, 9, 2, "MAP7")], monkeypatch, user_id=7, group_ids=[3])
 
     sql = str(db.execute.await_args.args[0].compile(compile_kwargs={"literal_binds": True}))
     assert "experiments.user_id = 7" in sql
-    assert "experiments.group_id = 3" in sql
+    assert "experiments.group_id IN (3)" in sql
 
 
 async def test_the_background_fit_only_takes_labelled_embedded_crops(monkeypatch):
@@ -417,7 +429,7 @@ async def test_the_background_fit_passes_the_right_columns_through(monkeypatch):
 
 async def test_an_empty_corpus_is_recorded_rather_than_left_spinning(monkeypatch):
     await _run_refresh([], monkeypatch)
-    key = svc.scope_key(7, None)
+    key = svc.scope_key(7, [])
     assert "protein assignment" in svc.compute_error(key)
     assert not svc.is_computing(key)
 
@@ -437,9 +449,9 @@ async def test_a_degenerate_corpus_records_why_instead_of_polling_forever(monkey
 
     monkeypatch.setattr("database.async_session_maker", session)
     monkeypatch.setattr(svc, "compute_discriminant", boom)
-    await svc.refresh_discriminant_scope(7, None)
+    await svc.refresh_discriminant_scope(7, [])
 
-    key = svc.scope_key(7, None)
+    key = svc.scope_key(7, [])
     assert "5 experiments" in svc.compute_error(key)
     assert not svc.is_computing(key)
 
@@ -460,16 +472,16 @@ async def test_the_scope_is_released_even_when_the_fit_explodes(monkeypatch):
 
     monkeypatch.setattr("database.async_session_maker", session)
     monkeypatch.setattr(svc, "compute_discriminant", boom)
-    await svc.refresh_discriminant_scope(7, None)
+    await svc.refresh_discriminant_scope(7, [])
 
-    key = svc.scope_key(7, None)
+    key = svc.scope_key(7, [])
     assert not svc.is_computing(key)
     assert "Projection failed" in svc.compute_error(key)
 
 
 async def test_a_failure_is_retired_once_the_corpus_moves():
     """"Need at least 5 experiments" must not outlive the condition it describes."""
-    key = svc.scope_key(7, None)
+    key = svc.scope_key(7, [])
     svc.record_failure(key, "need at least 5 experiments", None, "old-corpus")
 
     assert svc.clear_failure_if_corpus_moved(key, "old-corpus") is False
@@ -482,7 +494,7 @@ async def test_a_failure_is_retired_once_the_corpus_moves():
 def test_invalidating_one_scope_leaves_every_other_alone():
     # One user retrying their own failed fit must not cost every other user on
     # this worker minutes of recompute.
-    mine, theirs = svc.scope_key(1, None), svc.scope_key(2, None)
+    mine, theirs = svc.scope_key(1, []), svc.scope_key(2, [])
     svc.store(mine, result(), svc.generation(mine))
     svc.store(theirs, result(), svc.generation(theirs))
 

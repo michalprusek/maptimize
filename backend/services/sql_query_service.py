@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import logging
 import re
-from typing import Any, NamedTuple, Optional
+from typing import Any, NamedTuple, Optional, Sequence
 
 import sqlparse
 from sqlalchemy import text
@@ -152,16 +152,19 @@ def _inject_where_predicate(query_str: str, predicate: str) -> str:
 
 
 def _inject_user_id_filter(
-    query_str: str, table: str, ref: str, group_id: Optional[int] = None
+    query_str: str, table: str, ref: str, group_ids: Sequence[int] = ()
 ) -> str:
     """Inject the per-user ownership filter into ``query_str`` for one table reference.
 
     ``table`` is the real table name (selects the scoping rule); ``ref`` is how the
     query refers to it — its alias if it has one, else the table name.
 
-    For ``experiments`` and ``rag_documents`` the predicate widens to group-shared
-    rows so SQL answers match what the same user sees in the UI (both tables have a
-    ``group_id`` column); other tables have no group column and stay owner-scoped.
+    For ``experiments`` and ``rag_documents`` the predicate widens to the rows shared
+    with any of the caller's groups, so SQL answers match what the same user sees in
+    the UI (both tables have a ``group_id`` column); other tables have no group column
+    and stay owner-scoped. The ids arrive as a bound ``:group_ids`` array — the
+    predicate is built by string formatting, so a value interpolated here would be an
+    injection, not a shortcut.
     ``rag_documents`` additionally gates the group term on ``thread_id IS NULL`` —
     mirroring ``document_scope``/``document_read_scope`` and the pgvector
     ``owner_clause`` in rag_service — so chat attachments never leak to the group.
@@ -172,13 +175,13 @@ def _inject_user_id_filter(
     reference to FROM-clause entry"; it must say ``e.user_id``. On a self-join each
     alias gets its own predicate (this function is called once per reference).
     """
-    if table == "rag_documents" and group_id is not None:
+    if table == "rag_documents" and group_ids:
         predicate = (
             f"({ref}.user_id = :user_id OR "
-            f"({ref}.thread_id IS NULL AND {ref}.group_id = :group_id))"
+            f"({ref}.thread_id IS NULL AND {ref}.group_id = ANY(:group_ids)))"
         )
-    elif table == "experiments" and group_id is not None:
-        predicate = f"({ref}.user_id = :user_id OR {ref}.group_id = :group_id)"
+    elif table == "experiments" and group_ids:
+        predicate = f"({ref}.user_id = :user_id OR {ref}.group_id = ANY(:group_ids))"
     else:
         predicate = f"{ref}.user_id = :user_id"
     return _inject_where_predicate(query_str, predicate)
@@ -328,7 +331,7 @@ async def run_query(
     sql: str,
     *,
     user_id: int,
-    group_id: Optional[int],
+    group_ids: Sequence[int],
     db: AsyncSession,
     limit: Any = None,
 ) -> dict[str, Any]:
@@ -351,7 +354,7 @@ async def run_query(
     for predicate in correlations:
         scoped = _inject_where_predicate(scoped, predicate)
     for target in acl_targets:
-        scoped = _inject_user_id_filter(scoped, target.table, target.ref, group_id)
+        scoped = _inject_user_id_filter(scoped, target.table, target.ref, group_ids)
 
     # The model can't supply its own LIMIT (rejected in _validate), so always append
     # the clamped one — the cap can't be bypassed by a large literal in the query.
@@ -359,8 +362,8 @@ async def run_query(
     final_q = f"{scoped} LIMIT :limit_val"
 
     params: dict[str, Any] = {"user_id": user_id, "limit_val": limit_val}
-    if group_id is not None:
-        params["group_id"] = group_id
+    if group_ids:
+        params["group_ids"] = [int(g) for g in group_ids]
 
     try:
         result = await db.execute(text(final_q), params)

@@ -22,7 +22,7 @@ from schemas.experiment import (
 )
 from utils.reference_data import get_or_404
 from utils.security import get_current_user
-from utils.groups import experiment_owner_filter, get_user_group_id
+from utils.groups import default_group_id, experiment_owner_filter, get_user_group_ids
 
 logger = logging.getLogger(__name__)
 
@@ -62,12 +62,12 @@ async def get_experiment_for_user(
     user_id: int
 ) -> Experiment:
     """Get experiment and verify ownership or group membership. Raises 404 if not found."""
-    group_id = await get_user_group_id(user_id, db)
+    group_ids = await get_user_group_ids(user_id, db)
 
     result = await db.execute(
         select(Experiment).where(
             Experiment.id == experiment_id,
-            experiment_owner_filter(user_id, group_id),
+            experiment_owner_filter(user_id, group_ids),
         )
     )
     experiment = result.scalar_one_or_none()
@@ -97,8 +97,8 @@ async def list_experiments(
     db: AsyncSession = Depends(get_db)
 ):
     """List user's experiments (and group experiments) with image and cell counts."""
-    group_id = await get_user_group_id(current_user.id, db)
-    access_filter = experiment_owner_filter(current_user.id, group_id)
+    group_ids = await get_user_group_ids(current_user.id, db)
+    access_filter = experiment_owner_filter(current_user.id, group_ids)
 
     # Get experiments with counts using a single query with aggregates
     # Also count images with sum projections (sum_path IS NOT NULL)
@@ -144,7 +144,7 @@ async def create_experiment(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
-    """Create a new experiment. Auto-assigns group_id if user is in a group."""
+    """Create a new experiment, shared with the creator's group when they have exactly one."""
     # Verify protein exists if provided
     if data.map_protein_id is not None:
         protein_result = await db.execute(
@@ -162,13 +162,15 @@ async def create_experiment(
     if data.ptm_id is not None:
         await _verify_ptm_exists(data.ptm_id, db)
 
-    group_id = await get_user_group_id(current_user.id, db)
+    group_ids = await get_user_group_ids(current_user.id, db)
 
     experiment = Experiment(
         name=data.name,
         description=data.description,
         user_id=current_user.id,
-        group_id=group_id,
+        # One group -> share it, which is what a single-group lab expects. Several
+        # -> leave it unshared; PATCH /{id}/group assigns it deliberately.
+        group_id=default_group_id(group_ids),
         map_protein_id=data.map_protein_id,
         microscope_id=data.microscope_id,
         ptm_id=data.ptm_id,
@@ -191,7 +193,7 @@ async def get_experiment(
     db: AsyncSession = Depends(get_db)
 ):
     """Get experiment details with images."""
-    group_id = await get_user_group_id(current_user.id, db)
+    group_ids = await get_user_group_ids(current_user.id, db)
 
     result = await db.execute(
         select(Experiment)
@@ -204,7 +206,7 @@ async def get_experiment(
         )
         .where(
             Experiment.id == experiment_id,
-            experiment_owner_filter(current_user.id, group_id),
+            experiment_owner_filter(current_user.id, group_ids),
         )
     )
     experiment = result.scalar_one_or_none()
@@ -335,6 +337,56 @@ async def update_experiment_ptm(
 
     logger.info(
         f"User {current_user.id} set PTM for experiment {experiment_id} to {ptm_id}"
+    )
+
+    return await load_experiment_response(db, experiment_id)
+
+
+@router.patch("/{experiment_id}/group", response_model=ExperimentResponse)
+async def update_experiment_group(
+    experiment_id: int,
+    group_id: Optional[int] = Query(
+        default=None, description="Group to share with; omit to unshare"
+    ),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Share an experiment with one of the owner's groups, or unshare it.
+
+    OWNER-ONLY, unlike the protein / microscope / PTM endpoints beside it. Those
+    three are shared labelling that the whole group curates; this one decides who
+    can see the experiment at all, which is the container's own property -- the
+    same rule that keeps deleting a FOV and renaming an experiment owner-only.
+
+    This replaced the automatic adoption that used to run on joining a group. That
+    had one right answer while a person could belong to one group; with several it
+    would either pick arbitrarily or, on the second join, quietly take work away
+    from the first group.
+    """
+    result = await db.execute(select(Experiment).where(Experiment.id == experiment_id))
+    experiment = result.scalar_one_or_none()
+    if experiment is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Experiment not found"
+        )
+    if experiment.user_id != current_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only the owner can change who this experiment is shared with",
+        )
+
+    if group_id is not None:
+        if group_id not in await get_user_group_ids(current_user.id, db):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="You are not a member of that group",
+            )
+
+    experiment.group_id = group_id
+    await db.commit()
+
+    logger.info(
+        f"User {current_user.id} set experiment {experiment_id} group to {group_id}"
     )
 
     return await load_experiment_response(db, experiment_id)

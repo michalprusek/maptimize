@@ -450,13 +450,13 @@ def corpus_fingerprint(rows: Sequence[tuple]) -> str:
     return digest.hexdigest()
 
 
-def scope_key(user_id: int, group_id: Optional[int]) -> str:
+def scope_key(user_id: int, group_ids: Sequence[int]) -> str:
     """Group members share a corpus, so they share a cached projection.
 
     Prefixed because user ids and group ids share this key space: group 2 and
     user 2 must not collide.
     """
-    return f"g{group_id}" if group_id is not None else f"u{user_id}"
+    return f"u{user_id}|g{','.join(str(g) for g in sorted(group_ids))}"
 
 
 def cached(key: str):
@@ -529,7 +529,7 @@ def invalidate(key: Optional[str] = None) -> None:
     _generation[key] = _generation.get(key, 0) + 1
 
 
-async def refresh_discriminant_scope(user_id: int, group_id: Optional[int]) -> None:
+async def refresh_discriminant_scope(user_id: int, group_ids: Sequence[int]) -> None:
     """Compute and cache one scope's projection. Safe to call from a BackgroundTask.
 
     Deduped through `_inflight`, so a group whose members all open the dashboard
@@ -547,7 +547,7 @@ async def refresh_discriminant_scope(user_id: int, group_id: Optional[int]) -> N
     from models.image import Image, MapProtein
     from utils.groups import experiment_owner_filter
 
-    key = scope_key(user_id, group_id)
+    key = scope_key(user_id, group_ids)
     if key in _inflight:
         return
     _inflight.add(key)
@@ -568,7 +568,7 @@ async def refresh_discriminant_scope(user_id: int, group_id: Optional[int]) -> N
                     .join(Experiment, Image.experiment_id == Experiment.id)
                     .join(MapProtein, CellCrop.map_protein_id == MapProtein.id)
                     .where(
-                        experiment_owner_filter(user_id, group_id),
+                        experiment_owner_filter(user_id, group_ids),
                         CellCrop.embedding.isnot(None),
                         CellCrop.map_protein_id.isnot(None),
                     )
@@ -617,7 +617,7 @@ async def refresh_discriminant_scope(user_id: int, group_id: Optional[int]) -> N
         _inflight.discard(key)
 
 
-async def current_fingerprint(user_id: int, group_id: Optional[int], db) -> str:
+async def current_fingerprint(user_id: int, group_ids: Sequence[int], db) -> str:
     """The corpus identity as it stands now, without loading embeddings.
 
     Compared against the cached fit's fingerprint so a re-annotated batch is
@@ -637,7 +637,7 @@ async def current_fingerprint(user_id: int, group_id: Optional[int], db) -> str:
             .join(Image, CellCrop.image_id == Image.id)
             .join(Experiment, Image.experiment_id == Experiment.id)
             .where(
-                experiment_owner_filter(user_id, group_id),
+                experiment_owner_filter(user_id, group_ids),
                 CellCrop.embedding.isnot(None),
                 CellCrop.map_protein_id.isnot(None),
             )

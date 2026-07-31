@@ -68,7 +68,7 @@ async def test_crop_curation_query_widens_to_group(mock_db):
     the whole statement passes even when the filter is on a different column.
     """
     mock_db.execute.side_effect = [
-        make_result(scalar=7),
+        make_result(scalars_all=[7]),
         make_result(scalar=_fake_crop(owner_id=1)),
     ]
 
@@ -77,13 +77,13 @@ async def test_crop_curation_query_widens_to_group(mock_db):
     sql = _sql(mock_db.execute.call_args_list[1][0][0].whereclause)
     assert "cell_crops.id = 200" in sql
     assert "experiments.user_id = 1" in sql
-    assert "experiments.group_id = 7" in sql
+    assert "experiments.group_id IN (7)" in sql
 
 
 async def test_crop_curation_fails_closed_without_a_group(mock_db):
     """A user in no group sees only their own crops -- never a bare OR TRUE."""
     mock_db.execute.side_effect = [
-        make_result(scalar=None),   # no group membership
+        make_result(scalars_all=[]),   # no group membership
         make_result(scalar=_fake_crop(owner_id=1)),
     ]
 
@@ -131,7 +131,7 @@ async def test_group_member_may_curate_crops_on_another_users_fov(mock_db):
 
 async def test_image_curation_query_widens_to_group(mock_db):
     mock_db.execute.side_effect = [
-        make_result(scalar=7),
+        make_result(scalars_all=[7]),
         make_result(scalar=_fake_image(owner_id=1)),
     ]
 
@@ -140,7 +140,7 @@ async def test_image_curation_query_widens_to_group(mock_db):
     sql = _sql(mock_db.execute.call_args_list[1][0][0].whereclause)
     assert "images.id = 100" in sql
     assert "experiments.user_id = 1" in sql
-    assert "experiments.group_id = 7" in sql
+    assert "experiments.group_id IN (7)" in sql
 
 
 # ============================================================================

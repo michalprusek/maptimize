@@ -34,7 +34,7 @@ from schemas.rag import (
     ImportFailure,
     ImportResponse,
 )
-from utils.groups import get_user_group_id
+from utils.groups import get_user_group_ids
 from utils.security import get_current_user, get_current_user_from_query
 from services.document_indexing_service import (
     save_uploaded_document,
@@ -165,7 +165,7 @@ async def get_document_for_user(
     db: AsyncSession,
     document_id: int,
     user_id: int,
-    group_id: Optional[int] = None,
+    group_ids: Optional[int] = None,
 ) -> RAGDocument:
     """Get a RAG document the caller may READ. Raises 404 if not visible.
 
@@ -175,7 +175,7 @@ async def get_document_for_user(
     result = await db.execute(
         select(RAGDocument).where(
             RAGDocument.id == document_id,
-        ).where(document_read_scope(user_id, group_id))
+        ).where(document_read_scope(user_id, group_ids))
     )
     document = result.scalar_one_or_none()
     if not document:
@@ -212,11 +212,11 @@ async def list_documents(
     The total matching count (ignoring skip/limit) is returned in the
     ``X-Total-Count`` header so callers can paginate; the body stays a bare array.
     """
-    group_id = await get_user_group_id(current_user.id, db)
+    group_ids = await get_user_group_ids(current_user.id, db)
     filters = dict(
         name=name, doi=doi, folder_id=folder_id, in_folder=in_folder,
         file_type=file_type, status=status_filter, min_pages=min_pages,
-        max_pages=max_pages, group_id=group_id, thread_id=None,
+        max_pages=max_pages, group_ids=group_ids, thread_id=None,
     )
     documents = await search_documents_metadata(
         current_user.id, db, skip=skip, limit=limit, **filters
@@ -272,9 +272,9 @@ async def upload_document(
     if isinstance(folder_id, int):
         from models.document_folder import DocumentFolder as _Folder
         from routers.folders import _visible as _folder_visible
-        _gid = await get_user_group_id(current_user.id, db)
+        _gids = await get_user_group_ids(current_user.id, db)
         _folder = (await db.execute(
-            select(_Folder).where(_Folder.id == folder_id, _folder_visible(current_user.id, _gid))
+            select(_Folder).where(_Folder.id == folder_id, _folder_visible(current_user.id, _gids))
         )).scalar_one_or_none()
         if _folder is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Folder not found")
@@ -321,8 +321,8 @@ async def get_document(
     db: AsyncSession = Depends(get_db)
 ):
     """Get document details and processing status."""
-    group_id = await get_user_group_id(current_user.id, db)
-    document = await get_document_for_user(db, document_id, current_user.id, group_id)
+    group_ids = await get_user_group_ids(current_user.id, db)
+    document = await get_document_for_user(db, document_id, current_user.id, group_ids)
     return RAGDocumentResponse.for_user(document, current_user.id)
 
 
@@ -338,8 +338,8 @@ async def move_document(
     from models.document_folder import DocumentFolder
     from routers.folders import _visible
 
-    group_id = await get_user_group_id(current_user.id, db)
-    document = await get_document_for_user(db, document_id, current_user.id, group_id)
+    group_ids = await get_user_group_ids(current_user.id, db)
+    document = await get_document_for_user(db, document_id, current_user.id, group_ids)
     folder_id = payload.get("folder_id")
     if folder_id is not None:
         try:
@@ -349,7 +349,7 @@ async def move_document(
                                 detail="folder_id must be an integer or null")
         folder = (await db.execute(
             select(DocumentFolder).where(
-                DocumentFolder.id == folder_id, _visible(current_user.id, group_id)
+                DocumentFolder.id == folder_id, _visible(current_user.id, group_ids)
             )
         )).scalar_one_or_none()
         if folder is None:
@@ -412,8 +412,8 @@ async def serve_pdf(
 
     Uses query parameter token auth for browser-native file access.
     """
-    group_id = await get_user_group_id(current_user.id, db)
-    document = await get_document_for_user(db, document_id, current_user.id, group_id)
+    group_ids = await get_user_group_ids(current_user.id, db)
+    document = await get_document_for_user(db, document_id, current_user.id, group_ids)
 
     # Only serve PDF files
     if document.file_type != "pdf":
@@ -443,8 +443,8 @@ async def list_document_pages(
     db: AsyncSession = Depends(get_db)
 ):
     """List all pages of a document."""
-    group_id = await get_user_group_id(current_user.id, db)
-    document = await get_document_for_user(db, document_id, current_user.id, group_id)
+    group_ids = await get_user_group_ids(current_user.id, db)
+    document = await get_document_for_user(db, document_id, current_user.id, group_ids)
 
     result = await db.execute(
         select(RAGDocumentPage)
@@ -476,8 +476,8 @@ async def serve_page_image(
 
     Uses query parameter token auth for browser-native image loading.
     """
-    group_id = await get_user_group_id(current_user.id, db)
-    document = await get_document_for_user(db, document_id, current_user.id, group_id)
+    group_ids = await get_user_group_ids(current_user.id, db)
+    document = await get_document_for_user(db, document_id, current_user.id, group_ids)
 
     result = await db.execute(
         select(RAGDocumentPage).where(
@@ -529,12 +529,12 @@ async def serve_page_region(
             detail="bbox must be four integers ymin,xmin,ymax,xmax",
         ) from None
 
-    group_id = await get_user_group_id(current_user.id, db)
+    group_ids = await get_user_group_ids(current_user.id, db)
     # Scope check (raises 404 if not visible to this user / group).
-    await get_document_for_user(db, document_id, current_user.id, group_id)
+    await get_document_for_user(db, document_id, current_user.id, group_ids)
 
     png = await render_page_region(
-        document_id, page_number, coords, current_user.id, db, group_id=group_id
+        document_id, page_number, coords, current_user.id, db, group_ids=group_ids
     )
     if png is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Region could not be rendered (bad page or bbox)")
@@ -560,13 +560,13 @@ async def serve_passage_image(
             detail="Invalid passage hash format"
         )
 
-    group_id = await get_user_group_id(current_user.id, db)
+    group_ids = await get_user_group_ids(current_user.id, db)
     passage_path = await get_cached_passage(
         document_id=document_id,
         passage_hash=passage_hash,
         user_id=current_user.id,
         db=db,
-        group_id=group_id,
+        group_ids=group_ids,
     )
 
     if not passage_path:
@@ -635,11 +635,11 @@ async def discover_sources(
     dois = [p.doi for p in papers if p.doi]
     existing: set[str] = set()
     if dois:
-        group_id = await get_user_group_id(current_user.id, db)
+        group_ids = await get_user_group_ids(current_user.id, db)
         rows = await db.execute(
             select(RAGDocument.doi)
             .where(func.lower(RAGDocument.doi).in_([d.lower() for d in dois]))
-            .where(document_scope(current_user.id, None, group_id))
+            .where(document_scope(current_user.id, None, group_ids))
         )
         existing = {d.lower() for d in rows.scalars().all() if d}
 
@@ -765,11 +765,11 @@ async def import_discovered(
 
     # Skip DOIs already in the caller's readable library -- checked against the
     # SAME scope /discover used to mark them "already_imported".
-    group_id = await get_user_group_id(current_user.id, db)
+    group_ids = await get_user_group_ids(current_user.id, db)
     existing_rows = await db.execute(
         select(RAGDocument.doi)
         .where(func.lower(RAGDocument.doi).in_([d.lower() for d in dois]))
-        .where(document_scope(current_user.id, None, group_id))
+        .where(document_scope(current_user.id, None, group_ids))
     )
     # Distinct name from the `already_in_library` RESULT list built below: these
     # are lowercased for matching, that one holds the DOIs as the user sent them.
@@ -932,7 +932,7 @@ async def search(
 
     Returns ranked results from both uploaded documents and microscopy images.
     """
-    group_id = await get_user_group_id(current_user.id, db)
+    group_ids = await get_user_group_ids(current_user.id, db)
     results = await combined_search(
         query=q,
         user_id=current_user.id,
@@ -940,7 +940,7 @@ async def search(
         experiment_id=experiment_id,
         doc_limit=doc_limit,
         fov_limit=fov_limit,
-        group_id=group_id,
+        group_ids=group_ids,
     )
 
     return RAGSearchResponse(
@@ -977,8 +977,8 @@ async def search_documents_only(
     db: AsyncSession = Depends(get_db)
 ):
     """Search only uploaded documents."""
-    group_id = await get_user_group_id(current_user.id, db)
-    results = await search_documents(q, current_user.id, db, limit=limit, group_id=group_id)
+    group_ids = await get_user_group_ids(current_user.id, db)
+    results = await search_documents(q, current_user.id, db, limit=limit, group_ids=group_ids)
     return {"query": q, "results": results}
 
 
@@ -994,10 +994,10 @@ async def search_similar(
     """Query-by-example: pages similar to an EXISTING page/document/FOV image."""
     if page_id is None and document_id is None and image_id is None:
         raise HTTPException(status_code=400, detail="Provide page_id, document_id or image_id")
-    group_id = await get_user_group_id(current_user.id, db)
+    group_ids = await get_user_group_ids(current_user.id, db)
     results = await search_similar_pages(
         current_user.id, db, page_id=page_id, document_id=document_id,
-        image_id=image_id, limit=limit, group_id=group_id,
+        image_id=image_id, limit=limit, group_ids=group_ids,
     )
     return {"results": results}
 
@@ -1014,12 +1014,12 @@ async def search_by_text(
         raise HTTPException(status_code=400, detail="text is required")
     mode = payload.get("mode", "query")
     limit = max(1, min(int(payload.get("limit", 10)), 50))
-    group_id = await get_user_group_id(current_user.id, db)
+    group_ids = await get_user_group_ids(current_user.id, db)
     from ml.rag import get_qwen_vl_encoder
     encoder = get_qwen_vl_encoder()
     emb = encoder.encode_text(text_value) if mode == "passage" else encoder.encode_query(text_value)
     results = await _search_pages_by_embedding(
-        emb.tolist(), current_user.id, db, limit=limit, group_id=group_id,
+        emb.tolist(), current_user.id, db, limit=limit, group_ids=group_ids,
     )
     return {"results": results}
 
@@ -1041,11 +1041,11 @@ async def search_by_image(
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid image file")
     limit = max(1, min(int(limit), 50))
-    group_id = await get_user_group_id(current_user.id, db)
+    group_ids = await get_user_group_ids(current_user.id, db)
     encoder = get_qwen_vl_encoder()
     emb = encoder.encode_document(image)
     results = await _search_pages_by_embedding(
-        emb.tolist(), current_user.id, db, limit=limit, group_id=group_id,
+        emb.tolist(), current_user.id, db, limit=limit, group_ids=group_ids,
     )
     return {"results": results}
 
@@ -1104,8 +1104,8 @@ async def search_within_document(
     Case-insensitive search.
     """
     # Verify caller may read the document (own or group-shared library doc)
-    group_id = await get_user_group_id(current_user.id, db)
-    document = await get_document_for_user(db, document_id, current_user.id, group_id)
+    group_ids = await get_user_group_ids(current_user.id, db)
+    document = await get_document_for_user(db, document_id, current_user.id, group_ids)
 
     # Search in all pages of the document
     query_lower = q.lower()

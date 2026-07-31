@@ -70,7 +70,7 @@ class GroupMember(Base):
 
     # Relationships
     group: Mapped["Group"] = relationship(back_populates="members")
-    user: Mapped["User"] = relationship(back_populates="group_membership")
+    user: Mapped["User"] = relationship(back_populates="group_memberships")
 
     def __repr__(self) -> str:
         return f"<GroupMember(group={self.group_id}, user={self.user_id}, role={self.role})>"

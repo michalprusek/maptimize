@@ -44,7 +44,7 @@ from schemas.image import (
     CropBatchUpdateResponse,
 )
 from utils.security import get_current_user, decode_token, TokenPayload
-from utils.groups import experiment_owner_filter, get_user_group_id
+from utils.groups import experiment_owner_filter, get_user_group_ids
 from services.image_processor import (
     process_image_background,
     process_upload_only_background,
@@ -133,8 +133,8 @@ async def verify_experiment_ownership(
 
 async def _experiment_access_filter(user_id: int, db: AsyncSession):
     """Resolve the user's group, then build the shared experiment access filter."""
-    group_id = await get_user_group_id(user_id, db)
-    return experiment_owner_filter(user_id, group_id)
+    group_ids = await get_user_group_ids(user_id, db)
+    return experiment_owner_filter(user_id, group_ids)
 
 
 async def verify_experiment_read_access(
