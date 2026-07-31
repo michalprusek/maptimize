@@ -34,6 +34,10 @@ tools:
       you only need to locate pages. Set include_fov=true to also search microscopy
       field-of-view images. To read more pages of a specific hit, call
       read_document_pages; to zoom a small figure, read_page_region.
+      SCOPE: by default this searches everything you can see — every group you
+      belong to plus your own private folders. Narrow it with folder_ids and/or
+      group_ids when the user asks about one project or one group; call
+      list_folders first to see the tree and pick ids.
     handler: search_documents
     annotations:
       readOnlyHint: true
@@ -62,6 +66,26 @@ tools:
         type: integer
         default: 10
         description: Max hits (page images are capped at 10; refs up to 50).
+      - name: folder_ids
+        in: arg
+        type: array
+        items: integer
+        description: >
+          Restrict to these folders (ids from list_folders). Omit to search
+          everything you can see, across every group you belong to plus your own
+          private folders — that is the default and usually the right one.
+      - name: include_subfolders
+        in: arg
+        type: boolean
+        default: true
+        description: Also search folders nested under the ones named in folder_ids.
+      - name: group_ids
+        in: arg
+        type: array
+        items: integer
+        description: >
+          Restrict to these groups (ids from list_groups). Omit to cover all of
+          your groups.
 
   - name: read_document_pages
     annotations:
@@ -211,18 +235,25 @@ tools:
         description: >
           Offset for pagination. The response reports the total match count and
           the next skip value when more pages exist.
-      - name: folder_id
+      - name: folder_ids
         in: query
-        type: integer
+        type: array
+        items: integer
         description: >
-          Scope to one folder (with in_folder=true). Get folder ids from
-          list_folders.
-      - name: in_folder
+          Restrict to these folders (ids from list_folders). Omit to cover
+          everything you can see.
+      - name: include_subfolders
         in: query
         type: boolean
+        default: true
+        description: Also include folders nested under the ones named in folder_ids.
+      - name: group_ids
+        in: query
+        type: array
+        items: integer
         description: >
-          Set true to scope to folder_id; if folder_id is omitted, scopes to the
-          top-level (root) folder.
+          Restrict to these groups (ids from list_groups). Omit to cover all of
+          your groups.
 
   - name: get_document_metadata
     annotations:
@@ -422,13 +453,86 @@ tools:
       readOnlyHint: true
       openWorldHint: false
     description: >
-      List the folders in the document library (id, name, parent_id). The tree is
-      flat — reconstruct nesting from parent_id (parent_id null = a top-level
-      folder). Use a folder's id with find_documents (folder_id + in_folder=true)
-      or move_document.
+      The whole document-library tree you can see, across every group you belong
+      to. One row per folder: id, name, parent_id, path, group_id/group_name,
+      visibility, kind and document_count. Reconstruct nesting from parent_id
+      (null = top level), or just read `path`.
+      Each group has a root folder named after the group, a `common` folder the
+      whole group reads and writes, and one PRIVATE folder per member — you only
+      ever see your own private folder, never a colleague's.
+      Call this first when the user asks about "our documents" or a specific
+      project: it tells you which folder ids to pass to search_documents,
+      find_documents or move_document.
     handler: http_json
     method: GET
     path: /api/rag/folders
+    params: []
+
+
+  - name: list_groups
+    annotations:
+      readOnlyHint: true
+      openWorldHint: false
+    description: >
+      The groups you belong to, with their members and your role in each. Group
+      ids are what search_documents / find_documents accept as group_ids, and what
+      assign_experiment_group shares an experiment with. Reading is group-shared:
+      you see your own data plus every group's.
+    handler: http_json
+    method: GET
+    path: /api/groups/my
+    params: []
+
+
+  - name: list_all_groups
+    annotations:
+      readOnlyHint: true
+      openWorldHint: false
+    description: >
+      Every group on the server with its member count — the directory to pick from
+      when asking to join one. Use list_groups for the ones you are already in.
+    handler: http_json
+    method: GET
+    path: /api/groups
+    params: []
+
+
+  - name: request_group_join
+    annotations:
+      readOnlyHint: false
+      destructiveHint: false
+      idempotentHint: true
+      openWorldHint: false
+    description: >
+      Ask to join a group. An ADMIN OF THAT GROUP has to approve it, which they do
+      in the web interface — this only files the request, it does not grant access,
+      and there is no way for you to approve one. Check list_join_requests for the
+      outcome. Requesting again after a rejection reopens the same request.
+    handler: http_post_json
+    method: POST
+    path: /api/groups/{group_id}/join-requests
+    params:
+      - name: group_id
+        in: path
+        type: integer
+        required: true
+        description: Group to join (id from list_all_groups).
+      - name: message
+        in: body
+        type: string
+        description: Optional note to the group's admins saying who you are.
+
+
+  - name: list_join_requests
+    annotations:
+      readOnlyHint: true
+      openWorldHint: false
+    description: >
+      Your own requests to join groups and their status (pending / approved /
+      rejected).
+    handler: http_json
+    method: GET
+    path: /api/groups/join-requests/mine
     params: []
 
   - name: create_folder
@@ -660,6 +764,28 @@ tools:
         in: query
         type: integer
         description: PTM id to assign; omit to clear the assignment.
+
+  - name: assign_experiment_group
+    annotations: {readOnlyHint: false, destructiveHint: false}
+    description: >
+      Share one of YOUR experiments with a group you belong to, or omit group_id
+      to unshare it. Unlike the protein / microscope / PTM assignments beside it,
+      this one is OWNER-ONLY: it decides who can see the experiment at all, which
+      is the uploader's call. group_id must be a group you are in (see
+      list_groups). Confirm with the user before unsharing — colleagues lose sight
+      of the experiment immediately.
+    handler: http_json
+    method: PATCH
+    path: /api/experiments/{experiment_id}/group
+    params:
+      - name: experiment_id
+        in: path
+        type: integer
+        required: true
+      - name: group_id
+        in: query
+        type: integer
+        description: Group to share with; omit to unshare (owner-only again).
 
   # -- Images & cell detection ----------------------------------------------
   - name: upload_image

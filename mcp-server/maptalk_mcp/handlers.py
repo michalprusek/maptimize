@@ -156,6 +156,24 @@ def _decode_base64_arg(args: dict, field: str) -> tuple[bytes | None, ContentBlo
 _MAX_REF_HITS = 50
 
 
+def _library_scope_params(args: dict) -> dict[str, Any]:
+    """Turn the scoping args into query params.
+
+    httpx encodes a list value as repeated params (``folder_ids=3&folder_ids=4``),
+    which is what FastAPI's ``Query(List[int])`` expects -- a JSON-encoded string
+    would arrive as one unparseable value. Omitted args are left out entirely, so
+    the backend keeps its default of "everything the caller can read".
+    """
+    params: dict[str, Any] = {}
+    for key in ("folder_ids", "group_ids"):
+        value = args.get(key)
+        if value:
+            params[key] = [int(v) for v in value]
+    if "include_subfolders" in args:
+        params["include_subfolders"] = bool(args["include_subfolders"])
+    return params
+
+
 async def search_documents(
     reg: "ToolRegistry", spec: "ToolSpec", args: dict, token: str | None = None
 ) -> HandlerResult:
@@ -169,8 +187,10 @@ async def search_documents(
     cap = _MAX_SEARCH_IMAGES if return_images else _MAX_REF_HITS
     limit = min(int(args.get("limit", 10)), cap)  # tools.yaml injects default 10
 
+    params: dict[str, Any] = {"q": query, "limit": limit}
+    params.update(_library_scope_params(args))
     data = await reg.client.get_json(
-        "/api/rag/search/documents", params={"q": query, "limit": limit}, token=token
+        "/api/rag/search/documents", params=params, token=token
     )
     hits = (data.get("results") or [])[:limit]
     if not hits:

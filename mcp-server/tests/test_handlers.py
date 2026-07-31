@@ -66,6 +66,48 @@ async def test_search_documents_default_returns_page_images(make_registry):
     assert len(images) == 1 and base64.b64decode(images[0].data) == png
 
 
+async def test_search_documents_forwards_the_library_scope(make_registry):
+    """Scoping args must reach the backend as repeated query params.
+
+    Without this the agent can be told to search one folder, report that it did,
+    and have searched the whole library -- the failure mode where the answer looks
+    right and the scope silently was not applied.
+    """
+    seen = {}
+
+    def routes(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/rag/search/documents":
+            seen["params"] = request.url.params
+            return httpx.Response(200, json={"results": []})
+        return httpx.Response(404)
+
+    reg = make_registry(_with_login(routes))
+    await reg.dispatch("search_documents", {
+        "query": "tubulin", "return": "refs",
+        "folder_ids": [3, 4], "group_ids": [2], "include_subfolders": False,
+    })
+    assert seen["params"].get_list("folder_ids") == ["3", "4"]
+    assert seen["params"].get_list("group_ids") == ["2"]
+    assert seen["params"].get("include_subfolders") == "false"
+
+
+async def test_search_documents_without_scope_args_sends_none(make_registry):
+    """Omitted means "everything you can read" -- the backend default. Sending an
+    empty list instead would scope the search to no folders at all."""
+    seen = {}
+
+    def routes(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/rag/search/documents":
+            seen["params"] = request.url.params
+            return httpx.Response(200, json={"results": []})
+        return httpx.Response(404)
+
+    reg = make_registry(_with_login(routes))
+    await reg.dispatch("search_documents", {"query": "tubulin", "return": "refs"})
+    assert "folder_ids" not in seen["params"]
+    assert "group_ids" not in seen["params"]
+
+
 async def test_search_documents_include_fov_appends_fov_matches(make_registry):
     def routes(request: httpx.Request) -> httpx.Response:
         path = request.url.path
@@ -326,14 +368,18 @@ async def test_find_documents_forwards_folder_scope(make_registry):
 
     def routes(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/api/rag/documents":
-            seen["params"] = dict(request.url.params)
+            seen["params"] = request.url.params
             return httpx.Response(200, json=[])
         return httpx.Response(404)
 
     reg = make_registry(_with_login(routes))
-    await reg.dispatch("find_documents", {"folder_id": 5, "in_folder": True})
-    assert seen["params"].get("folder_id") == "5"
-    assert seen["params"].get("in_folder") == "true"  # folder scope reaches the backend
+    await reg.dispatch(
+        "find_documents", {"folder_ids": [5, 8], "include_subfolders": False}
+    )
+    # Repeated params, not a JSON-encoded string: that is what FastAPI's
+    # Query(List[int]) parses. A stringified list arrives as one unparseable value.
+    assert seen["params"].get_list("folder_ids") == ["5", "8"]
+    assert seen["params"].get("include_subfolders") == "false"
 
 
 async def test_web_search_parses_ddg_results(make_registry):
