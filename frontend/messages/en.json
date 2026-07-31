@@ -617,8 +617,8 @@
     "indexing": "Indexing {count} of {total}...",
     "hidePreview": "Hide preview",
     "showPreview": "Show preview",
-    "connectToClaude": "Connect to Claude",
-    "connectDescription": "Connect Claude Desktop or Claude Code to your MAPtimize document library through the MCP connector. You sign in with your MAPtimize account — no token needed.",
+    "connectToClaude": "Connect an assistant",
+    "connectDescription": "Connect Claude, ChatGPT or any MCP-capable assistant to your MAPtimize document library. You sign in with your MAPtimize account — no token needed.",
     "searchPlaceholder": "Search your documents...",
     "clearSearch": "Clear search",
     "searchFailed": "Search failed — please try again",
@@ -690,18 +690,21 @@
     "legendPartial": "Indexing",
     "legendNotIndexed": "Not indexed"
   },
-  "connectClaude": {
-    "title": "Connect to Claude",
-    "description": "Connect Claude Desktop or Claude Code to your MAPtimize document library through the MCP connector. Authentication runs through your MAPtimize account — no token to generate.",
+  "connectAssistant": {
+    "title": "Connect an AI assistant",
+    "description": "Any assistant that speaks MCP can read and work with your MAPtimize library. Paste the connector URL into its settings and sign in with your MAPtimize account — there is no token to generate.",
     "connectorUrl": "Connector URL",
+    "urlHint": "The same URL for every client. Leave any client ID / secret fields empty — sign-in happens in the browser.",
     "copyUrl": "Copy URL",
     "copy": "Copy",
     "copied": "Copied!",
     "copyCommand": "Copy command",
-    "desktopTitle": "Claude Desktop",
-    "desktopSteps": "Go to Settings → Connectors → Add custom connector, paste the URL above (leave the client ID and secret empty), then sign in with your MAPtimize account.",
-    "codeTitle": "Claude Code",
-    "codeSteps": "Run the command below, then authenticate in the browser when prompted."
+    "claudeTitle": "Claude (Desktop, web, Cowork)",
+    "claudeSteps": "Settings → Connectors → Add custom connector. Paste the URL, leave the client ID and secret empty, then sign in with your MAPtimize account.",
+    "chatgptTitle": "ChatGPT (Plus, Pro, Business)",
+    "chatgptSteps": "Settings → Apps → Advanced settings → turn on Developer mode. Then Settings → Connectors → Create, give it a name, paste the URL as the MCP server URL and pick OAuth authentication.",
+    "cliTitle": "Command line",
+    "cliSteps": "Run the command below, then authenticate in the browser when prompted."
   },
   "admin": {
     "title": "Admin Panel",

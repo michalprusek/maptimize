@@ -617,8 +617,8 @@
     "indexing": "Indexation de {count} sur {total}...",
     "hidePreview": "Masquer l'aperçu",
     "showPreview": "Afficher l'aperçu",
-    "connectToClaude": "Connecter à Claude",
-    "connectDescription": "Connectez Claude Desktop ou Claude Code à votre bibliothèque de documents MAPtimize via le connecteur MCP. Vous vous connectez avec votre compte MAPtimize — aucun jeton nécessaire.",
+    "connectToClaude": "Connecter un assistant",
+    "connectDescription": "Connectez Claude, ChatGPT ou tout assistant compatible MCP à votre bibliothèque de documents MAPtimize. Vous vous connectez avec votre compte MAPtimize — aucun jeton nécessaire.",
     "searchPlaceholder": "Rechercher dans vos documents...",
     "clearSearch": "Effacer la recherche",
     "searchFailed": "Échec de la recherche — réessayez",
@@ -690,18 +690,21 @@
     "legendPartial": "Indexation",
     "legendNotIndexed": "Non indexé"
   },
-  "connectClaude": {
-    "title": "Connecter à Claude",
-    "description": "Connectez Claude Desktop ou Claude Code à votre bibliothèque de documents MAPtimize via le connecteur MCP. L'authentification passe par votre compte MAPtimize — aucun jeton à générer.",
+  "connectAssistant": {
+    "title": "Connecter un assistant IA",
+    "description": "Tout assistant compatible MCP peut lire et exploiter votre bibliothèque MAPtimize. Collez l'URL du connecteur dans ses paramètres et connectez-vous avec votre compte MAPtimize — aucun jeton à générer.",
     "connectorUrl": "URL du connecteur",
+    "urlHint": "La même URL pour tous les clients. Laissez vides les champs client ID / secret — la connexion se fait dans le navigateur.",
     "copyUrl": "Copier l'URL",
     "copy": "Copier",
     "copied": "Copié !",
     "copyCommand": "Copier la commande",
-    "desktopTitle": "Claude Desktop",
-    "desktopSteps": "Allez dans Paramètres → Connecteurs → Ajouter un connecteur personnalisé, collez l'URL ci-dessus (laissez l'ID client et le secret vides), puis connectez-vous avec votre compte MAPtimize.",
-    "codeTitle": "Claude Code",
-    "codeSteps": "Exécutez la commande ci-dessous, puis authentifiez-vous dans le navigateur lorsque cela vous est demandé."
+    "claudeTitle": "Claude (Desktop, web, Cowork)",
+    "claudeSteps": "Réglages → Connecteurs → Ajouter un connecteur personnalisé. Collez l'URL, laissez le client ID et le secret vides, puis connectez-vous avec votre compte MAPtimize.",
+    "chatgptTitle": "ChatGPT (Plus, Pro, Business)",
+    "chatgptSteps": "Réglages → Apps → Paramètres avancés → activez le mode développeur. Puis Réglages → Connecteurs → Créer, donnez un nom, collez l'URL comme URL du serveur MCP et choisissez l'authentification OAuth.",
+    "cliTitle": "Ligne de commande",
+    "cliSteps": "Exécutez la commande ci-dessous, puis authentifiez-vous dans le navigateur."
   },
   "admin": {
     "title": "Panneau d'administration",

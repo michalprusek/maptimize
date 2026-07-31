@@ -1,11 +1,10 @@
 """Entry point. Serves the maptalk MCP server over stdio or streamable HTTP.
 
-- ``--transport stdio`` (default): a local server for Claude Code / Claude
-  Desktop. Whether the backend is local or remote is decided by
-  ``MAPTALK_BASE_URL``.
-- ``--transport http``: a hosted remote connector (Streamable HTTP). A public,
-  Anthropic-cloud-reachable endpoint; each caller authenticates with their own
-  personal access token, validated per request against the backend.
+- ``--transport stdio`` (default): a local server for a desktop or CLI client.
+  Whether the backend is local or remote is decided by ``MAPTALK_BASE_URL``.
+- ``--transport http``: a hosted remote connector (Streamable HTTP). A public
+  endpoint reachable from any vendor's cloud; each caller authenticates with
+  their own bearer token, validated per request against the backend.
 """
 from __future__ import annotations
 

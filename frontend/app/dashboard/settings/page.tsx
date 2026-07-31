@@ -32,7 +32,7 @@ import {
 import { useAuthStore } from "@/stores/authStore";
 import { useSettingsStore, DisplayMode, Theme, Language } from "@/stores/settingsStore";
 import { api } from "@/lib/api";
-import { ConnectClaudePanel } from "@/components/documents/ConnectClaudePanel";
+import { ConnectAssistantPanel } from "@/components/documents/ConnectAssistantPanel";
 import { GroupsSection } from "@/components/settings/GroupsSection";
 
 // Display mode visual configuration (labels come from translations)
@@ -540,17 +540,18 @@ export default function SettingsPage(): JSX.Element {
       <GroupsSection />
 
       {/* MCP Connector Section ("Connect to Claude") */}
-      <ConnectClaudeSection />
+      <ConnectAssistantSection />
     </div>
   );
 }
 
 // =============================================================================
-// MCP Connector Section ("Connect to Claude")
+// MCP Connector Section -- vendor-neutral: the connector implements the MCP
+// authorization spec, so every client that speaks it is a peer here.
 // =============================================================================
 
-function ConnectClaudeSection(): JSX.Element {
-  const t = useTranslations("connectClaude");
+function ConnectAssistantSection(): JSX.Element {
+  const t = useTranslations("connectAssistant");
 
   return (
     <motion.section
@@ -564,7 +565,7 @@ function ConnectClaudeSection(): JSX.Element {
         <h2 className="text-xl font-display font-semibold text-text-primary">{t("title")}</h2>
       </div>
       <p className="text-sm text-text-secondary">{t("description")}</p>
-      <ConnectClaudePanel />
+      <ConnectAssistantPanel />
     </motion.section>
   );
 }

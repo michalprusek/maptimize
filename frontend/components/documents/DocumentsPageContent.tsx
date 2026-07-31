@@ -29,7 +29,7 @@ import { DocumentUpload } from "./DocumentUpload";
 import { DiscoverSourcesModal } from "./DiscoverSourcesModal";
 import { PDFViewerPanel } from "./PDFViewerPanel";
 import { IndexingProgress } from "./IndexingProgress";
-import { ConnectClaudePanel } from "./ConnectClaudePanel";
+import { ConnectAssistantPanel } from "./ConnectAssistantPanel";
 import { api, DocumentSearchHit } from "@/lib/api";
 import { clsx } from "clsx";
 
@@ -317,7 +317,7 @@ export function DocumentsPageContent() {
               </div>
               <div className="p-5">
                 <p className="text-sm text-text-secondary mb-5">{t("connectDescription")}</p>
-                <ConnectClaudePanel />
+                <ConnectAssistantPanel />
               </div>
             </motion.div>
           </motion.div>

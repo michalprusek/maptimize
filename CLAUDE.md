@@ -13,12 +13,31 @@ docker compose -f docker-compose.prod.yml up -d maptimize-backend
 
 Neboj se dělat velké a rozsáhlé změny a mazat kód. Legacy implementace maž kdykoliv na ně narazíš. Codebase udržuje maximálně clean a přehlednou.
 
-## 🤖 MCP — ovládací plocha agenta (Claude connector)
+## 🤖 MCP — ovládací plocha agenta (konektor, vendor-neutrální)
 
-Agent (Claude) ovládá Maptimize **výhradně přes MCP server** `mcp-server/`
+Agent ovládá Maptimize **výhradně přes MCP server** `mcp-server/`
 (balík `maptalk_mcp`, HTTP transport, OAuth 2.0 PKCE + per-user PAT). Žádný in-app
 LLM tu není — dřívější Gemini chat agent byl smazán (commit `2ba9181`) a agentní
-vrstva se přesunula do Claude přes hostovaný per-user konektor.
+vrstva se přesunula do hostovaného per-user konektoru.
+
+⚠️ **Konektor není vázaný na Claude** (od 2026-07-31). Stojí na MCP autorizační
+specifikaci — RFC 9728 discovery (`.well-known/oauth-protected-resource` + 401
+s `WWW-Authenticate`) a RFC 7591 dynamickou registraci (`/oauth/register`) —
+takže **klient je zaměnitelný**: Claude, ChatGPT i CLI mluví týmž protokolem a
+dostanou tentýž seznam toolů, autentizovaný OAuth tokenem téhož uživatele.
+Přidat dalšího klienta = řádek v `ALLOWED_REDIRECT_PREFIXES`.
+
+⚠️ **Ten allowlist v `routers/oauth.py` je bezpečnostní hranice, ne konfigurace.**
+Registrace je otevřená (kdokoli může POSTnout na `/oauth/register`), takže jediné,
+co brání udělat z `/authorize` phishingový nástroj, je právě on. **Každý prefix
+musí končit na hranici cesty (`/` nebo `:`)** — match je prostý `startswith`, takže
+`http://localhost` (bez lomítka) matchuje i `http://localhost.evil.example/steal`.
+Tahle díra tam reálně byla do 2026-07-31; `tests/unit/test_oauth_redirect_allowlist.py`
+zamyká **tu vlastnost**, ne jen jednotlivé případy.
+
+⚠️ **UI konektoru je taky neutrální** — `ConnectAssistantPanel` (i18n namespace
+`connectAssistant`) vypisuje jednu URL a k ní kroky pro Claude / ChatGPT / CLI jako
+rovnocenné položky. Když přibude klient, přidej kartu, ne novou komponentu.
 
 **CRITICAL — SSOT pravidlo: každý nový/změněný aplikační endpoint přidej i do MCP.**
 MCP je to, čím agent appku „vidí" a „ovládá"; když endpoint v MCP chybí, pro agenta

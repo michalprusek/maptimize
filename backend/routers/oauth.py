@@ -39,14 +39,27 @@ RESOURCE = f"{ISSUER}/mcp/"
 CODE_TTL_SECONDS = 300
 REFRESH_TTL_DAYS = 30
 
-# Only Claude's own callbacks (and loopback for native apps) may be registered as
-# redirect targets. Open DCR + arbitrary redirect_uris would turn /authorize into
-# a phishing oracle: an attacker registers redirect_uri=attacker.example, phishes
-# a victim to the REAL /authorize, and the issued code is redirected to them.
+# Only a known client vendor's callbacks (and loopback for native apps) may be
+# registered as redirect targets. Registration is open -- anyone may POST
+# /oauth/register -- so this list is what stops /authorize becoming a phishing
+# oracle: an attacker who could register redirect_uri=attacker.example would
+# phish a victim to the REAL authorize page (right domain, right TLS, right login
+# form) and collect the issued code.
+#
+# ⚠️ Every prefix must end at a path boundary -- "/" or ":" -- because the match
+# is a plain startswith. "http://localhost" (no boundary) also matches
+# "http://localhost.evil.example/steal", which is a working phishing target;
+# tests/unit/test_oauth_redirect_allowlist.py asserts the property directly, not
+# just the cases.
+#
+# The vendors are interchangeable by design: the connector implements the MCP
+# authorization spec (RFC 9728 discovery + RFC 7591 registration), not anything
+# Anthropic-specific, so admitting another client is a line in this list.
 ALLOWED_REDIRECT_PREFIXES = [
     p.strip() for p in os.environ.get(
         "OAUTH_ALLOWED_REDIRECT_PREFIXES",
-        "https://claude.ai/,https://claude.com/,http://localhost,http://127.0.0.1",
+        "https://claude.ai/,https://claude.com/,https://chatgpt.com/,"
+        "http://localhost/,http://localhost:,http://127.0.0.1/,http://127.0.0.1:",
     ).split(",") if p.strip()
 ]
 
