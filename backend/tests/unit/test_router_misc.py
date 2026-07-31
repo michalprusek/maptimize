@@ -471,6 +471,7 @@ async def test_rag_list_documents(mock_db):
          patch.object(rag_r.RAGDocumentResponse, "model_validate",
                       side_effect=lambda d: SimpleNamespace(id=d.id)):
         out = await rag_r.list_documents(skip=0, limit=10, status_filter="completed",
+                                         scope=rag_r.LibraryScope(),
                                          current_user=user(id=7), db=mock_db)
     assert [o.id for o in out] == [1, 2]
     assert out[0].is_owner is True   # own document
@@ -736,6 +737,7 @@ async def test_rag_search(mock_db):
 async def test_rag_search_documents_only(mock_db):
     with patch.object(rag_r, "search_documents", new=AsyncMock(return_value=[{"x": 1}])):
         out = await rag_r.search_documents_only(q="q", limit=20,
+                                                scope=rag_r.LibraryScope(),
                                                 current_user=user(id=7), db=mock_db)
     assert out["results"] == [{"x": 1}]
 

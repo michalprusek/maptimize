@@ -106,6 +106,7 @@ async def _search_pages_by_embedding(
     group_ids: Sequence[int] = (),
     thread_id: Optional[int] = None,
     document_ids: Optional[List[int]] = None,
+    folder_ids: Optional[Sequence[int]] = None,
     exclude_page_id: Optional[int] = None,
     include_text: bool = True,
 ) -> List[dict]:
@@ -125,6 +126,17 @@ async def _search_pages_by_embedding(
     if document_ids:
         doc_filter = "AND rdp.document_id = ANY(:document_ids)"
         params["document_ids"] = [int(d) for d in document_ids]
+
+    # Optional filter: restrict to a set of folders. The ids arrive already
+    # expanded and already authorized (utils.folder_placement.resolve_folder_scope
+    # resolves them against the caller's folder ACL), so this narrows the result
+    # set and never widens it. An EMPTY list is meaningful and must not be
+    # confused with None: it means "the folders you asked for hold nothing you can
+    # see", so the search returns nothing rather than everything.
+    folder_filter = ""
+    if folder_ids is not None:
+        folder_filter = "AND rd.folder_id = ANY(:folder_ids)"
+        params["folder_ids"] = [int(f) for f in folder_ids]
 
     exclude_filter = ""
     if exclude_page_id is not None:
@@ -157,6 +169,7 @@ async def _search_pages_by_embedding(
           AND rdp.embedding IS NOT NULL
           {scope_filter}
           {doc_filter}
+          {folder_filter}
           {exclude_filter}
         ORDER BY rdp.embedding <=> :embedding
         LIMIT :limit
@@ -191,10 +204,15 @@ async def search_documents(
     limit: int = None,
     include_text: bool = True,
     document_ids: Optional[List[int]] = None,
+    folder_ids: Optional[Sequence[int]] = None,
     thread_id: Optional[int] = None,
     group_ids: Sequence[int] = (),
 ) -> List[dict]:
-    """Search uploaded documents by a text query (Qwen VL embeddings, pgvector cosine)."""
+    """Search uploaded documents by a text query (Qwen VL embeddings, pgvector cosine).
+
+    ``folder_ids=None`` searches everything the caller can read -- the default.
+    Pass an already-resolved id list to narrow it to a folder subtree.
+    """
     from ml.rag import get_qwen_vl_encoder
 
     if limit is None:
@@ -212,6 +230,7 @@ async def search_documents(
             group_ids=group_ids,
             thread_id=thread_id,
             document_ids=document_ids,
+            folder_ids=folder_ids,
             include_text=include_text,
         )
     except Exception as e:
@@ -282,8 +301,7 @@ def _document_metadata_conditions(
     created_before=None,
     min_pages: Optional[int] = None,
     max_pages: Optional[int] = None,
-    folder_id: Optional[int] = None,
-    in_folder: bool = False,
+    folder_ids: Optional[Sequence[int]] = None,
     group_ids: Sequence[int] = (),
     thread_id: Optional[int] = None,
 ) -> list:
@@ -306,11 +324,12 @@ def _document_metadata_conditions(
         conds.append(RAGDocument.page_count >= min_pages)
     if max_pages is not None:
         conds.append(RAGDocument.page_count <= max_pages)
-    if in_folder:  # scope to one folder (folder_id=None -> root)
-        conds.append(
-            RAGDocument.folder_id.is_(None) if folder_id is None
-            else RAGDocument.folder_id == folder_id
-        )
+    if folder_ids is not None:
+        # Already expanded and already authorized by the caller
+        # (utils.folder_placement.resolve_folder_scope). An EMPTY list is
+        # meaningful: the requested folders hold nothing this caller can see, so
+        # the answer is no rows -- not, as `if folder_ids:` would have it, every row.
+        conds.append(RAGDocument.folder_id.in_(list(folder_ids)))
     return conds
 
 
@@ -326,8 +345,7 @@ async def search_documents_metadata(
     created_before=None,
     min_pages: Optional[int] = None,
     max_pages: Optional[int] = None,
-    folder_id: Optional[int] = None,
-    in_folder: bool = False,
+    folder_ids: Optional[Sequence[int]] = None,
     group_ids: Sequence[int] = (),
     thread_id: Optional[int] = None,
     skip: int = 0,
@@ -338,8 +356,8 @@ async def search_documents_metadata(
     conds = _document_metadata_conditions(
         user_id, name=name, doi=doi, file_type=file_type, status=status,
         created_after=created_after, created_before=created_before,
-        min_pages=min_pages, max_pages=max_pages, folder_id=folder_id,
-        in_folder=in_folder, group_ids=group_ids, thread_id=thread_id,
+        min_pages=min_pages, max_pages=max_pages, folder_ids=folder_ids,
+        group_ids=group_ids, thread_id=thread_id,
     )
     stmt = (
         select(RAGDocument).where(*conds)
@@ -360,8 +378,7 @@ async def count_documents_metadata(
     created_before=None,
     min_pages: Optional[int] = None,
     max_pages: Optional[int] = None,
-    folder_id: Optional[int] = None,
-    in_folder: bool = False,
+    folder_ids: Optional[Sequence[int]] = None,
     group_ids: Sequence[int] = (),
     thread_id: Optional[int] = None,
 ) -> int:
@@ -370,8 +387,8 @@ async def count_documents_metadata(
     conds = _document_metadata_conditions(
         user_id, name=name, doi=doi, file_type=file_type, status=status,
         created_after=created_after, created_before=created_before,
-        min_pages=min_pages, max_pages=max_pages, folder_id=folder_id,
-        in_folder=in_folder, group_ids=group_ids, thread_id=thread_id,
+        min_pages=min_pages, max_pages=max_pages, folder_ids=folder_ids,
+        group_ids=group_ids, thread_id=thread_id,
     )
     stmt = select(func.count()).select_from(RAGDocument).where(*conds)
     return int((await db.execute(stmt)).scalar() or 0)

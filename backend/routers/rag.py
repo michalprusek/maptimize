@@ -4,6 +4,7 @@ Handles document upload, indexing, and search operations.
 """
 import asyncio
 import logging
+from dataclasses import dataclass
 import time
 from pathlib import Path
 from typing import List, Optional
@@ -189,6 +190,74 @@ async def get_document_for_user(
 
 # ============== Document Management ==============
 
+@dataclass
+class LibraryScope:
+    """Which slice of the library a read covers.
+
+    Both filters NARROW and can never widen: ``group_ids`` is intersected with the
+    caller's actual memberships and ``folder_ids`` is expanded against their
+    folder ACL. Asking for a group you are not in, or a folder you cannot see,
+    yields nothing rather than someone else's documents.
+
+    Unset (the default) means "everything you can read, across every group you
+    belong to plus your private folders".
+    """
+
+    folder_ids: Optional[List[int]] = None
+    include_subfolders: bool = True
+    group_ids: Optional[List[int]] = None
+
+
+def library_scope(
+    folder_ids: Optional[List[int]] = Query(
+        None, description="Folders to scope to; repeat the param for several"
+    ),
+    include_subfolders: bool = Query(
+        True, description="Include folders nested under the selected ones"
+    ),
+    group_ids: Optional[List[int]] = Query(
+        None, description="Groups to scope to; repeat the param for several"
+    ),
+) -> LibraryScope:
+    """Collect the scoping params into one value.
+
+    One dependency rather than three loose parameters, for the reason the facet
+    filter learned the hard way: tests call these handlers directly, and every
+    parameter left at a ``Query(...)`` default arrives in the body as a Query
+    OBJECT rather than None. With three of them that is three silent mines.
+    """
+    return LibraryScope(
+        folder_ids=folder_ids,
+        include_subfolders=include_subfolders,
+        group_ids=group_ids,
+    )
+
+
+async def resolve_scope(
+    db: AsyncSession, user_id: int, scope: LibraryScope
+) -> tuple[list[int], Optional[list[int]]]:
+    """Turn a :class:`LibraryScope` into ``(group_ids, folder_ids)`` for a query.
+
+    ``folder_ids`` is None when no folder filter was asked for -- meaning
+    "everything you can read" -- and an EMPTY list when the requested folders hold
+    nothing visible, which must return no rows rather than all of them.
+    """
+    group_ids = await get_user_group_ids(user_id, db)
+    if scope.group_ids:
+        requested = {int(g) for g in scope.group_ids}
+        group_ids = [g for g in group_ids if g in requested]
+
+    from routers.folders import _visible as _folder_visible
+
+    resolved = await resolve_folder_scope(
+        db,
+        scope.folder_ids,
+        scope.include_subfolders,
+        _folder_visible(user_id, group_ids),
+    )
+    return group_ids, resolved
+
+
 @router.get("/documents", response_model=List[RAGDocumentResponse])
 async def list_documents(
     skip: int = Query(0, ge=0),
@@ -199,8 +268,7 @@ async def list_documents(
     file_type: Optional[str] = Query(None, description="Exact file type"),
     min_pages: Optional[int] = Query(None, ge=0),
     max_pages: Optional[int] = Query(None, ge=0),
-    folder_id: Optional[int] = Query(None, description="Folder to scope to (with in_folder=true)"),
-    in_folder: bool = Query(False, description="Scope to folder_id; folder_id omitted = root"),
+    scope: LibraryScope = Depends(library_scope),
     response: Response = None,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
@@ -209,13 +277,15 @@ async def list_documents(
 
     Chat attachments are excluded: they belong to their thread, not the library.
     Group-shared library documents from other members are included, marked
-    ``is_owner=False``. With ``in_folder=true`` the list is scoped to one folder.
-    The total matching count (ignoring skip/limit) is returned in the
-    ``X-Total-Count`` header so callers can paginate; the body stays a bare array.
+    ``is_owner=False``. With no scoping params the listing covers everything the
+    caller can read across all their groups; ``folder_ids`` and ``group_ids``
+    narrow it and can never widen it. The total matching count (ignoring
+    skip/limit) is returned in the ``X-Total-Count`` header so callers can
+    paginate; the body stays a bare array.
     """
-    group_ids = await get_user_group_ids(current_user.id, db)
+    group_ids, resolved_folders = await resolve_scope(db, current_user.id, scope)
     filters = dict(
-        name=name, doi=doi, folder_id=folder_id, in_folder=in_folder,
+        name=name, doi=doi, folder_ids=resolved_folders,
         file_type=file_type, status=status_filter, min_pages=min_pages,
         max_pages=max_pages, group_ids=group_ids, thread_id=None,
     )
@@ -992,12 +1062,21 @@ async def search(
 async def search_documents_only(
     q: str = Query(..., min_length=1, max_length=1000),
     limit: int = Query(20, ge=1, le=100),
+    scope: LibraryScope = Depends(library_scope),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
-    """Search only uploaded documents."""
-    group_ids = await get_user_group_ids(current_user.id, db)
-    results = await search_documents(q, current_user.id, db, limit=limit, group_ids=group_ids)
+    """Semantic search over the document library.
+
+    With no scoping params it searches everything the caller can read, across
+    every group they belong to plus their private folders. The params only ever
+    narrow that.
+    """
+    scoped_groups, resolved_folders = await resolve_scope(db, current_user.id, scope)
+    results = await search_documents(
+        q, current_user.id, db, limit=limit,
+        group_ids=scoped_groups, folder_ids=resolved_folders,
+    )
     return {"query": q, "results": results}
 
 

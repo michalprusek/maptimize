@@ -497,7 +497,7 @@ def test_document_metadata_conditions_always_scopes():
     # bare call = just the scope predicate; each filter adds exactly one clause
     assert len(rag._document_metadata_conditions(7)) == 1
     conds = rag._document_metadata_conditions(
-        7, name="x", status="completed", min_pages=3, in_folder=True, folder_id=5
+        7, name="x", status="completed", min_pages=3, folder_ids=[5]
     )
     assert len(conds) == 5  # scope + name + status + min_pages + folder
 
@@ -516,7 +516,7 @@ async def test_search_and_count_forward_identical_conditions(mock_db):
 
     mock_db.execute.return_value = make_result(scalars_all=[], scalar=0)
     filters = dict(name="a", status="failed", file_type="pdf", min_pages=2,
-                   in_folder=True, folder_id=3)
+                   folder_ids=[3])
     with patch.object(rag, "_document_metadata_conditions", spy):
         await rag.search_documents_metadata(7, mock_db, skip=0, limit=10, **filters)
         await rag.count_documents_metadata(7, mock_db, **filters)

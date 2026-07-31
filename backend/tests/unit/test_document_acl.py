@@ -330,6 +330,7 @@ async def test_list_documents_sets_total_count_header(mock_db):
          patch.object(rag_router, "count_documents_metadata",
                       AsyncMock(return_value=17)) as mock_count:
         out = await rag_router.list_documents(
+            scope=rag_router.LibraryScope(),
             response=resp, current_user=SimpleNamespace(id=1), db=mock_db
         )
     assert out == []  # bare array preserved
