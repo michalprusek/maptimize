@@ -1008,6 +1008,13 @@ Na stacku torch 2.11 + coverage 7.x + greenlet + asyncpg narazíš na tvrdé pá
 2. SQLAlchemy-async (asyncpg) běží v greenletu → coverage C-tracer při přepínání greenlet stacku **segfaultuje**. **Fix:** server importuje appku před coverage; unit testy mockují DB (`mock_db` AsyncMock → žádný greenlet).
 3. `concurrency = greenlet` v `.coveragerc` + ctrace core (NE sysmon).
 4. Unit testy běží **offline + CPU-only** (`HF_HUB_OFFLINE=1`, `CUDA_VISIBLE_DEVICES=`) — nikdy nestahuj modely ani neber prod GPU.
+5. ⚠️ **`tests/unit/test_discriminant_service.py` padá 10× JEN pod coverage tracerem**
+   (`AttributeError: module 'numpy.dtypes' has no attribute 'VoidDType'` uvnitř
+   sklearn 1.8 / numpy 1.26). Bez coverage projde a **produkce je v pořádku**
+   (`balanced_accuracy_score` v `maptimize-backend` ověřeno ručně) — je to další
+   položka do téhle sbírky, ne regrese. Ověřeno 2026-07-31, že padá i na commitu
+   `f075680`, tedy dávno před multi-group změnami. Neopravuj to změnou pinu bez
+   měření: sklearn a numpy jsou tu připnuté kvůli reprodukovatelnosti skóre.
 
 ### Psaní unit testů (`backend/tests/unit/`)
 - `tests/unit/conftest.py` dává `mock_db` (AsyncMock AsyncSession) a `make_result(scalar=, scalars_all=, first=, fetchall=, rowcount=)`.

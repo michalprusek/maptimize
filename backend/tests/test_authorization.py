@@ -36,8 +36,8 @@ class TestAuthRequired:
     PROTECTED_ENDPOINTS = [
         ("GET", "/api/experiments"),
         ("GET", "/api/settings"),
-        ("GET", "/api/chat/threads"),
         ("GET", "/api/rag/documents"),
+        ("GET", "/api/groups/my"),
         ("GET", "/api/embeddings/status"),
         ("GET", "/api/segmentation/capabilities"),
         ("GET", "/api/bug-reports"),
