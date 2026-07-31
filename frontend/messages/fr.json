@@ -585,6 +585,10 @@
     }
   },
   "documents": {
+    "structuralFolder": "Fait partie de la structure du groupe — ne peut être renommée ni supprimée",
+    "commonFolder": "Partagée par tout le groupe",
+    "sharedFolder": "Partagée avec {group}",
+    "privateFolder": "Privée — vous seulement",
     "title": "Documents",
     "pages": "pages",
     "processing": "En cours",
@@ -811,6 +815,19 @@
     }
   },
   "groups": {
+    "roleMember": "Membre",
+    "roleAdmin": "Administrateur",
+    "rejectSuccess": "Demande refusée",
+    "approveSuccess": "Membre ajouté",
+    "reject": "Refuser",
+    "approve": "Approuver",
+    "pendingRequests": "{count, plural, one {# demande d'adhésion} other {# demandes d'adhésion}}",
+    "myPendingRequests": "Vos demandes en attente",
+    "cancelRequest": "Retirer",
+    "requestCancelled": "Demande retirée",
+    "requestSent": "Demande envoyée — un administrateur du groupe l'examinera",
+    "requestPending": "Demande en attente",
+    "requestToJoin": "Demander à rejoindre",
     "title": "Groupe",
     "noGroup": "Vous n'appartenez a aucun groupe",
     "noGroupDesc": "Creez un nouveau groupe ou parcourez les groupes existants pour les rejoindre.",
