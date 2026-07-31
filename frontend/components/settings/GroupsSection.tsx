@@ -359,6 +359,22 @@ export function GroupsSection(): JSX.Element {
   );
 }
 
+/** The admin/member pill. Rendered for the caller's own role and for each member. */
+function RoleBadge({ role }: { role: string }): JSX.Element {
+  const tg = useTranslations("groups");
+  const isAdmin = role === "admin";
+
+  return (
+    <span
+      className={`px-1.5 py-0.5 text-xs rounded ${
+        isAdmin ? "bg-primary-500/20 text-primary-400" : "bg-white/5 text-text-muted"
+      }`}
+    >
+      {isAdmin ? tg("roleAdmin") : tg("roleMember")}
+    </span>
+  );
+}
+
 function GroupCard({
   membership,
   currentUserId,
@@ -417,15 +433,7 @@ function GroupCard({
         <div>
           <div className="flex items-center gap-2">
             <h3 className="text-lg font-display font-semibold text-text-primary">{group.name}</h3>
-            <span
-              className={`px-1.5 py-0.5 text-xs rounded ${
-                role === "admin"
-                  ? "bg-primary-500/20 text-primary-400"
-                  : "bg-white/5 text-text-muted"
-              }`}
-            >
-              {role === "admin" ? tg("roleAdmin") : tg("roleMember")}
-            </span>
+            <RoleBadge role={role} />
           </div>
           {group.description && (
             <p className="text-sm text-text-secondary mt-1">{group.description}</p>
@@ -513,15 +521,7 @@ function GroupCard({
               <div>
                 <div className="flex items-center gap-2">
                   <span className="text-sm font-medium text-text-primary">{member.user_name}</span>
-                  <span
-                    className={`px-1.5 py-0.5 text-xs rounded ${
-                      member.role === "admin"
-                        ? "bg-primary-500/20 text-primary-400"
-                        : "bg-white/5 text-text-muted"
-                    }`}
-                  >
-                    {member.role === "admin" ? tg("roleAdmin") : tg("roleMember")}
-                  </span>
+                  <RoleBadge role={member.role} />
                 </div>
                 <span className="text-xs text-text-muted">{member.user_email}</span>
               </div>

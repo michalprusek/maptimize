@@ -25,10 +25,11 @@ is mirrored in four places, and a folder join would have to be kept in step in
 all of them.
 """
 from datetime import datetime
-from typing import Optional
+from typing import Optional, Sequence
 
-from sqlalchemy import DateTime, ForeignKey, Integer, String, func
+from sqlalchemy import DateTime, ForeignKey, Integer, String, and_, func, or_
 from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.sql.elements import ColumnElement
 
 from database import Base
 
@@ -73,3 +74,29 @@ class DocumentFolder(Base):
 
     def __repr__(self) -> str:
         return f"<DocumentFolder(id={self.id}, name={self.name!r}, parent={self.parent_id})>"
+
+
+def folder_read_scope(user_id: int, group_ids: Sequence[int] = ()) -> ColumnElement:
+    """SSOT for which folders a caller may see.
+
+    Their own -- private ones included -- plus the group-visible folders of every
+    group they belong to. A colleague's private folder carries
+    ``visibility='private'`` and a different ``user_id``, so it is excluded here:
+    for peers, for the group's admin, and for the global admin. Dropping the
+    visibility term would list every member's private folder to the whole group.
+
+    Lives beside the model, like ``document_scope`` in ``models.rag_document``,
+    because two routers need it: ``routers.folders`` to list and fetch, and
+    ``routers.rag`` to validate an upload/move target and to resolve a search
+    scope. An empty ``group_ids`` adds no term, leaving owner-only.
+    """
+    mine = DocumentFolder.user_id == user_id
+    if not group_ids:
+        return mine
+    return or_(
+        mine,
+        and_(
+            DocumentFolder.visibility == FOLDER_VISIBILITY_GROUP,
+            DocumentFolder.group_id.in_(list(group_ids)),
+        ),
+    )

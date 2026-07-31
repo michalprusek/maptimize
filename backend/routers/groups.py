@@ -70,6 +70,10 @@ async def load_group_detail(db: AsyncSession, group_id: int) -> Optional[Group]:
     Always used to build a response after a write: serializing the in-session
     object instead would touch attributes the commit expired, and lazy IO in an
     async request raises MissingGreenlet rather than loading.
+
+    Returns None for a missing group -- ``get_my_groups`` skips a membership that
+    outlived its group rather than failing the whole listing. Endpoints addressing
+    one group by id want :func:`load_group_detail_or_404`.
     """
     result = await db.execute(
         select(Group)
@@ -80,6 +84,28 @@ async def load_group_detail(db: AsyncSession, group_id: int) -> Optional[Group]:
         .where(Group.id == group_id)
     )
     return result.scalar_one_or_none()
+
+
+async def load_group_detail_or_404(db: AsyncSession, group_id: int) -> Group:
+    """Same, but a missing group is a 404 rather than a None to check."""
+    group = await load_group_detail(db, group_id)
+    if group is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Group not found"
+        )
+    return group
+
+
+async def get_group_or_404(db: AsyncSession, group_id: int) -> Group:
+    """The group row alone, for endpoints that never render its members."""
+    group = (
+        await db.execute(select(Group).where(Group.id == group_id))
+    ).scalar_one_or_none()
+    if group is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Group not found"
+        )
+    return group
 
 
 def build_join_request_response(
@@ -228,23 +254,7 @@ async def get_group(
     db: AsyncSession = Depends(get_db)
 ):
     """Get group detail with members list."""
-    result = await db.execute(
-        select(Group)
-        .options(
-            selectinload(Group.creator),
-            selectinload(Group.members).selectinload(GroupMember.user)
-        )
-        .where(Group.id == group_id)
-    )
-    group = result.scalar_one_or_none()
-
-    if not group:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Group not found"
-        )
-
-    return build_group_detail_response(group)
+    return build_group_detail_response(await load_group_detail_or_404(db, group_id))
 
 
 @router.patch("/{group_id}", response_model=GroupDetailResponse)
@@ -255,12 +265,7 @@ async def update_group(
     db: AsyncSession = Depends(get_db)
 ):
     """Update group name/description (group admin only)."""
-    group = await load_group_detail(db, group_id)
-    if not group:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Group not found"
-        )
+    group = await load_group_detail_or_404(db, group_id)
 
     await require_group_admin(current_user.id, group_id, db, actor=current_user)
 
@@ -288,16 +293,7 @@ async def delete_group(
     Experiments, documents and folders survive: their group_id is ON DELETE SET
     NULL, so they fall back to owner-only rather than disappearing with the group.
     """
-    result = await db.execute(
-        select(Group).where(Group.id == group_id)
-    )
-    group = result.scalar_one_or_none()
-
-    if not group:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Group not found"
-        )
+    group = await get_group_or_404(db, group_id)
 
     await require_group_admin(current_user.id, group_id, db, actor=current_user)
 
@@ -325,16 +321,6 @@ async def _get_membership(db: AsyncSession, group_id: int, user_id: int) -> Opti
     return result.scalar_one_or_none()
 
 
-async def _get_group_or_404(db: AsyncSession, group_id: int) -> Group:
-    result = await db.execute(select(Group).where(Group.id == group_id))
-    group = result.scalar_one_or_none()
-    if not group:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Group not found"
-        )
-    return group
-
-
 @router.post(
     "/{group_id}/join-requests",
     response_model=JoinRequestResponse,
@@ -347,7 +333,7 @@ async def create_join_request(
     db: AsyncSession = Depends(get_db),
 ):
     """Ask to join a group. A group admin decides."""
-    group = await _get_group_or_404(db, group_id)
+    group = await get_group_or_404(db, group_id)
 
     if await _get_membership(db, group_id, current_user.id):
         raise HTTPException(
@@ -417,7 +403,7 @@ async def list_join_requests(
     db: AsyncSession = Depends(get_db),
 ):
     """The group's requests (group admin only). Defaults to the pending queue."""
-    group = await _get_group_or_404(db, group_id)
+    group = await get_group_or_404(db, group_id)
     await require_group_admin(current_user.id, group_id, db, actor=current_user)
 
     query = (
@@ -479,7 +465,7 @@ async def approve_join_request(
             detail="That user is already a member",
         )
 
-    group = await _get_group_or_404(db, group_id)
+    group = await get_group_or_404(db, group_id)
     result = await db.execute(select(User).where(User.id == request.user_id))
     requester = result.scalar_one_or_none()
 
@@ -608,7 +594,7 @@ async def kick_member(
     db: AsyncSession = Depends(get_db)
 ):
     """Remove a member from the group (group admin only)."""
-    await _get_group_or_404(db, group_id)
+    await get_group_or_404(db, group_id)
     await require_group_admin(current_user.id, group_id, db, actor=current_user)
 
     if user_id == current_user.id:

@@ -34,11 +34,14 @@ function rank(folder: Folder): number {
   }
 }
 
+/** Shared by every listing, so one level of the tree never sorts unlike another. */
+function byDisplayOrder(a: Folder, b: Folder): number {
+  return rank(a) - rank(b) || a.name.localeCompare(b.name);
+}
+
 /** Direct children of `parentId` (null = top level), in display order. */
 export function childFolders(folders: Folder[], parentId: number | null): Folder[] {
-  return folders
-    .filter((f) => (f.parent_id ?? null) === parentId)
-    .sort((a, b) => rank(a) - rank(b) || a.name.localeCompare(b.name));
+  return folders.filter((f) => (f.parent_id ?? null) === parentId).sort(byDisplayOrder);
 }
 
 /**
@@ -52,7 +55,7 @@ export function rootFolders(folders: Folder[]): Folder[] {
   const ids = new Set(folders.map((f) => f.id));
   return folders
     .filter((f) => f.parent_id == null || !ids.has(f.parent_id))
-    .sort((a, b) => rank(a) - rank(b) || a.name.localeCompare(b.name));
+    .sort(byDisplayOrder);
 }
 
 /** Path from the top down to (and including) `folderId`. */
@@ -92,11 +95,10 @@ export function descendantIds(folders: Folder[], folderId: number): Set<number> 
  * holding a full library.
  */
 export function totalDocumentCount(folders: Folder[], folderId: number): number {
-  const subtree = descendantIds(folders, folderId);
-  const self = folders.find((f) => f.id === folderId);
-  let total = self?.document_count ?? 0;
-  for (const f of folders) {
-    if (subtree.has(f.id)) total += f.document_count;
-  }
-  return total;
+  const counted = descendantIds(folders, folderId);
+  counted.add(folderId);
+  return folders.reduce(
+    (total, f) => (counted.has(f.id) ? total + f.document_count : total),
+    0
+  );
 }

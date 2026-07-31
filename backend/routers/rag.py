@@ -4,23 +4,23 @@ Handles document upload, indexing, and search operations.
 """
 import asyncio
 import logging
-from dataclasses import dataclass
 import time
+from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Sequence
 
 import redis.asyncio as redis
 from fastapi import APIRouter, Depends, HTTPException, status, Query, UploadFile, File, Form, BackgroundTasks
 from fastapi.responses import FileResponse, Response
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
 
 from config import get_settings
 from database import get_db
+from models.document_folder import DocumentFolder, folder_read_scope
 from models.user import User
 from models.rag_document import (
-    RAGDocument, RAGDocumentPage, DocumentStatus, document_scope, document_read_scope,
+    RAGDocument, RAGDocumentPage, document_scope, document_read_scope,
 )
 from schemas.rag import (
     RAGDocumentUploadResponse,
@@ -167,12 +167,14 @@ async def get_document_for_user(
     db: AsyncSession,
     document_id: int,
     user_id: int,
-    group_ids: Optional[int] = None,
+    group_ids: Sequence[int] = (),
 ) -> RAGDocument:
     """Get a RAG document the caller may READ. Raises 404 if not visible.
 
-    Read scope = owner's own doc OR a group-shared library doc. Callers that must
-    mutate (delete/reindex) must NOT rely on this -- they keep an owner-only check.
+    Read scope = owner's own doc OR a library doc shared with one of ``group_ids``.
+    Omitting the groups therefore narrows to owner-only, which is what the reindex
+    pre-check wants; a read path must pass them, and should prefer
+    :func:`load_readable_document` so it cannot forget.
     """
     result = await db.execute(
         select(RAGDocument).where(
@@ -186,6 +188,43 @@ async def get_document_for_user(
             detail="Document not found"
         )
     return document
+
+
+async def load_readable_document(
+    db: AsyncSession, document_id: int, user_id: int
+) -> RAGDocument:
+    """Resolve the caller's groups and load a document they may READ.
+
+    The pairing is the point: passing an unresolved (empty) scope silently means
+    owner-only, so a read endpoint that forgets the lookup 404s a group member on
+    a document the listing just showed them -- a bug this codebase has already
+    had. Endpoints that need the group ids for something else too resolve them
+    once and call :func:`get_document_for_user` directly.
+    """
+    group_ids = await get_user_group_ids(user_id, db)
+    return await get_document_for_user(db, document_id, user_id, group_ids)
+
+
+async def get_target_folder(
+    db: AsyncSession, folder_id: int, user_id: int, group_ids: Sequence[int]
+) -> DocumentFolder:
+    """The folder a document may be filed under, or 404.
+
+    Upload and move share this so neither can file a document under a folder id
+    that is foreign or does not exist -- and so both get the folder object itself,
+    which ``placement_group_id`` needs to stamp the document's visibility.
+    """
+    folder = (await db.execute(
+        select(DocumentFolder).where(
+            DocumentFolder.id == folder_id,
+            folder_read_scope(user_id, group_ids),
+        )
+    )).scalar_one_or_none()
+    if folder is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Folder not found"
+        )
+    return folder
 
 
 # ============== Document Management ==============
@@ -247,13 +286,11 @@ async def resolve_scope(
         requested = {int(g) for g in scope.group_ids}
         group_ids = [g for g in group_ids if g in requested]
 
-    from routers.folders import _visible as _folder_visible
-
     resolved = await resolve_folder_scope(
         db,
         scope.folder_ids,
         scope.include_subfolders,
-        _folder_visible(user_id, group_ids),
+        folder_read_scope(user_id, group_ids),
     )
     return group_ids, resolved
 
@@ -342,14 +379,10 @@ async def upload_document(
     # int, not `is not None`, so an omitted form field is skipped cleanly.)
     target_folder = None
     if isinstance(folder_id, int):
-        from models.document_folder import DocumentFolder as _Folder
-        from routers.folders import _visible as _folder_visible
-        _gids = await get_user_group_ids(current_user.id, db)
-        target_folder = (await db.execute(
-            select(_Folder).where(_Folder.id == folder_id, _folder_visible(current_user.id, _gids))
-        )).scalar_one_or_none()
-        if target_folder is None:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Folder not found")
+        group_ids = await get_user_group_ids(current_user.id, db)
+        target_folder = await get_target_folder(
+            db, folder_id, current_user.id, group_ids
+        )
 
     try:
         # Save document
@@ -397,8 +430,7 @@ async def get_document(
     db: AsyncSession = Depends(get_db)
 ):
     """Get document details and processing status."""
-    group_ids = await get_user_group_ids(current_user.id, db)
-    document = await get_document_for_user(db, document_id, current_user.id, group_ids)
+    document = await load_readable_document(db, document_id, current_user.id)
     return RAGDocumentResponse.for_user(document, current_user.id)
 
 
@@ -418,9 +450,6 @@ async def move_document(
 
     Any group member who can see the shared document may organize it.
     """
-    from models.document_folder import DocumentFolder
-    from routers.folders import _visible
-
     group_ids = await get_user_group_ids(current_user.id, db)
     document = await get_document_for_user(db, document_id, current_user.id, group_ids)
     folder_id = payload.get("folder_id")
@@ -431,13 +460,7 @@ async def move_document(
         except (TypeError, ValueError):
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
                                 detail="folder_id must be an integer or null")
-        folder = (await db.execute(
-            select(DocumentFolder).where(
-                DocumentFolder.id == folder_id, _visible(current_user.id, group_ids)
-            )
-        )).scalar_one_or_none()
-        if folder is None:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Folder not found")
+        folder = await get_target_folder(db, folder_id, current_user.id, group_ids)
     document.folder_id = folder_id
     document.group_id = placement_group_id(folder)
     return {
@@ -501,8 +524,7 @@ async def serve_pdf(
 
     Uses query parameter token auth for browser-native file access.
     """
-    group_ids = await get_user_group_ids(current_user.id, db)
-    document = await get_document_for_user(db, document_id, current_user.id, group_ids)
+    document = await load_readable_document(db, document_id, current_user.id)
 
     # Only serve PDF files
     if document.file_type != "pdf":
@@ -532,8 +554,7 @@ async def list_document_pages(
     db: AsyncSession = Depends(get_db)
 ):
     """List all pages of a document."""
-    group_ids = await get_user_group_ids(current_user.id, db)
-    document = await get_document_for_user(db, document_id, current_user.id, group_ids)
+    document = await load_readable_document(db, document_id, current_user.id)
 
     result = await db.execute(
         select(RAGDocumentPage)
@@ -565,8 +586,7 @@ async def serve_page_image(
 
     Uses query parameter token auth for browser-native image loading.
     """
-    group_ids = await get_user_group_ids(current_user.id, db)
-    document = await get_document_for_user(db, document_id, current_user.id, group_ids)
+    document = await load_readable_document(db, document_id, current_user.id)
 
     result = await db.execute(
         select(RAGDocumentPage).where(
@@ -1202,8 +1222,7 @@ async def search_within_document(
     Case-insensitive search.
     """
     # Verify caller may read the document (own or group-shared library doc)
-    group_ids = await get_user_group_ids(current_user.id, db)
-    document = await get_document_for_user(db, document_id, current_user.id, group_ids)
+    document = await load_readable_document(db, document_id, current_user.id)
 
     # Search in all pages of the document
     query_lower = q.lower()

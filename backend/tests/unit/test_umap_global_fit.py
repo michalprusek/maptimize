@@ -29,8 +29,8 @@ def test_the_fit_corpus_does_not_depend_on_the_caller():
 
 
 def test_scope_key_no_longer_carries_a_user_or_a_group():
-    assert refresh_scope_key(UmapType.CROPPED) == (UmapType.CROPPED.value,)
-    assert refresh_scope_key(UmapType.FOV) == (UmapType.FOV.value,)
+    assert refresh_scope_key(UmapType.CROPPED) == UmapType.CROPPED.value
+    assert refresh_scope_key(UmapType.FOV) == UmapType.FOV.value
 
 
 def test_refresh_helpers_take_only_the_projection_type():

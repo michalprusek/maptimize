@@ -27,7 +27,7 @@ from typing import List, Optional, Sequence, Tuple
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 from sqlalchemy import delete as sql_delete
-from sqlalchemy import and_, func, or_, select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import get_db
@@ -36,6 +36,7 @@ from models.document_folder import (
     FOLDER_VISIBILITY_PRIVATE,
     SEEDED_FOLDER_KINDS,
     DocumentFolder,
+    folder_read_scope,
 )
 from models.group import Group
 from models.rag_document import RAGDocument
@@ -46,27 +47,6 @@ from utils.security import get_current_user
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
-
-
-def _visible(user_id: int, group_ids: Sequence[int]):
-    """Folders the caller may see.
-
-    Their own -- private ones included -- plus the group-visible folders of every
-    group they belong to. A colleague's private folder carries
-    ``visibility='private'`` and a different ``user_id``, so it is excluded here:
-    for peers, for the group's admin, and for the global admin. Dropping the
-    visibility term would list every member's private folder to the whole group.
-    """
-    mine = DocumentFolder.user_id == user_id
-    if not group_ids:
-        return mine
-    return or_(
-        mine,
-        and_(
-            DocumentFolder.visibility == FOLDER_VISIBILITY_GROUP,
-            DocumentFolder.group_id.in_(list(group_ids)),
-        ),
-    )
 
 
 def inherited_placement(parent: Optional[DocumentFolder]) -> Tuple[str, Optional[int]]:
@@ -131,16 +111,22 @@ class FolderResponse(BaseModel):
         from_attributes = True
 
 
-async def _get_folder(db, folder_id, user_id, group_ids) -> DocumentFolder:
+async def _get_folder(
+    db: AsyncSession, folder_id: int, user_id: int, group_ids: Sequence[int]
+) -> DocumentFolder:
     row = (await db.execute(
-        select(DocumentFolder).where(DocumentFolder.id == folder_id, _visible(user_id, group_ids))
+        select(DocumentFolder).where(
+            DocumentFolder.id == folder_id, folder_read_scope(user_id, group_ids)
+        )
     )).scalar_one_or_none()
     if row is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Folder not found")
     return row
 
 
-async def _is_ancestor(db, ancestor_id: int, node_id: Optional[int]) -> bool:
+async def _is_ancestor(
+    db: AsyncSession, ancestor_id: int, node_id: Optional[int]
+) -> bool:
     """True if ancestor_id is on the parent chain of node_id (cycle guard)."""
     seen: set[int] = set()
     cur = node_id
@@ -194,7 +180,7 @@ async def list_folders(
     group_ids = await get_user_group_ids(current_user.id, db)
     folders = list((await db.execute(
         select(DocumentFolder)
-        .where(_visible(current_user.id, group_ids))
+        .where(folder_read_scope(current_user.id, group_ids))
         .order_by(DocumentFolder.name)
     )).scalars().all())
 
@@ -324,7 +310,8 @@ async def delete_folder(
     )
     await db.execute(sql_delete(DocumentFolder).where(DocumentFolder.id == folder_id))
 
-    # The children that just moved up carry subtrees of their own.
-    if folder.parent_id is not None and parent is not None:
+    # The children that just moved up carry subtrees of their own. At the library
+    # root there is no parent to walk from, and nothing to inherit either.
+    if parent is not None:
         await apply_subtree_placement(db, parent)
     return None

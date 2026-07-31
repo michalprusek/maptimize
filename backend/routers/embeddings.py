@@ -326,8 +326,6 @@ async def trigger_discriminant_recomputation(
 def _take_precomputed(
     items: list[T],
     umap_type: UmapType,
-    user_id: int,
-    group_ids: Sequence[int],
     background_tasks: BackgroundTasks,
 ) -> tuple[list[T], bool, Optional[str]]:
     """
@@ -338,9 +336,12 @@ def _take_precomputed(
     the fit runs after the response is sent, and the client polls until is_stale
     clears. Never fit on the read path — that stalls page load for seconds.
 
-    A scope whose last refresh failed is NOT rescheduled; its error is returned so
-    the client can stop polling and show it. Otherwise each poll would kick off
-    another doomed multi-second fit, forever, in silence.
+    Takes no caller identity: the projection is global (one fit per type over
+    every row), so who is reading decides what comes back, never what is fitted.
+
+    A projection whose last refresh failed is NOT rescheduled; its error is
+    returned so the client can stop polling and show it. Otherwise each poll would
+    kick off another doomed multi-second fit, forever, in silence.
 
     Returns (items with coordinates, is_stale, refresh_error).
     """
@@ -569,7 +570,7 @@ async def _get_cropped_umap(
     facets = await _load_facets(UmapType.CROPPED, current_user.id, group_ids, db)
 
     crops_with_umap, is_stale, refresh_error = _take_precomputed(
-        crops, UmapType.CROPPED, current_user.id, group_ids, background_tasks
+        crops, UmapType.CROPPED, background_tasks
     )
 
     # Counts every crop with an embedding, including the ones still awaiting
@@ -648,7 +649,7 @@ async def _get_fov_umap(
     facets = await _load_facets(UmapType.FOV, current_user.id, group_ids, db)
 
     images_with_umap, is_stale, refresh_error = _take_precomputed(
-        images, UmapType.FOV, current_user.id, group_ids, background_tasks
+        images, UmapType.FOV, background_tasks
     )
 
     # Counts every image with an embedding, including the ones still awaiting

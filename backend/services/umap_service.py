@@ -325,7 +325,7 @@ async def compute_fov_umap(db: AsyncSession) -> dict:
 # Automatic UMAP Refresh (self-healing)
 # =============================================================================
 
-# Scopes with a refresh already running. A scope shares one global projection, so
+# Projections with a refresh already running. Each is one global fit, so
 # concurrent refreshes would duplicate seconds of CPU work and race writing the
 # same rows.
 #
@@ -333,25 +333,25 @@ async def compute_fov_umap(db: AsyncSession) -> dict:
 # process — see the CMD in backend/Dockerfile{,.gpu,.dev}. Adding `--workers N`
 # would silently reduce this to per-worker dedupe, letting N workers fit the same
 # rows concurrently and race their writes.
-_inflight_refreshes: set[tuple[str]] = set()
+_inflight_refreshes: set[str] = set()
 
-# Scopes whose last refresh raised, with the reason. A read that sees a scope in
+# Projections whose last refresh raised, with the reason. A read that sees one in
 # here stops rescheduling it: without this the client's poll loop would trigger a
 # fresh multi-second fit every few seconds forever, and the failure would stay
 # invisible — the exact silence that hid this bug for months. Cleared on the next
 # success or by an explicit /umap/recompute.
-_failed_refreshes: dict[tuple[str], str] = {}
+_failed_refreshes: dict[str, str] = {}
 
 
-def refresh_scope_key(umap_type: UmapType) -> tuple[str]:
-    """Dedupe key for a refresh.
+def refresh_scope_key(umap_type: UmapType) -> str:
+    """Dedupe key for a refresh: the projection type, and nothing else.
 
     There is one projection per type and it covers every row, so every caller's
     dashboard shares a key -- otherwise each visitor would kick off a redundant
-    multi-second fit of the same rows. The key stayed a tuple so the in-flight and
-    failure maps did not need reshaping when the user/group token was dropped.
+    multi-second fit of the same rows. It used to carry a user/group token as
+    well, back when the fit was scoped to the reader.
     """
-    return (umap_type.value,)
+    return umap_type.value
 
 
 def get_refresh_error(umap_type: UmapType) -> Optional[str]:

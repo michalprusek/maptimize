@@ -716,6 +716,20 @@ function FolderCard({
   const t = useTranslations("folders");
   const tCommon = useTranslations("common");
 
+  // Who can see this folder, worked out once so the icon and the caption can
+  // never disagree. A group folder with no group name is the library root, which
+  // says nothing rather than claiming to be shared with nobody.
+  let access: { Icon: typeof Lock; className: string; label: string } | null = null;
+  if (folder.visibility === "private") {
+    access = { Icon: Lock, className: "text-text-muted", label: tDocs("privateFolder") };
+  } else if (folder.group_name) {
+    access = {
+      Icon: Users,
+      className: "text-primary-400/70",
+      label: tDocs("sharedFolder", { group: folder.group_name }),
+    };
+  }
+
   return (
     <div
       onDoubleClick={onOpen}
@@ -742,19 +756,14 @@ function FolderCard({
         <span className="min-w-0">
           <span className="flex items-center gap-1.5">
             <span className="truncate text-sm font-medium text-text-primary">{folder.name}</span>
-            {folder.visibility === "private" ? (
-              <Lock className="w-3 h-3 flex-shrink-0 text-text-muted" aria-label={tDocs("privateFolder")} />
-            ) : folder.group_name ? (
-              <Users className="w-3 h-3 flex-shrink-0 text-primary-400/70" aria-label={tDocs("sharedFolder", { group: folder.group_name })} />
-            ) : null}
+            {access && (
+              <access.Icon
+                className={clsx("w-3 h-3 flex-shrink-0", access.className)}
+                aria-label={access.label}
+              />
+            )}
           </span>
-          <span className="block text-xs text-text-muted">
-            {folder.visibility === "private"
-              ? tDocs("privateFolder")
-              : folder.group_name
-                ? tDocs("sharedFolder", { group: folder.group_name })
-                : ""}
-          </span>
+          <span className="block text-xs text-text-muted">{access?.label ?? ""}</span>
         </span>
       </button>
 

@@ -9,7 +9,6 @@ Write access is unchanged by this module: experiments and images stay owner-only
 with the four deliberate group-write exceptions (crops, microscope, PTM, protein)
 enforced at their own endpoints.
 """
-import logging
 from typing import Optional, Sequence
 
 from fastapi import HTTPException, status
@@ -19,8 +18,6 @@ from sqlalchemy.sql.elements import ColumnElement
 
 from models.experiment import Experiment
 from models.group import GroupMember
-
-logger = logging.getLogger(__name__)
 
 
 async def get_user_group_ids(user_id: int, db: AsyncSession) -> list[int]:

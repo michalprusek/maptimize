@@ -422,7 +422,7 @@ def test_refresh_scope_key_is_one_key_per_projection():
     # There is one global fit per projection type, so every caller shares a key:
     # otherwise each visitor's dashboard would schedule a redundant multi-second
     # fit of the same rows. Types must still never collide.
-    assert umap_service.refresh_scope_key(UmapType.CROPPED) == (UmapType.CROPPED.value,)
+    assert umap_service.refresh_scope_key(UmapType.CROPPED) == UmapType.CROPPED.value
     assert (
         umap_service.refresh_scope_key(UmapType.CROPPED)
         != umap_service.refresh_scope_key(UmapType.FOV)

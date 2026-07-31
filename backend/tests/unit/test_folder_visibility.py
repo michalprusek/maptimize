@@ -16,8 +16,9 @@ from models.document_folder import (
     FOLDER_KIND_USER,
     FOLDER_VISIBILITY_GROUP,
     FOLDER_VISIBILITY_PRIVATE,
+    folder_read_scope,
 )
-from routers.folders import _reject_if_seeded, _visible, inherited_placement
+from routers.folders import _reject_if_seeded, inherited_placement
 
 
 def _sql(clause) -> str:
@@ -27,7 +28,7 @@ def _sql(clause) -> str:
 # --- visibility --------------------------------------------------------------
 
 def test_a_peers_private_folder_is_invisible_to_the_rest_of_the_group():
-    sql = _sql(_visible(7, [2]))
+    sql = _sql(folder_read_scope(7, [2]))
     assert "user_id = 7" in sql
     assert "visibility = 'group'" in sql, (
         "without the visibility term every private folder in my group is listed to me"
@@ -35,13 +36,13 @@ def test_a_peers_private_folder_is_invisible_to_the_rest_of_the_group():
 
 
 def test_visibility_with_no_groups_is_owner_only():
-    sql = _sql(_visible(7, []))
+    sql = _sql(folder_read_scope(7, []))
     assert "user_id = 7" in sql
     assert "group_id" not in sql
 
 
 def test_the_group_term_covers_every_group():
-    sql = _sql(_visible(7, [2, 5]))
+    sql = _sql(folder_read_scope(7, [2, 5]))
     assert "in (2, 5)" in sql
 
 
