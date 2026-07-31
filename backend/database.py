@@ -211,6 +211,11 @@ async def ensure_schema_updates():
             ("rag_documents", "source_url", "VARCHAR(1000)"),
             # sha256 of the file content: the deduplication key
             ("rag_documents", "content_hash", "VARCHAR(64)"),
+            # Folder visibility ('group' | 'private') and seeded-folder kind
+            # ('root' | 'common' | 'user' | 'custom'). Existing folders were all
+            # group-shared and user-made, which is exactly what the defaults say.
+            ("document_folders", "visibility", "VARCHAR(20) DEFAULT 'group' NOT NULL"),
+            ("document_folders", "kind", "VARCHAR(20) DEFAULT 'custom' NOT NULL"),
         ]
 
         for table, column, col_type in updates:
@@ -257,6 +262,31 @@ async def ensure_schema_updates():
             else:
                 logger.error(f"Failed to create uq_metric_image_user_rating: {e}")
                 failed_updates.append("metric_ratings.uq_constraint")
+
+        # Multi-group membership: a user may belong to several groups, but only
+        # once to each. create_all never alters an existing table, so without this
+        # swap the old one-group-per-user UNIQUE would survive in production
+        # forever -- and the second membership would fail with a constraint error
+        # that looks nothing like its cause.
+        for constraint_sql, label in (
+            ("ALTER TABLE group_members DROP CONSTRAINT IF EXISTS uq_user_one_group",
+             "drop uq_user_one_group"),
+            ("ALTER TABLE group_members ADD CONSTRAINT uq_group_member "
+             "UNIQUE (group_id, user_id)",
+             "add uq_group_member"),
+        ):
+            try:
+                await conn.execute(text("SAVEPOINT group_member_constraint"))
+                await conn.execute(text(constraint_sql))
+                await conn.execute(text("RELEASE SAVEPOINT group_member_constraint"))
+                logger.debug(f"Applied: {label}")
+            except Exception as e:
+                await conn.execute(text("ROLLBACK TO SAVEPOINT group_member_constraint"))
+                if "already exists" in str(e).lower():
+                    logger.debug(f"{label}: already applied")
+                else:
+                    logger.error(f"Failed to {label}: {e}")
+                    failed_updates.append(f"group_members.{label}")
 
         # Backfill user_id for existing metric_ratings and metric_comparisons
         # Old rows have user_id=NULL — assign to the metric owner

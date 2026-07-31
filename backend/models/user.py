@@ -78,9 +78,9 @@ class User(Base):
         back_populates="user",
         cascade="all, delete-orphan"
     )
-    group_membership: Mapped[Optional["GroupMember"]] = relationship(
+    group_memberships: Mapped[List["GroupMember"]] = relationship(
         back_populates="user",
-        uselist=False
+        cascade="all, delete-orphan",
     )
 
     def __repr__(self) -> str:

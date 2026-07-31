@@ -13,6 +13,7 @@ from .sam_embedding import SAMEmbedding
 from .segmentation import SegmentationMask, UserSegmentationPrompt, FOVSegmentationMask
 from .rag_document import RAGDocument, RAGDocumentPage, DocumentStatus, DocumentType
 from .group import Group, GroupMember
+from .group_join_request import GroupJoinRequest, JoinRequestStatus
 from .oauth_client import OAuthClient
 from .document_folder import DocumentFolder
 
@@ -48,6 +49,8 @@ __all__ = [
     "DocumentType",
     "Group",
     "GroupMember",
+    "GroupJoinRequest",
+    "JoinRequestStatus",
     "OAuthClient",
     "DocumentFolder",
 ]
