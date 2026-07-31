@@ -10,8 +10,8 @@
  */
 
 import { useState, useRef, useEffect } from "react";
-import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { motion, AnimatePresence } from "framer-motion";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { motion } from "framer-motion";
 import { useTranslations } from "next-intl";
 import {
   User,
@@ -27,21 +27,11 @@ import {
   AlertCircle,
   Eye,
   EyeOff,
-  Users,
-  Plus,
-  LogOut,
-  X,
-  ChevronDown,
-  ChevronUp,
-  Crown,
-  Pencil,
-  UserMinus,
   Plug,
 } from "lucide-react";
 import { useAuthStore } from "@/stores/authStore";
 import { useSettingsStore, DisplayMode, Theme, Language } from "@/stores/settingsStore";
-import { api, GroupDetail, GroupMember } from "@/lib/api";
-import { ConfirmModal } from "@/components/ui";
+import { api } from "@/lib/api";
 import { ConnectClaudePanel } from "@/components/documents/ConnectClaudePanel";
 import { GroupsSection } from "@/components/settings/GroupsSection";
 
