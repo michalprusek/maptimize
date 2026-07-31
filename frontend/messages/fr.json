@@ -585,6 +585,7 @@
     }
   },
   "documents": {
+    "folderDocumentCount": "{count, plural, =0 {aucun document} one {# document} other {# documents}}",
     "structuralFolder": "Fait partie de la structure du groupe — ne peut être renommée ni supprimée",
     "commonFolder": "Partagée par tout le groupe",
     "sharedFolder": "Partagée avec {group}",

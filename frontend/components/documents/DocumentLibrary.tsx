@@ -487,6 +487,7 @@ export function DocumentLibrary() {
               <FolderCard
                 key={folder.id}
                 folder={folder}
+                documentCount={totalDocumentCount(folders, folder.id)}
                 isDropTarget={dropTarget === folder.id}
                 canDrop={dragItem !== null && canDropOn(folder.id)}
                 onOpen={() => setCurrentFolder(folder.id)}
@@ -693,6 +694,7 @@ function Breadcrumb({
 
 function FolderCard({
   folder,
+  documentCount,
   isDropTarget,
   canDrop,
   onOpen,
@@ -703,6 +705,7 @@ function FolderCard({
   dropProps,
 }: {
   folder: Folder;
+  documentCount: number;
   isDropTarget: boolean;
   canDrop: boolean;
   onOpen: () => void;
@@ -763,7 +766,14 @@ function FolderCard({
               />
             )}
           </span>
-          <span className="block text-xs text-text-muted">{access?.label ?? ""}</span>
+          <span className="block text-xs text-text-muted">
+            {[
+              tDocs("folderDocumentCount", { count: documentCount }),
+              access?.label,
+            ]
+              .filter(Boolean)
+              .join(" · ")}
+          </span>
         </span>
       </button>
 
