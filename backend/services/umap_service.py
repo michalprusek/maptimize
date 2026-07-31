@@ -395,10 +395,15 @@ async def refresh_umap_scope(umap_type: UmapType) -> None:
             result = await compute(db)
 
         if "error" in result:
+            # "Too few points" is a standing condition, not a transient one, so it
+            # has to be RECORDED -- clearing it here let the read path reschedule
+            # a doomed fit on every poll, which is the exact silent loop the
+            # failure map was added to close.
             logger.warning(f"UMAP refresh {key} skipped: {result['error']}")
+            _failed_refreshes[key] = result["error"]
         else:
             logger.info(f"UMAP refresh {key} complete: {result}")
-        _failed_refreshes.pop(key, None)
+            _failed_refreshes.pop(key, None)
     except Exception as exc:
         logger.exception(f"UMAP refresh {key} failed")
         _failed_refreshes[key] = f"{type(exc).__name__}: {exc}"

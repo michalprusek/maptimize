@@ -280,10 +280,23 @@ async def resolve_scope(
     ``folder_ids`` is None when no folder filter was asked for -- meaning
     "everything you can read" -- and an EMPTY list when the requested folders hold
     nothing visible, which must return no rows rather than all of them.
+
+    ⚠️ The group half cannot use the same trick, because an empty group list does
+    NOT mean "no rows": every downstream predicate reads it as owner-only. So
+    narrowing to a group you do not belong to would answer "search group 999"
+    with your own private library -- and the agent would report it as that
+    group's material. Naming a group you are not in is refused instead, with the
+    id in the message so the caller can correct it.
     """
     group_ids = await get_user_group_ids(user_id, db)
-    if scope.group_ids:
+    if scope.group_ids is not None:
         requested = {int(g) for g in scope.group_ids}
+        unknown = sorted(requested - set(group_ids))
+        if unknown:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"You are not a member of group(s): {unknown}",
+            )
         group_ids = [g for g in group_ids if g in requested]
 
     resolved = await resolve_folder_scope(

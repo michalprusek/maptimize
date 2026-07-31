@@ -753,10 +753,26 @@ async def test_delete_group_success(mock_db):
     mock_db.execute.side_effect = [
         make_result(scalar=grp),
         make_result(scalar="admin"),
+        make_result(scalars_all=[]),   # dissolve_group_folders: nothing to free
     ]
     await g.delete_group(group_id=1, current_user=fake_user(uid=1), db=mock_db)
     mock_db.delete.assert_awaited_once_with(grp)
     mock_db.commit.assert_awaited_once()
+
+
+async def test_deleting_a_group_frees_its_seeded_folders_first(mock_db):
+    """They outlive the group (group_id is ON DELETE SET NULL) and would then be
+    un-editable forever, guarded by a structure that no longer exists."""
+    from unittest.mock import AsyncMock as _AsyncMock
+
+    grp = group_obj(gid=1, created_by=1)
+    mock_db.execute.side_effect = [
+        make_result(scalar=grp),
+        make_result(scalar="admin"),
+    ]
+    with patch.object(g, "dissolve_group_folders", _AsyncMock(return_value=3)) as free:
+        await g.delete_group(group_id=1, current_user=fake_user(uid=1), db=mock_db)
+    free.assert_awaited_once_with(mock_db, 1)
 
 
 # =============================================================================
@@ -816,15 +832,19 @@ async def test_an_admin_leaving_a_group_that_still_has_one_promotes_nobody(mock_
 
 
 async def test_leave_group_last_member_deletes_group(mock_db):
+    """This branch returns early, so it must do its own folder cleanup -- and
+    remove the membership, which the shared path below would otherwise do."""
     membership = member_obj(user_id=1, role="admin")
     grp = group_obj(gid=1, created_by=1)
     mock_db.execute.side_effect = [
         make_result(scalar=membership),
         make_result(scalar=grp),
         make_result(scalars_all=[]),   # nobody else
+        make_result(scalars_all=[]),   # dissolve_group_folders
     ]
     await g.leave_group(group_id=1, current_user=fake_user(uid=1), db=mock_db)
-    mock_db.delete.assert_awaited_once_with(grp)
+    deleted = [c.args[0] for c in mock_db.delete.await_args_list]
+    assert grp in deleted and membership in deleted
 
 
 # =============================================================================

@@ -1,20 +1,29 @@
 """Keeping a document's visibility equal to its folder's.
 
 ``RAGDocument.group_id`` is the ACL truth -- NULL means owner-only, set means
-readable by that group -- and the rule is mirrored in four places:
-``document_scope``, ``document_read_scope``, the raw-SQL ``owner_clause`` in
-``rag_service``, and ``_inject_user_id_filter`` in ``sql_query_service``.
+readable by that group -- and that one rule has four implementations:
+``_library_visible`` (backing both ``document_scope`` and
+``document_dedupe_scope``), ``document_read_scope``, the raw-SQL ``_owner_clause``
+in ``rag_service``, and ``_inject_user_id_filter`` in ``sql_query_service``.
 
 Deriving a document's visibility from its folder at read time would mean adding a
 folder join to all four and keeping them in step forever. Instead the column is
-re-stamped whenever placement changes: on upload, on moving a document, and --
-across the whole subtree -- on moving or dissolving a folder. The ACL surface
-does not change at all.
+re-stamped whenever placement changes: on upload into a folder, on moving a
+document, and -- across the subtree -- on moving or dissolving a folder. The
+document-row ACL is therefore untouched by the folder feature. (Folders have
+their own, separate predicate, ``folder_read_scope``; it decides which folders a
+caller may see and can narrow a search, but it never widens a document read.)
 
-The invariant this maintains: **a document's group_id equals
-``placement_group_id`` of the folder it sits in.** Anything that changes where a
-document lives must go through here, or a private folder will quietly contain
+The invariant this maintains: **a document filed IN a folder carries that
+folder's ``placement_group_id``.** Anything that changes which folder a document
+lives in must go through here, or a private folder will quietly contain
 group-readable documents.
+
+⚠️ A document at the library root is the exception, and deliberately so: it keeps
+the ``default_group_id()`` stamp ``save_uploaded_document`` gave it, so a
+single-group member's plain upload is shared with their group without being
+filed anywhere. ``placement_group_id(None)`` returning None is what a move *out*
+of a folder means, not what an unfiled upload means.
 """
 import logging
 from typing import Optional, Sequence
@@ -22,7 +31,11 @@ from typing import Optional, Sequence
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from models.document_folder import FOLDER_VISIBILITY_PRIVATE, DocumentFolder
+from models.document_folder import (
+    FOLDER_VISIBILITY_PRIVATE,
+    SEEDED_FOLDER_KINDS,
+    DocumentFolder,
+)
 from models.rag_document import RAGDocument
 
 logger = logging.getLogger(__name__)
@@ -58,6 +71,15 @@ async def apply_subtree_placement(db: AsyncSession, folder: DocumentFolder) -> i
     affected folder ids -- so dragging a folder holding fifty documents costs two
     statements, not fifty.
 
+    ⚠️ **A seeded folder owns its own visibility and the walk stops there.**
+    Every folder's subtree is visibility-uniform except a group ROOT, which holds
+    `common` (group-visible) beside one private folder per member -- those are
+    attached directly by ``utils.folder_seed``, not by inheritance. Without this
+    guard, walking from a root rewrites every member's private folder to the
+    root's visibility and re-stamps the documents inside them, publishing the
+    whole lab's private libraries. Silently, and permanently: nothing ever
+    recomputes it back.
+
     Returns the number of folders visited (including ``folder`` itself), which is
     what the caller can log. Does not commit.
     """
@@ -67,9 +89,17 @@ async def apply_subtree_placement(db: AsyncSession, folder: DocumentFolder) -> i
     while queue:
         current = queue.pop(0)
         for child in await _children(db, current.id):
-            if child.id in seen:  # a cycle would otherwise spin forever
+            if child.id in seen:
+                # parent_id carries no FK, so a bad row can point back up. Worth
+                # saying out loud: nothing else will ever notice a loop.
+                logger.error(
+                    f"Cycle in document_folders: {current.id} -> {child.id}; "
+                    f"stopping the walk here"
+                )
                 continue
             seen.add(child.id)
+            if child.kind in SEEDED_FOLDER_KINDS:
+                continue
             child.visibility = current.visibility
             child.group_id = current.group_id
             visited.append(child)

@@ -31,15 +31,23 @@ def test_known_vendor_and_loopback_callbacks_are_allowed(uri):
 
 
 @pytest.mark.parametrize("uri", [
-    # A host that merely BEGINS with an allowed one. Without a path boundary in
-    # the prefix these all match, and each is a working phishing target.
+    # A host that merely BEGINS with an allowed one. Prefix matching admits all
+    # of these, and each is a working phishing target.
     "https://claude.ai.evil.example/steal",
     "https://chatgpt.com.evil.example/steal",
     "http://localhost.evil.example/steal",
     "http://127.0.0.1.evil.example/steal",
-    # Plain foreign hosts and non-strings.
+    # ⚠️ URL userinfo. "http://localhost:" LOOKS like it ends at a boundary, but
+    # ":" opens the password field, not a port -- the real host here is
+    # evil.example. Prefix matching cannot see that; only parsing can.
+    "http://localhost:x@evil.example/cb",
+    "http://127.0.0.1:x@evil.example/cb",
+    "https://claude.ai@evil.example/cb",
+    "https://user:pass@chatgpt.com.evil.example/cb",
+    # Plain foreign hosts, wrong scheme, and non-strings.
     "https://evil.example/callback",
     "http://claude.ai/downgraded",
+    "javascript:alert(1)",
     "",
     None,
     12345,
@@ -48,14 +56,22 @@ def test_everything_else_is_refused(uri):
     assert not oauth._redirect_allowed(uri)
 
 
-def test_every_prefix_ends_at_a_path_boundary():
-    """The property the cases above depend on, asserted directly.
+def test_userinfo_is_refused_outright():
+    """Credentials in a redirect URI are never legitimate here, and they are the
+    one way an attacker makes an allowed name appear in the authority."""
+    assert not oauth._redirect_allowed("https://claude.ai:pw@evil.example/cb")
+    assert not oauth._redirect_allowed("https://claude.ai@claude.ai/cb")
 
-    A prefix ending in the host name alone (``http://localhost``) matches
-    ``http://localhost.evil.example``; one ending in ``/`` or ``:`` cannot.
+
+def test_the_allowed_host_is_matched_exactly_not_as_a_prefix():
+    """The property the cases above depend on, asserted on the mechanism.
+
+    A subdomain of an allowed host is a different origin and is not admitted;
+    neither is a host that merely starts with one.
     """
-    for prefix in oauth.ALLOWED_REDIRECT_PREFIXES:
-        assert prefix.endswith(("/", ":")), f"{prefix!r} does not end at a path boundary"
+    for host in oauth.ALLOWED_REDIRECT_HOSTS:
+        assert not oauth._redirect_allowed(f"https://{host}.evil.example/cb")
+        assert not oauth._redirect_allowed(f"https://evil-{host}/cb")
 
 
 async def test_registering_a_foreign_callback_is_rejected(mock_db):

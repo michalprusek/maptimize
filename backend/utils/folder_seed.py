@@ -136,6 +136,35 @@ async def detach_member_folder(db: AsyncSession, group_id: int, user_id: int) ->
     )
 
 
+async def dissolve_group_folders(db: AsyncSession, group_id: int) -> int:
+    """Turn a disbanded group's seeded folders back into ordinary ones.
+
+    ``document_folders.group_id`` is ON DELETE SET NULL, so deleting a group
+    leaves its root, its ``common`` and every member's private folder behind with
+    ``kind`` still seeded -- and ``_reject_if_seeded`` then refuses to rename,
+    move or delete them **forever**, citing a group that no longer exists.
+    Undeletable debris in someone's tree is a worse outcome than the tidy-up.
+
+    Each folder returns to its owner as a private, top-level, ordinary folder.
+    Private is the safe direction: ``common`` loses its group anyway, so leaving
+    it group-visible would only mean nobody could see it. Callers must commit.
+    """
+    rows = list((await db.execute(
+        select(DocumentFolder).where(DocumentFolder.group_id == group_id)
+    )).scalars().all())
+    for folder in rows:
+        folder.parent_id = None
+        folder.group_id = None
+        folder.kind = FOLDER_KIND_CUSTOM
+        folder.visibility = FOLDER_VISIBILITY_PRIVATE
+    if rows:
+        logger.info(
+            f"Dissolved {len(rows)} seeded folder(s) of group {group_id} into "
+            f"ordinary private folders"
+        )
+    return len(rows)
+
+
 async def rename_group_root_folder(db: AsyncSession, group_id: int, name: str) -> None:
     """Keep the root folder's title equal to the group's name."""
     root = await _find(db, group_id, FOLDER_KIND_ROOT)

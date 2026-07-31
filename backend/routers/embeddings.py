@@ -706,14 +706,14 @@ async def trigger_umap_recomputation(
     db: AsyncSession = Depends(get_db),
 ):
     """
-    Force a UMAP recomputation for the caller's scope.
+    Force a UMAP recomputation of the whole corpus for one projection type.
 
-    Reads schedule refreshes automatically, so this is the retry path for a scope
-    whose refresh failed (reads stop rescheduling those) and an escape hatch for
-    re-fitting coordinates that are already complete.
+    There is one fit per type, so this affects every reader, not just the caller.
+    Reads schedule refreshes automatically, so this is the retry path for a
+    projection whose refresh failed (reads stop rescheduling those) and an escape
+    hatch for re-fitting coordinates that are already complete.
     """
-    group_ids = await get_user_group_ids(current_user.id, db)
-    # Clear the recorded failure so reads resume auto-scheduling this scope.
+    # Clear the recorded failure so reads resume auto-scheduling this projection.
     clear_refresh_error(umap_type)
     background_tasks.add_task(refresh_umap_scope, umap_type)
 

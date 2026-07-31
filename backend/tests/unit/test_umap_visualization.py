@@ -452,15 +452,17 @@ async def test_refresh_umap_scope_images(mock_db):
     ccu.assert_not_awaited()
 
 
-async def test_refresh_umap_scope_error_result_logged(mock_db):
-    # "Too few points" is a normal outcome, not a crash — and not a failure the
-    # read path should report to the user.
+async def test_refresh_umap_scope_records_a_skip_so_reads_stop_rescheduling(mock_db):
+    # "Too few points" is not a crash, but it IS standing: the corpus will not
+    # grow by itself. Clearing the record here let the read path reschedule a
+    # doomed multi-second fit on every poll -- the exact silent loop the failure
+    # map exists to close.
     with patch("database.get_db_context", return_value=_db_context(mock_db)), \
          patch.object(umap_service, "compute_crop_umap",
                       new=AsyncMock(return_value={"error": "too few"})):
         await umap_service.refresh_umap_scope(UmapType.CROPPED)
     assert not umap_service._inflight_refreshes
-    assert umap_service.get_refresh_error(UmapType.CROPPED) is None
+    assert umap_service.get_refresh_error(UmapType.CROPPED) == "too few"
 
 
 async def test_refresh_umap_scope_swallows_exception_and_releases_key():

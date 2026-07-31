@@ -700,7 +700,7 @@ filtru by dalo dvěma filtrovaným pohledům neporovnatelné souřadnice a osy b
 význam podle klikání.
 
 Fit trvá minuty, takže běží na pozadí a cachuje se v procesu podle scope
-(`u{user}` / `g{group}`), ne v DB — je to analýza scope, ne atribut cropu. První
+(`u{user}|g{seřazené skupiny}`, viz výše), ne v DB — je to analýza scope, ne atribut cropu. První
 volání vrací `is_computing`; selhání se zaznamená a **nepřeplánovává** se, jinak
 by každý poll spouštěl další odsouzený výpočet.
 

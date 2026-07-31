@@ -477,7 +477,7 @@ tools:
       The groups you belong to, with their members and your role in each. Group
       ids are what search_documents / find_documents accept as group_ids, and what
       assign_experiment_group shares an experiment with. Reading is group-shared:
-      you see your own data plus every group's.
+      you see your own data plus the data of every group you belong to.
     handler: http_json
     method: GET
     path: /api/groups/my

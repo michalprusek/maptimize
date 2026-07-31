@@ -39,6 +39,7 @@ from schemas.group_join_request import (
 )
 from utils.folder_seed import (
     detach_member_folder,
+    dissolve_group_folders,
     ensure_group_folders,
     ensure_member_folder,
     rename_group_root_folder,
@@ -297,6 +298,10 @@ async def delete_group(
 
     await require_group_admin(current_user.id, group_id, db, actor=current_user)
 
+    # Before the group goes: its seeded folders would otherwise survive with
+    # kind still 'root'/'common'/'user' and become permanently un-editable, since
+    # _reject_if_seeded protects a structure that no longer exists.
+    await dissolve_group_folders(db, group_id)
     await db.delete(group)
     await db.commit()
 
@@ -520,18 +525,26 @@ async def cancel_join_request(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Withdraw your own pending request."""
+    """Withdraw your own PENDING request.
+
+    The status filter is the point: without it a member could delete their own
+    approved request and erase the record of who admitted them -- the provenance
+    that ``decided_by_user_id``'s ON DELETE SET NULL exists to preserve even when
+    the deciding admin's account is gone.
+    """
     result = await db.execute(
         select(GroupJoinRequest).where(
             GroupJoinRequest.id == request_id,
             GroupJoinRequest.group_id == group_id,
             GroupJoinRequest.user_id == current_user.id,
+            GroupJoinRequest.status == JoinRequestStatus.PENDING.value,
         )
     )
     request = result.scalar_one_or_none()
     if request is None:
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Request not found"
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="No pending request of yours with that id",
         )
     await db.delete(request)
     await db.commit()
@@ -568,7 +581,12 @@ async def leave_group(
         others = list(other_result.scalars().all())
         remaining_admins = [m for m in others if m.role == "admin"]
         if not others:
-            # Last member leaving -- the group has no reason to exist.
+            # Last member leaving -- the group has no reason to exist. This path
+            # returns early, so it has to do its own folder cleanup: without it
+            # the leaver keeps an un-editable root, `common` and private folder
+            # belonging to a group that is gone.
+            await dissolve_group_folders(db, group_id)
+            await db.delete(membership)
             await db.delete(group)
             await db.commit()
             return

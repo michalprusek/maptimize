@@ -298,6 +298,12 @@ async def delete_folder(
         )).scalar_one_or_none()
     visibility, group_id = inherited_placement(parent)
 
+    # Read the children that are about to move BEFORE the UPDATE, so the fixup
+    # afterwards can walk exactly them.
+    moved = list((await db.execute(
+        select(DocumentFolder).where(DocumentFolder.parent_id == folder_id)
+    )).scalars().all())
+
     await db.execute(
         update(DocumentFolder)
         .where(DocumentFolder.parent_id == folder_id)
@@ -310,8 +316,10 @@ async def delete_folder(
     )
     await db.execute(sql_delete(DocumentFolder).where(DocumentFolder.id == folder_id))
 
-    # The children that just moved up carry subtrees of their own. At the library
-    # root there is no parent to walk from, and nothing to inherit either.
-    if parent is not None:
-        await apply_subtree_placement(db, parent)
+    # Propagate from each folder that actually MOVED -- never from `parent`.
+    # Walking the parent descends into siblings that did not move, and at a group
+    # root those siblings are every member's private folder.
+    for child in moved:
+        child.visibility, child.group_id = visibility, group_id
+        await apply_subtree_placement(db, child)
     return None

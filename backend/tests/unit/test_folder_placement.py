@@ -17,6 +17,9 @@ import pytest
 
 from models.document_folder import (
     DocumentFolder,
+    FOLDER_KIND_COMMON,
+    FOLDER_KIND_ROOT,
+    FOLDER_KIND_USER,
     FOLDER_VISIBILITY_GROUP,
     FOLDER_VISIBILITY_PRIVATE,
 )
@@ -125,3 +128,54 @@ async def test_asking_only_for_invisible_folders_returns_an_empty_scope(mock_db)
     the opposite of what was asked."""
     mock_db.execute.return_value = make_result(scalars_all=[])
     assert await resolve_folder_scope(mock_db, [4242], True, None) == []
+
+
+# --- the group root is the one node whose subtree is NOT uniform -------------
+
+def _seeded(fid, kind, *, visibility, parent_id=None, group_id=2):
+    folder = _folder(fid, visibility=visibility, group_id=group_id, parent_id=parent_id)
+    folder.kind = kind
+    return folder
+
+
+async def test_the_walk_never_rewrites_a_seeded_folder(mock_db):
+    """A group root holds `common` (group-visible) beside one private folder per
+    member -- attached directly by folder_seed, not by inheritance. It is the one
+    folder in the tree whose children are NOT visibility-uniform.
+
+    Overwriting a member's private folder with the root's own visibility, and
+    re-stamping the documents inside it, publishes their whole library to the
+    group. Silently, and permanently: nothing recomputes it back.
+    """
+    root = _seeded(1, FOLDER_KIND_ROOT, visibility=FOLDER_VISIBILITY_GROUP)
+    common = _seeded(2, FOLDER_KIND_COMMON, visibility=FOLDER_VISIBILITY_GROUP, parent_id=1)
+    private = _seeded(3, FOLDER_KIND_USER, visibility=FOLDER_VISIBILITY_PRIVATE, parent_id=1)
+    mock_db.execute.side_effect = [
+        make_result(scalars_all=[common, private]),  # children of the root
+        make_result(rowcount=0),                     # the document UPDATE
+    ]
+
+    await apply_subtree_placement(mock_db, root)
+
+    assert private.visibility == FOLDER_VISIBILITY_PRIVATE, \
+        "the member's private folder was published to the group"
+    assert common.visibility == FOLDER_VISIBILITY_GROUP
+
+    stmt = mock_db.execute.call_args_list[-1].args[0]
+    sql = str(stmt.compile(compile_kwargs={"literal_binds": True}))
+    assert "folder_id IN (1)" in sql, \
+        f"documents under a seeded folder were re-stamped: {sql}"
+
+
+async def test_dissolving_a_folder_walks_what_moved_not_its_siblings(mock_db):
+    """The reachable version: any member may create a folder under the group root
+    and delete it again. Walking the PARENT afterwards would descend into every
+    member's private folder; walking the moved children cannot."""
+    import inspect
+
+    from routers import folders as folders_router
+
+    src = inspect.getsource(folders_router.delete_folder)
+    assert "apply_subtree_placement(db, parent)" not in src, \
+        "dissolve walks the surviving parent, whose other children never moved"
+    assert "for child in moved" in src

@@ -12,6 +12,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from fastapi import HTTPException
 
 from routers import rag as rag_router
 from routers.rag import LibraryScope
@@ -64,9 +65,30 @@ async def test_a_group_filter_intersects_with_real_membership(mock_db):
     mock_db.execute.return_value = make_result(scalars_all=[])
     with patch.object(rag_router, "get_user_group_ids", AsyncMock(return_value=[2, 5])):
         group_ids, _ = await rag_router.resolve_scope(
-            mock_db, 7, LibraryScope(group_ids=[5, 999])
+            mock_db, 7, LibraryScope(group_ids=[5])
         )
     assert group_ids == [5]
+
+
+async def test_naming_a_group_you_are_not_in_is_an_error_not_an_empty_scope(mock_db):
+    """The dangerous shape: intersecting to [] means "owner-only" everywhere
+    downstream, so "search group 999" would answer with the caller's OWN private
+    library -- and the agent would report it as that group's material. Say no
+    instead, and name the group, so the caller can correct the id."""
+    with patch.object(rag_router, "get_user_group_ids", AsyncMock(return_value=[2, 5])):
+        with pytest.raises(HTTPException) as exc:
+            await rag_router.resolve_scope(mock_db, 7, LibraryScope(group_ids=[999]))
+    assert exc.value.status_code == 400
+    assert "999" in str(exc.value.detail)
+
+
+async def test_one_unknown_group_among_valid_ones_is_still_an_error(mock_db):
+    """Silently dropping it would answer a narrower question than was asked
+    without saying so."""
+    with patch.object(rag_router, "get_user_group_ids", AsyncMock(return_value=[2, 5])):
+        with pytest.raises(HTTPException) as exc:
+            await rag_router.resolve_scope(mock_db, 7, LibraryScope(group_ids=[5, 999]))
+    assert exc.value.status_code == 400
 
 
 async def test_the_folder_filter_is_resolved_against_the_callers_acl(mock_db):

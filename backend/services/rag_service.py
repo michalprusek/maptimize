@@ -59,7 +59,8 @@ def _owner_clause(group_ids: Sequence[int] = ()) -> str:
     """Raw-SQL page ACL. SSOT mirror of models.rag_document.document_read_scope:
     library docs are shared with every group the caller belongs to; attachments
     match only the owner. The ids are bound as an array parameter (never
-    interpolated) -- this is the one ACL clause built by string formatting, so it
+    interpolated) -- this is one of the two ACL clauses built by string formatting
+    (the other is ``_inject_user_id_filter`` in ``sql_query_service``), so it
     is also the one where interpolating a value would be an injection."""
     if group_ids:
         return (

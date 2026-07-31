@@ -237,6 +237,41 @@ async def test_a_member_folder_is_private_and_hangs_under_the_group_root(mock_db
     assert folder.name == "Theo"
 
 
+async def test_cancelling_only_reaches_a_pending_request(mock_db):
+    """Without the status filter a member could delete their own APPROVED request
+    and erase who admitted them -- the provenance decided_by_user_id's ON DELETE
+    SET NULL exists to keep even when that admin's account is gone."""
+    import inspect
+
+    src = inspect.getsource(groups_router.cancel_join_request)
+    assert "GroupJoinRequest.status == JoinRequestStatus.PENDING.value" in src, \
+        "cancel deletes by (id, group, user) with no status filter"
+
+
+async def test_disbanding_a_group_does_not_leave_undeletable_folders(mock_db):
+    """group_id is ON DELETE SET NULL, so the seeded folders survive the group.
+    Left with kind='root'/'common'/'user' they hit _reject_if_seeded forever,
+    protecting a structure that no longer exists."""
+    from models.document_folder import FOLDER_KIND_COMMON, FOLDER_KIND_ROOT
+
+    root = DocumentFolder(id=1, name="G", kind=FOLDER_KIND_ROOT, group_id=2,
+                          visibility=FOLDER_VISIBILITY_GROUP)
+    common = DocumentFolder(id=2, name="common", kind=FOLDER_KIND_COMMON, group_id=2,
+                            parent_id=1, visibility=FOLDER_VISIBILITY_GROUP)
+    mine = DocumentFolder(id=3, name="Theo", kind=KIND_USER, group_id=2,
+                          parent_id=1, visibility=PRIVATE)
+    mock_db.execute.return_value = make_result(scalars_all=[root, common, mine])
+
+    n = await folder_seed.dissolve_group_folders(mock_db, group_id=2)
+
+    assert n == 3
+    for folder in (root, common, mine):
+        assert folder.kind == KIND_CUSTOM, f"{folder.name} stayed seeded"
+        assert folder.group_id is None
+        assert folder.parent_id is None
+        assert folder.visibility == PRIVATE
+
+
 async def test_leaving_cuts_the_private_folder_loose(mock_db):
     """Left attached, it hangs under a root the ex-member can no longer see --
     so it disappears from their tree while still holding their files."""
