@@ -351,8 +351,37 @@ docker run --rm -v $(pwd)/data:/dst alpine chown -R 1000:1000 /dst/<novy_adresar
 
 Čtecí dotazy používají `experiment_owner_filter` (SSOT z `utils/groups.py`),
 takže je vidět i experimenty sdílené přes skupinu — stejně pro UI i MCP konektor.
-`group_id` resolvuje endpoint přes `get_user_group_id(current_user.id, db)`;
-default `None` = jen vlastník (fail-closed).
+Scope resolvuje endpoint přes `get_user_group_ids(current_user.id, db)`, který vrací
+**seznam**; prázdný seznam = jen vlastník (fail-closed).
+
+⚠️ **Členství je many-to-many (od 2026-07-31).** `group_members` má
+`UNIQUE (group_id, user_id)`, ne `UNIQUE (user_id)`. Singulární `get_user_group_id`
+**neexistuje a nesmí se vrátit ani jako shim** — jedno volání, které si nechá
+jednoskupinovou sémantiku, nevypadá nijak podezřele. Prázdný seznam nesmí projít
+jako `IN ()`: v jednom dialektu je to chyba, v druhém tiché false, a ani jedno
+nechceš mít jako strážce dat. Proto `if group_ids:` a term se nepřidá vůbec.
+
+⚠️ **`adopt_orphan_experiments` / `adopt_orphan_documents` jsou smazané.** Vstup do
+skupiny už nepřerazítkuje tvoje experimenty bez skupiny — mělo to jednu správnou
+odpověď pro jednu skupinu a žádnou pro dvě (při druhém vstupu by to první skupině
+data odebralo). Nahradil je `PATCH /api/experiments/{id}/group` (**owner-only** —
+kontejner patří tomu, kdo ho nahrál) a u dokumentů přesun do složky skupiny.
+Nový objekt se stamp­uje přes `default_group_id()`: **jedna skupina → sdílí se,
+víc skupin → nesdílí a přiřadí se ručně** (hádat, kterou uživatel myslel, znamená
+tiše publikovat cizímu publiku).
+
+⚠️ **Role skupiny je autoritativní.** `require_group_admin` čte
+`group_members.role` a navíc bere globální `users.role == ADMIN` jako admina
+**každé** skupiny — i těch, které ještě nevznikly (proto se nikam nemusí dosazovat
+řádky). `Group.created_by_user_id` je jen provenience a nedává **nic**; do
+2026-07-31 byl jedinou kontrolou, takže zakladatel byl jediný správce a sloupec
+`role` byl dekorativní.
+
+⚠️ **Otevřený `POST /groups/{id}/join` je smazaný** — pouštěl dovnitř kohokoli, kdo
+uhodl id skupiny. Nahradily ho `group_join_requests` + schválení adminem.
+`approve`/`reject` visí na `require_interactive_user`, takže konektorový token
+nemůže přijmout sám sebe do skupiny — a tím pádem podle existujícího pravidla
+**do MCP nepatří**. Agent smí požádat; rozhoduje člověk.
 
 **Dokumenty mají druhou, paralelní ACL plochu** (od 2026-07-21): `rag_documents`
 se sdílí stejným způsobem přes `document_scope` (listing/search) a
@@ -370,6 +399,55 @@ takže záměna `and_`→`or_` shodí test.
 current_user.id` → 403) — skupina dává právo číst, ne měnit. U dokumentů
 `delete_document` / `reindex_document` schválně používají holý
 `RAGDocument.user_id == user_id` a **nesmí** se „uklidit" na `document_read_scope`.
+
+### Složky knihovny: viditelnost a razítkování (od 2026-07-31)
+
+Každá skupina má strom: kořen pojmenovaný podle skupiny, `common` (čte i píše celá
+skupina) a **jednu soukromou složku na člena**. Seeduje ho `utils/folder_seed.py`
+(idempotentně, klíčem je `kind` — nikdy jméno, to se mění).
+
+`DocumentFolder` má dvě **oddělené** osy a plést je dohromady je ta chyba, kterou
+tu jde udělat:
+- `group_id` = v jakém stromu složka leží,
+- `visibility` (`group` | `private`) = kdo ji smí číst.
+
+Členská soukromá složka má **obojí** — `group_id` skupiny (proto visí pod jejím
+kořenem) i `private` (proto ji nikdo jiný nevidí). ⚠️ **Soukromá znamená soukromá i
+proti adminovi skupiny a globálnímu adminovi** — je to jediné místo v aplikaci, kam
+globální admin nevidí, a `tests/unit/test_folder_visibility.py` to zamyká.
+Viditelnost se **dědí od rodiče**, nevybírá se; jinak je „nová podsložka" jednoklikový
+způsob, jak zveřejnit soukromý dokument.
+
+⚠️ **Soukromí dokumentu se RAZÍTKUJE, neodvozuje.** `placement_group_id(folder)`
+vrací `None` pro soukromou složku i pro kořen knihovny, a `rag_documents.group_id`
+se přepisuje při uploadu, přesunu dokumentu a — přes celý podstrom —
+při přesunu i rozpuštění složky (`utils/folder_placement.py`). Odvozovat viditelnost
+joinem na složku by znamenalo držet ten join ve **všech čtyřech** zrcadlech ACL
+dokumentů; takhle se ACL plocha nemění vůbec. **Cokoli, co mění, kde dokument leží,
+musí projít tímhle helperem**, jinak soukromá složka tiše obsahuje dokumenty, které
+čte celá skupina.
+
+⚠️ **Seedované složky (`root`/`common`/`user`) nejdou přejmenovat, přesunout ani
+smazat** (`_reject_if_seeded` → 400). Navigují podle nich všichni členové. Jediná
+výjimka není akce uživatele: přejmenování skupiny přejmenuje i její kořen, aby se
+strom nerozešel se seznamem skupin. Odchod ze skupiny (i vyhození) soukromou složku
+**odpojí** na kořen knihovny — jinak visí pod kořenem, který ex-člen už nevidí, a
+zmizí mu ze stromu i s obsahem.
+
+#### Scoping hledání
+
+`GET /api/rag/documents` i `/api/rag/search/documents` berou `folder_ids`,
+`include_subfolders`, `group_ids` — jako **jednu dependency** `LibraryScope`, ne tři
+volné `Query` parametry (testy volají handlery přímo a nepředaný `Query(...)` doteče
+do těla jako **objekt**, takže `if folder_ids:` je pravdivé; se třemi parametry jsou
+to tři miny — viz tentýž vzor u facet filtru).
+
+⚠️ **Oba filtry jen zužují.** `group_ids` se protne se skutečným členstvím,
+`folder_ids` se rozvine proti složkové ACL volajícího — proto je výsledný seznam id
+bezpečné předat do pgvector dotazu jako bound array. ⚠️ **Prázdný výsledný seznam
+znamená „ve složkách, cos jmenoval, nic viditelného není" a musí vrátit nula řádků**;
+`if folder_ids:` by ho přečetl jako „žádný filtr" a vrátil celou knihovnu, proto se
+všude testuje `is not None`.
 
 #### Kurátorování cropů — jediná výjimka ze „zápisy jen vlastník" (od 2026-07-26)
 
@@ -416,8 +494,14 @@ takže starý klient, který `microscope_id` pošle tam, spadne na **422** míst
 zahození. `ExperimentCreate` ho naopak přijímá dál — zakládá vlastník.
 
 MCP: tool `assign_experiment_microscope` (`update_experiment` ho už **nemá**);
-`SERVER_VERSION` 2.4.0. Testy pinují jmennou sadu i verzi — při změně kontraktu je
-uprav (`tests/test_registry.py`, `tests/test_protocol.py`, `tests/test_app_control_tools.py`).
+`SERVER_VERSION` je od 2026-07-31 **3.0.0**. Testy pinují jmennou sadu i verzi — při
+změně kontraktu je uprav (`tests/test_registry.py`, `tests/test_protocol.py`,
+`tests/test_app_control_tools.py`).
+
+⚠️ **Pole se posílají jako opakované query parametry**, ne jako JSON string —
+`?folder_ids=3&folder_ids=4`. To je to, co parsuje FastAPI `Query(List[int])`;
+serializovaný seznam dorazí jako jedna neparsovatelná hodnota. Zařizuje to
+`_library_scope_params` v `handlers.py` (httpx to zakóduje sám, když je hodnota list).
 
 #### Přiřazení PTM — třetí výjimka (od 2026-07-28)
 
@@ -494,6 +578,23 @@ s hodnotou prahu). Práh chrání **fitování**, ne čtení: souřadnice pochá
 z jednoho sdíleného fitu, který už proběhl, takže zobrazit tři filtrované body je správná
 odpověď. Dřív filtr mikroskopu na úzký výběr vracel „Need at least N crops" — chyba tam,
 kam patří prázdný graf.
+
+⚠️ **UMAP se od 2026-07-31 fituje GLOBÁLNĚ** — `compute_crop_umap(db)` /
+`compute_fov_umap(db)` už neberou uživatele a nemají `experiment_owner_filter`;
+`refresh_scope_key(umap_type)` je jediný klíč na typ projekce. Souřadnice žijí ve
+sloupcích `cell_crops.umap_x/umap_y`, tedy **jedna projekce uložená na řádku**, což
+je bezpečné jen dokud každý čtenář vidí stejný korpus. S členstvím ve více skupinách
+to přestalo platit: člen skupin A+B čte `vlastní ∪ A ∪ B`, kolega jen z A čte
+`vlastní ∪ A`, oba fity zapisují tytéž sloupce a **nic nespadne** — graf se jen tiše
+zhorší. Platí tedy totéž pravidlo jako u diskriminační projekce: ACL rozhoduje o tom,
+co request **vrátí**, nikdy o tom, co se fituje. **Nevracej sem filtr podle volajícího.**
+
+Diskriminační cache se naopak keyuje `u{user}|g{seřazené skupiny}` — dřív stačilo
+`g{group}`, protože adopce zaručovala, že členové čtou identický korpus. Adopce je
+pryč a členství je many-to-many, takže ani jedna půlka toho předpokladu neplatí;
+sdílet fit napříč uživateli by hlásilo skóre spočítané na korpusu, který volající
+nevidí. (Souřadnice diskriminantu se **neukládají do DB**, takže špatný klíč stojí
+přepočet, ne poškozená data.)
 
 Odpověď nese navíc `facets`: jeden řádek na dvojici (experiment, protein) s počtem bodů,
 počítaný nad scope **před** facetovými filtry (jinak by odškrtnutá hodnota z panelu
