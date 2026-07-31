@@ -34,6 +34,7 @@ from schemas.rag import (
     ImportFailure,
     ImportResponse,
 )
+from utils.folder_placement import placement_group_id, resolve_folder_scope
 from utils.groups import get_user_group_ids
 from utils.security import get_current_user, get_current_user_from_query
 from services.document_indexing_service import (
@@ -269,14 +270,15 @@ async def upload_document(
     # Validate the target folder is one the caller can see (mirrors move_document),
     # so a document can't be filed under a foreign/nonexistent folder id. (isinstance
     # int, not `is not None`, so an omitted form field is skipped cleanly.)
+    target_folder = None
     if isinstance(folder_id, int):
         from models.document_folder import DocumentFolder as _Folder
         from routers.folders import _visible as _folder_visible
         _gids = await get_user_group_ids(current_user.id, db)
-        _folder = (await db.execute(
+        target_folder = (await db.execute(
             select(_Folder).where(_Folder.id == folder_id, _folder_visible(current_user.id, _gids))
         )).scalar_one_or_none()
-        if _folder is None:
+        if target_folder is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Folder not found")
 
     try:
@@ -288,7 +290,11 @@ async def upload_document(
             db=db,
         )
         if created and isinstance(folder_id, int):
+            # The folder decides who can read it, so file it and re-stamp in one
+            # go -- a document whose group_id disagrees with its folder is exactly
+            # the inconsistency utils.folder_placement exists to prevent.
             document.folder_id = folder_id
+            document.group_id = placement_group_id(target_folder)
         await db.commit()
 
         # A duplicate is already stored, and its indexing has either finished or
@@ -333,14 +339,22 @@ async def move_document(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Move a document into a folder (folder_id=null -> root). Any group member
-    who can see the shared document may organize it."""
+    """Move a document into a folder (folder_id=null -> root).
+
+    This is how sharing happens: moving a document into a group's folder makes it
+    readable by that group, and moving it into a private one takes it back. The
+    document's own ``group_id`` is re-stamped to match -- it is the ACL truth, and
+    leaving it behind would let a private folder hold group-readable documents.
+
+    Any group member who can see the shared document may organize it.
+    """
     from models.document_folder import DocumentFolder
     from routers.folders import _visible
 
     group_ids = await get_user_group_ids(current_user.id, db)
     document = await get_document_for_user(db, document_id, current_user.id, group_ids)
     folder_id = payload.get("folder_id")
+    folder = None
     if folder_id is not None:
         try:
             folder_id = int(folder_id)
@@ -355,7 +369,12 @@ async def move_document(
         if folder is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Folder not found")
     document.folder_id = folder_id
-    return {"id": document.id, "folder_id": document.folder_id}
+    document.group_id = placement_group_id(folder)
+    return {
+        "id": document.id,
+        "folder_id": document.folder_id,
+        "group_id": document.group_id,
+    }
 
 
 @router.delete("/documents/{document_id}", status_code=status.HTTP_204_NO_CONTENT)
