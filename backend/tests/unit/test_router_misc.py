@@ -380,12 +380,34 @@ async def test_rag_get_document_for_user_not_found(mock_db):
     assert e.value.status_code == 404
 
 
+def test_the_upload_cap_is_a_backstop_not_a_quota():
+    """1000/hour is deliberately far above anything a person does by hand.
+
+    It exists to stop a runaway client filling the disk or the GPU queue, so it
+    must not be reachable by ordinary work -- 10/hour was, and a researcher
+    filing a year of papers hit it.
+
+    It governs the manual paths only (file upload and index_text). Bulk paper
+    import counts against its own key, so this cap neither limits nor widens it.
+    """
+    import inspect
+
+    assert rag_r.UPLOAD_RATE_LIMIT_REQUESTS == 1000
+    assert rag_r.UPLOAD_RATE_LIMIT_WINDOW == 3600
+
+    upload_key = inspect.getsource(rag_r._check_upload_rate_limit)
+    import_key = inspect.getsource(rag_r._check_discovery_rate_limit)
+    assert "rate_limit:upload:" in upload_key
+    assert "rate_limit:discovery_import:" in import_key, \
+        "the importer must spend a separate budget, or one cap governs both"
+
+
 async def test_rag_check_rate_limit_under_limit():
     r = AsyncMock(name="redis")
     pipe = AsyncMock(name="pipe")
     pipe.zremrangebyscore = MagicMock()
     pipe.zcard = MagicMock()
-    pipe.execute = AsyncMock(return_value=[0, 3])  # count = 3 < 10
+    pipe.execute = AsyncMock(return_value=[0, rag_r.UPLOAD_RATE_LIMIT_REQUESTS - 1])
     cm = MagicMock()
     cm.__aenter__ = AsyncMock(return_value=pipe)
     cm.__aexit__ = AsyncMock(return_value=False)
@@ -402,7 +424,7 @@ async def test_rag_check_rate_limit_exceeded():
     pipe = AsyncMock(name="pipe")
     pipe.zremrangebyscore = MagicMock()
     pipe.zcard = MagicMock()
-    pipe.execute = AsyncMock(return_value=[0, 10])  # at the limit
+    pipe.execute = AsyncMock(return_value=[0, rag_r.UPLOAD_RATE_LIMIT_REQUESTS])  # at the limit
     cm = MagicMock()
     cm.__aenter__ = AsyncMock(return_value=pipe)
     cm.__aexit__ = AsyncMock(return_value=False)
@@ -420,7 +442,9 @@ async def test_rag_check_rate_limit_exceeded_no_oldest():
     pipe = AsyncMock(name="pipe")
     pipe.zremrangebyscore = MagicMock()
     pipe.zcard = MagicMock()
-    pipe.execute = AsyncMock(return_value=[0, 12])
+    # Derived from the limit, not a literal: a test that hardcodes "12 is over
+    # the line" silently stops testing the branch the moment the cap moves.
+    pipe.execute = AsyncMock(return_value=[0, rag_r.UPLOAD_RATE_LIMIT_REQUESTS + 2])
     cm = MagicMock()
     cm.__aenter__ = AsyncMock(return_value=pipe)
     cm.__aexit__ = AsyncMock(return_value=False)

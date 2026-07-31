@@ -79,8 +79,12 @@ router = APIRouter()
 
 
 # ============== Upload Rate Limiting ==============
-# Limit: 10 uploads per hour per user (prevent disk/GPU exhaustion)
-UPLOAD_RATE_LIMIT_REQUESTS = 10
+# Limit: 1000 uploads per hour per user. The cap is a backstop against a runaway
+# client filling the disk or the GPU queue, not a quota -- a person filing a
+# year's worth of papers in one sitting must not hit it, which 10/hour did.
+# Covers both the file upload and index_text; the discovery importer has its own
+# budget (DISCOVERY_RATE_LIMIT_REQUESTS), so bulk paper import is unaffected.
+UPLOAD_RATE_LIMIT_REQUESTS = 1000
 UPLOAD_RATE_LIMIT_WINDOW = 3600  # 1 hour in seconds
 
 _redis_pool: Optional[redis.Redis] = None
