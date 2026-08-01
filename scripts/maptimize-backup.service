@@ -7,6 +7,10 @@ Documentation=file:/home/cvat/maptimize/scripts/backup.sh
 RequiresMountsFor=/backup
 After=docker.service
 Requires=docker.service
+# The script writes FAIL itself on the paths it survives. This covers the ones
+# it does not: killed before the trap runs, the unit failing before ExecStart,
+# or /backup read-only so its own status write did nothing.
+OnFailure=maptimize-backup-failed.service
 
 [Service]
 Type=oneshot
@@ -14,9 +18,11 @@ User=cvat
 Group=cvat
 ExecStart=/home/cvat/maptimize/scripts/backup.sh
 
-# The default start timeout is 90s and a full run already takes ~80s. Without
-# this the job would start being SIGTERM'd partway through the file sync as soon
-# as the dataset grew a little — intermittently, and only in production.
+# Type=oneshot has NO start timeout by default — systemd reports
+# TimeoutStartUSec=infinity for it, and DefaultTimeoutStartUSec (90s here)
+# does not apply. So this is not protection against being killed; it is an
+# explicit upper bound so a wedged `docker exec` or a hung rsync eventually
+# fails the unit instead of blocking the timer forever.
 TimeoutStartSec=4h
 
 Nice=10
