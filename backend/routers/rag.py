@@ -373,7 +373,7 @@ async def upload_document(
     Supported formats: PDF, DOCX, PPTX, XLSX, images.
     Documents are processed asynchronously in the background.
 
-    Rate limited: max 10 uploads per hour per user.
+    Rate limited: max 1000 uploads per hour per user.
     """
     # Check rate limit before processing upload
     await _check_upload_rate_limit(current_user.id)
@@ -476,7 +476,12 @@ async def move_document(
     document's own ``group_id`` is re-stamped to match -- it is the ACL truth, and
     leaving it behind would let a private folder hold group-readable documents.
 
-    Any group member who can see the shared document may organize it.
+    Any group member who can see the shared document may organize it -- WITHIN a
+    group the owner belongs to. Multi-group membership made a second reading
+    reachable: a member of A and B could take a colleague's A-document and drop it
+    into B's `common`, disclosing it to a group its owner never joined and cannot
+    see. Organizing is not the same as publishing to a new audience, so a
+    destination whose group the owner is not in is refused.
     """
     group_ids = await get_user_group_ids(current_user.id, db)
     document = await get_document_for_user(db, document_id, current_user.id, group_ids)
@@ -489,8 +494,21 @@ async def move_document(
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
                                 detail="folder_id must be an integer or null")
         folder = await get_target_folder(db, folder_id, current_user.id, group_ids)
-    document.folder_id = folder_id
-    document.group_id = placement_group_id(folder)
+
+    destination_group = placement_group_id(folder)
+    if destination_group is not None and document.user_id != current_user.id:
+        owner_groups = await get_user_group_ids(document.user_id, db)
+        if destination_group not in owner_groups:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=(
+                    "That folder belongs to a group the document's owner is not "
+                    "in. Moving it there would share their work with people they "
+                    "cannot see."
+                ),
+            )
+
+    file_document(document, folder)
     return {
         "id": document.id,
         "folder_id": document.folder_id,
@@ -1265,6 +1283,8 @@ async def index_document_from_url(
         page_count=document.page_count,
         created_at=document.created_at,
         is_duplicate=not created,
+        folder_id=document.folder_id,
+        group_id=document.group_id,
     )
 
 
@@ -1294,6 +1314,9 @@ async def index_text_endpoint(
         "name": document.name,
         "status": document.status,
         "is_duplicate": not created,
+        # Where it landed and who can read it -- see RAGDocumentUploadResponse.
+        "folder_id": document.folder_id,
+        "group_id": document.group_id,
     }
 
 

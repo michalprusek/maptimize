@@ -414,6 +414,12 @@ zopakovaný na dalších dvou místech: raw-SQL `owner_clause` v
 `tests/unit/test_document_acl.py` zamykají *strukturu* SQL (ne jen substring),
 takže záměna `and_`→`or_` shodí test.
 
+⚠️ **Přesun dokumentu je jediná akce, která mění publikum.** „Kdo vidí, smí
+organizovat" platí **uvnitř** skupiny; člen skupin A+B ale nesmí vzít kolegův
+dokument z A a upustit ho do `common` skupiny B — zpřístupnil by ho lidem, které
+vlastník nezná a nevidí. `move_document` proto odmítne (403) cíl, jehož skupinu
+vlastník nemá. Vlastní dokument mezi vlastními skupinami přesunout lze.
+
 ⚠️ **Zápisy** zůstávají striktně na vlastníkovi (re-check `obj.user_id ==
 current_user.id` → 403) — skupina dává právo číst, ne měnit. U dokumentů
 `delete_document` / `reindex_document` schválně používají holý
