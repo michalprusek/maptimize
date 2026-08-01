@@ -35,7 +35,11 @@ from schemas.rag import (
     ImportFailure,
     ImportResponse,
 )
-from utils.folder_placement import placement_group_id, resolve_folder_scope
+from utils.folder_placement import (
+    file_document,
+    placement_group_id,
+    resolve_folder_scope,
+)
 from utils.folder_seed import default_upload_folder
 from utils.groups import get_user_group_ids
 from utils.security import get_current_user, get_current_user_from_query
@@ -416,13 +420,10 @@ async def upload_document(
             db=db,
         )
         if created:
-            # The folder decides who can read it, so file it and stamp in one go
-            # -- a document whose group_id disagrees with its folder is exactly
-            # the inconsistency utils.folder_placement exists to prevent. With no
-            # folder (a multi-group member, who has no unambiguous `common`) both
-            # stay None: unfiled and owner-only, until they move it.
-            document.folder_id = folder_id
-            document.group_id = placement_group_id(target_folder)
+            # The folder decides who can read it. With no folder (a multi-group
+            # member, who has no unambiguous `common`) the document stays unfiled
+            # and owner-only until they move it.
+            file_document(document, target_folder)
         await db.commit()
 
         # A duplicate is already stored, and its indexing has either finished or
@@ -911,6 +912,10 @@ async def import_discovered(
     # last read happened to precede the rebind.
     existing_dois = {d.lower() for d in existing_rows.scalars().all() if d}
 
+    # Resolved once for the whole batch: every imported paper is filed like a
+    # hand upload, into the importer's group `common` when that is unambiguous.
+    default_folder = await default_upload_folder(db, group_ids)
+
     # Papers already here are neither imported nor failed. Reporting them as
     # failures made the summary read "0 imported - 3 failed" for the most common
     # case there is: re-selecting papers you already imported.
@@ -976,6 +981,13 @@ async def import_discovered(
                 user_id=current_user.id, filename=filename, content=content,
                 db=db, thread_id=None,
             )
+            if created:
+                # An imported paper is filed exactly like a hand upload. Without
+                # this it stayed unfiled and owner-only, so the lab never saw the
+                # papers it imported AND the group-wide dedupe stopped matching a
+                # colleague's copy -- every member re-downloaded and re-indexed
+                # the same PDF.
+                file_document(document, default_folder)
             if created or (document.user_id == current_user.id and not document.doi):
                 # Stamped on a duplicate ONLY when we own it and it has no DOI
                 # yet -- typically a paper uploaded by hand before discovery
@@ -1211,9 +1223,7 @@ async def index_text_endpoint(
         # Same filing rule as an uploaded file: `common` by default, so a snippet
         # the agent indexes is shared with the lab rather than owner-only.
         group_ids = await get_user_group_ids(current_user.id, db)
-        folder = await default_upload_folder(db, group_ids)
-        document.folder_id = folder.id if folder else None
-        document.group_id = placement_group_id(folder)
+        file_document(document, await default_upload_folder(db, group_ids))
         await db.commit()
         background_tasks.add_task(process_text_document, document.id)
     return {

@@ -10,6 +10,7 @@ The dangerous direction is group -> private: if a re-stamp is missed there, a
 folder that looks private to its owner still contains documents the whole group
 can read, and nothing in the UI says so.
 """
+import pathlib
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -190,6 +191,79 @@ async def test_a_member_of_several_groups_gets_no_default_folder(mock_db):
     assert await default_upload_folder(mock_db, [2, 5]) is None
     assert await default_upload_folder(mock_db, []) is None
     mock_db.execute.assert_not_called()
+
+
+def test_no_startup_job_restamps_a_documents_group():
+    """`rag_documents.group_id IS NULL` changed meaning under this feature.
+
+    It used to mark "not yet backfilled", so a startup UPDATE that stamped every
+    such row with its owner's group was correct. Once folders could hold
+    documents it became the ACL state meaning PRIVATE -- exactly what
+    placement_group_id returns for a private folder -- so the same UPDATE
+    published every private folder's contents to the group, on every restart, and
+    with many-to-many membership `UPDATE ... FROM group_members` picked an
+    arbitrary one of the owner's groups. Observed in production: 45 documents in
+    a private UTIA ZOI folder stamped with Dr. Janke Lab.
+
+    The backfill has served its purpose and is gone. Nothing may write
+    rag_documents.group_id outside utils.folder_placement.
+    """
+    src = pathlib.Path(__file__).resolve().parents[2] / "database.py"
+    text = src.read_text()
+    assert "rag_documents SET group_id" not in text, (
+        "a bulk write to rag_documents.group_id cannot know which folder a "
+        "document sits in, so it cannot honour the placement invariant"
+    )
+    assert "backfill_doc_group" not in text
+
+
+def test_every_document_creator_files_what_it_created():
+    """`save_uploaded_document` returns group_id=None by design, so FILING is the
+    caller's job -- and a caller that forgets produces an unfiled, owner-only
+    document with no error anywhere.
+
+    import_discovered forgot exactly this: it was the one call site still relying
+    on the service to stamp a group, so every imported paper became invisible to
+    the lab the moment the service stopped. Asserted on the shape of the code
+    because the alternative is discovering it from a colleague saying "I can't
+    find that paper".
+    """
+    import re
+
+    src = pathlib.Path(__file__).resolve().parents[2] / "routers" / "rag.py"
+    text = src.read_text()
+    creators = [
+        m.start() for m in re.finditer(
+            r"await (save_uploaded_document|index_text_snippet)\(", text
+        )
+    ]
+    assert creators, "no document creators found -- the guard would be vacuous"
+    for pos in creators:
+        window = text[pos:pos + 1600]
+        assert "file_document(" in window, (
+            f"a document created at offset {pos} is never filed; it would be "
+            "unfiled and owner-only"
+        )
+
+
+async def test_filing_sets_both_halves_together(mock_db):
+    """One call, both fields -- the pair used to be open-coded at four sites, and
+    the fourth was the one that drifted."""
+    from types import SimpleNamespace
+
+    from utils.folder_placement import file_document
+
+    doc = SimpleNamespace(folder_id=None, group_id=None)
+    shared = _folder(9, visibility=FOLDER_VISIBILITY_GROUP, group_id=2)
+    file_document(doc, shared)
+    assert (doc.folder_id, doc.group_id) == (9, 2)
+
+    private = _folder(9, visibility=FOLDER_VISIBILITY_PRIVATE, group_id=2)
+    file_document(doc, private)
+    assert (doc.folder_id, doc.group_id) == (9, None)
+
+    file_document(doc, None)
+    assert (doc.folder_id, doc.group_id) == (None, None)
 
 
 async def test_an_unfiled_document_is_owner_only(mock_db):

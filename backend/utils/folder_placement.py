@@ -58,6 +58,24 @@ def placement_group_id(folder: Optional[DocumentFolder]) -> Optional[int]:
     return folder.group_id
 
 
+def file_document(document: RAGDocument, folder: Optional[DocumentFolder]) -> None:
+    """Put a document in a folder and stamp its audience to match.
+
+    The only supported way to set ``folder_id``: the two fields are one fact, and
+    setting them separately is how they drift. ``folder=None`` means the library
+    root -- unfiled and owner-only.
+
+    This exists because the pair was open-coded at four call sites and the fourth
+    was missed: ``import_discovered`` kept relying on the service to stamp a
+    group, so when that stopped, every imported paper became invisible to the lab
+    and the group-wide dedupe stopped matching a colleague's copy. Nothing raised.
+    ``grep file_document`` is now the complete list of places a document's
+    audience changes.
+    """
+    document.folder_id = folder.id if folder is not None else None
+    document.group_id = placement_group_id(folder)
+
+
 async def _children(db: AsyncSession, parent_id: int) -> list[DocumentFolder]:
     return list((await db.execute(
         select(DocumentFolder).where(DocumentFolder.parent_id == parent_id)

@@ -313,24 +313,22 @@ async def ensure_schema_updates():
         # Backfill group_id for existing LIBRARY documents (thread_id IS NULL).
         # Stamp each with its owner's group so lab members see docs uploaded
         # before this feature existed. Attachments (thread_id set) stay private.
-        try:
-            await conn.execute(text("SAVEPOINT backfill_doc_group"))
-            await conn.execute(text("""
-                UPDATE rag_documents SET group_id = gm.group_id
-                FROM group_members gm
-                WHERE rag_documents.user_id = gm.user_id
-                  AND rag_documents.thread_id IS NULL
-                  AND rag_documents.group_id IS NULL
-            """))
-            await conn.execute(text("RELEASE SAVEPOINT backfill_doc_group"))
-            logger.info("Backfilled group_id on library rag_documents")
-        except Exception as e:
-            await conn.execute(text("ROLLBACK TO SAVEPOINT backfill_doc_group"))
-            logger.error(
-                f"Backfill group_id on rag_documents FAILED "
-                f"(pre-existing library documents will NOT be shared with the owner's group): {e}"
-            )
-            failed_updates.append("rag_documents.backfill_doc_group")
+        # NOTE: a startup backfill used to stamp every library document that had
+        # no group with its owner's group. It ran when groups were introduced and
+        # `group_id IS NULL` meant "not yet backfilled".
+        #
+        # ⚠️ It is deliberately GONE, and must not come back. Once folders could
+        # hold documents (2026-07-31), NULL became the ACL state meaning PRIVATE
+        # -- it is what placement_group_id returns for a private folder and for an
+        # unfiled document. The backfill therefore republished every private
+        # folder's contents to the owner's group on EVERY restart, and because
+        # membership is many-to-many, `UPDATE ... FROM group_members` picked an
+        # arbitrary one: 45 documents in a private UTIA ZOI folder were stamped
+        # with Dr. Janke Lab and read by twelve people.
+        #
+        # A document's audience comes from the folder it sits in
+        # (utils/folder_placement.py). A bulk UPDATE cannot see the folder, so it
+        # cannot honour that rule -- there is no correct version of this job.
 
         # Index for group_id lookups (create_all skips columns added via ALTER TABLE above)
         try:
