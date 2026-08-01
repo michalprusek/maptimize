@@ -40,11 +40,17 @@ class Group(Base):
 
 
 class GroupMember(Base):
-    """Membership record linking a user to a group."""
+    """Membership record linking a user to a group.
+
+    A user may belong to several groups -- the constraint is one membership per
+    (group, user), not one membership per user. ``role`` is authoritative: it is
+    what ``utils.groups.require_group_admin`` reads. ``Group.created_by_user_id``
+    is provenance only and grants nothing.
+    """
 
     __tablename__ = "group_members"
     __table_args__ = (
-        UniqueConstraint("user_id", name="uq_user_one_group"),
+        UniqueConstraint("group_id", "user_id", name="uq_group_member"),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -64,7 +70,7 @@ class GroupMember(Base):
 
     # Relationships
     group: Mapped["Group"] = relationship(back_populates="members")
-    user: Mapped["User"] = relationship(back_populates="group_membership")
+    user: Mapped["User"] = relationship(back_populates="group_memberships")
 
     def __repr__(self) -> str:
         return f"<GroupMember(group={self.group_id}, user={self.user_id}, role={self.role})>"

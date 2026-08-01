@@ -42,7 +42,7 @@ def test_microscope_is_assignable_at_creation_but_not_via_generic_patch():
 async def test_create_experiment_missing_microscope_404(mock_db, monkeypatch):
     async def fake_group_id(uid, db):
         return None
-    monkeypatch.setattr(mod, "get_user_group_id", fake_group_id)
+    monkeypatch.setattr(mod, "get_user_group_ids", fake_group_id)
     # protein not requested; microscope lookup returns None → 404
     mock_db.execute.return_value = make_result(scalar=None)
     data = ExperimentCreate(name="E", microscope_id=42)
@@ -69,7 +69,7 @@ async def test_create_experiment_with_valid_microscope(mock_db):
         make_result(scalar=_microscope()),                          # existence check
         make_result(scalar=_experiment(microscope=_microscope())),   # response re-read
     ]
-    with patch.object(mod, "get_user_group_id", new=AsyncMock(return_value=None)):
+    with patch.object(mod, "get_user_group_ids", new=AsyncMock(return_value=[])):
         out = await mod.create_experiment(
             ExperimentCreate(name="E", microscope_id=5), current_user=_user(), db=mock_db
         )

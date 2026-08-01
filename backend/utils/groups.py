@@ -1,86 +1,109 @@
-"""Group utility functions shared across routers and services."""
-from typing import Optional
+"""Group utility functions shared across routers and services.
 
-from sqlalchemy import or_, select, update
+Read access is "your own rows, plus the rows of every group you belong to".
+Membership is many-to-many, so the scope is a LIST of group ids: an empty list
+contributes no group term at all, which fails closed to owner-only rather than
+widening to everything.
+
+Write access is unchanged by this module: experiments and images stay owner-only,
+with the four deliberate group-write exceptions (crops, microscope, PTM, protein)
+enforced at their own endpoints.
+"""
+from typing import Optional, Sequence
+
+from fastapi import HTTPException, status
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql.elements import ColumnElement
 
 from models.experiment import Experiment
 from models.group import GroupMember
-from models.rag_document import RAGDocument
 
 
-async def get_user_group_id(user_id: int, db: AsyncSession) -> Optional[int]:
-    """Get the group_id for a user, or None if not in a group."""
+async def get_user_group_ids(user_id: int, db: AsyncSession) -> list[int]:
+    """Every group the user belongs to. An empty list means no group.
+
+    Returns a list rather than a single id because membership is many-to-many:
+    a person can sit in the lab group and an institutional group at once. There
+    is deliberately no singular variant -- one would let a call site keep the old
+    one-group semantics without anything looking wrong.
+    """
     result = await db.execute(
         select(GroupMember.group_id).where(GroupMember.user_id == user_id)
     )
-    return result.scalar_one_or_none()
+    return list(result.scalars().all())
 
 
-def experiment_owner_filter(user_id: int, group_id: Optional[int] = None) -> ColumnElement:
+def experiment_owner_filter(
+    user_id: int, group_ids: Sequence[int] = ()
+) -> ColumnElement:
     """Build a SQL filter matching experiments the user can read.
 
     Read access = direct ownership OR membership in the experiment's group.
     SSOT for the access rule: every query that scopes experiments to a user goes
     through this, so widening access never has to be found in N places.
+
+    An empty ``group_ids`` adds no term, leaving owner-only. Do not "simplify"
+    that to an unconditional ``IN``: an empty ``IN ()`` is a SQL error in some
+    dialects and a silent false in others, and neither failure mode is one you
+    want guarding data.
     """
     conditions = [Experiment.user_id == user_id]
-    if group_id is not None:
-        conditions.append(Experiment.group_id == group_id)
+    if group_ids:
+        conditions.append(Experiment.group_id.in_(list(group_ids)))
     return or_(*conditions)
 
 
-async def adopt_orphan_experiments(
-    db: AsyncSession,
-    user_id: int,
-    group_id: int,
-) -> int:
+def default_group_id(group_ids: Sequence[int]) -> Optional[int]:
+    """Which group a newly created object is shared with by default.
+
+    Exactly one group -> that group. This is what every member of a single-group
+    lab expects: what I make is visible to my colleagues, without a second step.
+
+    Several groups -> None. Guessing which one the user meant would silently
+    publish work to the wrong audience, and "shared with nobody" is the mistake
+    that is trivial to correct. They assign it explicitly instead
+    (``PATCH /api/experiments/{id}/group``, or by moving a document into a
+    group's folder).
     """
-    Move the user's group-less experiments into the group they just joined.
+    return group_ids[0] if len(group_ids) == 1 else None
 
-    Experiments are stamped with group_id at creation, so anything created before
-    the owner had a group keeps group_id NULL forever. Such a row sits in its
-    owner's read scope but not their peers' — and because umap_x/umap_y are ONE
-    shared projection per scope, two members fitting different corpora would
-    overwrite each other's coordinates with values from incompatible fits.
 
-    Adopting the orphans keeps every member's corpus identical, which is the
-    precondition that makes umap_service.refresh_scope_key's group-wide dedupe
-    correct. Callers must commit.
-
-    Returns the number of experiments adopted.
-    """
+async def is_group_admin(user_id: int, group_id: int, db: AsyncSession) -> bool:
+    """True when the user holds the 'admin' role in this specific group."""
     result = await db.execute(
-        update(Experiment)
-        .where(Experiment.user_id == user_id, Experiment.group_id.is_(None))
-        .values(group_id=group_id)
-    )
-    return result.rowcount
-
-
-async def adopt_orphan_documents(
-    db: AsyncSession,
-    user_id: int,
-    group_id: int,
-) -> int:
-    """Share the joiner's group-less LIBRARY documents with the group they joined.
-
-    Library docs are stamped with group_id at upload, so anything uploaded before
-    the owner had a group keeps group_id NULL and is invisible to peers. Adopting
-    them makes the joiner's existing library visible group-wide, matching
-    adopt_orphan_experiments. Attachments (thread_id set) are never adopted -- they
-    stay private to their conversation. Callers must commit.
-
-    Returns the number of documents adopted.
-    """
-    result = await db.execute(
-        update(RAGDocument)
-        .where(
-            RAGDocument.user_id == user_id,
-            RAGDocument.thread_id.is_(None),
-            RAGDocument.group_id.is_(None),
+        select(GroupMember.role).where(
+            GroupMember.group_id == group_id,
+            GroupMember.user_id == user_id,
         )
-        .values(group_id=group_id)
     )
-    return result.rowcount
+    return result.scalar_one_or_none() == "admin"
+
+
+async def require_group_admin(
+    user_id: int,
+    group_id: int,
+    db: AsyncSession,
+    *,
+    actor: Optional[object] = None,
+) -> None:
+    """Authorize a group-administration action, or raise 403.
+
+    A global ``users.role == ADMIN`` counts as admin of every group, including
+    groups that do not exist yet -- which is what makes "this person administers
+    everything" durable, with no rows to remember to add later. Pass the User
+    object as ``actor`` to enable that path.
+
+    ``Group.created_by_user_id`` grants nothing; it is provenance. It used to be
+    the only check, which meant the group's founder was the sole administrator
+    and the ``role`` column was decorative.
+    """
+    if actor is not None:
+        role = getattr(actor, "role", None)
+        if getattr(role, "value", role) == "admin":
+            return
+    if not await is_group_admin(user_id, group_id, db):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only a group admin can do this",
+        )

@@ -55,7 +55,16 @@ class GroupListResponse(BaseModel):
     total: int
 
 
-class MyGroupResponse(BaseModel):
-    """Schema for current user's group (or null)."""
-    group: Optional[GroupDetailResponse] = None
-    role: Optional[str] = None
+class MyGroupMembership(BaseModel):
+    """One of the caller's memberships: the group and their role in it."""
+    group: GroupDetailResponse
+    role: str
+
+
+class MyGroupsResponse(BaseModel):
+    """Every group the caller belongs to.
+
+    A list, not a single group: membership is many-to-many, so "my group" has no
+    meaning. An empty list is the ungrouped case.
+    """
+    items: List[MyGroupMembership] = []

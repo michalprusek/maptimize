@@ -9,4 +9,4 @@ export {
 export { DiscoverSourcesModal } from "./DiscoverSourcesModal";
 export { PDFViewerPanel } from "./PDFViewerPanel";
 export { IndexingProgress } from "./IndexingProgress";
-export { ConnectClaudePanel } from "./ConnectClaudePanel";
+export { ConnectAssistantPanel } from "./ConnectAssistantPanel";

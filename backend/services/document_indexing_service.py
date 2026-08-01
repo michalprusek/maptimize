@@ -12,7 +12,7 @@ import hashlib
 import logging
 import shutil
 from pathlib import Path
-from typing import Optional, List, Tuple
+from typing import Optional, List, Sequence, Tuple
 from datetime import datetime
 
 from PIL import Image
@@ -24,7 +24,7 @@ from database import get_db_context
 from models.rag_document import (
     RAGDocument, RAGDocumentPage, DocumentStatus, document_dedupe_scope,
 )
-from utils.groups import get_user_group_id
+from utils.groups import get_user_group_ids
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -59,26 +59,26 @@ def is_supported_file(filename: str) -> bool:
     return ext in ALL_SUPPORTED
 
 
-async def _resolve_upload_group(
+async def _resolve_upload_groups(
     user_id: int, thread_id: Optional[int], db: AsyncSession
-) -> Optional[int]:
-    """Group to stamp on / scope by for a new document. Library uploads
-    (thread_id IS NULL) belong to the owner's lab group; chat attachments stay
-    owner-private (None). Fail-closed to owner-only if the group can't be
-    resolved. Mirrors experiment group stamping in routers/experiments.py."""
+) -> list[int]:
+    """Groups a new document may be deduplicated against. Library uploads
+    (thread_id IS NULL) dedupe across every group the owner belongs to; chat
+    attachments stay owner-private (empty). Fail-closed to owner-only if the
+    groups cannot be resolved."""
     if thread_id is not None:
-        return None
+        return []
     try:
-        return await get_user_group_id(user_id, db)
+        return await get_user_group_ids(user_id, db)
     except Exception:
-        logger.exception("Failed to resolve group for user %s; uploading as owner-only", user_id)
-        return None
+        logger.exception("Failed to resolve groups for user %s; uploading as owner-only", user_id)
+        return []
 
 
 async def _find_duplicate_document(
     user_id: int,
     thread_id: Optional[int],
-    group_id: Optional[int],
+    group_ids: Sequence[int],
     content_hash: str,
     db: AsyncSession,
 ) -> Optional[RAGDocument]:
@@ -90,7 +90,7 @@ async def _find_duplicate_document(
         select(RAGDocument).where(
             RAGDocument.content_hash == content_hash,
             RAGDocument.status != DocumentStatus.FAILED.value,
-            document_dedupe_scope(user_id, thread_id, group_id),
+            document_dedupe_scope(user_id, thread_id, group_ids),
         ).limit(1)
     )).scalar_one_or_none()
 
@@ -138,11 +138,11 @@ async def save_uploaded_document(
 
     # Resolve the group BEFORE touching the filesystem: the dedupe scope needs
     # it, and so does the row we may be about to create.
-    group_id = await _resolve_upload_group(user_id, thread_id, db)
+    group_ids = await _resolve_upload_groups(user_id, thread_id, db)
 
     # Deduplicate before anything is written, so a duplicate leaves no trace.
     content_hash = hashlib.sha256(content).hexdigest()
-    existing = await _find_duplicate_document(user_id, thread_id, group_id, content_hash, db)
+    existing = await _find_duplicate_document(user_id, thread_id, group_ids, content_hash, db)
     if existing is not None:
         logger.info(
             "Duplicate upload of %s (sha256 %s...) -> existing document %s",
@@ -178,12 +178,15 @@ async def save_uploaded_document(
     # Save file
     original_path.write_bytes(content)
 
-    # Create DB record (group_id resolved above stamps library uploads for the
-    # lab group; chat attachments keep it None).
+    # Created owner-only. Audience is decided by where the document is FILED --
+    # the caller stamps group_id from the target folder's placement, defaulting
+    # to the group's `common` (utils.folder_seed.default_upload_folder). Stamping
+    # a group here as well would give an unfiled document an audience that
+    # placement_group_id(None) says it does not have.
     document = RAGDocument(
         user_id=user_id,
         thread_id=thread_id,
-        group_id=group_id,
+        group_id=None,
         name=filename,
         file_type=file_type,
         original_path=str(original_path),
@@ -615,8 +618,8 @@ async def index_text_snippet(
     content = text_content.encode("utf-8")
     content_hash = hashlib.sha256(content).hexdigest()
 
-    group_id = await _resolve_upload_group(user_id, thread_id, db)
-    existing = await _find_duplicate_document(user_id, thread_id, group_id, content_hash, db)
+    group_ids = await _resolve_upload_groups(user_id, thread_id, db)
+    existing = await _find_duplicate_document(user_id, thread_id, group_ids, content_hash, db)
     if existing is not None:
         return existing, False
 
@@ -626,10 +629,12 @@ async def index_text_snippet(
     original_path = user_rag_dir / f"{timestamp}_text_{content_hash[:8]}.txt"
     original_path.write_bytes(content)
 
+    # Owner-only on creation, like save_uploaded_document: filing decides the
+    # audience, and the caller stamps it from the folder.
     document = RAGDocument(
         user_id=user_id,
         thread_id=thread_id,
-        group_id=group_id,
+        group_id=None,
         name=(title or "Text snippet")[:255],
         file_type="text",
         original_path=str(original_path),

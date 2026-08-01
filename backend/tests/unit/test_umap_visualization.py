@@ -356,29 +356,23 @@ def test_protein_umap_online_returns_none_silhouette():
 # =============================================================================
 async def test_compute_crop_umap_too_few(mock_db):
     crops = [_item([0.1, 0.2]) for _ in range(3)]  # < MIN_POINTS_FOR_UMAP
-    # First execute() = group lookup, second = crops query.
-    mock_db.execute.side_effect = [
-        make_result(scalar=None),
-        make_result(scalars_all=crops),
-    ]
-    result = await umap_service.compute_crop_umap(user_id=1, db=mock_db)
+    # One execute(): the fit is global, so there is no group to look up first.
+    mock_db.execute.side_effect = [make_result(scalars_all=crops)]
+    result = await umap_service.compute_crop_umap(db=mock_db)
     assert "error" in result
     assert result["count"] == 3
     mock_db.commit.assert_not_awaited()
 
 
-async def test_compute_crop_umap_success_with_group(mock_db):
+async def test_compute_crop_umap_success(mock_db):
     # Labeled crops → also exercise the silhouette success branch (stubbed sklearn).
     crops = [_item([float(i), float(i) + 1], protein_id=(i % 2)) for i in range(12)]
-    mock_db.execute.side_effect = [
-        make_result(scalar=99),  # user is in group 99
-        make_result(scalars_all=crops),
-    ]
+    mock_db.execute.side_effect = [make_result(scalars_all=crops)]
     with patch.object(
         umap_service, "_compute_umap_projection",
         return_value=np.arange(24, dtype=float).reshape(12, 2),
     ), _patch_silhouette(0.55):
-        result = await umap_service.compute_crop_umap(user_id=1, db=mock_db)
+        result = await umap_service.compute_crop_umap(db=mock_db)
     assert result["success"] == 12
     assert result["silhouette_score"] == pytest.approx(0.55)
     assert "computed_at" in result
@@ -388,17 +382,14 @@ async def test_compute_crop_umap_success_with_group(mock_db):
     assert crops[0].umap_computed_at is not None
 
 
-async def test_compute_fov_umap_success_with_group(mock_db):
+async def test_compute_fov_umap_success(mock_db):
     images = [_item([float(i), 0.0]) for i in range(11)]  # no protein labels
-    mock_db.execute.side_effect = [
-        make_result(scalar=88),  # user is in group 88 → group owner condition
-        make_result(scalars_all=images),
-    ]
+    mock_db.execute.side_effect = [make_result(scalars_all=images)]
     with patch.object(
         umap_service, "_compute_umap_projection",
         return_value=np.zeros((11, 2)),
     ):
-        result = await umap_service.compute_fov_umap(user_id=2, db=mock_db)
+        result = await umap_service.compute_fov_umap(db=mock_db)
     assert result["success"] == 11
     # silhouette None (no labels) → still fine
     assert result["silhouette_score"] is None
@@ -407,11 +398,8 @@ async def test_compute_fov_umap_success_with_group(mock_db):
 
 async def test_compute_fov_umap_too_few(mock_db):
     images = [_item([0.0]) for _ in range(2)]
-    mock_db.execute.side_effect = [
-        make_result(scalar=None),
-        make_result(scalars_all=images),
-    ]
-    result = await umap_service.compute_fov_umap(user_id=2, db=mock_db)
+    mock_db.execute.side_effect = [make_result(scalars_all=images)]
+    result = await umap_service.compute_fov_umap(db=mock_db)
     assert "error" in result
     assert result["count"] == 2
 
@@ -430,30 +418,14 @@ def _db_context(db):
     return ctx
 
 
-def test_refresh_scope_key_groups_share_one_key():
-    # Two members of the same group must collapse onto one key, so one
-    # member's dashboard does not schedule a refresh the other duplicates.
+def test_refresh_scope_key_is_one_key_per_projection():
+    # There is one global fit per projection type, so every caller shares a key:
+    # otherwise each visitor's dashboard would schedule a redundant multi-second
+    # fit of the same rows. Types must still never collide.
+    assert umap_service.refresh_scope_key(UmapType.CROPPED) == UmapType.CROPPED.value
     assert (
-        umap_service.refresh_scope_key(UmapType.CROPPED, user_id=1, group_id=2)
-        == umap_service.refresh_scope_key(UmapType.CROPPED, user_id=99, group_id=2)
-    )
-    # Ungrouped users each get their own key, and types never collide.
-    assert (
-        umap_service.refresh_scope_key(UmapType.CROPPED, 1, None)
-        != umap_service.refresh_scope_key(UmapType.CROPPED, 2, None)
-    )
-    assert (
-        umap_service.refresh_scope_key(UmapType.CROPPED, 1, 2)
-        != umap_service.refresh_scope_key(UmapType.FOV, 1, 2)
-    )
-
-
-def test_refresh_scope_key_user_and_group_ids_do_not_collide():
-    # The scope token is prefixed precisely so that group 2 and user 2 — which
-    # share an integer space — cannot land on the same key.
-    assert (
-        umap_service.refresh_scope_key(UmapType.CROPPED, user_id=2, group_id=None)
-        != umap_service.refresh_scope_key(UmapType.CROPPED, user_id=7, group_id=2)
+        umap_service.refresh_scope_key(UmapType.CROPPED)
+        != umap_service.refresh_scope_key(UmapType.FOV)
     )
 
 
@@ -462,10 +434,10 @@ async def test_refresh_umap_scope_crops(mock_db):
          patch.object(umap_service, "compute_crop_umap",
                       new=AsyncMock(return_value={"success": 5})) as ccu, \
          patch.object(umap_service, "compute_fov_umap", new=AsyncMock()) as cfu:
-        await umap_service.refresh_umap_scope(UmapType.CROPPED, user_id=1, group_id=2)
+        await umap_service.refresh_umap_scope(UmapType.CROPPED)
     # Always full-scope: passing an experiment would fit a subset into the
     # shared coordinate space.
-    ccu.assert_awaited_once_with(1, mock_db)
+    ccu.assert_awaited_once_with(mock_db)
     cfu.assert_not_awaited()
     assert not umap_service._inflight_refreshes  # key released
 
@@ -475,27 +447,29 @@ async def test_refresh_umap_scope_images(mock_db):
          patch.object(umap_service, "compute_fov_umap",
                       new=AsyncMock(return_value={"success": 3})) as cfu, \
          patch.object(umap_service, "compute_crop_umap", new=AsyncMock()) as ccu:
-        await umap_service.refresh_umap_scope(UmapType.FOV, user_id=1)
-    cfu.assert_awaited_once_with(1, mock_db)
+        await umap_service.refresh_umap_scope(UmapType.FOV)
+    cfu.assert_awaited_once_with(mock_db)
     ccu.assert_not_awaited()
 
 
-async def test_refresh_umap_scope_error_result_logged(mock_db):
-    # "Too few points" is a normal outcome, not a crash — and not a failure the
-    # read path should report to the user.
+async def test_refresh_umap_scope_records_a_skip_so_reads_stop_rescheduling(mock_db):
+    # "Too few points" is not a crash, but it IS standing: the corpus will not
+    # grow by itself. Clearing the record here let the read path reschedule a
+    # doomed multi-second fit on every poll -- the exact silent loop the failure
+    # map exists to close.
     with patch("database.get_db_context", return_value=_db_context(mock_db)), \
          patch.object(umap_service, "compute_crop_umap",
                       new=AsyncMock(return_value={"error": "too few"})):
-        await umap_service.refresh_umap_scope(UmapType.CROPPED, user_id=1)
+        await umap_service.refresh_umap_scope(UmapType.CROPPED)
     assert not umap_service._inflight_refreshes
-    assert umap_service.get_refresh_error(UmapType.CROPPED, 1, None) is None
+    assert umap_service.get_refresh_error(UmapType.CROPPED) == "too few"
 
 
 async def test_refresh_umap_scope_swallows_exception_and_releases_key():
     # Fire-and-forget background task: a failure must never escape, and must
     # not wedge the guard shut against later refreshes.
     with patch("database.get_db_context", side_effect=RuntimeError("db down")):
-        await umap_service.refresh_umap_scope(UmapType.CROPPED, user_id=1, group_id=2)
+        await umap_service.refresh_umap_scope(UmapType.CROPPED)
     assert not umap_service._inflight_refreshes
 
 
@@ -503,38 +477,35 @@ async def test_refresh_umap_scope_records_failure_for_the_scope():
     # A failed fit must be remembered, so the read path stops rescheduling a
     # doomed multi-second fit on every 5s poll.
     with patch("database.get_db_context", side_effect=RuntimeError("db down")):
-        await umap_service.refresh_umap_scope(UmapType.CROPPED, 1, 2)
+        await umap_service.refresh_umap_scope(UmapType.CROPPED)
 
-    err = umap_service.get_refresh_error(UmapType.CROPPED, 1, 2)
+    err = umap_service.get_refresh_error(UmapType.CROPPED)
     assert err is not None and "db down" in err
-    # Scoped: a different corpus / a different group is unaffected.
-    assert umap_service.get_refresh_error(UmapType.FOV, 1, 2) is None
-    assert umap_service.get_refresh_error(UmapType.CROPPED, 1, 3) is None
-    # Group members share the scope, so they see the same failure.
-    assert umap_service.get_refresh_error(UmapType.CROPPED, 99, 2) == err
+    # Scoped per projection: the other corpus is unaffected.
+    assert umap_service.get_refresh_error(UmapType.FOV) is None
 
 
 async def test_refresh_umap_scope_success_clears_previous_failure(mock_db):
     with patch("database.get_db_context", side_effect=RuntimeError("boom")):
-        await umap_service.refresh_umap_scope(UmapType.CROPPED, 1, 2)
-    assert umap_service.get_refresh_error(UmapType.CROPPED, 1, 2) is not None
+        await umap_service.refresh_umap_scope(UmapType.CROPPED)
+    assert umap_service.get_refresh_error(UmapType.CROPPED) is not None
 
     with patch("database.get_db_context", return_value=_db_context(mock_db)), \
          patch.object(umap_service, "compute_crop_umap",
                       new=AsyncMock(return_value={"success": 5})):
-        await umap_service.refresh_umap_scope(UmapType.CROPPED, 1, 2)
-    assert umap_service.get_refresh_error(UmapType.CROPPED, 1, 2) is None
+        await umap_service.refresh_umap_scope(UmapType.CROPPED)
+    assert umap_service.get_refresh_error(UmapType.CROPPED) is None
 
 
 async def test_clear_refresh_error_allows_retry():
     with patch("database.get_db_context", side_effect=RuntimeError("boom")):
-        await umap_service.refresh_umap_scope(UmapType.CROPPED, 1, 2)
-    assert umap_service.get_refresh_error(UmapType.CROPPED, 1, 2) is not None
+        await umap_service.refresh_umap_scope(UmapType.CROPPED)
+    assert umap_service.get_refresh_error(UmapType.CROPPED) is not None
 
-    umap_service.clear_refresh_error(UmapType.CROPPED, 1, 2)
-    assert umap_service.get_refresh_error(UmapType.CROPPED, 1, 2) is None
-    # Clearing an unknown scope is a no-op, not a KeyError.
-    umap_service.clear_refresh_error(UmapType.FOV, 42, None)
+    umap_service.clear_refresh_error(UmapType.CROPPED)
+    assert umap_service.get_refresh_error(UmapType.CROPPED) is None
+    # Clearing a projection with no recorded failure is a no-op, not a KeyError.
+    umap_service.clear_refresh_error(UmapType.FOV)
 
 
 async def test_refresh_umap_scope_skips_concurrent_duplicate(mock_db):
@@ -543,7 +514,7 @@ async def test_refresh_umap_scope_skips_concurrent_duplicate(mock_db):
     started = asyncio.Event()
     release = asyncio.Event()
 
-    async def _slow_compute(user_id, db):
+    async def _slow_compute(db):
         started.set()
         await release.wait()
         return {"success": 1}
@@ -552,14 +523,14 @@ async def test_refresh_umap_scope_skips_concurrent_duplicate(mock_db):
          patch.object(umap_service, "compute_crop_umap",
                       new=AsyncMock(side_effect=_slow_compute)) as ccu:
         first = asyncio.create_task(
-            umap_service.refresh_umap_scope(UmapType.CROPPED, 1, 2)
+            umap_service.refresh_umap_scope(UmapType.CROPPED)
         )
         await asyncio.wait_for(started.wait(), timeout=5)
-        # Same scope via a different group member -> must be skipped.
+        # A second visitor's dashboard hitting the same projection -> skipped.
         # wait_for: without the guard this call blocks on `release` forever, and
         # a hung test is a far worse signal than a failed one.
         await asyncio.wait_for(
-            umap_service.refresh_umap_scope(UmapType.CROPPED, 99, 2), timeout=5
+            umap_service.refresh_umap_scope(UmapType.CROPPED), timeout=5
         )
         assert ccu.await_count == 1
         release.set()
@@ -572,7 +543,7 @@ async def test_refresh_umap_scope_skips_concurrent_duplicate(mock_db):
     with patch("database.get_db_context", return_value=_db_context(mock_db)), \
          patch.object(umap_service, "compute_crop_umap",
                       new=AsyncMock(return_value={"success": 1})) as ccu2:
-        await umap_service.refresh_umap_scope(UmapType.CROPPED, 1, 2)
+        await umap_service.refresh_umap_scope(UmapType.CROPPED)
     ccu2.assert_awaited_once()
 
 

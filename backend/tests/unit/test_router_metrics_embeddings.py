@@ -6,9 +6,9 @@ background_tasks) as kwargs — no live server, DB, or ML libs. The DB is the
 ``make_result`` (single result) or ``db.execute.side_effect`` (ordered
 multi-query endpoints).
 
-``get_user_group_id`` is imported into each router's namespace, so it is
-patched there (``routers.metrics.get_user_group_id`` /
-``routers.embeddings.get_user_group_id``). ML/UMAP/feature-extraction helpers
+``get_user_group_ids`` is imported into each router's namespace, so it is
+patched there (``routers.metrics.get_user_group_ids`` /
+``routers.embeddings.get_user_group_ids``). ML/UMAP/feature-extraction helpers
 are patched at the boundary where the router imports them.
 """
 import inspect
@@ -38,17 +38,17 @@ def user(uid=1, name="Alice"):
 
 @pytest.fixture
 def no_group():
-    """Patch get_user_group_id in BOTH routers to return None (no group)."""
-    with patch.object(m, "get_user_group_id", new=AsyncMock(return_value=None)), \
-         patch.object(e, "get_user_group_id", new=AsyncMock(return_value=None)):
+    """Patch get_user_group_ids in BOTH routers to return None (no group)."""
+    with patch.object(m, "get_user_group_ids", new=AsyncMock(return_value=[])), \
+         patch.object(e, "get_user_group_ids", new=AsyncMock(return_value=[])):
         yield
 
 
 @pytest.fixture
 def with_group():
-    """Patch get_user_group_id in BOTH routers to return group id 7."""
-    with patch.object(m, "get_user_group_id", new=AsyncMock(return_value=7)), \
-         patch.object(e, "get_user_group_id", new=AsyncMock(return_value=7)):
+    """Patch get_user_group_ids in BOTH routers to return group id 7."""
+    with patch.object(m, "get_user_group_ids", new=AsyncMock(return_value=[7])), \
+         patch.object(e, "get_user_group_ids", new=AsyncMock(return_value=[7])):
         yield
 
 
@@ -882,12 +882,12 @@ async def test_image_file_success(mock_db, no_group):
 
 def test_experiment_owner_filter_no_group():
     # group_id None -> single condition; just ensure it builds without error
-    clause = e.experiment_owner_filter(1, None)
+    clause = e.experiment_owner_filter(1, [])
     assert clause is not None
 
 
 def test_experiment_owner_filter_with_group():
-    clause = e.experiment_owner_filter(1, 7)
+    clause = e.experiment_owner_filter(1, [7])
     assert clause is not None
 
 
@@ -963,7 +963,7 @@ async def test_cropped_umap_no_precomputed_schedules_refresh(mock_db, no_group):
     assert out.total_crops == 5
     assert out.silhouette_score is None
     assert out.is_stale is True
-    bg.add_task.assert_called_once_with(e.refresh_umap_scope, e.UmapType.CROPPED, 1, None)
+    bg.add_task.assert_called_once_with(e.refresh_umap_scope, e.UmapType.CROPPED)
 
 
 async def test_scheduled_refresh_task_actually_runs_and_hits_the_right_corpus(
@@ -997,7 +997,7 @@ async def test_scheduled_refresh_task_actually_runs_and_hits_the_right_corpus(
         await fn(*args)
 
     # Ran the crop refresh — not the FOV one, and not nothing.
-    ccu.assert_awaited_once_with(1, mock_db)
+    ccu.assert_awaited_once_with(mock_db)
     cfu.assert_not_awaited()
 
 
@@ -1025,7 +1025,7 @@ async def test_scheduled_fov_refresh_task_actually_runs_and_hits_the_right_corpu
          patch("services.umap_service.compute_crop_umap", new=AsyncMock()) as ccu:
         await fn(*args)
 
-    cfu.assert_awaited_once_with(1, mock_db)
+    cfu.assert_awaited_once_with(mock_db)
     ccu.assert_not_awaited()
 
 
@@ -1097,7 +1097,7 @@ async def test_cropped_umap_partially_stale_serves_existing_points(mock_db, no_g
     assert out.is_stale is True
     # total_crops is every crop with an embedding, not just the plotted ones.
     assert out.total_crops == 4
-    bg.add_task.assert_called_once_with(e.refresh_umap_scope, e.UmapType.CROPPED, 1, None)
+    bg.add_task.assert_called_once_with(e.refresh_umap_scope, e.UmapType.CROPPED)
 
 
 async def test_cropped_umap_precomputed_with_experiment_filter(mock_db, no_group):
@@ -1174,7 +1174,7 @@ async def test_fov_umap_no_precomputed_schedules_refresh(mock_db, no_group):
     assert out.points == []
     assert out.total_images == 5
     assert out.is_stale is True
-    bg.add_task.assert_called_once_with(e.refresh_umap_scope, e.UmapType.FOV, 1, None)
+    bg.add_task.assert_called_once_with(e.refresh_umap_scope, e.UmapType.FOV)
 
 
 async def test_fov_umap_experiment_filter_empty(mock_db, no_group):
@@ -1217,7 +1217,7 @@ async def test_fov_umap_partially_stale_reports_true_total(mock_db, no_group):
     # total_images is every image with an embedding, not just the plotted ones.
     assert out.total_images == 4
     assert out.is_stale is True
-    bg.add_task.assert_called_once_with(e.refresh_umap_scope, e.UmapType.FOV, 1, None)
+    bg.add_task.assert_called_once_with(e.refresh_umap_scope, e.UmapType.FOV)
 
 
 async def test_fov_umap_precomputed_success(mock_db, no_group):
@@ -1248,7 +1248,7 @@ async def test_trigger_umap_recompute_cropped(mock_db, no_group):
         umap_type=e.UmapType.CROPPED, background_tasks=bg,
         current_user=user(), db=mock_db,
     )
-    bg.add_task.assert_called_once_with(e.refresh_umap_scope, e.UmapType.CROPPED, 1, None)
+    bg.add_task.assert_called_once_with(e.refresh_umap_scope, e.UmapType.CROPPED)
     assert e.UmapType.CROPPED.value in out["message"]
 
 
@@ -1258,19 +1258,20 @@ async def test_trigger_umap_recompute_fov(mock_db, no_group):
         umap_type=e.UmapType.FOV, background_tasks=bg,
         current_user=user(), db=mock_db,
     )
-    bg.add_task.assert_called_once_with(e.refresh_umap_scope, e.UmapType.FOV, 1, None)
+    bg.add_task.assert_called_once_with(e.refresh_umap_scope, e.UmapType.FOV)
     assert "fov" in out["message"]
 
 
-async def test_trigger_umap_recompute_passes_group_scope(mock_db):
-    # Group members share one projection, so the refresh is keyed to the group.
+async def test_trigger_umap_recompute_is_not_keyed_to_the_caller(mock_db):
+    # There is one global projection, so a member's manual recompute schedules
+    # the same refresh as anyone else's -- no user or group in the key.
     bg = MagicMock()
-    with patch.object(e, "get_user_group_id", new=AsyncMock(return_value=7)):
+    with patch.object(e, "get_user_group_ids", new=AsyncMock(return_value=[7])):
         await e.trigger_umap_recomputation(
             umap_type=e.UmapType.CROPPED, background_tasks=bg,
             current_user=user(), db=mock_db,
         )
-    bg.add_task.assert_called_once_with(e.refresh_umap_scope, e.UmapType.CROPPED, 1, 7)
+    bg.add_task.assert_called_once_with(e.refresh_umap_scope, e.UmapType.CROPPED)
 
 
 async def test_trigger_umap_recompute_clears_recorded_failure(mock_db, no_group):
@@ -1282,7 +1283,7 @@ async def test_trigger_umap_recompute_clears_recorded_failure(mock_db, no_group)
             umap_type=e.UmapType.CROPPED, background_tasks=bg,
             current_user=user(), db=mock_db,
         )
-    clear.assert_called_once_with(e.UmapType.CROPPED, 1, None)
+    clear.assert_called_once_with(e.UmapType.CROPPED)
     bg.add_task.assert_called_once()
 
 

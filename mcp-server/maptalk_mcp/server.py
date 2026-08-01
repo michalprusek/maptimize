@@ -139,6 +139,14 @@ SERVER_INSTRUCTIONS = (
     "semantic over page images. Workflow: search_documents (returns matching page "
     "images) → read_document_pages (specific pages) → read_page_region (ZOOM into a "
     "figure/table illegible at full-page scale). find_documents filters by metadata.\n\n"
+    "GROWING the library is your job, not the user's. When the library does not "
+    "already hold what a question needs, go and find it: run your own deep research "
+    "or web search, then index what you found — index_document_from_url takes a link "
+    "and the SERVER downloads it, and import_papers takes DOIs. search_literature "
+    "queries Europe PMC for published work. Never ask the user to download, upload or "
+    "paste a file for you, and never pass file bytes through index_document unless you "
+    "generated the content yourself: a megabyte of base64 costs ~350k tokens, which is "
+    "why the URL and DOI routes exist.\n\n"
     "B) Application control: list/create/update/delete experiments; upload_image then "
     "process_images to run YOLO cell detection; read results with list_cell_crops; "
     "manage the shared reference data — proteins, microscopes and PTMs (microtubule "
@@ -160,7 +168,7 @@ SERVER_INSTRUCTIONS = (
 # Bumped when the tool contract or capabilities change (see MCP versioning).
 # The pinning tests in tests/test_registry.py and tests/test_protocol.py record
 # what THIS version exposes — update them with the bump.
-SERVER_VERSION = "2.6.0"
+SERVER_VERSION = "3.1.0"
 
 
 def build_server(registry: ToolRegistry) -> Server:

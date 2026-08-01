@@ -1241,21 +1241,23 @@ class ApiClient {
   // ============================================================================
 
   /**
-   * List documents. When `inFolder` is set the response is scoped to a single
-   * folder (file-explorer view): pass `folderId` for a specific folder, or omit
-   * it (folderId null/undefined) for the ROOT folder. Without `inFolder` the
-   * flat, folder-agnostic listing is returned (used by search / legacy callers).
+   * List documents. With no scoping options the response covers everything the
+   * user can read, across every group they belong to plus their private folders.
+   * `folderIds` / `groupIds` only ever narrow that — naming a folder or group
+   * you cannot reach yields nothing, never someone else's documents.
    */
   async getRAGDocuments(opts?: {
-    inFolder?: boolean;
-    folderId?: number | null;
+    folderIds?: number[];
+    includeSubfolders?: boolean;
+    groupIds?: number[];
     status?: string;
   }) {
     const params = new URLSearchParams();
     if (opts?.status) params.append("status", opts.status);
-    if (opts?.inFolder) {
-      params.append("in_folder", "true");
-      if (opts.folderId != null) params.append("folder_id", String(opts.folderId));
+    for (const id of opts?.folderIds ?? []) params.append("folder_ids", String(id));
+    for (const id of opts?.groupIds ?? []) params.append("group_ids", String(id));
+    if (opts?.includeSubfolders !== undefined) {
+      params.append("include_subfolders", String(opts.includeSubfolders));
     }
     const qs = params.toString();
     return this.request<RAGDocument[]>(`/api/rag/documents${qs ? `?${qs}` : ""}`);
@@ -1509,8 +1511,9 @@ class ApiClient {
     return res.items;
   }
 
-  async getMyGroup(): Promise<MyGroupResponse> {
-    return this.request<MyGroupResponse>("/api/groups/my");
+  /** Every group the user belongs to, with their role in each. */
+  async getMyGroups(): Promise<MyGroupsResponse> {
+    return this.request<MyGroupsResponse>("/api/groups/my");
   }
 
   async createGroup(data: { name: string; description?: string }): Promise<GroupDetail> {
@@ -1520,10 +1523,46 @@ class ApiClient {
     });
   }
 
-  async joinGroup(groupId: number): Promise<GroupMember> {
-    return this.request<GroupMember>(`/api/groups/${groupId}/join`, {
+  /**
+   * Ask to join a group. This does NOT grant access: a group admin approves it.
+   * Self-service join was removed — it admitted anyone who could name a group id.
+   */
+  async requestGroupJoin(groupId: number, message?: string): Promise<JoinRequest> {
+    return this.request<JoinRequest>(`/api/groups/${groupId}/join-requests`, {
       method: "POST",
+      body: JSON.stringify({ message: message ?? null }),
     });
+  }
+
+  /** The caller's own join requests, in any state. */
+  async listMyJoinRequests(): Promise<JoinRequestList> {
+    return this.request<JoinRequestList>("/api/groups/join-requests/mine");
+  }
+
+  /** A group's pending requests (group admins only). */
+  async listGroupJoinRequests(groupId: number): Promise<JoinRequestList> {
+    return this.request<JoinRequestList>(`/api/groups/${groupId}/join-requests`);
+  }
+
+  async approveJoinRequest(groupId: number, requestId: number): Promise<GroupDetail> {
+    return this.request<GroupDetail>(
+      `/api/groups/${groupId}/join-requests/${requestId}/approve`,
+      { method: "POST" }
+    );
+  }
+
+  async rejectJoinRequest(groupId: number, requestId: number): Promise<void> {
+    return this.request<void>(
+      `/api/groups/${groupId}/join-requests/${requestId}/reject`,
+      { method: "POST" }
+    );
+  }
+
+  async cancelJoinRequest(groupId: number, requestId: number): Promise<void> {
+    return this.request<void>(
+      `/api/groups/${groupId}/join-requests/${requestId}`,
+      { method: "DELETE" }
+    );
   }
 
   async leaveGroup(groupId: number): Promise<void> {
@@ -1627,9 +1666,39 @@ export interface GroupMember {
   joined_at: string;
 }
 
-export interface MyGroupResponse {
-  group: GroupDetail | null;
-  role: string | null;
+export interface MyGroupMembership {
+  group: GroupDetail;
+  role: string;
+}
+
+/**
+ * Every group the user belongs to. A list, not a single group: membership is
+ * many-to-many, so "my group" no longer has a meaning. An empty `items` is the
+ * ungrouped case.
+ */
+export interface MyGroupsResponse {
+  items: MyGroupMembership[];
+}
+
+export type JoinRequestStatus = "pending" | "approved" | "rejected";
+
+export interface JoinRequest {
+  id: number;
+  group_id: number;
+  group_name: string;
+  user_id: number;
+  user_name: string;
+  user_email: string;
+  status: JoinRequestStatus;
+  message: string | null;
+  created_at: string;
+  decided_at: string | null;
+  decided_by_user_id: number | null;
+}
+
+export interface JoinRequestList {
+  items: JoinRequest[];
+  total: number;
 }
 
 export interface MapProtein {
@@ -2501,11 +2570,27 @@ export interface SendMessageResponse {
 export type RAGDocumentStatus = "pending" | "processing" | "completed" | "failed";
 
 /** A library folder. The tree is built client-side from the flat list via parent_id. */
+export type FolderVisibility = "group" | "private";
+export type FolderKind = "root" | "common" | "user" | "custom";
+
 export interface Folder {
   id: number;
   name: string;
   parent_id: number | null;
   created_at: string;
+  /** Which group's tree this sits in. Null = outside any group. */
+  group_id: number | null;
+  group_name: string | null;
+  /**
+   * "group" = every member of group_id sees it; "private" = only its owner, and
+   * that holds against the group's admin and the global admin too.
+   */
+  visibility: FolderVisibility;
+  /** Seeded folders (root/common/user) cannot be renamed, moved or deleted. */
+  kind: FolderKind;
+  owner_user_id: number | null;
+  path: string;
+  document_count: number;
 }
 
 export interface RAGDocument {

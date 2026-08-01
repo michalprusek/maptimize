@@ -26,7 +26,7 @@ instrument was a confounder hurting generalisation across experiments rather tha
 a source of signal.
 """
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import List, Mapping, Optional, Sequence
 
 import numpy as np
@@ -450,13 +450,20 @@ def corpus_fingerprint(rows: Sequence[tuple]) -> str:
     return digest.hexdigest()
 
 
-def scope_key(user_id: int, group_id: Optional[int]) -> str:
-    """Group members share a corpus, so they share a cached projection.
+def scope_key(user_id: int, group_ids: Sequence[int]) -> str:
+    """One cache entry per readable corpus: the caller AND their groups.
 
-    Prefixed because user ids and group ids share this key space: group 2 and
-    user 2 must not collide.
+    It used to key on the group alone, which was sound only while every member of
+    a group read exactly the same rows -- guaranteed by the automatic adoption of
+    a joiner's group-less experiments. That adoption is gone and membership is
+    many-to-many, so neither half of the assumption holds: a member of A+B reads
+    more than a member of A, and sharing one fit between them would report a score
+    measured on a corpus the caller cannot see.
+
+    Both parts are prefixed and the groups sorted, so the key is stable and a user
+    id can never be read as a group id.
     """
-    return f"g{group_id}" if group_id is not None else f"u{user_id}"
+    return f"u{user_id}|g{','.join(str(g) for g in sorted(group_ids))}"
 
 
 def cached(key: str):
@@ -529,11 +536,11 @@ def invalidate(key: Optional[str] = None) -> None:
     _generation[key] = _generation.get(key, 0) + 1
 
 
-async def refresh_discriminant_scope(user_id: int, group_id: Optional[int]) -> None:
+async def refresh_discriminant_scope(user_id: int, group_ids: Sequence[int]) -> None:
     """Compute and cache one scope's projection. Safe to call from a BackgroundTask.
 
-    Deduped through `_inflight`, so a group whose members all open the dashboard
-    at once computes once. Never raises: a background task that throws is
+    Deduped through `_inflight`, so a dashboard polling while the fit runs does
+    not stack up a second one. Never raises: a background task that throws is
     swallowed by the runtime, so the reason is recorded for the next poll to
     report instead of the client spinning forever.
     """
@@ -547,7 +554,7 @@ async def refresh_discriminant_scope(user_id: int, group_id: Optional[int]) -> N
     from models.image import Image, MapProtein
     from utils.groups import experiment_owner_filter
 
-    key = scope_key(user_id, group_id)
+    key = scope_key(user_id, group_ids)
     if key in _inflight:
         return
     _inflight.add(key)
@@ -568,7 +575,7 @@ async def refresh_discriminant_scope(user_id: int, group_id: Optional[int]) -> N
                     .join(Experiment, Image.experiment_id == Experiment.id)
                     .join(MapProtein, CellCrop.map_protein_id == MapProtein.id)
                     .where(
-                        experiment_owner_filter(user_id, group_id),
+                        experiment_owner_filter(user_id, group_ids),
                         CellCrop.embedding.isnot(None),
                         CellCrop.map_protein_id.isnot(None),
                     )
@@ -617,7 +624,7 @@ async def refresh_discriminant_scope(user_id: int, group_id: Optional[int]) -> N
         _inflight.discard(key)
 
 
-async def current_fingerprint(user_id: int, group_id: Optional[int], db) -> str:
+async def current_fingerprint(user_id: int, group_ids: Sequence[int], db) -> str:
     """The corpus identity as it stands now, without loading embeddings.
 
     Compared against the cached fit's fingerprint so a re-annotated batch is
@@ -637,7 +644,7 @@ async def current_fingerprint(user_id: int, group_id: Optional[int], db) -> str:
             .join(Image, CellCrop.image_id == Image.id)
             .join(Experiment, Image.experiment_id == Experiment.id)
             .where(
-                experiment_owner_filter(user_id, group_id),
+                experiment_owner_filter(user_id, group_ids),
                 CellCrop.embedding.isnot(None),
                 CellCrop.map_protein_id.isnot(None),
             )

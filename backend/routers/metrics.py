@@ -35,7 +35,7 @@ from schemas.metric import (
     ExperimentForImport,
 )
 from utils.security import get_current_user
-from utils.groups import experiment_owner_filter, get_user_group_id
+from utils.groups import default_group_id, experiment_owner_filter, get_user_group_ids
 
 router = APIRouter()
 settings = get_settings()
@@ -52,11 +52,11 @@ async def get_metric_for_user(
     user_id: int
 ) -> Metric:
     """Get metric and verify ownership or group membership."""
-    group_id = await get_user_group_id(user_id, db)
+    group_ids = await get_user_group_ids(user_id, db)
 
     conditions = [Metric.user_id == user_id]
-    if group_id is not None:
-        conditions.append(Metric.group_id == group_id)
+    if group_ids:
+        conditions.append(Metric.group_id.in_(group_ids))
 
     result = await db.execute(
         select(Metric)
@@ -210,11 +210,11 @@ async def list_metrics(
     db: AsyncSession = Depends(get_db)
 ):
     """List all metrics for current user (and group metrics)."""
-    group_id = await get_user_group_id(current_user.id, db)
+    group_ids = await get_user_group_ids(current_user.id, db)
 
     conditions = [Metric.user_id == current_user.id]
-    if group_id is not None:
-        conditions.append(Metric.group_id == group_id)
+    if group_ids:
+        conditions.append(Metric.group_id.in_(group_ids))
 
     # Simpler approach: fetch metrics then get counts (avoids complex JOIN ambiguity)
     result = await db.execute(
@@ -246,12 +246,12 @@ async def create_metric(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
-    """Create a new metric. Auto-assigns group_id if user is in a group."""
-    group_id = await get_user_group_id(current_user.id, db)
+    """Create a new metric, shared with the creator's group when they have exactly one."""
+    group_ids = await get_user_group_ids(current_user.id, db)
 
     metric = Metric(
         user_id=current_user.id,
-        group_id=group_id,
+        group_id=default_group_id(group_ids),
         name=data.name,
         description=data.description,
     )
@@ -410,13 +410,13 @@ async def import_crops_to_metric(
         )
 
     # Verify experiments belong to user or their group
-    group_id = await get_user_group_id(current_user.id, db)
+    group_ids = await get_user_group_ids(current_user.id, db)
 
     result = await db.execute(
         select(Experiment.id)
         .where(
             Experiment.id.in_(data.experiment_ids),
-            experiment_owner_filter(current_user.id, group_id),
+            experiment_owner_filter(current_user.id, group_ids),
         )
     )
     valid_ids = set(result.scalars().all())
@@ -481,8 +481,8 @@ async def list_experiments_for_import(
     """List experiments available for importing crops into this metric."""
     metric = await get_metric_for_user(db, metric_id, current_user.id)
 
-    group_id = await get_user_group_id(current_user.id, db)
-    access_filter = experiment_owner_filter(current_user.id, group_id)
+    group_ids = await get_user_group_ids(current_user.id, db)
+    access_filter = experiment_owner_filter(current_user.id, group_ids)
 
     # Get user's (and group's) experiments with image and crop counts
     experiments_query = (

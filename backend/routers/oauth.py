@@ -39,20 +39,51 @@ RESOURCE = f"{ISSUER}/mcp/"
 CODE_TTL_SECONDS = 300
 REFRESH_TTL_DAYS = 30
 
-# Only Claude's own callbacks (and loopback for native apps) may be registered as
-# redirect targets. Open DCR + arbitrary redirect_uris would turn /authorize into
-# a phishing oracle: an attacker registers redirect_uri=attacker.example, phishes
-# a victim to the REAL /authorize, and the issued code is redirected to them.
-ALLOWED_REDIRECT_PREFIXES = [
-    p.strip() for p in os.environ.get(
-        "OAUTH_ALLOWED_REDIRECT_PREFIXES",
-        "https://claude.ai/,https://claude.com/,http://localhost,http://127.0.0.1",
-    ).split(",") if p.strip()
-]
+# Only a known client vendor's callbacks (and loopback for native apps) may be
+# registered as redirect targets. Registration is open -- anyone may POST
+# /oauth/register -- so this list is what stops /authorize becoming a phishing
+# oracle: an attacker who could register redirect_uri=attacker.example would
+# phish a victim to the REAL authorize page (right domain, right TLS, right login
+# form) and collect the issued code.
+#
+# ⚠️ Match on the PARSED HOST, never on a string prefix. Prefix matching cannot
+# read a URL authority correctly, and it fails in two directions:
+#   "http://localhost"          also matches http://localhost.evil.example/steal
+#   "http://localhost:"         also matches http://localhost:x@evil.example/cb
+# The second is the nastier one -- ":" looks like a port separator but opens
+# userinfo, so the real host is evil.example while the string still "starts with
+# localhost". Both were live here. Userinfo is therefore refused outright: there
+# is no legitimate reason for credentials in an OAuth redirect URI, and it is the
+# one way to make an allowed name appear inside a foreign authority.
+#
+# The vendors are interchangeable by design: the connector implements the MCP
+# authorization spec (RFC 9728 discovery + RFC 7591 registration), not anything
+# Anthropic-specific, so admitting another client is a name in this set.
+ALLOWED_REDIRECT_HOSTS = {
+    h.strip().lower() for h in os.environ.get(
+        "OAUTH_ALLOWED_REDIRECT_HOSTS", "claude.ai,claude.com,chatgpt.com",
+    ).split(",") if h.strip()
+}
+
+# Native apps redirect to a loopback listener on an arbitrary port (RFC 8252), so
+# these are matched by host and allowed over plain http -- nothing leaves the
+# machine.
+LOOPBACK_HOSTS = {"localhost", "127.0.0.1", "::1"}
 
 
 def _redirect_allowed(uri: str) -> bool:
-    return isinstance(uri, str) and any(uri.startswith(p) for p in ALLOWED_REDIRECT_PREFIXES)
+    if not isinstance(uri, str) or not uri:
+        return False
+    try:
+        parsed = urlparse(uri)
+    except ValueError:  # malformed IPv6 literal, etc.
+        return False
+    if parsed.username or parsed.password:
+        return False
+    host = (parsed.hostname or "").lower()
+    if host in LOOPBACK_HOSTS:
+        return parsed.scheme == "http"
+    return parsed.scheme == "https" and host in ALLOWED_REDIRECT_HOSTS
 
 
 def _b64url(data: bytes) -> str:
@@ -101,7 +132,8 @@ async def register_client(request: Request, db: AsyncSession = Depends(get_db)):
     if not isinstance(redirect_uris, list) or not redirect_uris:
         raise HTTPException(status_code=400, detail="redirect_uris is required")
     if not all(_redirect_allowed(u) for u in redirect_uris):
-        # Anti-phishing: only Claude's callbacks may be registered.
+        # Anti-phishing: only an allowlisted vendor callback (or loopback) may
+        # be registered -- see ALLOWED_REDIRECT_HOSTS.
         raise HTTPException(status_code=400, detail="redirect_uri is not permitted")
     client_id = "mcp-" + secrets.token_urlsafe(16)
     db.add(OAuthClient(

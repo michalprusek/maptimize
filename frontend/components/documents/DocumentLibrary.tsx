@@ -5,6 +5,13 @@ import { useTranslations } from "next-intl";
 import { useDocumentStore } from "@/stores/documentStore";
 import { ConfirmModal } from "@/components/ui/ConfirmModal";
 import { Dialog } from "@/components/ui/Dialog";
+import {
+  breadcrumbTrail,
+  childFolders,
+  descendantIds,
+  isStructural,
+  totalDocumentCount,
+} from "./folderTree";
 import type { Folder, RAGDocument } from "@/lib/api";
 import {
   Folder as FolderIcon,
@@ -16,6 +23,8 @@ import {
   FileText,
   AlertCircle,
   Trash2,
+  Lock,
+  Users,
   Eye,
   RefreshCw,
   Pencil,
@@ -25,44 +34,6 @@ import {
 import { clsx } from "clsx";
 import { formatDistanceToNow } from "date-fns";
 import { IndexStatusDot, IndexStatusLegend } from "./IndexStatusIndicator";
-
-// ---------------------------------------------------------------------------
-// Folder-tree helpers (the API returns a flat list; we derive structure here)
-// ---------------------------------------------------------------------------
-
-/** Direct child folders of `parentId` (null = root), sorted by name. */
-function childFolders(folders: Folder[], parentId: number | null): Folder[] {
-  return folders
-    .filter((f) => (f.parent_id ?? null) === parentId)
-    .sort((a, b) => a.name.localeCompare(b.name));
-}
-
-/** Path from the root down to (and including) `folderId`. */
-function breadcrumbTrail(folders: Folder[], folderId: number | null): Folder[] {
-  const byId = new Map(folders.map((f) => [f.id, f]));
-  const trail: Folder[] = [];
-  let current = folderId != null ? byId.get(folderId) : undefined;
-  while (current) {
-    trail.unshift(current);
-    current = current.parent_id != null ? byId.get(current.parent_id) : undefined;
-  }
-  return trail;
-}
-
-/** All descendant folder ids of `folderId` (used to block invalid moves). */
-function descendantIds(folders: Folder[], folderId: number): Set<number> {
-  const result = new Set<number>();
-  const walk = (parent: number) => {
-    for (const f of folders) {
-      if ((f.parent_id ?? null) === parent && !result.has(f.id)) {
-        result.add(f.id);
-        walk(f.id);
-      }
-    }
-  };
-  walk(folderId);
-  return result;
-}
 
 // A drag payload / move-target descriptor.
 type ExplorerItem = { type: "folder" | "document"; id: number; name: string };
@@ -516,6 +487,7 @@ export function DocumentLibrary() {
               <FolderCard
                 key={folder.id}
                 folder={folder}
+                documentCount={totalDocumentCount(folders, folder.id)}
                 isDropTarget={dropTarget === folder.id}
                 canDrop={dragItem !== null && canDropOn(folder.id)}
                 onOpen={() => setCurrentFolder(folder.id)}
@@ -722,6 +694,7 @@ function Breadcrumb({
 
 function FolderCard({
   folder,
+  documentCount,
   isDropTarget,
   canDrop,
   onOpen,
@@ -732,6 +705,7 @@ function FolderCard({
   dropProps,
 }: {
   folder: Folder;
+  documentCount: number;
   isDropTarget: boolean;
   canDrop: boolean;
   onOpen: () => void;
@@ -741,8 +715,23 @@ function FolderCard({
   dragProps: Record<string, unknown>;
   dropProps: Record<string, unknown>;
 }) {
+  const tDocs = useTranslations("documents");
   const t = useTranslations("folders");
   const tCommon = useTranslations("common");
+
+  // Who can see this folder, worked out once so the icon and the caption can
+  // never disagree. A group folder with no group name is the library root, which
+  // says nothing rather than claiming to be shared with nobody.
+  let access: { Icon: typeof Lock; className: string; label: string } | null = null;
+  if (folder.visibility === "private") {
+    access = { Icon: Lock, className: "text-text-muted", label: tDocs("privateFolder") };
+  } else if (folder.group_name) {
+    access = {
+      Icon: Users,
+      className: "text-primary-400/70",
+      label: tDocs("sharedFolder", { group: folder.group_name }),
+    };
+  }
 
   return (
     <div
@@ -767,32 +756,55 @@ function FolderCard({
           <FolderIcon className="w-6 h-6 group-hover:hidden" />
           <FolderOpen className="w-6 h-6 hidden group-hover:block" />
         </span>
-        <span className="truncate text-sm font-medium text-text-primary">{folder.name}</span>
+        <span className="min-w-0">
+          <span className="flex items-center gap-1.5">
+            <span className="truncate text-sm font-medium text-text-primary">{folder.name}</span>
+            {access && (
+              <access.Icon
+                className={clsx("w-3 h-3 flex-shrink-0", access.className)}
+                aria-label={access.label}
+              />
+            )}
+          </span>
+          <span className="block text-xs text-text-muted">
+            {[
+              tDocs("folderDocumentCount", { count: documentCount }),
+              access?.label,
+            ]
+              .filter(Boolean)
+              .join(" · ")}
+          </span>
+        </span>
       </button>
 
-      <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
-        <button
-          onClick={onMove}
-          className="p-1.5 rounded-lg text-text-muted hover:text-primary-400 hover:bg-white/10 transition-colors"
-          title={t("moveTo")}
-        >
-          <FolderInput className="w-4 h-4" />
-        </button>
-        <button
-          onClick={onRename}
-          className="p-1.5 rounded-lg text-text-muted hover:text-primary-400 hover:bg-white/10 transition-colors"
-          title={t("rename")}
-        >
-          <Pencil className="w-4 h-4" />
-        </button>
-        <button
-          onClick={onDelete}
-          className="p-1.5 rounded-lg text-text-muted hover:text-rose-400 hover:bg-rose-500/20 transition-colors"
-          title={tCommon("delete")}
-        >
-          <Trash2 className="w-4 h-4" />
-        </button>
-      </div>
+      {/* Structural folders (a group root, its `common`, a member's private
+          folder) are refused by the server, so they do not offer the buttons --
+          the old UI showed them and surfaced a 400 only after the click. */}
+      {!isStructural(folder) && (
+        <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
+          <button
+            onClick={onMove}
+            className="p-1.5 rounded-lg text-text-muted hover:text-primary-400 hover:bg-white/10 transition-colors"
+            title={t("moveTo")}
+          >
+            <FolderInput className="w-4 h-4" />
+          </button>
+          <button
+            onClick={onRename}
+            className="p-1.5 rounded-lg text-text-muted hover:text-primary-400 hover:bg-white/10 transition-colors"
+            title={t("rename")}
+          >
+            <Pencil className="w-4 h-4" />
+          </button>
+          <button
+            onClick={onDelete}
+            className="p-1.5 rounded-lg text-text-muted hover:text-rose-400 hover:bg-rose-500/20 transition-colors"
+            title={tCommon("delete")}
+          >
+            <Trash2 className="w-4 h-4" />
+          </button>
+        </div>
+      )}
     </div>
   );
 }

@@ -536,20 +536,21 @@ def group_obj(gid=1, name="Lab", created_by=1, members=None, creator=_UNSET):
     )
 
 
-def member_obj(mid=1, user_id=1, role="admin", user=_UNSET):
+def member_obj(mid=1, user_id=1, role="admin", user=_UNSET, group_id=1):
     if user is _UNSET:
         user = SimpleNamespace(name="Alice", email="a@b.cz")
     return SimpleNamespace(
-        id=mid, user_id=user_id, role=role, user=user,
+        id=mid, group_id=group_id, user_id=user_id, role=role, user=user,
         joined_at=datetime.now(timezone.utc),
     )
 
 
-async def test_get_user_group_membership(mock_db):
-    m = member_obj()
-    mock_db.execute.return_value = make_result(scalar=m)
-    got = await g.get_user_group_membership(mock_db, user_id=1)
-    assert got is m
+async def test_get_user_memberships_returns_every_row(mock_db):
+    """Membership is many-to-many, so the helper returns a list. The singular
+    lookup it replaced could only ever see one group."""
+    m1, m2 = member_obj(mid=1), member_obj(mid=2, user_id=1)
+    mock_db.execute.return_value = make_result(scalars_all=[m1, m2])
+    assert await g.get_user_memberships(mock_db, user_id=1) == [m1, m2]
 
 
 def test_build_group_response_unknown_creator():
@@ -574,60 +575,40 @@ def test_build_group_detail_response_unknown_user():
 # =============================================================================
 
 
-async def test_create_group_already_in_group_409(mock_db):
-    mock_db.execute.return_value = make_result(scalar=member_obj())
-    payload = g.GroupCreate(name="New", description=None)
-    with pytest.raises(HTTPException) as e:
-        await g.create_group(payload, current_user=fake_user(), db=mock_db)
-    assert e.value.status_code == 409
-
-
 async def test_create_group_success(mock_db):
     created_group = group_obj(members=[member_obj()])
-
-    async def fake_flush():
-        # simulate group.id being populated after flush
-        pass
-
-    mock_db.flush.side_effect = fake_flush
     mock_db.execute.side_effect = [
-        make_result(scalar=None),               # membership check -> none
-        make_result(rowcount=0),                # adopt_orphan_experiments
-        make_result(rowcount=0),                # adopt_orphan_documents
-        result_scalar_one(created_group),       # reload group (scalar_one)
+        make_result(scalars_all=[]),            # ensure_group_folders: no root
+        make_result(scalars_all=[]),            # ensure_group_folders: no common
+        make_result(scalars_all=[]),            # ensure_member_folder: none yet
+        make_result(scalars_all=[SimpleNamespace(id=1)]),   # root (re-found)
+        make_result(scalars_all=[SimpleNamespace(id=2)]),   # common (re-found)
+        make_result(scalar=created_group),      # load_group_detail
     ]
     payload = g.GroupCreate(name="New Lab", description="d")
     resp = await g.create_group(payload, current_user=fake_user(), db=mock_db)
     assert resp.id == created_group.id
     assert resp.name == created_group.name
-    # group + membership added
-    assert mock_db.add.call_count == 2
+    # group + membership + root + common + the creator's private folder
+    assert mock_db.add.call_count == 5
     mock_db.commit.assert_awaited_once()
 
 
-async def test_create_group_adopts_pre_group_experiments(mock_db):
-    # Experiments made before the creator had a group must join it, so every
-    # member's readable corpus is identical — umap_service's group-wide refresh
-    # key depends on that.
+async def test_creating_a_second_group_is_allowed(mock_db):
+    """Being in the lab group must not block founding an institutional one.
+    The old code rejected this with 409."""
     created_group = group_obj(members=[member_obj()])
-    # adopt_orphan_experiments/adopt_orphan_documents are patched below, so they
-    # issue no execute() here.
     mock_db.execute.side_effect = [
-        make_result(scalar=None),               # membership check -> none
-        result_scalar_one(created_group),       # reload group
+        make_result(scalars_all=[SimpleNamespace(id=1)]),   # root exists
+        make_result(scalars_all=[SimpleNamespace(id=2)]),   # common exists
+        make_result(scalars_all=[SimpleNamespace(id=3)]),   # member folder exists
+        make_result(scalar=created_group),
     ]
-    with patch.object(g, "adopt_orphan_experiments",
-                      new=AsyncMock(return_value=4)) as adopt, \
-         patch.object(g, "adopt_orphan_documents",
-                      new=AsyncMock(return_value=2)) as adopt_docs:
-        await g.create_group(
-            g.GroupCreate(name="New Lab", description="d"),
-            current_user=fake_user(), db=mock_db,
-        )
-    adopt.assert_awaited_once()
-    adopt_docs.assert_awaited_once()
-    # Adopted before the commit, or the UPDATE would be lost.
-    assert mock_db.commit.await_count == 1
+    resp = await g.create_group(
+        g.GroupCreate(name="UTIA ZOI", description="d"),
+        current_user=fake_user(), db=mock_db,
+    )
+    assert resp.name == created_group.name
 
 
 # =============================================================================
@@ -648,41 +629,37 @@ async def test_list_groups(mock_db):
 
 
 # =============================================================================
-# groups.get_my_group
+# groups.get_my_groups
 # =============================================================================
 
 
-async def test_get_my_group_no_membership(mock_db):
-    mock_db.execute.return_value = make_result(scalar=None)
-    resp = await g.get_my_group(current_user=fake_user(), db=mock_db)
-    assert resp.group is None
-    assert resp.role is None
+async def test_get_my_groups_when_ungrouped(mock_db):
+    mock_db.execute.return_value = make_result(scalars_all=[])
+    resp = await g.get_my_groups(current_user=fake_user(), db=mock_db)
+    assert resp.items == []
 
 
-async def test_get_my_group_membership_but_group_gone(mock_db):
-    m = member_obj(role="member")
-    m.group_id = 1
+async def test_get_my_groups_skips_a_membership_whose_group_vanished(mock_db):
+    """A dangling membership must not 500 the whole listing -- the user's other
+    groups are still perfectly renderable."""
     mock_db.execute.side_effect = [
-        make_result(scalar=m),       # membership
-        make_result(scalar=None),    # group reload -> None
+        make_result(scalars_all=[member_obj(mid=1, group_id=1), member_obj(mid=2, group_id=2)]),
+        make_result(scalar=None),                       # group 1 gone
+        make_result(scalar=group_obj(gid=2, name="B")),  # group 2 fine
     ]
-    resp = await g.get_my_group(current_user=fake_user(), db=mock_db)
-    assert resp.group is None
-    assert resp.role is None
+    resp = await g.get_my_groups(current_user=fake_user(), db=mock_db)
+    assert [item.group.name for item in resp.items] == ["B"]
 
 
-async def test_get_my_group_success(mock_db):
-    m = member_obj(role="member")
-    m.group_id = 1
-    grp = group_obj(gid=1, members=[m])
+async def test_get_my_groups_returns_the_role_in_each(mock_db):
     mock_db.execute.side_effect = [
-        make_result(scalar=m),       # membership
-        make_result(scalar=grp),     # group reload
+        make_result(scalars_all=[member_obj(role="admin", group_id=1),
+                                 member_obj(mid=2, role="member", group_id=2)]),
+        make_result(scalar=group_obj(gid=1, name="A")),
+        make_result(scalar=group_obj(gid=2, name="B")),
     ]
-    resp = await g.get_my_group(current_user=fake_user(), db=mock_db)
-    assert resp.group is not None
-    assert resp.group.id == 1
-    assert resp.role == "member"
+    resp = await g.get_my_groups(current_user=fake_user(), db=mock_db)
+    assert [(i.group.name, i.role) for i in resp.items] == [("A", "admin"), ("B", "member")]
 
 
 # =============================================================================
@@ -693,177 +670,109 @@ async def test_get_my_group_success(mock_db):
 async def test_get_group_not_found_404(mock_db):
     mock_db.execute.return_value = make_result(scalar=None)
     with pytest.raises(HTTPException) as e:
-        await g.get_group(group_id=1, current_user=fake_user(), db=mock_db)
+        await g.get_group(group_id=99, current_user=fake_user(), db=mock_db)
     assert e.value.status_code == 404
 
 
 async def test_get_group_success(mock_db):
-    grp = group_obj(gid=1, members=[member_obj()])
+    grp = group_obj(members=[member_obj()])
     mock_db.execute.return_value = make_result(scalar=grp)
     resp = await g.get_group(group_id=1, current_user=fake_user(), db=mock_db)
-    assert resp.id == 1
+    assert resp.id == grp.id
     assert len(resp.members) == 1
 
 
 # =============================================================================
-# groups.update_group
+# groups.update_group / delete_group -- authorization is the role, not the founder
 # =============================================================================
 
 
 async def test_update_group_not_found_404(mock_db):
     mock_db.execute.return_value = make_result(scalar=None)
-    payload = g.GroupUpdate(name="X")
     with pytest.raises(HTTPException) as e:
-        await g.update_group(group_id=1, data=payload,
+        await g.update_group(group_id=99, data=g.GroupUpdate(name="x"),
                              current_user=fake_user(), db=mock_db)
     assert e.value.status_code == 404
 
 
-async def test_update_group_not_creator_403(mock_db):
-    grp = group_obj(gid=1, created_by=999)  # owned by someone else
-    mock_db.execute.return_value = make_result(scalar=grp)
-    payload = g.GroupUpdate(name="X")
+async def test_update_group_plain_member_403(mock_db):
+    """The founder used to be the only administrator; now it is anyone holding
+    the admin role -- and a plain member still cannot."""
+    mock_db.execute.side_effect = [
+        make_result(scalar=group_obj(gid=1, created_by=1)),
+        make_result(scalar="member"),   # role lookup
+    ]
     with pytest.raises(HTTPException) as e:
-        await g.update_group(group_id=1, data=payload,
-                             current_user=fake_user(uid=1), db=mock_db)
+        await g.update_group(group_id=1, data=g.GroupUpdate(name="x"),
+                             current_user=fake_user(uid=2), db=mock_db)
     assert e.value.status_code == 403
 
 
-async def test_update_group_success(mock_db):
+async def test_update_group_by_a_non_founder_admin_succeeds(mock_db):
     grp = group_obj(gid=1, created_by=1, members=[member_obj()])
-    reloaded = group_obj(gid=1, created_by=1, name="Renamed",
-                         members=[member_obj()])
     mock_db.execute.side_effect = [
-        make_result(scalar=grp),          # find group
-        result_scalar_one(reloaded),      # reload group (scalar_one)
+        make_result(scalar=grp),
+        make_result(scalar="admin"),                       # role lookup
+        make_result(scalars_all=[SimpleNamespace(name="Lab")]),  # root folder
+        make_result(scalar=grp),                           # reload
     ]
-    payload = g.GroupUpdate(name="Renamed", description="newdesc")
-    resp = await g.update_group(group_id=1, data=payload,
-                                current_user=fake_user(uid=1), db=mock_db)
-    # name/description applied on the original object
+    resp = await g.update_group(group_id=1, data=g.GroupUpdate(name="Renamed"),
+                                current_user=fake_user(uid=2), db=mock_db)
     assert grp.name == "Renamed"
-    assert grp.description == "newdesc"
-    assert resp.name == "Renamed"
+    assert resp.id == grp.id
     mock_db.commit.assert_awaited_once()
 
 
-async def test_update_group_partial_no_fields(mock_db):
-    # name and description both None -> no mutation, still reloads
-    grp = group_obj(gid=1, created_by=1, name="Keep")
-    reloaded = group_obj(gid=1, created_by=1, name="Keep")
+async def test_renaming_a_group_renames_its_root_folder(mock_db):
+    """Otherwise members navigate a tree still labelled with the old name."""
+    grp = group_obj(gid=1, created_by=1)
+    root = SimpleNamespace(name="Lab")
     mock_db.execute.side_effect = [
         make_result(scalar=grp),
-        result_scalar_one(reloaded),
+        make_result(scalar="admin"),
+        make_result(scalars_all=[root]),
+        make_result(scalar=grp),
     ]
-    payload = g.GroupUpdate(name=None, description=None)
-    resp = await g.update_group(group_id=1, data=payload,
-                                current_user=fake_user(uid=1), db=mock_db)
-    assert grp.name == "Keep"
-    assert resp.name == "Keep"
+    await g.update_group(group_id=1, data=g.GroupUpdate(name="Renamed"),
+                         current_user=fake_user(uid=1), db=mock_db)
+    assert root.name == "Renamed"
 
 
-# =============================================================================
-# groups.delete_group
-# =============================================================================
-
-
-async def test_delete_group_not_found_404(mock_db):
-    mock_db.execute.return_value = make_result(scalar=None)
+async def test_delete_group_plain_member_403(mock_db):
+    mock_db.execute.side_effect = [
+        make_result(scalar=group_obj(gid=1, created_by=1)),
+        make_result(scalar="member"),
+    ]
     with pytest.raises(HTTPException) as e:
-        await g.delete_group(group_id=1, current_user=fake_user(), db=mock_db)
-    assert e.value.status_code == 404
-
-
-async def test_delete_group_not_creator_403(mock_db):
-    grp = group_obj(gid=1, created_by=999)
-    mock_db.execute.return_value = make_result(scalar=grp)
-    with pytest.raises(HTTPException) as e:
-        await g.delete_group(group_id=1, current_user=fake_user(uid=1),
-                             db=mock_db)
+        await g.delete_group(group_id=1, current_user=fake_user(uid=2), db=mock_db)
     assert e.value.status_code == 403
 
 
 async def test_delete_group_success(mock_db):
     grp = group_obj(gid=1, created_by=1)
-    mock_db.execute.return_value = make_result(scalar=grp)
+    mock_db.execute.side_effect = [
+        make_result(scalar=grp),
+        make_result(scalar="admin"),
+        make_result(scalars_all=[]),   # dissolve_group_folders: nothing to free
+    ]
     await g.delete_group(group_id=1, current_user=fake_user(uid=1), db=mock_db)
     mock_db.delete.assert_awaited_once_with(grp)
     mock_db.commit.assert_awaited_once()
 
 
-# =============================================================================
-# groups.join_group
-# =============================================================================
+async def test_deleting_a_group_frees_its_seeded_folders_first(mock_db):
+    """They outlive the group (group_id is ON DELETE SET NULL) and would then be
+    un-editable forever, guarded by a structure that no longer exists."""
+    from unittest.mock import AsyncMock as _AsyncMock
 
-
-async def test_join_group_already_in_group_409(mock_db):
-    mock_db.execute.return_value = make_result(scalar=member_obj())
-    with pytest.raises(HTTPException) as e:
-        await g.join_group(group_id=1, current_user=fake_user(), db=mock_db)
-    assert e.value.status_code == 409
-
-
-async def test_join_group_group_not_found_404(mock_db):
+    grp = group_obj(gid=1, created_by=1)
     mock_db.execute.side_effect = [
-        make_result(scalar=None),   # membership check -> none
-        make_result(scalar=None),   # group lookup -> none
+        make_result(scalar=grp),
+        make_result(scalar="admin"),
     ]
-    with pytest.raises(HTTPException) as e:
-        await g.join_group(group_id=1, current_user=fake_user(), db=mock_db)
-    assert e.value.status_code == 404
-
-
-async def test_join_group_success(mock_db):
-    grp = group_obj(gid=1, members=[member_obj(user_id=2, role="member")])
-    mock_db.execute.side_effect = [
-        make_result(scalar=None),   # membership check
-        make_result(scalar=grp),    # group lookup
-        make_result(rowcount=0),    # adopt_orphan_experiments
-        make_result(rowcount=0),    # adopt_orphan_documents
-        result_scalar_one(grp),     # reload group (scalar_one)
-    ]
-    resp = await g.join_group(group_id=1, current_user=fake_user(uid=2),
-                              db=mock_db)
-    assert resp.id == 1
-    mock_db.add.assert_called_once()
-    mock_db.commit.assert_awaited_once()
-
-
-async def test_join_group_adopts_pre_group_experiments(mock_db):
-    # A user who created experiments before joining brings them into the group,
-    # keeping every member's corpus identical (see refresh_scope_key).
-    grp = group_obj(gid=1, members=[member_obj(user_id=2, role="member")])
-    # adopt_orphan_experiments/adopt_orphan_documents are patched below, so they
-    # issue no execute() here.
-    mock_db.execute.side_effect = [
-        make_result(scalar=None),   # membership check
-        make_result(scalar=grp),    # group lookup
-        result_scalar_one(grp),     # reload group
-    ]
-    with patch.object(g, "adopt_orphan_experiments",
-                      new=AsyncMock(return_value=2)) as adopt, \
-         patch.object(g, "adopt_orphan_documents",
-                      new=AsyncMock(return_value=1)) as adopt_docs:
-        await g.join_group(group_id=1, current_user=fake_user(uid=2), db=mock_db)
-    adopt.assert_awaited_once_with(mock_db, 2, 1)
-    adopt_docs.assert_awaited_once_with(mock_db, 2, 1)
-    assert mock_db.commit.await_count == 1
-
-
-async def test_join_group_integrity_error_409(mock_db):
-    grp = group_obj(gid=1)
-    mock_db.execute.side_effect = [
-        make_result(scalar=None),   # membership check
-        make_result(scalar=grp),    # group lookup
-        make_result(rowcount=0),    # adopt_orphan_experiments
-        make_result(rowcount=0),    # adopt_orphan_documents
-    ]
-    mock_db.commit.side_effect = g.IntegrityError("x", "y", "z")
-    with pytest.raises(HTTPException) as e:
-        await g.join_group(group_id=1, current_user=fake_user(uid=2),
-                           db=mock_db)
-    assert e.value.status_code == 409
-    mock_db.rollback.assert_awaited_once()
+    with patch.object(g, "dissolve_group_folders", _AsyncMock(return_value=3)) as free:
+        await g.delete_group(group_id=1, current_user=fake_user(uid=1), db=mock_db)
+    free.assert_awaited_once_with(mock_db, 1)
 
 
 # =============================================================================
@@ -879,55 +788,63 @@ async def test_leave_group_not_member_404(mock_db):
 
 
 async def test_leave_group_regular_member(mock_db):
-    membership = member_obj(user_id=2, role="member")
-    grp = group_obj(gid=1, created_by=1)  # current user (2) is not creator
+    membership = member_obj(user_id=1, role="member")
     mock_db.execute.side_effect = [
-        make_result(scalar=membership),   # membership lookup
-        make_result(scalar=grp),          # group lookup
-    ]
-    await g.leave_group(group_id=1, current_user=fake_user(uid=2), db=mock_db)
-    mock_db.delete.assert_awaited_once_with(membership)
-    mock_db.commit.assert_awaited_once()
-
-
-async def test_leave_group_creator_transfers_ownership(mock_db):
-    membership = member_obj(user_id=1, role="admin")
-    grp = group_obj(gid=1, created_by=1)
-    other = member_obj(mid=2, user_id=5, role="member")
-    mock_db.execute.side_effect = [
-        make_result(scalar=membership),   # membership lookup
-        make_result(scalar=grp),          # group lookup (creator == user)
-        make_result(scalar=other),        # other member found
+        make_result(scalar=membership),                 # my membership
+        make_result(scalar=group_obj(gid=1, created_by=2)),
+        make_result(scalars_all=[]),                    # detach: no private folder
     ]
     await g.leave_group(group_id=1, current_user=fake_user(uid=1), db=mock_db)
-    assert grp.created_by_user_id == 5
-    assert other.role == "admin"
     mock_db.delete.assert_awaited_once_with(membership)
 
 
-async def test_leave_group_creator_last_member_deletes_group(mock_db):
+async def test_the_last_admin_leaving_promotes_someone(mock_db):
+    """A group with no admin can never approve a request or remove a member
+    again -- it would be permanently frozen."""
     membership = member_obj(user_id=1, role="admin")
+    successor = member_obj(mid=2, user_id=5, role="member")
     grp = group_obj(gid=1, created_by=1)
-    mock_db.execute.side_effect = [
-        make_result(scalar=membership),   # membership lookup
-        make_result(scalar=grp),          # group lookup
-        make_result(scalar=None),         # no other member
-    ]
-    await g.leave_group(group_id=1, current_user=fake_user(uid=1), db=mock_db)
-    # group deleted, returns early before deleting membership
-    mock_db.delete.assert_awaited_once_with(grp)
-    mock_db.commit.assert_awaited_once()
-
-
-async def test_leave_group_group_lookup_none(mock_db):
-    # membership exists but group lookup returns None (edge) -> just delete member
-    membership = member_obj(user_id=2, role="member")
     mock_db.execute.side_effect = [
         make_result(scalar=membership),
-        make_result(scalar=None),   # group not found
+        make_result(scalar=grp),
+        make_result(scalars_all=[successor]),   # the other members
+        make_result(scalars_all=[]),            # detach
     ]
-    await g.leave_group(group_id=1, current_user=fake_user(uid=2), db=mock_db)
-    mock_db.delete.assert_awaited_once_with(membership)
+    await g.leave_group(group_id=1, current_user=fake_user(uid=1), db=mock_db)
+    assert successor.role == "admin"
+    assert grp.created_by_user_id == 5
+
+
+async def test_an_admin_leaving_a_group_that_still_has_one_promotes_nobody(mock_db):
+    membership = member_obj(user_id=1, role="admin")
+    other_admin = member_obj(mid=2, user_id=5, role="admin")
+    plain = member_obj(mid=3, user_id=6, role="member")
+    grp = group_obj(gid=1, created_by=1)
+    mock_db.execute.side_effect = [
+        make_result(scalar=membership),
+        make_result(scalar=grp),
+        make_result(scalars_all=[other_admin, plain]),
+        make_result(scalars_all=[]),
+    ]
+    await g.leave_group(group_id=1, current_user=fake_user(uid=1), db=mock_db)
+    assert plain.role == "member"
+    assert grp.created_by_user_id == 1
+
+
+async def test_leave_group_last_member_deletes_group(mock_db):
+    """This branch returns early, so it must do its own folder cleanup -- and
+    remove the membership, which the shared path below would otherwise do."""
+    membership = member_obj(user_id=1, role="admin")
+    grp = group_obj(gid=1, created_by=1)
+    mock_db.execute.side_effect = [
+        make_result(scalar=membership),
+        make_result(scalar=grp),
+        make_result(scalars_all=[]),   # nobody else
+        make_result(scalars_all=[]),   # dissolve_group_folders
+    ]
+    await g.leave_group(group_id=1, current_user=fake_user(uid=1), db=mock_db)
+    deleted = [c.args[0] for c in mock_db.delete.await_args_list]
+    assert grp in deleted and membership in deleted
 
 
 # =============================================================================
@@ -938,49 +855,49 @@ async def test_leave_group_group_lookup_none(mock_db):
 async def test_kick_member_group_not_found_404(mock_db):
     mock_db.execute.return_value = make_result(scalar=None)
     with pytest.raises(HTTPException) as e:
-        await g.kick_member(group_id=1, user_id=2, current_user=fake_user(),
-                            db=mock_db)
+        await g.kick_member(group_id=99, user_id=2, current_user=fake_user(), db=mock_db)
     assert e.value.status_code == 404
 
 
-async def test_kick_member_not_creator_403(mock_db):
-    grp = group_obj(gid=1, created_by=999)
-    mock_db.execute.return_value = make_result(scalar=grp)
+async def test_kick_member_plain_member_403(mock_db):
+    mock_db.execute.side_effect = [
+        make_result(scalar=group_obj(gid=1, created_by=1)),
+        make_result(scalar="member"),
+    ]
     with pytest.raises(HTTPException) as e:
-        await g.kick_member(group_id=1, user_id=2, current_user=fake_user(uid=1),
-                            db=mock_db)
+        await g.kick_member(group_id=1, user_id=2, current_user=fake_user(uid=2), db=mock_db)
     assert e.value.status_code == 403
 
 
 async def test_kick_member_self_400(mock_db):
-    grp = group_obj(gid=1, created_by=1)
-    mock_db.execute.return_value = make_result(scalar=grp)
+    mock_db.execute.side_effect = [
+        make_result(scalar=group_obj(gid=1, created_by=1)),
+        make_result(scalar="admin"),
+    ]
     with pytest.raises(HTTPException) as e:
-        await g.kick_member(group_id=1, user_id=1, current_user=fake_user(uid=1),
-                            db=mock_db)
+        await g.kick_member(group_id=1, user_id=1, current_user=fake_user(uid=1), db=mock_db)
     assert e.value.status_code == 400
 
 
 async def test_kick_member_not_member_404(mock_db):
-    grp = group_obj(gid=1, created_by=1)
     mock_db.execute.side_effect = [
-        make_result(scalar=grp),     # group lookup
-        make_result(scalar=None),    # membership lookup -> none
+        make_result(scalar=group_obj(gid=1, created_by=1)),
+        make_result(scalar="admin"),
+        make_result(scalar=None),      # no such membership
     ]
     with pytest.raises(HTTPException) as e:
-        await g.kick_member(group_id=1, user_id=2, current_user=fake_user(uid=1),
-                            db=mock_db)
+        await g.kick_member(group_id=1, user_id=2, current_user=fake_user(uid=1), db=mock_db)
     assert e.value.status_code == 404
 
 
 async def test_kick_member_success(mock_db):
-    grp = group_obj(gid=1, created_by=1)
     membership = member_obj(user_id=2, role="member")
     mock_db.execute.side_effect = [
-        make_result(scalar=grp),
+        make_result(scalar=group_obj(gid=1, created_by=1)),
+        make_result(scalar="admin"),
         make_result(scalar=membership),
+        make_result(scalars_all=[]),   # detach: no private folder
     ]
-    await g.kick_member(group_id=1, user_id=2, current_user=fake_user(uid=1),
-                        db=mock_db)
+    await g.kick_member(group_id=1, user_id=2, current_user=fake_user(uid=1), db=mock_db)
     mock_db.delete.assert_awaited_once_with(membership)
     mock_db.commit.assert_awaited_once()

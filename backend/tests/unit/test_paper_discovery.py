@@ -1010,7 +1010,7 @@ async def test_discover_endpoint_marks_already_imported_papers(monkeypatch, mock
     monkeypatch.setattr(rag_router, "discover_papers", AsyncMock(return_value=pds.DiscoveryResult(
         papers=[new_paper, old_paper], failed_queries=0, dropped_queries=0,
     )))
-    monkeypatch.setattr(rag_router, "get_user_group_id", AsyncMock(return_value=7))
+    monkeypatch.setattr(rag_router, "get_user_group_ids", AsyncMock(return_value=[7]))
     # The library already holds the lowercase DOI of `old_paper` -> the match
     # must be case-insensitive.
     mock_db.execute.return_value = make_result(scalars_all=["10.1/old"])
@@ -1058,7 +1058,7 @@ async def test_discover_endpoint_skips_dedupe_lookup_when_no_dois(monkeypatch, m
         papers=[paper], failed_queries=0, dropped_queries=0,
     )))
     get_group = AsyncMock(return_value=7)
-    monkeypatch.setattr(rag_router, "get_user_group_id", get_group)
+    monkeypatch.setattr(rag_router, "get_user_group_ids", get_group)
 
     out = await rag_router.discover_sources(
         payload=rag_router.DiscoverRequest(query="x"),
@@ -1336,7 +1336,7 @@ async def test_import_discovered_skips_papers_already_in_library(monkeypatch, mo
     # as skipped WITHOUT ever being fetched -- avoids duplicate documents from
     # a re-click, a retried 504, or two lab members importing the same paper.
     monkeypatch.setattr(rag_router, "_check_discovery_rate_limit", AsyncMock())
-    monkeypatch.setattr(rag_router, "get_user_group_id", AsyncMock(return_value=None))
+    monkeypatch.setattr(rag_router, "get_user_group_ids", AsyncMock(return_value=[]))
     # DB reports the DOI already in the library, in a different case.
     mock_db.execute.return_value = make_result(scalars_all=["10.1186/S43897-026-00231-0"])
     resolve = AsyncMock()
@@ -2061,7 +2061,7 @@ async def test_discover_marks_a_paper_without_pdf_candidates_as_not_importable(m
         return_value=pds.DiscoveryResult(
             papers=[paywalled, open_access], failed_queries=0, dropped_queries=0)))
     monkeypatch.setattr(rag_router, "_check_discovery_rate_limit", AsyncMock())
-    monkeypatch.setattr(rag_router, "get_user_group_id", AsyncMock(return_value=None))
+    monkeypatch.setattr(rag_router, "get_user_group_ids", AsyncMock(return_value=[]))
 
     db = AsyncMock()
     db.execute.return_value = make_result(scalars_all=[])

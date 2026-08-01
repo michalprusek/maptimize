@@ -41,7 +41,7 @@ from services.umap_service import (
     refresh_umap_scope,
 )
 from utils.security import get_current_user
-from utils.groups import experiment_owner_filter, get_user_group_id
+from utils.groups import experiment_owner_filter, get_user_group_ids
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -136,18 +136,18 @@ async def get_umap_visualization(
     await _verify_reference_ids(db, MapProtein, selection.protein_ids, "MAP protein")
     await _verify_reference_ids(db, PTM, selection.ptm_ids, "PTM")
 
-    group_id = await get_user_group_id(current_user.id, db)
+    group_ids = await get_user_group_ids(current_user.id, db)
     if selection.experiment_ids:
         await _verify_experiments_visible(
-            selection.experiment_ids, current_user.id, group_id, db
+            selection.experiment_ids, current_user.id, group_ids, db
         )
 
     if umap_type is UmapType.FOV:
         return await _get_fov_umap(
-            selection, current_user, group_id, background_tasks, db
+            selection, current_user, group_ids, background_tasks, db
         )
     return await _get_cropped_umap(
-        selection, current_user, group_id, background_tasks, db
+        selection, current_user, group_ids, background_tasks, db
     )
 
 
@@ -184,14 +184,14 @@ async def get_discriminant_visualization(
     await _verify_reference_ids(db, MapProtein, selection.protein_ids, "MAP protein")
     await _verify_reference_ids(db, PTM, selection.ptm_ids, "PTM")
 
-    group_id = await get_user_group_id(current_user.id, db)
+    group_ids = await get_user_group_ids(current_user.id, db)
     if selection.experiment_ids:
         await _verify_experiments_visible(
-            selection.experiment_ids, current_user.id, group_id, db
+            selection.experiment_ids, current_user.id, group_ids, db
         )
 
-    facets = await _load_facets(UmapType.CROPPED, current_user.id, group_id, db)
-    key = discriminant_service.scope_key(current_user.id, group_id)
+    facets = await _load_facets(UmapType.CROPPED, current_user.id, group_ids, db)
+    key = discriminant_service.scope_key(current_user.id, group_ids)
     cached = discriminant_service.cached(key)
 
     if cached is None:
@@ -199,14 +199,14 @@ async def get_discriminant_visualization(
         # since fixed exactly what it was told to fix, retire the message rather
         # than serving it forever.
         discriminant_service.clear_failure_if_corpus_moved(
-            key, await discriminant_service.current_fingerprint(current_user.id, group_id, db)
+            key, await discriminant_service.current_fingerprint(current_user.id, group_ids, db)
         )
         error = discriminant_service.compute_error(key)
         if error is None and not discriminant_service.is_computing(key):
             background_tasks.add_task(
                 discriminant_service.refresh_discriminant_scope,
                 current_user.id,
-                group_id,
+                group_ids,
             )
         return DiscriminantDataResponse(
             points=[],
@@ -227,11 +227,11 @@ async def get_discriminant_visualization(
     # longer exist. Say so, and schedule the refit that the code used to claim
     # would happen by itself.
     is_stale = result.fingerprint != await discriminant_service.current_fingerprint(
-        current_user.id, group_id, db
+        current_user.id, group_ids, db
     )
     if is_stale and not discriminant_service.is_computing(key):
         background_tasks.add_task(
-            discriminant_service.refresh_discriminant_scope, current_user.id, group_id
+            discriminant_service.refresh_discriminant_scope, current_user.id, group_ids
         )
 
     metrics = DiscriminantMetrics(
@@ -265,7 +265,7 @@ async def get_discriminant_visualization(
         .join(Experiment, Image.experiment_id == Experiment.id)
         .options(selectinload(CellCrop.map_protein), selectinload(CellCrop.image))
         .where(
-            experiment_owner_filter(current_user.id, group_id),
+            experiment_owner_filter(current_user.id, group_ids),
             CellCrop.embedding.isnot(None),
             CellCrop.map_protein_id.isnot(None),
         )
@@ -314,11 +314,11 @@ async def trigger_discriminant_recomputation(
     db: AsyncSession = Depends(get_db),
 ):
     """Refit this scope's projection, clearing any recorded failure."""
-    group_id = await get_user_group_id(current_user.id, db)
-    key = discriminant_service.scope_key(current_user.id, group_id)
+    group_ids = await get_user_group_ids(current_user.id, db)
+    key = discriminant_service.scope_key(current_user.id, group_ids)
     discriminant_service.invalidate(key)
     background_tasks.add_task(
-        discriminant_service.refresh_discriminant_scope, current_user.id, group_id
+        discriminant_service.refresh_discriminant_scope, current_user.id, group_ids
     )
     return {"message": "Discriminant projection scheduled"}
 
@@ -326,8 +326,6 @@ async def trigger_discriminant_recomputation(
 def _take_precomputed(
     items: list[T],
     umap_type: UmapType,
-    user_id: int,
-    group_id: Optional[int],
     background_tasks: BackgroundTasks,
 ) -> tuple[list[T], bool, Optional[str]]:
     """
@@ -338,9 +336,12 @@ def _take_precomputed(
     the fit runs after the response is sent, and the client polls until is_stale
     clears. Never fit on the read path — that stalls page load for seconds.
 
-    A scope whose last refresh failed is NOT rescheduled; its error is returned so
-    the client can stop polling and show it. Otherwise each poll would kick off
-    another doomed multi-second fit, forever, in silence.
+    Takes no caller identity: the projection is global (one fit per type over
+    every row), so who is reading decides what comes back, never what is fitted.
+
+    A projection whose last refresh failed is NOT rescheduled; its error is
+    returned so the client can stop polling and show it. Otherwise each poll would
+    kick off another doomed multi-second fit, forever, in silence.
 
     Returns (items with coordinates, is_stale, refresh_error).
     """
@@ -350,7 +351,7 @@ def _take_precomputed(
     if stale_count == 0:
         return with_umap, False, None
 
-    refresh_error = get_refresh_error(umap_type, user_id, group_id)
+    refresh_error = get_refresh_error(umap_type)
     if refresh_error is not None:
         logger.warning(
             f"{stale_count}/{len(items)} {umap_type.item_word} missing UMAP "
@@ -363,7 +364,7 @@ def _take_precomputed(
         f"{stale_count}/{len(items)} {umap_type.item_word} missing UMAP "
         f"coordinates - scheduling background refresh"
     )
-    background_tasks.add_task(refresh_umap_scope, umap_type, user_id, group_id)
+    background_tasks.add_task(refresh_umap_scope, umap_type)
     return with_umap, True, None
 
 
@@ -401,14 +402,14 @@ async def _verify_experiment_ownership(
     The single-id entry point, for endpoints that scope to one experiment rather
     than filter across many.
     """
-    group_id = await get_user_group_id(user_id, db)
-    await _verify_experiments_visible([experiment_id], user_id, group_id, db)
+    group_ids = await get_user_group_ids(user_id, db)
+    await _verify_experiments_visible([experiment_id], user_id, group_ids, db)
 
 
 async def _verify_experiments_visible(
     experiment_ids: Sequence[int],
     user_id: int,
-    group_id: Optional[int],
+    group_ids: Sequence[int],
     db: AsyncSession,
 ) -> None:
     """404 unless every selected experiment is one the user may read.
@@ -420,7 +421,7 @@ async def _verify_experiments_visible(
     result = await db.execute(
         select(Experiment.id).where(
             Experiment.id.in_(list(experiment_ids)),
-            experiment_owner_filter(user_id, group_id),
+            experiment_owner_filter(user_id, group_ids),
         )
     )
     missing = sorted(set(experiment_ids) - set(result.scalars().all()))
@@ -434,7 +435,7 @@ async def _verify_experiments_visible(
 async def _load_facets(
     umap_type: UmapType,
     user_id: int,
-    group_id: Optional[int],
+    group_ids: Sequence[int],
     db: AsyncSession,
 ) -> List[UmapFacetRow]:
     """Summarise the readable scope into filter options with counts.
@@ -474,7 +475,7 @@ async def _load_facets(
 
     result = await db.execute(
         source.where(
-            experiment_owner_filter(user_id, group_id),
+            experiment_owner_filter(user_id, group_ids),
             embedded,
         ).group_by(*buckets)
     )
@@ -538,7 +539,7 @@ def _apply_facets(query, selection: FacetSelection, protein_column):
 async def _get_cropped_umap(
     selection: FacetSelection,
     current_user: User,
-    group_id: Optional[int],
+    group_ids: Sequence[int],
     background_tasks: BackgroundTasks,
     db: AsyncSession,
 ) -> UmapDataResponse:
@@ -552,7 +553,7 @@ async def _get_cropped_umap(
             selectinload(CellCrop.image),
         )
         .where(
-            experiment_owner_filter(current_user.id, group_id),
+            experiment_owner_filter(current_user.id, group_ids),
             CellCrop.embedding.isnot(None),
         )
     )
@@ -566,10 +567,10 @@ async def _get_cropped_umap(
 
     _guard_enough_points(len(crops), selection, UmapType.CROPPED)
 
-    facets = await _load_facets(UmapType.CROPPED, current_user.id, group_id, db)
+    facets = await _load_facets(UmapType.CROPPED, current_user.id, group_ids, db)
 
     crops_with_umap, is_stale, refresh_error = _take_precomputed(
-        crops, UmapType.CROPPED, current_user.id, group_id, background_tasks
+        crops, UmapType.CROPPED, background_tasks
     )
 
     # Counts every crop with an embedding, including the ones still awaiting
@@ -621,7 +622,7 @@ async def _get_cropped_umap(
 async def _get_fov_umap(
     selection: FacetSelection,
     current_user: User,
-    group_id: Optional[int],
+    group_ids: Sequence[int],
     background_tasks: BackgroundTasks,
     db: AsyncSession,
 ) -> UmapFovDataResponse:
@@ -631,7 +632,7 @@ async def _get_fov_umap(
         .join(Experiment, Image.experiment_id == Experiment.id)
         .options(selectinload(Image.map_protein))
         .where(
-            experiment_owner_filter(current_user.id, group_id),
+            experiment_owner_filter(current_user.id, group_ids),
             Image.embedding.isnot(None),
         )
     )
@@ -645,10 +646,10 @@ async def _get_fov_umap(
 
     _guard_enough_points(len(images), selection, UmapType.FOV)
 
-    facets = await _load_facets(UmapType.FOV, current_user.id, group_id, db)
+    facets = await _load_facets(UmapType.FOV, current_user.id, group_ids, db)
 
     images_with_umap, is_stale, refresh_error = _take_precomputed(
-        images, UmapType.FOV, current_user.id, group_id, background_tasks
+        images, UmapType.FOV, background_tasks
     )
 
     # Counts every image with an embedding, including the ones still awaiting
@@ -705,16 +706,16 @@ async def trigger_umap_recomputation(
     db: AsyncSession = Depends(get_db),
 ):
     """
-    Force a UMAP recomputation for the caller's scope.
+    Force a UMAP recomputation of the whole corpus for one projection type.
 
-    Reads schedule refreshes automatically, so this is the retry path for a scope
-    whose refresh failed (reads stop rescheduling those) and an escape hatch for
-    re-fitting coordinates that are already complete.
+    There is one fit per type, so this affects every reader, not just the caller.
+    Reads schedule refreshes automatically, so this is the retry path for a
+    projection whose refresh failed (reads stop rescheduling those) and an escape
+    hatch for re-fitting coordinates that are already complete.
     """
-    group_id = await get_user_group_id(current_user.id, db)
-    # Clear the recorded failure so reads resume auto-scheduling this scope.
-    clear_refresh_error(umap_type, current_user.id, group_id)
-    background_tasks.add_task(refresh_umap_scope, umap_type, current_user.id, group_id)
+    # Clear the recorded failure so reads resume auto-scheduling this projection.
+    clear_refresh_error(umap_type)
+    background_tasks.add_task(refresh_umap_scope, umap_type)
 
     return {"message": f"UMAP recomputation started for {umap_type.value}"}
 
@@ -726,8 +727,8 @@ async def get_embedding_status(
     db: AsyncSession = Depends(get_db),
 ) -> FeatureExtractionStatus:
     """Get feature extraction status for user's crops."""
-    group_id = await get_user_group_id(current_user.id, db)
-    base_conditions = [experiment_owner_filter(current_user.id, group_id)]
+    group_ids = await get_user_group_ids(current_user.id, db)
+    base_conditions = [experiment_owner_filter(current_user.id, group_ids)]
     if experiment_id:
         base_conditions.append(Image.experiment_id == experiment_id)
 
@@ -838,9 +839,9 @@ async def trigger_fov_feature_extraction(
     db: AsyncSession = Depends(get_db),
 ) -> FeatureExtractionTriggerResponse:
     """Trigger FOV embedding extraction for images without embeddings. Runs in background."""
-    group_id = await get_user_group_id(current_user.id, db)
+    group_ids = await get_user_group_ids(current_user.id, db)
     base_conditions = [
-        experiment_owner_filter(current_user.id, group_id),
+        experiment_owner_filter(current_user.id, group_ids),
         Image.embedding.is_(None),
     ]
 

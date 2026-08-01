@@ -5,21 +5,23 @@ Handles document upload, indexing, and search operations.
 import asyncio
 import logging
 import time
+from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Optional
+from urllib.parse import urlparse
+from typing import List, Optional, Sequence
 
 import redis.asyncio as redis
 from fastapi import APIRouter, Depends, HTTPException, status, Query, UploadFile, File, Form, BackgroundTasks
 from fastapi.responses import FileResponse, Response
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
 
 from config import get_settings
 from database import get_db
+from models.document_folder import DocumentFolder, folder_read_scope
 from models.user import User
 from models.rag_document import (
-    RAGDocument, RAGDocumentPage, DocumentStatus, document_scope, document_read_scope,
+    RAGDocument, RAGDocumentPage, document_scope, document_read_scope,
 )
 from schemas.rag import (
     RAGDocumentUploadResponse,
@@ -34,7 +36,13 @@ from schemas.rag import (
     ImportFailure,
     ImportResponse,
 )
-from utils.groups import get_user_group_id
+from utils.folder_placement import (
+    file_document,
+    placement_group_id,
+    resolve_folder_scope,
+)
+from utils.folder_seed import default_upload_folder
+from utils.groups import get_user_group_ids
 from utils.security import get_current_user, get_current_user_from_query
 from services.document_indexing_service import (
     save_uploaded_document,
@@ -62,6 +70,7 @@ from services.rag_service import (
 from services.paper_discovery_service import (
     discover as discover_papers,
     fetch_paper_pdf,
+    fetch_pdf,
     PdfFetchError,
     DiscoveryError,
     search_epmc,
@@ -77,8 +86,12 @@ router = APIRouter()
 
 
 # ============== Upload Rate Limiting ==============
-# Limit: 10 uploads per hour per user (prevent disk/GPU exhaustion)
-UPLOAD_RATE_LIMIT_REQUESTS = 10
+# Limit: 1000 uploads per hour per user. The cap is a backstop against a runaway
+# client filling the disk or the GPU queue, not a quota -- a person filing a
+# year's worth of papers in one sitting must not hit it, which 10/hour did.
+# Covers both the file upload and index_text; the discovery importer has its own
+# budget (DISCOVERY_RATE_LIMIT_REQUESTS), so bulk paper import is unaffected.
+UPLOAD_RATE_LIMIT_REQUESTS = 1000
 UPLOAD_RATE_LIMIT_WINDOW = 3600  # 1 hour in seconds
 
 _redis_pool: Optional[redis.Redis] = None
@@ -165,17 +178,19 @@ async def get_document_for_user(
     db: AsyncSession,
     document_id: int,
     user_id: int,
-    group_id: Optional[int] = None,
+    group_ids: Sequence[int] = (),
 ) -> RAGDocument:
     """Get a RAG document the caller may READ. Raises 404 if not visible.
 
-    Read scope = owner's own doc OR a group-shared library doc. Callers that must
-    mutate (delete/reindex) must NOT rely on this -- they keep an owner-only check.
+    Read scope = owner's own doc OR a library doc shared with one of ``group_ids``.
+    Omitting the groups therefore narrows to owner-only, which is what the reindex
+    pre-check wants; a read path must pass them, and should prefer
+    :func:`load_readable_document` so it cannot forget.
     """
     result = await db.execute(
         select(RAGDocument).where(
             RAGDocument.id == document_id,
-        ).where(document_read_scope(user_id, group_id))
+        ).where(document_read_scope(user_id, group_ids))
     )
     document = result.scalar_one_or_none()
     if not document:
@@ -186,7 +201,123 @@ async def get_document_for_user(
     return document
 
 
+async def load_readable_document(
+    db: AsyncSession, document_id: int, user_id: int
+) -> RAGDocument:
+    """Resolve the caller's groups and load a document they may READ.
+
+    The pairing is the point: passing an unresolved (empty) scope silently means
+    owner-only, so a read endpoint that forgets the lookup 404s a group member on
+    a document the listing just showed them -- a bug this codebase has already
+    had. Endpoints that need the group ids for something else too resolve them
+    once and call :func:`get_document_for_user` directly.
+    """
+    group_ids = await get_user_group_ids(user_id, db)
+    return await get_document_for_user(db, document_id, user_id, group_ids)
+
+
+async def get_target_folder(
+    db: AsyncSession, folder_id: int, user_id: int, group_ids: Sequence[int]
+) -> DocumentFolder:
+    """The folder a document may be filed under, or 404.
+
+    Upload and move share this so neither can file a document under a folder id
+    that is foreign or does not exist -- and so both get the folder object itself,
+    which ``placement_group_id`` needs to stamp the document's visibility.
+    """
+    folder = (await db.execute(
+        select(DocumentFolder).where(
+            DocumentFolder.id == folder_id,
+            folder_read_scope(user_id, group_ids),
+        )
+    )).scalar_one_or_none()
+    if folder is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Folder not found"
+        )
+    return folder
+
+
 # ============== Document Management ==============
+
+@dataclass
+class LibraryScope:
+    """Which slice of the library a read covers.
+
+    Both filters NARROW and can never widen: ``group_ids`` is intersected with the
+    caller's actual memberships and ``folder_ids`` is expanded against their
+    folder ACL. Asking for a group you are not in, or a folder you cannot see,
+    yields nothing rather than someone else's documents.
+
+    Unset (the default) means "everything you can read, across every group you
+    belong to plus your private folders".
+    """
+
+    folder_ids: Optional[List[int]] = None
+    include_subfolders: bool = True
+    group_ids: Optional[List[int]] = None
+
+
+def library_scope(
+    folder_ids: Optional[List[int]] = Query(
+        None, description="Folders to scope to; repeat the param for several"
+    ),
+    include_subfolders: bool = Query(
+        True, description="Include folders nested under the selected ones"
+    ),
+    group_ids: Optional[List[int]] = Query(
+        None, description="Groups to scope to; repeat the param for several"
+    ),
+) -> LibraryScope:
+    """Collect the scoping params into one value.
+
+    One dependency rather than three loose parameters, for the reason the facet
+    filter learned the hard way: tests call these handlers directly, and every
+    parameter left at a ``Query(...)`` default arrives in the body as a Query
+    OBJECT rather than None. With three of them that is three silent mines.
+    """
+    return LibraryScope(
+        folder_ids=folder_ids,
+        include_subfolders=include_subfolders,
+        group_ids=group_ids,
+    )
+
+
+async def resolve_scope(
+    db: AsyncSession, user_id: int, scope: LibraryScope
+) -> tuple[list[int], Optional[list[int]]]:
+    """Turn a :class:`LibraryScope` into ``(group_ids, folder_ids)`` for a query.
+
+    ``folder_ids`` is None when no folder filter was asked for -- meaning
+    "everything you can read" -- and an EMPTY list when the requested folders hold
+    nothing visible, which must return no rows rather than all of them.
+
+    ⚠️ The group half cannot use the same trick, because an empty group list does
+    NOT mean "no rows": every downstream predicate reads it as owner-only. So
+    narrowing to a group you do not belong to would answer "search group 999"
+    with your own private library -- and the agent would report it as that
+    group's material. Naming a group you are not in is refused instead, with the
+    id in the message so the caller can correct it.
+    """
+    group_ids = await get_user_group_ids(user_id, db)
+    if scope.group_ids is not None:
+        requested = {int(g) for g in scope.group_ids}
+        unknown = sorted(requested - set(group_ids))
+        if unknown:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"You are not a member of group(s): {unknown}",
+            )
+        group_ids = [g for g in group_ids if g in requested]
+
+    resolved = await resolve_folder_scope(
+        db,
+        scope.folder_ids,
+        scope.include_subfolders,
+        folder_read_scope(user_id, group_ids),
+    )
+    return group_ids, resolved
+
 
 @router.get("/documents", response_model=List[RAGDocumentResponse])
 async def list_documents(
@@ -198,8 +329,7 @@ async def list_documents(
     file_type: Optional[str] = Query(None, description="Exact file type"),
     min_pages: Optional[int] = Query(None, ge=0),
     max_pages: Optional[int] = Query(None, ge=0),
-    folder_id: Optional[int] = Query(None, description="Folder to scope to (with in_folder=true)"),
-    in_folder: bool = Query(False, description="Scope to folder_id; folder_id omitted = root"),
+    scope: LibraryScope = Depends(library_scope),
     response: Response = None,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
@@ -208,15 +338,17 @@ async def list_documents(
 
     Chat attachments are excluded: they belong to their thread, not the library.
     Group-shared library documents from other members are included, marked
-    ``is_owner=False``. With ``in_folder=true`` the list is scoped to one folder.
-    The total matching count (ignoring skip/limit) is returned in the
-    ``X-Total-Count`` header so callers can paginate; the body stays a bare array.
+    ``is_owner=False``. With no scoping params the listing covers everything the
+    caller can read across all their groups; ``folder_ids`` and ``group_ids``
+    narrow it and can never widen it. The total matching count (ignoring
+    skip/limit) is returned in the ``X-Total-Count`` header so callers can
+    paginate; the body stays a bare array.
     """
-    group_id = await get_user_group_id(current_user.id, db)
+    group_ids, resolved_folders = await resolve_scope(db, current_user.id, scope)
     filters = dict(
-        name=name, doi=doi, folder_id=folder_id, in_folder=in_folder,
+        name=name, doi=doi, folder_ids=resolved_folders,
         file_type=file_type, status=status_filter, min_pages=min_pages,
-        max_pages=max_pages, group_id=group_id, thread_id=None,
+        max_pages=max_pages, group_ids=group_ids, thread_id=None,
     )
     documents = await search_documents_metadata(
         current_user.id, db, skip=skip, limit=limit, **filters
@@ -266,18 +398,20 @@ async def upload_document(
             detail="File too large. Maximum size is 100MB"
         )
 
-    # Validate the target folder is one the caller can see (mirrors move_document),
-    # so a document can't be filed under a foreign/nonexistent folder id. (isinstance
-    # int, not `is not None`, so an omitted form field is skipped cleanly.)
+    # Where this lands. A named folder is validated against what the caller can
+    # see (mirrors move_document), so a document can't be filed under a foreign or
+    # nonexistent id; an unnamed one defaults to the group's `common`, which is
+    # what makes an ordinary upload shared without the row having to carry a group
+    # of its own. (isinstance int, not `is not None`, so an omitted form field is
+    # skipped cleanly.)
+    group_ids = await get_user_group_ids(current_user.id, db)
     if isinstance(folder_id, int):
-        from models.document_folder import DocumentFolder as _Folder
-        from routers.folders import _visible as _folder_visible
-        _gid = await get_user_group_id(current_user.id, db)
-        _folder = (await db.execute(
-            select(_Folder).where(_Folder.id == folder_id, _folder_visible(current_user.id, _gid))
-        )).scalar_one_or_none()
-        if _folder is None:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Folder not found")
+        target_folder = await get_target_folder(
+            db, folder_id, current_user.id, group_ids
+        )
+    else:
+        target_folder = await default_upload_folder(db, group_ids)
+        folder_id = target_folder.id if target_folder else None
 
     try:
         # Save document
@@ -287,8 +421,11 @@ async def upload_document(
             content=content,
             db=db,
         )
-        if created and isinstance(folder_id, int):
-            document.folder_id = folder_id
+        if created:
+            # The folder decides who can read it. With no folder (a multi-group
+            # member, who has no unambiguous `common`) the document stays unfiled
+            # and owner-only until they move it.
+            file_document(document, target_folder)
         await db.commit()
 
         # A duplicate is already stored, and its indexing has either finished or
@@ -321,8 +458,7 @@ async def get_document(
     db: AsyncSession = Depends(get_db)
 ):
     """Get document details and processing status."""
-    group_id = await get_user_group_id(current_user.id, db)
-    document = await get_document_for_user(db, document_id, current_user.id, group_id)
+    document = await load_readable_document(db, document_id, current_user.id)
     return RAGDocumentResponse.for_user(document, current_user.id)
 
 
@@ -333,29 +469,33 @@ async def move_document(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Move a document into a folder (folder_id=null -> root). Any group member
-    who can see the shared document may organize it."""
-    from models.document_folder import DocumentFolder
-    from routers.folders import _visible
+    """Move a document into a folder (folder_id=null -> root).
 
-    group_id = await get_user_group_id(current_user.id, db)
-    document = await get_document_for_user(db, document_id, current_user.id, group_id)
+    This is how sharing happens: moving a document into a group's folder makes it
+    readable by that group, and moving it into a private one takes it back. The
+    document's own ``group_id`` is re-stamped to match -- it is the ACL truth, and
+    leaving it behind would let a private folder hold group-readable documents.
+
+    Any group member who can see the shared document may organize it.
+    """
+    group_ids = await get_user_group_ids(current_user.id, db)
+    document = await get_document_for_user(db, document_id, current_user.id, group_ids)
     folder_id = payload.get("folder_id")
+    folder = None
     if folder_id is not None:
         try:
             folder_id = int(folder_id)
         except (TypeError, ValueError):
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
                                 detail="folder_id must be an integer or null")
-        folder = (await db.execute(
-            select(DocumentFolder).where(
-                DocumentFolder.id == folder_id, _visible(current_user.id, group_id)
-            )
-        )).scalar_one_or_none()
-        if folder is None:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Folder not found")
+        folder = await get_target_folder(db, folder_id, current_user.id, group_ids)
     document.folder_id = folder_id
-    return {"id": document.id, "folder_id": document.folder_id}
+    document.group_id = placement_group_id(folder)
+    return {
+        "id": document.id,
+        "folder_id": document.folder_id,
+        "group_id": document.group_id,
+    }
 
 
 @router.delete("/documents/{document_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -412,8 +552,7 @@ async def serve_pdf(
 
     Uses query parameter token auth for browser-native file access.
     """
-    group_id = await get_user_group_id(current_user.id, db)
-    document = await get_document_for_user(db, document_id, current_user.id, group_id)
+    document = await load_readable_document(db, document_id, current_user.id)
 
     # Only serve PDF files
     if document.file_type != "pdf":
@@ -443,8 +582,7 @@ async def list_document_pages(
     db: AsyncSession = Depends(get_db)
 ):
     """List all pages of a document."""
-    group_id = await get_user_group_id(current_user.id, db)
-    document = await get_document_for_user(db, document_id, current_user.id, group_id)
+    document = await load_readable_document(db, document_id, current_user.id)
 
     result = await db.execute(
         select(RAGDocumentPage)
@@ -476,8 +614,7 @@ async def serve_page_image(
 
     Uses query parameter token auth for browser-native image loading.
     """
-    group_id = await get_user_group_id(current_user.id, db)
-    document = await get_document_for_user(db, document_id, current_user.id, group_id)
+    document = await load_readable_document(db, document_id, current_user.id)
 
     result = await db.execute(
         select(RAGDocumentPage).where(
@@ -529,12 +666,12 @@ async def serve_page_region(
             detail="bbox must be four integers ymin,xmin,ymax,xmax",
         ) from None
 
-    group_id = await get_user_group_id(current_user.id, db)
+    group_ids = await get_user_group_ids(current_user.id, db)
     # Scope check (raises 404 if not visible to this user / group).
-    await get_document_for_user(db, document_id, current_user.id, group_id)
+    await get_document_for_user(db, document_id, current_user.id, group_ids)
 
     png = await render_page_region(
-        document_id, page_number, coords, current_user.id, db, group_id=group_id
+        document_id, page_number, coords, current_user.id, db, group_ids=group_ids
     )
     if png is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Region could not be rendered (bad page or bbox)")
@@ -560,13 +697,13 @@ async def serve_passage_image(
             detail="Invalid passage hash format"
         )
 
-    group_id = await get_user_group_id(current_user.id, db)
+    group_ids = await get_user_group_ids(current_user.id, db)
     passage_path = await get_cached_passage(
         document_id=document_id,
         passage_hash=passage_hash,
         user_id=current_user.id,
         db=db,
-        group_id=group_id,
+        group_ids=group_ids,
     )
 
     if not passage_path:
@@ -635,11 +772,11 @@ async def discover_sources(
     dois = [p.doi for p in papers if p.doi]
     existing: set[str] = set()
     if dois:
-        group_id = await get_user_group_id(current_user.id, db)
+        group_ids = await get_user_group_ids(current_user.id, db)
         rows = await db.execute(
             select(RAGDocument.doi)
             .where(func.lower(RAGDocument.doi).in_([d.lower() for d in dois]))
-            .where(document_scope(current_user.id, None, group_id))
+            .where(document_scope(current_user.id, None, group_ids))
         )
         existing = {d.lower() for d in rows.scalars().all() if d}
 
@@ -765,17 +902,21 @@ async def import_discovered(
 
     # Skip DOIs already in the caller's readable library -- checked against the
     # SAME scope /discover used to mark them "already_imported".
-    group_id = await get_user_group_id(current_user.id, db)
+    group_ids = await get_user_group_ids(current_user.id, db)
     existing_rows = await db.execute(
         select(RAGDocument.doi)
         .where(func.lower(RAGDocument.doi).in_([d.lower() for d in dois]))
-        .where(document_scope(current_user.id, None, group_id))
+        .where(document_scope(current_user.id, None, group_ids))
     )
     # Distinct name from the `already_in_library` RESULT list built below: these
     # are lowercased for matching, that one holds the DOIs as the user sent them.
     # They were briefly the same identifier, which worked only because this set's
     # last read happened to precede the rebind.
     existing_dois = {d.lower() for d in existing_rows.scalars().all() if d}
+
+    # Resolved once for the whole batch: every imported paper is filed like a
+    # hand upload, into the importer's group `common` when that is unambiguous.
+    default_folder = await default_upload_folder(db, group_ids)
 
     # Papers already here are neither imported nor failed. Reporting them as
     # failures made the summary read "0 imported - 3 failed" for the most common
@@ -842,6 +983,13 @@ async def import_discovered(
                 user_id=current_user.id, filename=filename, content=content,
                 db=db, thread_id=None,
             )
+            if created:
+                # An imported paper is filed exactly like a hand upload. Without
+                # this it stayed unfiled and owner-only, so the lab never saw the
+                # papers it imported AND the group-wide dedupe stopped matching a
+                # colleague's copy -- every member re-downloaded and re-indexed
+                # the same PDF.
+                file_document(document, default_folder)
             if created or (document.user_id == current_user.id and not document.doi):
                 # Stamped on a duplicate ONLY when we own it and it has no DOI
                 # yet -- typically a paper uploaded by hand before discovery
@@ -932,7 +1080,7 @@ async def search(
 
     Returns ranked results from both uploaded documents and microscopy images.
     """
-    group_id = await get_user_group_id(current_user.id, db)
+    group_ids = await get_user_group_ids(current_user.id, db)
     results = await combined_search(
         query=q,
         user_id=current_user.id,
@@ -940,7 +1088,7 @@ async def search(
         experiment_id=experiment_id,
         doc_limit=doc_limit,
         fov_limit=fov_limit,
-        group_id=group_id,
+        group_ids=group_ids,
     )
 
     return RAGSearchResponse(
@@ -973,12 +1121,21 @@ async def search(
 async def search_documents_only(
     q: str = Query(..., min_length=1, max_length=1000),
     limit: int = Query(20, ge=1, le=100),
+    scope: LibraryScope = Depends(library_scope),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
-    """Search only uploaded documents."""
-    group_id = await get_user_group_id(current_user.id, db)
-    results = await search_documents(q, current_user.id, db, limit=limit, group_id=group_id)
+    """Semantic search over the document library.
+
+    With no scoping params it searches everything the caller can read, across
+    every group they belong to plus their private folders. The params only ever
+    narrow that.
+    """
+    scoped_groups, resolved_folders = await resolve_scope(db, current_user.id, scope)
+    results = await search_documents(
+        q, current_user.id, db, limit=limit,
+        group_ids=scoped_groups, folder_ids=resolved_folders,
+    )
     return {"query": q, "results": results}
 
 
@@ -994,10 +1151,10 @@ async def search_similar(
     """Query-by-example: pages similar to an EXISTING page/document/FOV image."""
     if page_id is None and document_id is None and image_id is None:
         raise HTTPException(status_code=400, detail="Provide page_id, document_id or image_id")
-    group_id = await get_user_group_id(current_user.id, db)
+    group_ids = await get_user_group_ids(current_user.id, db)
     results = await search_similar_pages(
         current_user.id, db, page_id=page_id, document_id=document_id,
-        image_id=image_id, limit=limit, group_id=group_id,
+        image_id=image_id, limit=limit, group_ids=group_ids,
     )
     return {"results": results}
 
@@ -1014,12 +1171,12 @@ async def search_by_text(
         raise HTTPException(status_code=400, detail="text is required")
     mode = payload.get("mode", "query")
     limit = max(1, min(int(payload.get("limit", 10)), 50))
-    group_id = await get_user_group_id(current_user.id, db)
+    group_ids = await get_user_group_ids(current_user.id, db)
     from ml.rag import get_qwen_vl_encoder
     encoder = get_qwen_vl_encoder()
     emb = encoder.encode_text(text_value) if mode == "passage" else encoder.encode_query(text_value)
     results = await _search_pages_by_embedding(
-        emb.tolist(), current_user.id, db, limit=limit, group_id=group_id,
+        emb.tolist(), current_user.id, db, limit=limit, group_ids=group_ids,
     )
     return {"results": results}
 
@@ -1041,13 +1198,74 @@ async def search_by_image(
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid image file")
     limit = max(1, min(int(limit), 50))
-    group_id = await get_user_group_id(current_user.id, db)
+    group_ids = await get_user_group_ids(current_user.id, db)
     encoder = get_qwen_vl_encoder()
     emb = encoder.encode_document(image)
     results = await _search_pages_by_embedding(
-        emb.tolist(), current_user.id, db, limit=limit, group_id=group_id,
+        emb.tolist(), current_user.id, db, limit=limit, group_ids=group_ids,
     )
     return {"results": results}
+
+
+@router.post("/documents/from-url", response_model=RAGDocumentUploadResponse)
+async def index_document_from_url(
+    payload: dict,
+    background_tasks: BackgroundTasks,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Index a document the SERVER downloads, given its URL.
+
+    This exists because the base64 upload cannot be driven by an agent: the model
+    would have to emit the file's bytes itself, and a 5 MB PDF is millions of
+    tokens. Here the caller sends a URL and the bytes never pass through the
+    conversation.
+
+    The download reuses the discovery importer's fetch path, so it inherits its
+    guards rather than reimplementing them: SSRF checks with every redirect hop
+    re-validated, a content-type check, and the 100 MB cap.
+    """
+    await _check_upload_rate_limit(current_user.id)
+
+    url = (payload.get("url") or "").strip()
+    if not url:
+        raise HTTPException(status_code=400, detail="url is required")
+
+    try:
+        content = await fetch_pdf(url)
+    except PdfFetchError as exc:
+        # The reason matters: a 403, a wrong content-type and an over-size file
+        # call for different next steps from the caller.
+        logger.info("from-url fetch refused for %s: %s", url, exc)
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    filename = Path(urlparse(url).path).name or "document.pdf"
+    if not is_supported_file(filename):
+        filename = f"{filename}.pdf" if filename else "document.pdf"
+
+    group_ids = await get_user_group_ids(current_user.id, db)
+    document, created = await save_uploaded_document(
+        user_id=current_user.id, filename=filename, content=content, db=db,
+    )
+    if created:
+        file_document(document, await default_upload_folder(db, group_ids))
+        document.source_url = url
+    await db.commit()
+
+    if created:
+        background_tasks.add_task(process_document_async, document.id)
+    else:
+        logger.info("from-url download of %s deduplicated to document %s", url, document.id)
+
+    return RAGDocumentUploadResponse(
+        id=document.id,
+        name=document.name,
+        file_type=document.file_type,
+        status=document.status,
+        page_count=document.page_count,
+        created_at=document.created_at,
+        is_duplicate=not created,
+    )
 
 
 @router.post("/documents/text")
@@ -1065,6 +1283,11 @@ async def index_text_endpoint(
         raise HTTPException(status_code=400, detail="text is required")
     document, created = await index_text_snippet(current_user.id, title, text_value, db)
     if created:
+        # Same filing rule as an uploaded file: `common` by default, so a snippet
+        # the agent indexes is shared with the lab rather than owner-only.
+        group_ids = await get_user_group_ids(current_user.id, db)
+        file_document(document, await default_upload_folder(db, group_ids))
+        await db.commit()
         background_tasks.add_task(process_text_document, document.id)
     return {
         "document_id": document.id,
@@ -1104,8 +1327,7 @@ async def search_within_document(
     Case-insensitive search.
     """
     # Verify caller may read the document (own or group-shared library doc)
-    group_id = await get_user_group_id(current_user.id, db)
-    document = await get_document_for_user(db, document_id, current_user.id, group_id)
+    document = await load_readable_document(db, document_id, current_user.id)
 
     # Search in all pages of the document
     query_lower = q.lower()

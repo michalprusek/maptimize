@@ -132,12 +132,14 @@ export const useDocumentStore = create<DocumentState>()((set, get) => ({
   loadDocuments: async () => {
     set({ error: null });
     try {
-      // Folder-scoped: the file explorer shows one folder at a time. Root =
-      // omit folder_id (folderId null), otherwise the current folder's docs.
-      const documents = await api.getRAGDocuments({
-        inFolder: true,
-        folderId: get().currentFolderId,
-      });
+      // Folder-scoped: the file explorer shows one folder at a time. At the root
+      // (currentFolderId null) there is no folder filter, so the listing is
+      // everything the user can read across their groups -- which is the right
+      // landing view now that documents live in per-group trees.
+      const folderId = get().currentFolderId;
+      const documents = await api.getRAGDocuments(
+        folderId == null ? {} : { folderIds: [folderId], includeSubfolders: false }
+      );
       set({ documents });
     } catch (error) {
       set({

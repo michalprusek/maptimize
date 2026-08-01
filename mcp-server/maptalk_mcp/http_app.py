@@ -1,12 +1,17 @@
 """Streamable-HTTP transport — for a hosted, remote MCP connector.
 
 Wraps the low-level MCP server in a Starlette app behind a **mandatory** gate.
-Claude's remote custom connectors call this URL from Anthropic's cloud, so the
-endpoint is public: each caller presents their own personal access token (PAT),
-which the gate validates against the backend (``GET /api/auth/me``) before any
-request reaches the transport. This is what stops anonymous use of the
-backend-independent ``web_search`` tool; every real document tool call is
-independently re-authenticated at the backend as that user.
+Remote custom connectors call this URL from their vendor's cloud -- Anthropic's,
+OpenAI's, anyone's -- so the endpoint is public: each caller presents their own
+bearer token (an OAuth token or a PAT), which the gate validates against the
+backend (``GET /api/auth/me``) before any request reaches the transport. This is
+what stops anonymous use of the backend-independent ``web_search`` tool; every
+real document tool call is independently re-authenticated at the backend as that
+user.
+
+Nothing here is vendor-specific: the 401 below implements RFC 9728 discovery, so
+any client that follows the MCP authorization spec can find the authorization
+server and start the OAuth flow.
 """
 from __future__ import annotations
 
@@ -25,9 +30,9 @@ from starlette.types import Receive, Scope, Send
 from .registry import ToolRegistry
 from .server import build_server
 
-# On a 401, point clients at the OAuth protected-resource metadata so Claude
-# Desktop's remote connector can discover the authorization server and start the
-# OAuth flow. Claude Code just sends its bearer (PAT) and never sees this.
+# On a 401, point clients at the OAuth protected-resource metadata so a remote
+# connector can discover the authorization server and start the OAuth flow. A
+# client that already holds a bearer (a PAT, say) never sees this.
 _RESOURCE_METADATA_URL = os.environ.get(
     "MCP_RESOURCE_METADATA_URL",
     "https://maptimize.utia.cas.cz/.well-known/oauth-protected-resource",
@@ -80,7 +85,7 @@ def build_http_app(
             except Exception:
                 valid = False
         if not valid:
-            # 401 + WWW-Authenticate triggers Claude Desktop's OAuth discovery.
+            # 401 + WWW-Authenticate triggers the client's OAuth discovery.
             await _send_json(
                 send, 401, {"error": "unauthorized"},
                 extra_headers=[(b"www-authenticate", _WWW_AUTHENTICATE.encode())],

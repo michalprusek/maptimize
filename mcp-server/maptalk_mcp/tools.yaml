@@ -34,6 +34,10 @@ tools:
       you only need to locate pages. Set include_fov=true to also search microscopy
       field-of-view images. To read more pages of a specific hit, call
       read_document_pages; to zoom a small figure, read_page_region.
+      SCOPE: by default this searches everything you can see — every group you
+      belong to plus your own private folders. Narrow it with folder_ids and/or
+      group_ids when the user asks about one project or one group; call
+      list_folders first to see the tree and pick ids.
     handler: search_documents
     annotations:
       readOnlyHint: true
@@ -62,6 +66,26 @@ tools:
         type: integer
         default: 10
         description: Max hits (page images are capped at 10; refs up to 50).
+      - name: folder_ids
+        in: arg
+        type: array
+        items: integer
+        description: >
+          Restrict to these folders (ids from list_folders). Omit to search
+          everything you can see, across every group you belong to plus your own
+          private folders — that is the default and usually the right one.
+      - name: include_subfolders
+        in: arg
+        type: boolean
+        default: true
+        description: Also search folders nested under the ones named in folder_ids.
+      - name: group_ids
+        in: arg
+        type: array
+        items: integer
+        description: >
+          Restrict to these groups (ids from list_groups). Omit to cover all of
+          your groups.
 
   - name: read_document_pages
     annotations:
@@ -211,18 +235,25 @@ tools:
         description: >
           Offset for pagination. The response reports the total match count and
           the next skip value when more pages exist.
-      - name: folder_id
+      - name: folder_ids
         in: query
-        type: integer
+        type: array
+        items: integer
         description: >
-          Scope to one folder (with in_folder=true). Get folder ids from
-          list_folders.
-      - name: in_folder
+          Restrict to these folders (ids from list_folders). Omit to cover
+          everything you can see.
+      - name: include_subfolders
         in: query
         type: boolean
+        default: true
+        description: Also include folders nested under the ones named in folder_ids.
+      - name: group_ids
+        in: query
+        type: array
+        items: integer
         description: >
-          Set true to scope to folder_id; if folder_id is omitted, scopes to the
-          top-level (root) folder.
+          Restrict to these groups (ids from list_groups). Omit to cover all of
+          your groups.
 
   - name: get_document_metadata
     annotations:
@@ -351,8 +382,12 @@ tools:
       readOnlyHint: false
       destructiveHint: false
     description: >
-      Index a new PDF / Office / image document into the library. Provide the
-      file bytes as base64 plus a filename.
+      Index a document you already hold as BYTES, passed base64 inline. Only
+      practical for something small you generated yourself — a real paper is
+      megabytes, and base64 in a tool call costs you roughly 350k tokens per
+      megabyte. For anything you found rather than made, use
+      index_document_from_url (you give a link, the SERVER downloads it) or
+      import_papers (you give DOIs). Those cost nothing but the URL.
     handler: index_document
     params:
       - name: filename
@@ -365,6 +400,146 @@ tools:
         type: string
         required: true
         description: Base64-encoded file bytes.
+
+
+  - name: index_document_from_url
+    annotations:
+      readOnlyHint: false
+      destructiveHint: false
+      idempotentHint: true
+    description: >
+      Index a document by URL — the SERVER downloads it, so the file never passes
+      through the conversation and costs you no tokens. This is how you add a
+      paper, preprint or report you found anywhere on the web.
+      YOU ARE EXPECTED TO DO THE FINDING YOURSELF: if the user needs literature
+      or background the library does not have, run your own deep research or web
+      search, then bring the results back here and index them. Do not ask the
+      user to fetch or upload files for you. For anything with a DOI, prefer
+      import_papers — it resolves the open-access copy for you.
+      Re-indexing the same URL is safe: identical bytes are deduplicated and
+      reported as is_duplicate.
+    handler: http_post_json
+    method: POST
+    path: /api/rag/documents/from-url
+    params:
+      - name: url
+        in: body
+        type: string
+        required: true
+        description: Direct link to the PDF (redirects are followed and re-checked).
+
+
+  - name: search_literature
+    annotations:
+      readOnlyHint: true
+      openWorldHint: true
+    description: >
+      Search published literature in Europe PMC — outside the library, for papers
+      the lab does not have yet. Accepts a plain-language topic, a list of titles,
+      or DOIs. Returns candidates with title, authors, journal, year, abstract,
+      DOI, and two flags: `importable` (an open-access PDF exists) and
+      `already_imported` (it is in your library already).
+      Pass the DOIs of the ones you want to import_papers. This is a literature
+      database, not the whole web: for anything it does not cover, do your own
+      research and use index_document_from_url.
+    handler: http_post_json
+    method: POST
+    path: /api/rag/discover
+    params:
+      - name: query
+        in: body
+        type: string
+        required: true
+        description: Topic, pasted titles, or DOIs.
+
+
+  - name: import_papers
+    annotations:
+      readOnlyHint: false
+      destructiveHint: false
+      idempotentHint: true
+    description: >
+      Import papers into the library BY DOI — the server resolves the
+      open-access PDF, downloads it and indexes it. No file bytes pass through
+      you. This is the cheapest way to add published work; use search_literature
+      first to get the DOIs, or pass DOIs the user gave you.
+      Reports imported / failed / already_in_library separately, so a duplicate is
+      never counted as an import and a failure always carries its reason.
+    handler: http_post_json
+    method: POST
+    path: /api/rag/discover/import
+    params:
+      - name: dois
+        in: body
+        type: array
+        items: string
+        required: true
+        description: DOIs to import (max 50 per call).
+
+
+  - name: rename_folder
+    annotations:
+      readOnlyHint: false
+      destructiveHint: false
+      idempotentHint: true
+    description: >
+      Rename a library folder, or move it under a different parent. A group's
+      root, its `common` and anyone's private folder are structural and refuse
+      both (400) — everyone navigates by them.
+    handler: http_post_json
+    method: PATCH
+    path: /api/rag/folders/{folder_id}
+    params:
+      - name: folder_id
+        in: path
+        type: integer
+        required: true
+      - name: name
+        in: body
+        type: string
+        description: New name.
+      - name: parent_id
+        in: body
+        type: integer
+        description: New parent folder id; the folder inherits its visibility.
+
+
+  - name: delete_folder
+    annotations:
+      readOnlyHint: false
+      destructiveHint: true
+    description: >
+      Dissolve a folder. Its subfolders and documents move up to its parent and
+      are re-stamped for that location — nothing is deleted, so this is
+      recoverable by moving them back. Structural folders (a group root, `common`,
+      a private folder) refuse with 400.
+    handler: http_json
+    method: DELETE
+    path: /api/rag/folders/{folder_id}
+    params:
+      - name: folder_id
+        in: path
+        type: integer
+        required: true
+
+
+  - name: index_experiment_images
+    annotations:
+      readOnlyHint: false
+      destructiveHint: false
+      idempotentHint: true
+    description: >
+      Make an experiment's microscopy field-of-view images searchable, so
+      search_documents with include_fov=true can find them. Runs in the
+      background; poll get_indexing_status.
+    handler: http_post_json
+    method: POST
+    path: /api/rag/index/experiment/{experiment_id}
+    params:
+      - name: experiment_id
+        in: path
+        type: integer
+        required: true
 
   - name: reindex_document
     annotations:
@@ -422,13 +597,86 @@ tools:
       readOnlyHint: true
       openWorldHint: false
     description: >
-      List the folders in the document library (id, name, parent_id). The tree is
-      flat — reconstruct nesting from parent_id (parent_id null = a top-level
-      folder). Use a folder's id with find_documents (folder_id + in_folder=true)
-      or move_document.
+      The whole document-library tree you can see, across every group you belong
+      to. One row per folder: id, name, parent_id, path, group_id/group_name,
+      visibility, kind and document_count. Reconstruct nesting from parent_id
+      (null = top level), or just read `path`.
+      Each group has a root folder named after the group, a `common` folder the
+      whole group reads and writes, and one PRIVATE folder per member — you only
+      ever see your own private folder, never a colleague's.
+      Call this first when the user asks about "our documents" or a specific
+      project: it tells you which folder ids to pass to search_documents,
+      find_documents or move_document.
     handler: http_json
     method: GET
     path: /api/rag/folders
+    params: []
+
+
+  - name: list_groups
+    annotations:
+      readOnlyHint: true
+      openWorldHint: false
+    description: >
+      The groups you belong to, with their members and your role in each. Group
+      ids are what search_documents / find_documents accept as group_ids, and what
+      assign_experiment_group shares an experiment with. Reading is group-shared:
+      you see your own data plus the data of every group you belong to.
+    handler: http_json
+    method: GET
+    path: /api/groups/my
+    params: []
+
+
+  - name: list_all_groups
+    annotations:
+      readOnlyHint: true
+      openWorldHint: false
+    description: >
+      Every group on the server with its member count — the directory to pick from
+      when asking to join one. Use list_groups for the ones you are already in.
+    handler: http_json
+    method: GET
+    path: /api/groups
+    params: []
+
+
+  - name: request_group_join
+    annotations:
+      readOnlyHint: false
+      destructiveHint: false
+      idempotentHint: true
+      openWorldHint: false
+    description: >
+      Ask to join a group. An ADMIN OF THAT GROUP has to approve it, which they do
+      in the web interface — this only files the request, it does not grant access,
+      and there is no way for you to approve one. Check list_join_requests for the
+      outcome. Requesting again after a rejection reopens the same request.
+    handler: http_post_json
+    method: POST
+    path: /api/groups/{group_id}/join-requests
+    params:
+      - name: group_id
+        in: path
+        type: integer
+        required: true
+        description: Group to join (id from list_all_groups).
+      - name: message
+        in: body
+        type: string
+        description: Optional note to the group's admins saying who you are.
+
+
+  - name: list_join_requests
+    annotations:
+      readOnlyHint: true
+      openWorldHint: false
+    description: >
+      Your own requests to join groups and their status (pending / approved /
+      rejected).
+    handler: http_json
+    method: GET
+    path: /api/groups/join-requests/mine
     params: []
 
   - name: create_folder
@@ -660,6 +908,28 @@ tools:
         in: query
         type: integer
         description: PTM id to assign; omit to clear the assignment.
+
+  - name: assign_experiment_group
+    annotations: {readOnlyHint: false, destructiveHint: false}
+    description: >
+      Share one of YOUR experiments with a group you belong to, or omit group_id
+      to unshare it. Unlike the protein / microscope / PTM assignments beside it,
+      this one is OWNER-ONLY: it decides who can see the experiment at all, which
+      is the uploader's call. group_id must be a group you are in (see
+      list_groups). Confirm with the user before unsharing — colleagues lose sight
+      of the experiment immediately.
+    handler: http_json
+    method: PATCH
+    path: /api/experiments/{experiment_id}/group
+    params:
+      - name: experiment_id
+        in: path
+        type: integer
+        required: true
+      - name: group_id
+        in: query
+        type: integer
+        description: Group to share with; omit to unshare (owner-only again).
 
   # -- Images & cell detection ----------------------------------------------
   - name: upload_image

@@ -39,7 +39,7 @@ async def test_duplicate_upload_returns_existing_and_writes_nothing(mock_db, tmp
     mock_db.execute.return_value = make_result(scalar=existing)
 
     with patch.object(dind, "settings", _settings(tmp_path)), \
-         patch.object(dind, "get_user_group_id", AsyncMock(return_value=3)):
+         patch.object(dind, "get_user_group_ids", AsyncMock(return_value=[3])):
         doc, created = await dind.save_uploaded_document(
             user_id=1, filename="paper.pdf", content=b"%PDF-1.4 same",
             db=mock_db, thread_id=None,
@@ -61,7 +61,7 @@ async def test_new_content_is_stored_with_its_hash(mock_db, tmp_path):
 
     content = b"%PDF-1.4 brand new"
     with patch.object(dind, "settings", _settings(tmp_path)), \
-         patch.object(dind, "get_user_group_id", AsyncMock(return_value=3)):
+         patch.object(dind, "get_user_group_ids", AsyncMock(return_value=[3])):
         doc, created = await dind.save_uploaded_document(
             user_id=1, filename="paper.pdf", content=content, db=mock_db, thread_id=None,
         )
@@ -78,7 +78,7 @@ async def test_same_filename_different_bytes_is_not_a_duplicate(mock_db, tmp_pat
     mock_db.add = MagicMock(side_effect=lambda obj: hashes.append(obj.content_hash))
 
     with patch.object(dind, "settings", _settings(tmp_path)), \
-         patch.object(dind, "get_user_group_id", AsyncMock(return_value=3)):
+         patch.object(dind, "get_user_group_ids", AsyncMock(return_value=[3])):
         for content in (b"%PDF-1.4 first", b"%PDF-1.4 second"):
             await dind.save_uploaded_document(
                 user_id=1, filename="paper.pdf", content=content,
@@ -97,7 +97,7 @@ async def test_lookup_excludes_failed_documents(mock_db, tmp_path):
     # AND silently consume the re-upload that was their only way to fix it.
     mock_db.execute.return_value = make_result(scalar=None)
     with patch.object(dind, "settings", _settings(tmp_path)), \
-         patch.object(dind, "get_user_group_id", AsyncMock(return_value=3)):
+         patch.object(dind, "get_user_group_ids", AsyncMock(return_value=[3])):
         await dind.save_uploaded_document(
             user_id=1, filename="p.pdf", content=b"%PDF-x", db=mock_db, thread_id=None,
         )
@@ -120,7 +120,7 @@ async def test_lookup_runs_before_any_filesystem_work(mock_db, tmp_path):
     mock_db.execute.return_value = make_result(scalar=existing)
 
     with patch.object(dind, "settings", _settings(tmp_path)), \
-         patch.object(dind, "get_user_group_id", AsyncMock(return_value=3)):
+         patch.object(dind, "get_user_group_ids", AsyncMock(return_value=[3])):
         await dind.save_uploaded_document(
             user_id=1, filename="p.pdf", content=b"%PDF-x", db=mock_db, thread_id=None,
         )
@@ -133,20 +133,20 @@ async def test_lookup_runs_before_any_filesystem_work(mock_db, tmp_path):
 # --------------------------------------------------------------------------- #
 
 def test_library_upload_dedupes_group_wide():
-    sql = str(document_dedupe_scope(user_id=1, thread_id=None, group_id=5))
+    sql = str(document_dedupe_scope(user_id=1, thread_id=None, group_ids=[5]))
     assert "thread_id IS NULL" in sql
     assert "group_id" in sql          # one lab indexes a paper once
 
 
 def test_library_upload_without_a_group_is_owner_only():
     # Fail-closed: no group resolved -> never match a stranger's document.
-    sql = str(document_dedupe_scope(user_id=1, thread_id=None, group_id=None))
+    sql = str(document_dedupe_scope(user_id=1, thread_id=None, group_ids=[]))
     assert "group_id" not in sql
     assert "user_id" in sql
 
 
 def test_attachment_dedupes_only_within_its_own_thread():
-    sql = str(document_dedupe_scope(user_id=1, thread_id=42, group_id=5))
+    sql = str(document_dedupe_scope(user_id=1, thread_id=42, group_ids=[5]))
     # Never widens to a group, and never matches a library document: an
     # attachment dies with its thread, so aliasing the two would make a library
     # document vanish when someone deletes a conversation.
@@ -320,15 +320,20 @@ async def test_reaper_is_a_noop_when_nothing_is_stuck(mock_db):
 # The spec's promise that both upload paths share one implementation.
 # --------------------------------------------------------------------------- #
 
-def test_both_upload_paths_go_through_the_same_choke_point():
-    """If either endpoint ever grows its own storage call, dedupe silently stops
-    covering it -- and nothing else in the suite would notice."""
+def test_every_upload_path_goes_through_the_same_choke_point():
+    """If any endpoint ever grows its own storage call, dedupe silently stops
+    covering it -- and nothing else in the suite would notice.
+
+    Three paths store bytes today: the manual upload, the discovery import, and
+    the URL fetch. The count is the tripwire: a fourth makes this fail, which is
+    the moment to check it dedupes and files like the others rather than to bump
+    the number.
+    """
     import inspect
     import routers.rag as rag_r
 
     source = inspect.getsource(rag_r)
-    # The manual upload endpoint and the discovery import must both call it...
-    assert source.count("await save_uploaded_document(") == 2
+    assert source.count("await save_uploaded_document(") == 3
     # ...and nothing may construct a RAGDocument row directly to bypass it.
     assert "RAGDocument(" not in source
 
@@ -411,7 +416,7 @@ async def test_lookup_keys_on_the_content_hash_within_the_dedupe_scope(mock_db, 
     content = b"%PDF-1.4 payload"
     mock_db.execute.return_value = make_result(scalar=None)
     with patch.object(dind, "settings", _settings(tmp_path)), \
-         patch.object(dind, "get_user_group_id", AsyncMock(return_value=3)):
+         patch.object(dind, "get_user_group_ids", AsyncMock(return_value=[3])):
         await dind.save_uploaded_document(
             user_id=1, filename="p.pdf", content=content, db=mock_db, thread_id=None)
 
@@ -433,7 +438,7 @@ async def test_attachment_lookup_never_widens_to_the_group(mock_db, tmp_path):
     # library row it can neither delete nor reindex.
     mock_db.execute.return_value = make_result(scalar=None)
     with patch.object(dind, "settings", _settings(tmp_path)), \
-         patch.object(dind, "get_user_group_id", AsyncMock(return_value=3)):
+         patch.object(dind, "get_user_group_ids", AsyncMock(return_value=[3])):
         await dind.save_uploaded_document(
             user_id=1, filename="p.pdf", content=b"%PDF-x", db=mock_db, thread_id=42)
 

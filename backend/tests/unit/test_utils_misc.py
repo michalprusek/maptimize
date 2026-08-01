@@ -579,47 +579,27 @@ async def test_get_current_admin_rejects_non_admin():
 # utils.groups - experiment access filter + group adoption
 # =============================================================================
 
-async def test_get_user_group_id_returns_none_when_ungrouped(mock_db):
-    mock_db.execute.return_value = make_result(scalar=None)
-    assert await groups.get_user_group_id(1, mock_db) is None
+async def test_get_user_group_ids_is_empty_when_ungrouped(mock_db):
+    mock_db.execute.return_value = make_result(scalars_all=[])
+    assert await groups.get_user_group_ids(1, mock_db) == []
 
 
-async def test_get_user_group_id_returns_group(mock_db):
-    mock_db.execute.return_value = make_result(scalar=7)
-    assert await groups.get_user_group_id(1, mock_db) == 7
-
-
-def test_experiment_owner_filter_ungrouped_is_owner_only():
-    # No group -> the filter must not widen beyond the owner.
-    sql = str(groups.experiment_owner_filter(5, None).compile(
-        compile_kwargs={"literal_binds": True}))
-    assert "experiments.user_id = 5" in sql
-    assert "group_id" not in sql
+async def test_get_user_group_ids_returns_every_membership(mock_db):
+    mock_db.execute.return_value = make_result(scalars_all=[7, 9])
+    assert await groups.get_user_group_ids(1, mock_db) == [7, 9]
 
 
 def test_experiment_owner_filter_grouped_is_owner_or_group():
-    sql = str(groups.experiment_owner_filter(5, 2).compile(
+    sql = str(groups.experiment_owner_filter(5, [2]).compile(
         compile_kwargs={"literal_binds": True}))
     assert "experiments.user_id = 5" in sql
-    assert "experiments.group_id = 2" in sql
+    assert "experiments.group_id IN (2)" in sql
     assert " OR " in sql  # widening, not narrowing
 
 
-async def test_adopt_orphan_experiments_claims_only_groupless_rows(mock_db):
-    mock_db.execute.return_value = make_result(rowcount=3)
-    adopted = await groups.adopt_orphan_experiments(mock_db, user_id=5, group_id=2)
-    assert adopted == 3
-
-    stmt = str(mock_db.execute.call_args.args[0].compile(
-        compile_kwargs={"literal_binds": True}))
-    # Only this user's rows, and only the ones with no group — never reassign an
-    # experiment that already belongs to a group.
-    assert "UPDATE experiments" in stmt
-    assert "SET group_id=2" in stmt.replace(" ", "").replace("SETgroup_id=2", "SET group_id=2")
-    assert "experiments.user_id = 5" in stmt
-    assert "experiments.group_id IS NULL" in stmt
-
-
-async def test_adopt_orphan_experiments_returns_zero_when_nothing_to_adopt(mock_db):
-    mock_db.execute.return_value = make_result(rowcount=0)
-    assert await groups.adopt_orphan_experiments(mock_db, 5, 2) == 0
+def test_default_group_id_only_guesses_when_there_is_nothing_to_guess():
+    # One group -> share it. Several -> leave it unshared rather than publish to
+    # the wrong audience; the user assigns it explicitly.
+    assert groups.default_group_id([7]) == 7
+    assert groups.default_group_id([]) is None
+    assert groups.default_group_id([7, 9]) is None
