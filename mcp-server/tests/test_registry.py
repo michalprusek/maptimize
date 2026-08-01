@@ -26,7 +26,13 @@ def test_list_tools_builds_schema_from_yaml(make_registry):
         "find_documents", "get_document_metadata", "find_similar_pages",
         "search_by_image", "search_by_text_example", "index_text", "index_document",
         "reindex_document", "delete_document", "get_indexing_status",
-        "list_folders", "create_folder", "move_document",
+        "list_folders", "create_folder", "rename_folder", "delete_folder",
+        "move_document",
+        # Ingest paths the AGENT can actually drive: index_document takes bytes
+        # inline (~350k tokens per MB), so a real paper has to arrive by URL or
+        # DOI, with the server doing the download.
+        "index_document_from_url", "search_literature", "import_papers",
+        "index_experiment_images",
         # groups: membership is many-to-many and joining needs an admin's
         # approval, which is deliberately NOT exposed here -- approve/reject sit
         # behind require_interactive_user, so a connector token cannot admit its

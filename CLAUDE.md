@@ -525,6 +525,18 @@ MCP: tool `assign_experiment_microscope` (`update_experiment` ho už **nemá**);
 změně kontraktu je uprav (`tests/test_registry.py`, `tests/test_protocol.py`,
 `tests/test_app_control_tools.py`).
 
+⚠️ **Agent NESMÍ dostávat soubory přes `index_document`** (base64 v argumentu
+volání). Megabajt base64 stojí ~350 tisíc tokenů, takže jeden 5MB paper je
+~1,9 M — tool sice existuje, ale je pro agenta nepoužitelný. Serverové cesty:
+`index_document_from_url` (pošle odkaz, stahuje server — `fetch_pdf` s SSRF
+guardem a revalidací každého redirectu) a `import_papers` (pošle DOI). Instrukce
+serveru navíc agentovi říkají, ať si literaturu **dohledá sám** (vlastní deep
+research / web search) a naimportuje — ne aby o soubory žádal uživatele.
+
+⚠️ **`GET /api/rag/documents/{id}/search` do MCP nepatří.** Čte
+`page.extracted_text`, který je u Vision RAGu vždy `NULL` — endpoint tedy vždy
+vrátí nula shod. Agentovi by tiše odpovídal „nenalezeno" na všechno.
+
 ⚠️ **Pole se posílají jako opakované query parametry**, ne jako JSON string —
 `?folder_ids=3&folder_ids=4`. To je to, co parsuje FastAPI `Query(List[int])`;
 serializovaný seznam dorazí jako jedna neparsovatelná hodnota. Zařizuje to

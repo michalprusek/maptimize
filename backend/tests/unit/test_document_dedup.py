@@ -320,15 +320,20 @@ async def test_reaper_is_a_noop_when_nothing_is_stuck(mock_db):
 # The spec's promise that both upload paths share one implementation.
 # --------------------------------------------------------------------------- #
 
-def test_both_upload_paths_go_through_the_same_choke_point():
-    """If either endpoint ever grows its own storage call, dedupe silently stops
-    covering it -- and nothing else in the suite would notice."""
+def test_every_upload_path_goes_through_the_same_choke_point():
+    """If any endpoint ever grows its own storage call, dedupe silently stops
+    covering it -- and nothing else in the suite would notice.
+
+    Three paths store bytes today: the manual upload, the discovery import, and
+    the URL fetch. The count is the tripwire: a fourth makes this fail, which is
+    the moment to check it dedupes and files like the others rather than to bump
+    the number.
+    """
     import inspect
     import routers.rag as rag_r
 
     source = inspect.getsource(rag_r)
-    # The manual upload endpoint and the discovery import must both call it...
-    assert source.count("await save_uploaded_document(") == 2
+    assert source.count("await save_uploaded_document(") == 3
     # ...and nothing may construct a RAGDocument row directly to bypass it.
     assert "RAGDocument(" not in source
 

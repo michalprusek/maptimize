@@ -460,3 +460,43 @@ async def test_page_image_token_passthrough_uses_query(make_registry):
         "read_document_pages", {"document_id": 5, "start_page": 1, "count": 1}, token="mtk_pat_xyz"
     )
     assert any(b.type == "image" for b in blocks)
+
+
+async def test_index_from_url_sends_only_the_link(make_registry):
+    """The whole point of this tool: the file never passes through the model.
+
+    index_document takes bytes inline, which is ~350k tokens per megabyte -- so a
+    real paper can only be indexed if the SERVER fetches it.
+    """
+    seen = {}
+
+    def routes(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/rag/documents/from-url":
+            seen["body"] = json.loads(request.content)
+            return httpx.Response(200, json={
+                "id": 5, "name": "p.pdf", "file_type": "pdf", "status": "pending",
+                "page_count": 0, "created_at": "2026-08-01T00:00:00Z",
+                "is_duplicate": False,
+            })
+        return httpx.Response(404)
+
+    reg = make_registry(_with_login(routes))
+    await reg.dispatch("index_document_from_url", {"url": "https://example.org/p.pdf"})
+    assert seen["body"] == {"url": "https://example.org/p.pdf"}
+    assert "content_base64" not in seen["body"]
+
+
+async def test_import_papers_sends_dois_as_a_list(make_registry):
+    seen = {}
+
+    def routes(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/rag/discover/import":
+            seen["body"] = json.loads(request.content)
+            return httpx.Response(200, json={
+                "imported": 2, "failed": [], "already_in_library": [],
+            })
+        return httpx.Response(404)
+
+    reg = make_registry(_with_login(routes))
+    await reg.dispatch("import_papers", {"dois": ["10.1/a", "10.1/b"]})
+    assert seen["body"]["dois"] == ["10.1/a", "10.1/b"]

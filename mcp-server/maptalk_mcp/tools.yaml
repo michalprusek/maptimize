@@ -382,8 +382,12 @@ tools:
       readOnlyHint: false
       destructiveHint: false
     description: >
-      Index a new PDF / Office / image document into the library. Provide the
-      file bytes as base64 plus a filename.
+      Index a document you already hold as BYTES, passed base64 inline. Only
+      practical for something small you generated yourself — a real paper is
+      megabytes, and base64 in a tool call costs you roughly 350k tokens per
+      megabyte. For anything you found rather than made, use
+      index_document_from_url (you give a link, the SERVER downloads it) or
+      import_papers (you give DOIs). Those cost nothing but the URL.
     handler: index_document
     params:
       - name: filename
@@ -396,6 +400,146 @@ tools:
         type: string
         required: true
         description: Base64-encoded file bytes.
+
+
+  - name: index_document_from_url
+    annotations:
+      readOnlyHint: false
+      destructiveHint: false
+      idempotentHint: true
+    description: >
+      Index a document by URL — the SERVER downloads it, so the file never passes
+      through the conversation and costs you no tokens. This is how you add a
+      paper, preprint or report you found anywhere on the web.
+      YOU ARE EXPECTED TO DO THE FINDING YOURSELF: if the user needs literature
+      or background the library does not have, run your own deep research or web
+      search, then bring the results back here and index them. Do not ask the
+      user to fetch or upload files for you. For anything with a DOI, prefer
+      import_papers — it resolves the open-access copy for you.
+      Re-indexing the same URL is safe: identical bytes are deduplicated and
+      reported as is_duplicate.
+    handler: http_post_json
+    method: POST
+    path: /api/rag/documents/from-url
+    params:
+      - name: url
+        in: body
+        type: string
+        required: true
+        description: Direct link to the PDF (redirects are followed and re-checked).
+
+
+  - name: search_literature
+    annotations:
+      readOnlyHint: true
+      openWorldHint: true
+    description: >
+      Search published literature in Europe PMC — outside the library, for papers
+      the lab does not have yet. Accepts a plain-language topic, a list of titles,
+      or DOIs. Returns candidates with title, authors, journal, year, abstract,
+      DOI, and two flags: `importable` (an open-access PDF exists) and
+      `already_imported` (it is in your library already).
+      Pass the DOIs of the ones you want to import_papers. This is a literature
+      database, not the whole web: for anything it does not cover, do your own
+      research and use index_document_from_url.
+    handler: http_post_json
+    method: POST
+    path: /api/rag/discover
+    params:
+      - name: query
+        in: body
+        type: string
+        required: true
+        description: Topic, pasted titles, or DOIs.
+
+
+  - name: import_papers
+    annotations:
+      readOnlyHint: false
+      destructiveHint: false
+      idempotentHint: true
+    description: >
+      Import papers into the library BY DOI — the server resolves the
+      open-access PDF, downloads it and indexes it. No file bytes pass through
+      you. This is the cheapest way to add published work; use search_literature
+      first to get the DOIs, or pass DOIs the user gave you.
+      Reports imported / failed / already_in_library separately, so a duplicate is
+      never counted as an import and a failure always carries its reason.
+    handler: http_post_json
+    method: POST
+    path: /api/rag/discover/import
+    params:
+      - name: dois
+        in: body
+        type: array
+        items: string
+        required: true
+        description: DOIs to import (max 50 per call).
+
+
+  - name: rename_folder
+    annotations:
+      readOnlyHint: false
+      destructiveHint: false
+      idempotentHint: true
+    description: >
+      Rename a library folder, or move it under a different parent. A group's
+      root, its `common` and anyone's private folder are structural and refuse
+      both (400) — everyone navigates by them.
+    handler: http_post_json
+    method: PATCH
+    path: /api/rag/folders/{folder_id}
+    params:
+      - name: folder_id
+        in: path
+        type: integer
+        required: true
+      - name: name
+        in: body
+        type: string
+        description: New name.
+      - name: parent_id
+        in: body
+        type: integer
+        description: New parent folder id; the folder inherits its visibility.
+
+
+  - name: delete_folder
+    annotations:
+      readOnlyHint: false
+      destructiveHint: true
+    description: >
+      Dissolve a folder. Its subfolders and documents move up to its parent and
+      are re-stamped for that location — nothing is deleted, so this is
+      recoverable by moving them back. Structural folders (a group root, `common`,
+      a private folder) refuse with 400.
+    handler: http_json
+    method: DELETE
+    path: /api/rag/folders/{folder_id}
+    params:
+      - name: folder_id
+        in: path
+        type: integer
+        required: true
+
+
+  - name: index_experiment_images
+    annotations:
+      readOnlyHint: false
+      destructiveHint: false
+      idempotentHint: true
+    description: >
+      Make an experiment's microscopy field-of-view images searchable, so
+      search_documents with include_fov=true can find them. Runs in the
+      background; poll get_indexing_status.
+    handler: http_post_json
+    method: POST
+    path: /api/rag/index/experiment/{experiment_id}
+    params:
+      - name: experiment_id
+        in: path
+        type: integer
+        required: true
 
   - name: reindex_document
     annotations:

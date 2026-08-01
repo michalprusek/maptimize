@@ -7,6 +7,7 @@ import logging
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import urlparse
 from typing import List, Optional, Sequence
 
 import redis.asyncio as redis
@@ -69,6 +70,7 @@ from services.rag_service import (
 from services.paper_discovery_service import (
     discover as discover_papers,
     fetch_paper_pdf,
+    fetch_pdf,
     PdfFetchError,
     DiscoveryError,
     search_epmc,
@@ -1203,6 +1205,67 @@ async def search_by_image(
         emb.tolist(), current_user.id, db, limit=limit, group_ids=group_ids,
     )
     return {"results": results}
+
+
+@router.post("/documents/from-url", response_model=RAGDocumentUploadResponse)
+async def index_document_from_url(
+    payload: dict,
+    background_tasks: BackgroundTasks,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Index a document the SERVER downloads, given its URL.
+
+    This exists because the base64 upload cannot be driven by an agent: the model
+    would have to emit the file's bytes itself, and a 5 MB PDF is millions of
+    tokens. Here the caller sends a URL and the bytes never pass through the
+    conversation.
+
+    The download reuses the discovery importer's fetch path, so it inherits its
+    guards rather than reimplementing them: SSRF checks with every redirect hop
+    re-validated, a content-type check, and the 100 MB cap.
+    """
+    await _check_upload_rate_limit(current_user.id)
+
+    url = (payload.get("url") or "").strip()
+    if not url:
+        raise HTTPException(status_code=400, detail="url is required")
+
+    try:
+        content = await fetch_pdf(url)
+    except PdfFetchError as exc:
+        # The reason matters: a 403, a wrong content-type and an over-size file
+        # call for different next steps from the caller.
+        logger.info("from-url fetch refused for %s: %s", url, exc)
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    filename = Path(urlparse(url).path).name or "document.pdf"
+    if not is_supported_file(filename):
+        filename = f"{filename}.pdf" if filename else "document.pdf"
+
+    group_ids = await get_user_group_ids(current_user.id, db)
+    document, created = await save_uploaded_document(
+        user_id=current_user.id, filename=filename, content=content, db=db,
+    )
+    if created:
+        file_document(document, await default_upload_folder(db, group_ids))
+        document.source_url = url
+    await db.commit()
+
+    if created:
+        background_tasks.add_task(process_document_async, document.id)
+    else:
+        logger.info("from-url download of %s deduplicated to document %s", url, document.id)
+
+    return RAGDocumentUploadResponse(
+        id=document.id,
+        name=document.name,
+        file_type=document.file_type,
+        status=document.status,
+        page_count=document.page_count,
+        created_at=document.created_at,
+        is_duplicate=not created,
+    )
 
 
 @router.post("/documents/text")
