@@ -23,8 +23,16 @@ class RAGDocumentUploadResponse(BaseModel):
     # True when the upload was recognised as a copy of a document already
     # visible to the uploader: nothing was stored, nothing was indexed, and the
     # fields above describe the PRE-EXISTING document. The UI must say so
-    # rather than showing this as a fresh upload.
+    # rather than showing this as a fresh upload. Note that a duplicate is NOT
+    # refiled -- it may be a colleague's row -- so folder_id below is where the
+    # existing copy already sits, not where you asked to put it.
     is_duplicate: bool = False
+    # Where it landed and who can read it. Without these the most consequential
+    # fact about an upload -- shared with the lab, or only mine -- is the one
+    # thing the API does not return, so the agent has to guess and will guess
+    # "shared". group_id NULL means owner-only.
+    folder_id: Optional[int] = None
+    group_id: Optional[int] = None
 
     class Config:
         from_attributes = True
