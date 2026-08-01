@@ -24,7 +24,7 @@ from database import get_db_context
 from models.rag_document import (
     RAGDocument, RAGDocumentPage, DocumentStatus, document_dedupe_scope,
 )
-from utils.groups import default_group_id, get_user_group_ids
+from utils.groups import get_user_group_ids
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -178,12 +178,15 @@ async def save_uploaded_document(
     # Save file
     original_path.write_bytes(content)
 
-    # Create DB record (the group stamp shares library uploads with the
-    # lab group; chat attachments keep it None).
+    # Created owner-only. Audience is decided by where the document is FILED --
+    # the caller stamps group_id from the target folder's placement, defaulting
+    # to the group's `common` (utils.folder_seed.default_upload_folder). Stamping
+    # a group here as well would give an unfiled document an audience that
+    # placement_group_id(None) says it does not have.
     document = RAGDocument(
         user_id=user_id,
         thread_id=thread_id,
-        group_id=default_group_id(group_ids),
+        group_id=None,
         name=filename,
         file_type=file_type,
         original_path=str(original_path),
@@ -626,10 +629,12 @@ async def index_text_snippet(
     original_path = user_rag_dir / f"{timestamp}_text_{content_hash[:8]}.txt"
     original_path.write_bytes(content)
 
+    # Owner-only on creation, like save_uploaded_document: filing decides the
+    # audience, and the caller stamps it from the folder.
     document = RAGDocument(
         user_id=user_id,
         thread_id=thread_id,
-        group_id=default_group_id(group_ids),
+        group_id=None,
         name=(title or "Text snippet")[:255],
         file_type="text",
         original_path=str(original_path),

@@ -446,6 +446,14 @@ dokumentů; takhle se ACL plocha nemění vůbec. **Cokoli, co mění, kde dokum
 musí projít tímhle helperem**, jinak soukromá složka tiše obsahuje dokumenty, které
 čte celá skupina.
 
+⚠️ **Upload bez složky spadne do `common` té skupiny** (`default_upload_folder`),
+ne do kořene. Díky tomu je běžný upload sdílený, aniž by řádek nesl vlastní
+skupinu — a invariant výše platí **bez výjimky**: nezaložený dokument je
+owner-only. Kdo je ve víc skupinách, nemá jednoznačné `common`, takže mu upload
+zůstane nezaložený a soukromý (totéž pravidlo i důvod jako `default_group_id`).
+Do 2026-08-01 to razítkoval `save_uploaded_document` sám, takže dokument v kořeni
+byl skupinově čitelný, zatímco `placement_group_id(None)` tvrdil opak.
+
 ⚠️ **Seedované složky (`root`/`common`/`user`) nejdou přejmenovat, přesunout ani
 smazat** (`_reject_if_seeded` → 400). Navigují podle nich všichni členové. Jediná
 výjimka není akce uživatele: přejmenování skupiny přejmenuje i její kořen, aby se

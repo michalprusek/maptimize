@@ -167,6 +167,46 @@ async def test_the_walk_never_rewrites_a_seeded_folder(mock_db):
         f"documents under a seeded folder were re-stamped: {sql}"
 
 
+async def test_an_unfiled_upload_lands_in_the_groups_common_folder(mock_db):
+    """"Where does a plain upload go" and "is the placement invariant true" are
+    the same question. Answering `common` makes it true with no exception: the
+    document is filed, so its group_id comes from its folder like every other."""
+    from utils.folder_seed import default_upload_folder
+
+    common = _seeded(2, FOLDER_KIND_COMMON, visibility=FOLDER_VISIBILITY_GROUP, parent_id=1)
+    mock_db.execute.return_value = make_result(scalars_all=[common])
+
+    folder = await default_upload_folder(mock_db, [2])
+
+    assert folder is common
+    assert placement_group_id(folder) == 2, "filing it there must share it"
+
+
+async def test_a_member_of_several_groups_gets_no_default_folder(mock_db):
+    """Same rule as default_group_id: guessing which group the user meant would
+    publish work to the wrong audience. They pick a folder, or it stays private."""
+    from utils.folder_seed import default_upload_folder
+
+    assert await default_upload_folder(mock_db, [2, 5]) is None
+    assert await default_upload_folder(mock_db, []) is None
+    mock_db.execute.assert_not_called()
+
+
+async def test_an_unfiled_document_is_owner_only(mock_db):
+    """With `common` as the default, nothing reaches the library root by accident
+    -- so the root can mean what placement_group_id has always said it means."""
+    import inspect
+
+    from services import document_indexing_service as dind
+
+    for fn in (dind.save_uploaded_document, dind.index_text_snippet):
+        src = inspect.getsource(fn)
+        assert "default_group_id" not in src, (
+            f"{fn.__name__} still stamps a group without a folder, so a document "
+            "at the root disagrees with placement_group_id(None)"
+        )
+
+
 async def test_dissolving_a_folder_walks_what_moved_not_its_siblings(mock_db):
     """The reachable version: any member may create a folder under the group root
     and delete it again. Walking the PARENT afterwards would descend into every

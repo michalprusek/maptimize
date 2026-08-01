@@ -90,7 +90,14 @@ def test_document_read_scope_owner_only_without_group():
     assert "group_id" not in sql
 
 
-async def test_library_upload_is_stamped_with_group(mock_db, tmp_path):
+async def test_a_saved_document_starts_owner_only(mock_db, tmp_path):
+    """The service no longer decides the audience -- filing does.
+
+    It used to stamp the uploader's single group here, which made an UNFILED
+    document group-readable while placement_group_id(None) said it was not. The
+    router now files the upload (into the group's `common` by default) and stamps
+    group_id from that folder, so the two can never disagree.
+    """
     mock_db.execute.return_value = make_result(scalar=None)  # no dedupe hit
     with patch.object(dis, "get_user_group_ids", AsyncMock(return_value=[7])), \
          patch.object(dis.settings, "rag_document_dir", tmp_path):
@@ -98,7 +105,26 @@ async def test_library_upload_is_stamped_with_group(mock_db, tmp_path):
             user_id=1, filename="paper.pdf", content=b"%PDF-1.4",
             db=mock_db, thread_id=None,
         )
-    assert doc.group_id == 7
+    assert doc.group_id is None
+
+
+async def test_the_dedupe_scope_still_covers_every_group(mock_db, tmp_path):
+    """Dropping the stamp must not narrow the dedupe: a paper a colleague already
+    indexed should still be recognised, or the lab re-indexes it per member."""
+    captured = {}
+
+    async def spy(user_id, thread_id, group_ids, content_hash, db):
+        captured["group_ids"] = list(group_ids)
+        return None
+
+    with patch.object(dis, "get_user_group_ids", AsyncMock(return_value=[7, 9])), \
+         patch.object(dis, "_find_duplicate_document", spy), \
+         patch.object(dis.settings, "rag_document_dir", tmp_path):
+        await dis.save_uploaded_document(
+            user_id=1, filename="paper.pdf", content=b"%PDF-1.4",
+            db=mock_db, thread_id=None,
+        )
+    assert captured["group_ids"] == [7, 9]
 
 
 async def test_attachment_upload_is_not_stamped(mock_db, tmp_path):

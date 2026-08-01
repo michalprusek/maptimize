@@ -36,6 +36,7 @@ from schemas.rag import (
     ImportResponse,
 )
 from utils.folder_placement import placement_group_id, resolve_folder_scope
+from utils.folder_seed import default_upload_folder
 from utils.groups import get_user_group_ids
 from utils.security import get_current_user, get_current_user_from_query
 from services.document_indexing_service import (
@@ -391,15 +392,20 @@ async def upload_document(
             detail="File too large. Maximum size is 100MB"
         )
 
-    # Validate the target folder is one the caller can see (mirrors move_document),
-    # so a document can't be filed under a foreign/nonexistent folder id. (isinstance
-    # int, not `is not None`, so an omitted form field is skipped cleanly.)
-    target_folder = None
+    # Where this lands. A named folder is validated against what the caller can
+    # see (mirrors move_document), so a document can't be filed under a foreign or
+    # nonexistent id; an unnamed one defaults to the group's `common`, which is
+    # what makes an ordinary upload shared without the row having to carry a group
+    # of its own. (isinstance int, not `is not None`, so an omitted form field is
+    # skipped cleanly.)
+    group_ids = await get_user_group_ids(current_user.id, db)
     if isinstance(folder_id, int):
-        group_ids = await get_user_group_ids(current_user.id, db)
         target_folder = await get_target_folder(
             db, folder_id, current_user.id, group_ids
         )
+    else:
+        target_folder = await default_upload_folder(db, group_ids)
+        folder_id = target_folder.id if target_folder else None
 
     try:
         # Save document
@@ -409,10 +415,12 @@ async def upload_document(
             content=content,
             db=db,
         )
-        if created and isinstance(folder_id, int):
-            # The folder decides who can read it, so file it and re-stamp in one
-            # go -- a document whose group_id disagrees with its folder is exactly
-            # the inconsistency utils.folder_placement exists to prevent.
+        if created:
+            # The folder decides who can read it, so file it and stamp in one go
+            # -- a document whose group_id disagrees with its folder is exactly
+            # the inconsistency utils.folder_placement exists to prevent. With no
+            # folder (a multi-group member, who has no unambiguous `common`) both
+            # stay None: unfiled and owner-only, until they move it.
             document.folder_id = folder_id
             document.group_id = placement_group_id(target_folder)
         await db.commit()
@@ -1200,6 +1208,13 @@ async def index_text_endpoint(
         raise HTTPException(status_code=400, detail="text is required")
     document, created = await index_text_snippet(current_user.id, title, text_value, db)
     if created:
+        # Same filing rule as an uploaded file: `common` by default, so a snippet
+        # the agent indexes is shared with the lab rather than owner-only.
+        group_ids = await get_user_group_ids(current_user.id, db)
+        folder = await default_upload_folder(db, group_ids)
+        document.folder_id = folder.id if folder else None
+        document.group_id = placement_group_id(folder)
+        await db.commit()
         background_tasks.add_task(process_text_document, document.id)
     return {
         "document_id": document.id,

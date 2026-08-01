@@ -17,7 +17,7 @@ member folder), never on the folder's name -- names are user-visible and change.
 None of them commit; the caller owns the transaction.
 """
 import logging
-from typing import Optional, Tuple
+from typing import Optional, Sequence, Tuple
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -134,6 +134,27 @@ async def detach_member_folder(db: AsyncSession, group_id: int, user_id: int) ->
     logger.info(
         f"Detached user {user_id}'s private folder {folder.id} from group {group_id}"
     )
+
+
+async def default_upload_folder(
+    db: AsyncSession, group_ids: Sequence[int]
+) -> Optional[DocumentFolder]:
+    """Where a document goes when the uploader named no folder.
+
+    Exactly one group -> that group's ``common``, so the ordinary upload is
+    shared with colleagues, which is what a single-group lab expects. Several
+    groups -> None, for the same reason ``default_group_id`` returns None:
+    guessing which one the user meant would publish work to the wrong audience.
+    Their document stays unfiled and owner-only until they move it.
+
+    Filing the default rather than stamping a group is what lets
+    ``placement_group_id`` be the whole truth about a document's audience -- with
+    an unfiled upload carrying a group, the root would have meant one thing on
+    upload and another on move.
+    """
+    if len(group_ids) != 1:
+        return None
+    return await _find(db, group_ids[0], FOLDER_KIND_COMMON)
 
 
 async def dissolve_group_folders(db: AsyncSession, group_id: int) -> int:

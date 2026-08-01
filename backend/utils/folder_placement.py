@@ -14,16 +14,17 @@ document-row ACL is therefore untouched by the folder feature. (Folders have
 their own, separate predicate, ``folder_read_scope``; it decides which folders a
 caller may see and can narrow a search, but it never widens a document read.)
 
-The invariant this maintains: **a document filed IN a folder carries that
-folder's ``placement_group_id``.** Anything that changes which folder a document
-lives in must go through here, or a private folder will quietly contain
-group-readable documents.
+The invariant this maintains, with no exception: **a document's group_id equals
+``placement_group_id`` of the folder it sits in**, and an unfiled document is
+owner-only. Anything that changes where a document lives must go through here, or
+a private folder will quietly contain group-readable documents.
 
-⚠️ A document at the library root is the exception, and deliberately so: it keeps
-the ``default_group_id()`` stamp ``save_uploaded_document`` gave it, so a
-single-group member's plain upload is shared with their group without being
-filed anywhere. ``placement_group_id(None)`` returning None is what a move *out*
-of a folder means, not what an unfiled upload means.
+Uploads keep that true by being FILED rather than stamped: with no folder named
+they land in the uploader's group ``common``
+(``utils.folder_seed.default_upload_folder``), so the ordinary upload is shared
+without the row carrying an audience of its own. A member of several groups has
+no unambiguous ``common``, so their upload stays unfiled and private until they
+move it -- the same rule, and the same reason, as ``default_group_id``.
 """
 import logging
 from typing import Optional, Sequence
