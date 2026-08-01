@@ -1,0 +1,26 @@
+[Unit]
+Description=Maptimize production backup (Postgres + data/ + weights)
+Documentation=file:/home/cvat/maptimize/scripts/backup.sh
+# Nothing to back up if the backup disk is not there. Without this the script
+# would happily write into the empty /backup mountpoint on the root disk —
+# producing "successful" backups that sit on the very disk they protect against.
+RequiresMountsFor=/backup
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+User=cvat
+Group=cvat
+ExecStart=/home/cvat/maptimize/scripts/backup.sh
+
+# The default start timeout is 90s and a full run already takes ~80s. Without
+# this the job would start being SIGTERM'd partway through the file sync as soon
+# as the dataset grew a little — intermittently, and only in production.
+TimeoutStartSec=4h
+
+Nice=10
+IOSchedulingClass=idle
+
+[Install]
+WantedBy=multi-user.target
