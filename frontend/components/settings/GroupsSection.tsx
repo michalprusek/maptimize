@@ -56,7 +56,12 @@ export function GroupsSection(): JSX.Element {
   const [groupError, setGroupError] = useState<string | null>(null);
   const [groupSuccess, setGroupSuccess] = useState<string | null>(null);
 
-  const { data: myGroupsData, isLoading: isLoadingMyGroups } = useQuery({
+  const {
+    data: myGroupsData,
+    isLoading: isLoadingMyGroups,
+    isError: myGroupsFailed,
+    error: myGroupsError,
+  } = useQuery({
     queryKey: ["myGroups"],
     queryFn: () => api.getMyGroups(),
   });
@@ -178,6 +183,14 @@ export function GroupsSection(): JSX.Element {
         {isLoadingMyGroups ? (
           <div className="flex justify-center py-6">
             <Loader2 className="w-6 h-6 text-primary-500 animate-spin" />
+          </div>
+        ) : myGroupsFailed ? (
+          /* Without this branch a failed fetch falls through to the empty state
+             and tells a member of two groups, with a friendly icon, that they
+             belong to none. */
+          <div className="flex items-center gap-2 text-accent-red text-sm">
+            <AlertCircle className="w-4 h-4" />
+            {tg("loadFailed", { reason: (myGroupsError as Error)?.message ?? "" })}
           </div>
         ) : memberships.length > 0 ? (
           <div className="space-y-6">

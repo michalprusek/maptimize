@@ -16,6 +16,7 @@ import logging
 import os
 import secrets
 from datetime import datetime, timedelta, timezone
+from typing import Optional
 from urllib.parse import urlencode, urlparse
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
@@ -67,23 +68,63 @@ ALLOWED_REDIRECT_HOSTS = {
 
 # Native apps redirect to a loopback listener on an arbitrary port (RFC 8252), so
 # these are matched by host and allowed over plain http -- nothing leaves the
-# machine.
+# machine. Only http: an https loopback URI is refused.
 LOOPBACK_HOSTS = {"localhost", "127.0.0.1", "::1"}
 
+# The list used to be URL PREFIXES under a different variable name. Silence would
+# be the worst outcome of that rename: an operator who had narrowed the allowlist
+# gets the defaults restored (a boundary silently re-widened), and one who had
+# widened it loses a client and debugs a config that "stopped working".
+if os.environ.get("OAUTH_ALLOWED_REDIRECT_PREFIXES"):
+    logger.error(
+        "OAUTH_ALLOWED_REDIRECT_PREFIXES is no longer read. Set "
+        "OAUTH_ALLOWED_REDIRECT_HOSTS to bare hostnames (e.g. "
+        "'claude.ai,chatgpt.com'). Until then only the built-in defaults apply: %s",
+        ",".join(sorted(ALLOWED_REDIRECT_HOSTS)),
+    )
+for _h in ALLOWED_REDIRECT_HOSTS:
+    if "/" in _h or ":" in _h:
+        logger.error(
+            "OAUTH_ALLOWED_REDIRECT_HOSTS entry %r looks like a URL, not a host; "
+            "it will never match. Use a bare hostname.", _h,
+        )
 
-def _redirect_allowed(uri: str) -> bool:
+
+def _redirect_refusal(uri: str) -> Optional[str]:
+    """Why this redirect URI is not admissible, or None if it is.
+
+    A reason rather than a bool: five different causes used to collapse into the
+    same silent False, and the operator debugging "my connector will not connect"
+    got one generic string and an empty log. The reason is safe to log and to
+    return -- the client sent the URI, so it is not a secret.
+    """
     if not isinstance(uri, str) or not uri:
-        return False
+        return "redirect_uri is missing"
     try:
         parsed = urlparse(uri)
     except ValueError:  # malformed IPv6 literal, etc.
-        return False
+        return "redirect_uri is not a parseable URL"
     if parsed.username or parsed.password:
-        return False
+        return "redirect_uri must not contain credentials"
     host = (parsed.hostname or "").lower()
+    if not host:
+        return "redirect_uri has no host (private-use URI schemes are not supported)"
     if host in LOOPBACK_HOSTS:
-        return parsed.scheme == "http"
-    return parsed.scheme == "https" and host in ALLOWED_REDIRECT_HOSTS
+        if parsed.scheme != "http":
+            return f"loopback redirect_uri must use http, got {parsed.scheme!r}"
+        return None
+    if parsed.scheme != "https":
+        return f"redirect_uri must use https, got {parsed.scheme!r}"
+    if host not in ALLOWED_REDIRECT_HOSTS:
+        return (
+            f"host {host!r} is not an allowed connector host "
+            f"({', '.join(sorted(ALLOWED_REDIRECT_HOSTS))} or loopback)"
+        )
+    return None
+
+
+def _redirect_allowed(uri: str) -> bool:
+    return _redirect_refusal(uri) is None
 
 
 def _b64url(data: bytes) -> str:
@@ -131,10 +172,17 @@ async def register_client(request: Request, db: AsyncSession = Depends(get_db)):
     redirect_uris = body.get("redirect_uris") or []
     if not isinstance(redirect_uris, list) or not redirect_uris:
         raise HTTPException(status_code=400, detail="redirect_uris is required")
-    if not all(_redirect_allowed(u) for u in redirect_uris):
-        # Anti-phishing: only an allowlisted vendor callback (or loopback) may
-        # be registered -- see ALLOWED_REDIRECT_HOSTS.
-        raise HTTPException(status_code=400, detail="redirect_uri is not permitted")
+    # Anti-phishing: only an allowlisted vendor callback (or loopback) may be
+    # registered -- see ALLOWED_REDIRECT_HOSTS. Name the URI AND the reason: a
+    # client registering several gets told which one, instead of retrying blind.
+    for uri in redirect_uris:
+        refusal = _redirect_refusal(uri)
+        if refusal is not None:
+            logger.warning("DCR refused %r from %r: %s",
+                           uri, body.get("client_name", ""), refusal)
+            raise HTTPException(
+                status_code=400, detail=f"redirect_uri {uri!r} is not permitted: {refusal}"
+            )
     client_id = "mcp-" + secrets.token_urlsafe(16)
     db.add(OAuthClient(
         client_id=client_id,
@@ -157,11 +205,22 @@ async def _client_allows(db: AsyncSession, client_id: str, redirect_uri: str) ->
         select(OAuthClient).where(OAuthClient.client_id == client_id)
     )).scalar_one_or_none()
     if row is None:
+        logger.info("Authorize refused: no client registered as %r", client_id)
         return False
     try:
-        return redirect_uri in json.loads(row.redirect_uris)
-    except Exception:
+        registered = json.loads(row.redirect_uris)
+    except (ValueError, TypeError):
+        # Corrupt stored data, not a policy decision -- it would otherwise look
+        # identical to "unknown client" forever.
+        logger.error("OAuth client %r has unparseable redirect_uris", client_id)
         return False
+    if redirect_uri not in registered:
+        logger.info(
+            "Authorize refused for client %r: %r is not among its registered URIs",
+            client_id, redirect_uri,
+        )
+        return False
+    return True
 
 
 # ---- authorization endpoint (login + consent) ------------------------------

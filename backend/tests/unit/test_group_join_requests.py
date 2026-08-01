@@ -262,9 +262,8 @@ async def test_disbanding_a_group_does_not_leave_undeletable_folders(mock_db):
                           parent_id=1, visibility=PRIVATE)
     mock_db.execute.return_value = make_result(scalars_all=[root, common, mine])
 
-    n = await folder_seed.dissolve_group_folders(mock_db, group_id=2)
+    await folder_seed.dissolve_group_folders(mock_db, group_id=2)
 
-    assert n == 3
     for folder in (root, common, mine):
         assert folder.kind == KIND_CUSTOM, f"{folder.name} stayed seeded"
         assert folder.group_id is None

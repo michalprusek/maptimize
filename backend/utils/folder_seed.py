@@ -154,10 +154,22 @@ async def default_upload_folder(
     """
     if len(group_ids) != 1:
         return None
-    return await _find(db, group_ids[0], FOLDER_KIND_COMMON)
+    folder = await _find(db, group_ids[0], FOLDER_KIND_COMMON)
+    if folder is None:
+        # A THIRD outcome wearing the same None: not a policy refusal but a
+        # seeding fault (a group created before folders existed, or a backfill
+        # that never ran). Every upload by its members silently becomes
+        # owner-only, and the only symptom is a colleague saying "I can't find
+        # that paper" weeks later.
+        logger.error(
+            "Group %s has no 'common' folder, so uploads by its members land "
+            "unfiled and owner-only. Run scripts/migrate_multi_group_folders.py.",
+            group_ids[0],
+        )
+    return folder
 
 
-async def dissolve_group_folders(db: AsyncSession, group_id: int) -> int:
+async def dissolve_group_folders(db: AsyncSession, group_id: int) -> None:
     """Turn a disbanded group's seeded folders back into ordinary ones.
 
     ``document_folders.group_id`` is ON DELETE SET NULL, so deleting a group
@@ -167,6 +179,8 @@ async def dissolve_group_folders(db: AsyncSession, group_id: int) -> int:
     Undeletable debris in someone's tree is a worse outcome than the tidy-up.
 
     Each folder returns to its owner as a private, top-level, ordinary folder.
+    ⚠️ This selects the group's WHOLE tree, not only the seeded rows: custom
+    folders inherit `group_id` from their parent, so nesting is flattened too.
     Private is the safe direction: ``common`` loses its group anyway, so leaving
     it group-visible would only mean nobody could see it. Callers must commit.
     """
@@ -180,10 +194,18 @@ async def dissolve_group_folders(db: AsyncSession, group_id: int) -> int:
         folder.visibility = FOLDER_VISIBILITY_PRIVATE
     if rows:
         logger.info(
-            f"Dissolved {len(rows)} seeded folder(s) of group {group_id} into "
-            f"ordinary private folders"
+            f"Dissolved {len(rows)} folder(s) of group {group_id} into ordinary "
+            f"private folders"
         )
-    return len(rows)
+    else:
+        # Every group gets a root and a `common` at creation, so none at all
+        # means the seed never ran or the rows were already detached -- and the
+        # group row is about to be deleted, after which they can no longer be
+        # found by group at all.
+        logger.warning(
+            "Disbanding group %s that has no folder tree; anything it should "
+            "have owned is now unreachable by group id", group_id,
+        )
 
 
 async def rename_group_root_folder(db: AsyncSession, group_id: int, name: str) -> None:
