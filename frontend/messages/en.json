@@ -813,6 +813,7 @@
     }
   },
   "groups": {
+    "loadFailed": "Could not load your groups: {reason}",
     "roleMember": "Member",
     "roleAdmin": "Admin",
     "rejectSuccess": "Request declined",

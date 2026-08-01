@@ -239,7 +239,16 @@ async def get_my_groups(
     items = []
     for membership in memberships:
         group = await load_group_detail(db, membership.group_id)
-        if group is None:  # membership outliving its group: skip, do not 500
+        if group is None:
+            # Skipping beats a 500 -- their other groups still render. But
+            # GroupMember.group_id is ON DELETE CASCADE, so this is supposed to
+            # be unreachable; if it fires, a FK was bypassed and the user is
+            # quietly missing a group from their settings page.
+            logger.error(
+                "Membership %s references missing group %s for user %s -- "
+                "skipping; this should be impossible under the CASCADE FK",
+                membership.id, membership.group_id, current_user.id,
+            )
             continue
         items.append(MyGroupMembership(
             group=build_group_detail_response(group),

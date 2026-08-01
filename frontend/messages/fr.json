@@ -819,6 +819,7 @@
     }
   },
   "groups": {
+    "loadFailed": "Impossible de charger vos groupes : {reason}",
     "roleMember": "Membre",
     "roleAdmin": "Administrateur",
     "rejectSuccess": "Demande refusée",
