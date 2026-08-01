@@ -110,3 +110,37 @@ async def test_registering_the_chatgpt_callback_succeeds(mock_db):
     mock_db.add.assert_called_once()
     registered = mock_db.add.call_args.args[0]
     assert "chatgpt.com" in registered.redirect_uris
+
+
+# --- diagnosing a refusal ----------------------------------------------------
+
+@pytest.mark.parametrize("uri,expect", [
+    ("", "missing"),
+    ("https://evil.example/cb", "not an allowed connector host"),
+    ("http://claude.ai/cb", "must use https"),
+    ("https://claude.ai:pw@evil.example/cb", "must not contain credentials"),
+    ("https://localhost/cb", "must use http"),
+    ("javascript:alert(1)", "no host"),
+])
+def test_a_refusal_says_which_rule_it_broke(uri, expect):
+    """Five causes used to collapse into the same silent False, so an operator
+    debugging "the connector will not connect" had one generic string and an
+    empty log. The URI came from the client, so the reason is not a secret."""
+    reason = oauth._redirect_refusal(uri)
+    assert reason is not None and expect in reason, f"{uri!r} -> {reason!r}"
+
+
+def test_an_admissible_uri_has_no_reason():
+    assert oauth._redirect_refusal("https://chatgpt.com/cb") is None
+    assert oauth._redirect_refusal("http://localhost:8765/cb") is None
+
+
+async def test_registration_names_the_offending_uri(mock_db):
+    """Registering several at once, one bad: say which, or the client retries blind."""
+    request = SimpleNamespace(json=AsyncMock(return_value={
+        "redirect_uris": ["https://chatgpt.com/ok", "https://evil.example/cb"],
+    }))
+    with pytest.raises(HTTPException) as exc:
+        await oauth.register_client(request, db=mock_db)
+    assert "https://evil.example/cb" in exc.value.detail, "the bad URI is not named"
+    assert "https://chatgpt.com/ok" not in exc.value.detail, "the good one is blamed too"
