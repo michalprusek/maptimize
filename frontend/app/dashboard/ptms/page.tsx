@@ -4,7 +4,10 @@ import { useState, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useTranslations } from "next-intl";
-import { api, PTMDetailed, PTMCreate, PTMUpdate } from "@/lib/api";
+import { api, PTMDetailed, PTMCreate, PTMKind, PTMUpdate } from "@/lib/api";
+// The vocabulary's kinds and their normaliser live with the marker rules they
+// drive; a second copy here is a second place for the two to disagree.
+import { MARKER_KINDS, ptmKindOf } from "@/components/visualization/pointMarker";
 import { ConfirmModal, Dialog, EmptyState, LoadingContainer } from "@/components/ui";
 import { staggerContainerVariants, staggerItemVariants } from "@/lib/animations";
 import {
@@ -31,6 +34,16 @@ const DEFAULT_FORM_DATA: PTMCreate = {
   enzyme: "",
   description: "",
   color: "",
+  // Most entries are tubulin marks; the two that are not are the exception the
+  // user opts into.
+  kind: "modification",
+};
+
+/** i18n key per kind, for the selector and the card badge. */
+const KIND_LABEL: Record<PTMKind, string> = {
+  modification: "kindModification",
+  control: "kindControl",
+  none: "kindNone",
 };
 
 export default function PtmsPage(): JSX.Element {
@@ -106,6 +119,9 @@ export default function PtmsPage(): JSX.Element {
       enzyme: p.enzyme || "",
       description: p.description || "",
       color: p.color || "",
+      // Through the same normaliser the plot uses, so the editor can never show
+      // a row as one kind while the projection draws it as another.
+      kind: ptmKindOf(p.kind),
     });
     setShowModal(true);
     setError(null);
@@ -188,6 +204,15 @@ export default function PtmsPage(): JSX.Element {
                     <div>
                       <h3 className="font-display font-semibold text-lg text-text-primary">{p.name}</h3>
                       {p.abbreviation && <p className="text-sm text-text-secondary">{p.abbreviation}</p>}
+                      {/* Only the two entries that are not modifications get a
+                          badge: labelling the other nine would be noise, and a
+                          control filed as a modification is the mistake worth
+                          seeing without opening the editor. */}
+                      {ptmKindOf(p.kind) !== "modification" && (
+                        <span className="inline-block mt-1 px-1.5 py-0.5 rounded text-[10px] uppercase tracking-wide bg-white/5 text-text-muted">
+                          {t(KIND_LABEL[ptmKindOf(p.kind)])}
+                        </span>
+                      )}
                     </div>
                   </div>
                   <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
@@ -243,6 +268,17 @@ export default function PtmsPage(): JSX.Element {
             <label className="block text-sm font-medium text-text-secondary mb-2">{t("enzyme")}</label>
             <input type="text" value={formData.enzyme} onChange={(e) => setFormData({ ...formData, enzyme: e.target.value })}
               className="input-field" placeholder={t("enzymePlaceholder")} />
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-text-secondary mb-2">{t("kind")}</label>
+            <select value={formData.kind ?? "modification"}
+              onChange={(e) => setFormData({ ...formData, kind: e.target.value as PTMKind })}
+              className="input-field">
+              {MARKER_KINDS.map((kind) => (
+                <option key={kind} value={kind}>{t(KIND_LABEL[kind])}</option>
+              ))}
+            </select>
+            <p className="text-xs text-text-muted mt-1.5">{t("kindHint")}</p>
           </div>
           <div>
             <label className="block text-sm font-medium text-text-secondary mb-2">{t("description")}</label>
