@@ -55,7 +55,6 @@ def test_list_tools_builds_schema_from_yaml(make_registry):
         # application control: PTMs
         "list_ptms", "get_ptm", "create_ptm", "update_ptm", "delete_ptm",
         # analysis
-        "get_protein_separation",
         # database
         "query_database",
     }

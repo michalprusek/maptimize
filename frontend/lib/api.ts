@@ -68,7 +68,7 @@ const FACET_QUERY_PARAMS: Record<keyof UmapFacetSelection, string> = {
  * Append the dashboard filter to a query string, one repeated parameter per
  * ticked value: OR within a facet, AND across facets.
  *
- * Shared by every projection endpoint, so UMAP and the discriminant view cannot
+ * Shared by every projection endpoint, so the cropped and FOV views cannot
  * drift into disagreeing about how a filter is spelled on the wire. Id 0 means
  * "not assigned" for microscope, protein and PTM and is passed through
  * untouched — without it the PTM facet would be unusable, since experiments
@@ -781,45 +781,9 @@ class ApiClient {
   }
 
   /**
-   * Fetch the supervised discriminant (LDA) projection for the same scope.
-   *
-   * Takes the same repeatable facet parameters as the UMAP endpoint, and the
-   * filter selects which points come back rather than what was fitted — the
-   * projection is fitted once per scope, so two filtered views stay in the same
-   * coordinate system.
-   *
-   * The fit is minutes of work, so a first request answers with
-   * `is_computing: true` and no metrics; poll until it clears.
-   */
-  async getDiscriminantData({
-    selection,
-  }: {
-    selection?: UmapFacetSelection;
-  } = {}): Promise<DiscriminantDataResponse> {
-    const query = appendFacetParams(new URLSearchParams(), selection).toString();
-    return this.request<DiscriminantDataResponse>(
-      `/api/embeddings/discriminant${query ? `?${query}` : ""}`
-    );
-  }
-
-  /**
    * Force a UMAP re-fit. Reads schedule this automatically when coordinates are
    * missing, so this is only needed to re-fit already-complete coordinates.
    */
-  /**
-   * Refit the discriminant projection for this scope.
-   *
-   * Needed, not optional: the backend records a failed fit and deliberately does
-   * NOT reschedule it, so a plain refetch returns the same recorded error
-   * forever. This clears it and queues the work.
-   */
-  async triggerDiscriminantRecomputation() {
-    return this.request<{ message: string }>(
-      "/api/embeddings/discriminant/recompute",
-      { method: "POST" }
-    );
-  }
-
   async triggerUmapRecomputation(umapType: UmapType) {
     const params = new URLSearchParams({ umap_type: umapType });
     return this.request<{ message: string }>(
@@ -2166,76 +2130,6 @@ export interface UmapFovDataResponse {
   is_stale: boolean;
   /** The refresh failed — coordinates won't arrive on their own. Stop polling. */
   refresh_error: string | null;
-}
-
-// Discriminant (LDA) projection types
-/**
- * One crop in the supervised projection.
- *
- * Structurally the same as `UmapPoint`, deliberately declared separately: the
- * two endpoints are free to diverge, and the tooltips and legend accept either
- * by structure rather than by a shared name they would both be pinned to.
- */
-export interface DiscriminantPoint {
-  crop_id: number;
-  image_id: number;
-  experiment_id: number;
-  x: number;
-  y: number;
-  protein_name: string | null;
-  protein_color: string;
-  thumbnail_url: string;
-  bundleness_score: number | null;
-}
-
-/**
- * What the separation on screen is actually worth.
- *
- * A supervised projection always looks separated — that is what supervising it
- * does — so these travel with the plot and are rendered beside it rather than
- * hidden in a tooltip. `balanced_accuracy` is out-of-fold under a split grouped
- * by experiment; the null fields are the same score with the labels shuffled at
- * experiment level, which is the bar a real signal has to clear.
- */
-export interface DiscriminantMetrics {
-  balanced_accuracy: number;
-  chance: number;
-  null_mean: number;
-  /**
-   * ⚠️ The max of a small sample, not a ceiling — on this corpus 17.5% of
-   * individual shuffles exceed the max of the 20 that run. Read `null_p95`.
-   */
-  null_max: number;
-  /** 95th percentile of the null: the stable bar. */
-  null_p95: number | null;
-  /** Floored at 1/(n_permutations + 1); 0.048 at the shipped 20 shuffles. */
-  p_value: number | null;
-  /** Out-of-fold recall per protein — the headline is only their mean. */
-  per_class: DiscriminantClassScore[];
-  /** Plotted but not scored: only one experiment each, so CV cannot test them. */
-  unscoreable_proteins: string[];
-  n_permutations: number;
-  n_proteins: number;
-  n_experiments: number;
-}
-
-/** How well one protein is recovered, out of fold. */
-export interface DiscriminantClassScore {
-  protein: string;
-  recall: number;
-  n_crops: number;
-}
-
-export interface DiscriminantDataResponse {
-  points: DiscriminantPoint[];
-  total_crops: number;
-  facets: UmapFacetRow[];
-  /** Null while the fit is still running. */
-  metrics: DiscriminantMetrics | null;
-  /** The projection is being computed; poll until false. */
-  is_computing: boolean;
-  /** The computation failed — nothing is coming. Stop polling and say so. */
-  compute_error: string | null;
 }
 
 export interface EmbeddingStatus {

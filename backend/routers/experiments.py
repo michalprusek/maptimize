@@ -409,9 +409,9 @@ async def update_experiment_protein(
     Theo uploads the batch, Michal corrects it -- whoever can SEE an experiment
     may say which protein it carries.
 
-    ⚠️ Weightier than the other three: this label is what the discriminant
-    projection is fitted on and what every plot colours by, so a wrong edit
-    propagates into the science rather than into a facet. It also cascades to
+    ⚠️ Weightier than the other three: this label is what every plot colours
+    by, so a wrong edit propagates into the science rather than into a facet.
+    It also cascades to
     every image and cell crop below. That is a reason to log it, not a reason to
     lock the annotator out of their own data.
 
