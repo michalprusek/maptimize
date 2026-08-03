@@ -216,6 +216,11 @@ async def ensure_schema_updates():
             # group-shared and user-made, which is exactly what the defaults say.
             ("document_folders", "visibility", "VARCHAR(20) DEFAULT 'group' NOT NULL"),
             ("document_folders", "kind", "VARCHAR(20) DEFAULT 'custom' NOT NULL"),
+            # What a PTM row is: a tubulin mark, an inactive-enzyme control, or
+            # the unmodified state. Every existing row is a mark, which is what
+            # the default says; `Unmodified` is corrected once by
+            # scripts/ptm_control_backfill.sql.
+            ("ptms", "kind", "VARCHAR(20) DEFAULT 'modification' NOT NULL"),
         ]
 
         for table, column, col_type in updates:

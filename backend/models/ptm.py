@@ -1,11 +1,39 @@
 """Post-translational modification (PTM) model."""
 from datetime import datetime
+from enum import Enum as PyEnum
 from typing import Optional
 
 from sqlalchemy import String, Text, DateTime, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from database import Base
+
+
+class PTMKind(str, PyEnum):
+    """What a row in this vocabulary actually is.
+
+    The list is not homogeneous. `Unmodified` is the *absence* of a modification
+    and `Control` is a transfection carried out with a catalytically inactive
+    enzyme; neither is a tubulin mark. The lab runs a control alongside every PTM
+    condition, so telling the three apart is the whole point of recording them.
+
+    This drives the **second visual channel** on the projections — colour already
+    carries the protein, so a control keeps its colour and is drawn as a
+    translucent ring, while a modified sample gets a black centre dot.
+
+    ⚠️ Stored as a plain VARCHAR, not a Postgres enum: `ensure_schema_updates()`
+    adds columns with raw ALTER TABLE and cannot CREATE TYPE, so an enum column
+    would exist on a fresh database and be silently missing in production. Same
+    choice, and the same reason, as `document_folders.kind`.
+
+    ⚠️ The class is read from here and **never from `name`**. Renaming the row,
+    or the lab creating "Control (inactive VASH)" instead, must not quietly
+    return every control point to the plain marker with nothing failing.
+    """
+
+    MODIFICATION = "modification"
+    CONTROL = "control"
+    NONE = "none"
 
 
 class PTM(Base):
@@ -29,6 +57,13 @@ class PTM(Base):
     enzyme: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     color: Mapped[Optional[str]] = mapped_column(String(7), nullable=True)  # Hex for UMAP legend
+    # Modification / inactive-enzyme control / no modification. See PTMKind.
+    kind: Mapped[str] = mapped_column(
+        String(20),
+        default=PTMKind.MODIFICATION.value,
+        server_default=PTMKind.MODIFICATION.value,
+        nullable=False,
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )

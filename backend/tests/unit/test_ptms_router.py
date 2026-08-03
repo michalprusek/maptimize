@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 from fastapi import HTTPException
+from pydantic import ValidationError
 
 from routers import ptms as mod
 from schemas.ptm import PTMCreate, PTMUpdate
@@ -29,6 +30,7 @@ def _ptm(**kw):
         enzyme="TTLL1-TTLL7",
         description=None,
         color="#ec4899",
+        kind="modification",
         created_at=None,
     )
     base.update(kw)
@@ -161,3 +163,83 @@ async def test_delete_succeeds_when_unreferenced(mock_db):
     await mod.delete_ptm(3, current_user=_user(), db=mock_db)
     mock_db.delete.assert_awaited_once_with(ptm)
     mock_db.commit.assert_awaited()
+
+
+# -- kind: what a row in this vocabulary actually is -------------------------
+#
+# The list is not homogeneous — `Unmodified` is the absence of a modification
+# and `Control` is a transfection with an inactive enzyme — and the projections
+# draw the three kinds as three markers. A row whose kind is wrong is drawn as
+# something it is not, with nothing failing anywhere, so the write path is
+# pinned here.
+
+
+async def test_create_defaults_to_a_modification(mock_db):
+    """A PTM created without `kind` is an ordinary modification.
+
+    The default has to live in the schema, not only in the column: the router
+    builds `PTM(**model_dump())`, so an absent field would pass None straight
+    into a NOT NULL column instead of falling back to the DDL default.
+    """
+    mock_db.execute.return_value = make_result(scalar=None)
+    _populate_pk(mock_db)
+    with patch.object(mod, "pick_color", new=AsyncMock(return_value="#ef4444")):
+        out = await mod.create_ptm(
+            PTMCreate(name="Acetylation"), current_user=_user(), db=mock_db
+        )
+    assert out.kind == "modification"
+    assert mock_db.add.call_args[0][0].kind == "modification"
+
+
+async def test_create_persists_the_control_kind(mock_db):
+    mock_db.execute.return_value = make_result(scalar=None)
+    _populate_pk(mock_db)
+    with patch.object(mod, "pick_color", new=AsyncMock(return_value="#94a3b8")):
+        out = await mod.create_ptm(
+            PTMCreate(name="Control", kind="control"), current_user=_user(), db=mock_db
+        )
+    assert out.kind == "control"
+    # A plain str, not the enum member: it goes into a VARCHAR column, and an
+    # enum object reaching the driver is the kind of thing that works until it
+    # does not. This is what `use_enum_values` on the schema buys.
+    assert type(mock_db.add.call_args[0][0].kind) is str
+
+
+@pytest.mark.parametrize("bad", ["Control", "controls", "", "modification "])
+def test_an_unrecognised_kind_is_refused(bad):
+    """422, not a row carrying a class nothing can read.
+
+    Case and trailing whitespace included on purpose: "Control" is the exact
+    value a person would type, and storing it would leave every control drawn
+    as a plain point with no error raised anywhere.
+    """
+    with pytest.raises(ValidationError):
+        PTMCreate(name="x", kind=bad)
+
+
+async def test_update_can_change_the_kind(mock_db):
+    ptm = _ptm(kind="modification")
+    mock_db.execute.side_effect = [
+        make_result(scalar=ptm),  # get_or_404
+        make_result(scalar=0),    # experiment count
+    ]
+    out = await mod.update_ptm(
+        3, PTMUpdate(kind="none"), current_user=_user(), db=mock_db
+    )
+    assert ptm.kind == "none"
+    assert out.kind == "none"
+
+
+async def test_a_patch_that_omits_kind_leaves_it_alone(mock_db):
+    # `exclude_unset` is what makes this work: the schema default would
+    # otherwise reset every renamed control back to a modification.
+    ptm = _ptm(kind="control")
+    mock_db.execute.side_effect = [
+        make_result(scalar=ptm),   # get_or_404
+        make_result(scalar=None),  # uniqueness re-check for the new name
+        make_result(scalar=0),     # experiment count
+    ]
+    await mod.update_ptm(
+        3, PTMUpdate(name="Renamed"), current_user=_user(), db=mock_db
+    )
+    assert ptm.kind == "control"
