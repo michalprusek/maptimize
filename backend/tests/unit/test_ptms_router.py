@@ -13,7 +13,7 @@ from fastapi import HTTPException
 from pydantic import ValidationError
 
 from routers import ptms as mod
-from schemas.ptm import PTMCreate, PTMUpdate
+from schemas.ptm import PTMCreate, PTMDetailedResponse, PTMResponse, PTMUpdate
 from tests.unit.conftest import make_result
 
 
@@ -188,7 +188,14 @@ async def test_create_defaults_to_a_modification(mock_db):
             PTMCreate(name="Acetylation"), current_user=_user(), db=mock_db
         )
     assert out.kind == "modification"
-    assert mock_db.add.call_args[0][0].kind == "modification"
+    stored = mock_db.add.call_args[0][0].kind
+    assert stored == "modification"
+    # ⚠️ Asserted on the DEFAULT path, which is the common one and the only one
+    # where it can fail: pydantic does not validate defaults, so without
+    # `validate_default=True` this is the enum member, not a str — and `==`
+    # cannot tell, because PTMKind subclasses str. The version of this test that
+    # asserted the type only on the explicit path could never have gone red.
+    assert type(stored) is str
 
 
 async def test_create_persists_the_control_kind(mock_db):
@@ -199,22 +206,76 @@ async def test_create_persists_the_control_kind(mock_db):
             PTMCreate(name="Control", kind="control"), current_user=_user(), db=mock_db
         )
     assert out.kind == "control"
-    # A plain str, not the enum member: it goes into a VARCHAR column, and an
-    # enum object reaching the driver is the kind of thing that works until it
-    # does not. This is what `use_enum_values` on the schema buys.
     assert type(mock_db.add.call_args[0][0].kind) is str
 
 
+@pytest.mark.parametrize("schema", [PTMCreate, PTMUpdate])
 @pytest.mark.parametrize("bad", ["Control", "controls", "", "modification "])
-def test_an_unrecognised_kind_is_refused(bad):
+def test_an_unrecognised_kind_is_refused(schema, bad):
     """422, not a row carrying a class nothing can read.
 
     Case and trailing whitespace included on purpose: "Control" is the exact
     value a person would type, and storing it would leave every control drawn
     as a plain point with no error raised anywhere.
+
+    ⚠️ Both schemas. Pinning only the POST left the PATCH path completely
+    unguarded — `PTMUpdate.kind` could be widened to `Optional[str]` with the
+    whole 1772-test suite still green. The MCP tool advertises an `enum` but the
+    registry never enforces it at dispatch, so this schema is the only guard.
     """
     with pytest.raises(ValidationError):
-        PTMCreate(name="x", kind=bad)
+        schema(name="x", kind=bad)
+
+
+@pytest.mark.parametrize("schema", [PTMCreate, PTMUpdate])
+def test_the_kind_enum_is_coerced_to_a_plain_string(schema):
+    # `use_enum_values` on both, so what reaches the VARCHAR column is a str
+    # regardless of which endpoint wrote it. Unpinned on PTMUpdate, removing it
+    # there changed nothing in the suite.
+    assert type(schema(name="x", kind="control").kind) is str
+
+
+def test_an_explicit_null_kind_is_refused():
+    """422, not the 500 a NOT NULL column answers with.
+
+    `kind` is the second NOT NULL column on this table; `name` was the first and
+    is guarded by RejectsNullName. `exclude_unset` deliberately keeps an
+    explicit null — that is what makes `color: null` mean "pick me a fresh one"
+    — so without a guard the router setattrs None onto the column and Postgres
+    raises. Verified against the live database before this guard existed.
+    """
+    with pytest.raises(ValidationError):
+        PTMUpdate(kind=None)
+
+
+def test_omitting_kind_is_still_a_valid_patch():
+    # The guard must reject an explicit null, not make the field required.
+    assert "kind" not in PTMUpdate(name="x").model_dump(exclude_unset=True)
+
+
+@pytest.mark.parametrize("schema", [PTMResponse, PTMDetailedResponse])
+def test_a_kind_no_client_can_draw_degrades_to_the_plain_marker(schema):
+    """Read, never 500 — and read as the SAME thing the client would read it as.
+
+    `PTMResponse` is embedded in `ExperimentResponse`, so validating strictly
+    would let one hand-edited row take out every experiment list, not just its
+    own. But passing it through untouched left two degradation rules that
+    disagreed: a missing value read as "modification" here and an unreadable one
+    read as "none" in the browser — and "modification" is precisely the value
+    that draws a control as the sample it controls.
+    """
+    out = schema.model_validate(
+        {"id": 1, "name": "Legacy", "kind": "Control"}
+    )
+    assert out.kind == "none"
+
+
+@pytest.mark.parametrize("schema", [PTMResponse, PTMDetailedResponse])
+def test_a_missing_kind_is_an_error_rather_than_a_guess(schema):
+    # A source object with no `kind` at all is a programming error. Defaulting
+    # it silently reported controls as modifications.
+    with pytest.raises(ValidationError):
+        schema.model_validate({"id": 1, "name": "Legacy"})
 
 
 async def test_update_can_change_the_kind(mock_db):
@@ -231,8 +292,9 @@ async def test_update_can_change_the_kind(mock_db):
 
 
 async def test_a_patch_that_omits_kind_leaves_it_alone(mock_db):
-    # `exclude_unset` is what makes this work: the schema default would
-    # otherwise reset every renamed control back to a modification.
+    # `exclude_unset` is what makes this work. Without it the field's default —
+    # None, not "modification" — would reach the NOT NULL column and 500 the
+    # request; the same is true of every other omitted field on this schema.
     ptm = _ptm(kind="control")
     mock_db.execute.side_effect = [
         make_result(scalar=ptm),   # get_or_404

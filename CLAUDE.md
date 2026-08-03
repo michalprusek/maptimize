@@ -574,10 +574,36 @@ transfekce s katalyticky neaktivním enzymem**, Theo ji pouští ke každé PTM 
 `none` (`Unmodified`, tedy nepřítomnost modifikace). Řídí **druhý vizuální kanál** na
 projekcích: kontrola se kreslí jako **průsvitný prstenec v téže barvě**, modifikace
 dostane **černou tečku ve středu**, zbytek beze změny. Barva zůstává na `colorBy`,
-takže se ty dva kanály nikde nepřekrývají. SSOT pravidel je
+takže jsou ty dva kanály nezávislé — **s jednou výjimkou: při `colorBy: ptm` nesou obě
+informace touž vlastnost a marker je pak redundantní, ne ortogonální.** SSOT pravidel je
 `frontend/components/visualization/pointMarker.ts` (čisté funkce, testy
 `e2e/unit/pointMarker.spec.ts`) — `/dashboard/ptms` si odtud importuje `ptmKindOf`
-i `MARKER_KINDS`, aby editor nemohl řádek ukazovat jako jiný druh, než jaký graf kreslí.
+i `PTM_KINDS`, aby editor nemohl řádek ukazovat jako jiný druh, než jaký graf kreslí.
+
+⚠️ **`PTM_KINDS` a `MARKER_CLASSES` jsou schválně dva seznamy.** První je *backendový
+slovník* (tři hodnoty, allow-list pro `ptmKindOf` a `<option>` v editoru), druhý je *co
+může být bod* a nese navíc `unrecorded` — experiment, kterému nikdo PTM nepřiřadil.
+Kreslí se stejně jako `none`, ale **počítá a popisuje se zvlášť**: „mřížka nenesla
+modifikaci" je výsledek, „nikdo PTM nezaznamenal" je absence, a označit druhé za
+„Non-PTM" tvrdí něco, co v DB není. Sloučení těch dvou seznamů nabídne laboratoři
+v editoru hodnotu, kterou API odmítne 422.
+
+⚠️ **Legenda markerů se skrývá podle toho, jestli je něco nakresleno jinak než výchozí
+— NE podle počtu tříd.** Odfiltrování na jediné PTM nechá všechny body s černou tečkou
+a `counts.size === 1`; se starým pravidlem zmizela vysvětlivka právě tehdy. U kontrol je
+to horší: vybledlé prstence jsou univerzální řeč pro „potlačeno / odfiltrováno", takže
+graf bez legendy čte úplně jinak, než co ukazuje.
+
+⚠️ **`ptms.kind` má CHECK (`ck_ptms_kind`), generovaný z `PTMKind`.** Pydantic hlídá jen
+API; `scripts/ptm_control_backfill.sql` píše ty hodnoty jako ručně psané literály a je to
+jediný writer, který reálně běžel proti produkci. CHECK **není** to, co docstring
+`PTMKind` vylučuje (to je `CREATE TYPE`) — `ensure_schema_updates()` constrainty přidává
+i jinde.
+
+⚠️ **`ProjectionMarker` musí guardovat `Number.isFinite`, ne `=== undefined`.** recharts
+vrací pro chybějící souřadnici **`null`**, React atribut zahodí a SVG dosadí `cx=0` —
+bod se nakreslí v plné barvě a velikosti v rohu grafu, k nerozeznání od dat. Výchozí
+`Symbols` má přesně tu numerickou kontrolu; custom shape ji musí zachovat.
 
 ⚠️ **Třída se čte z `kind`, NIKDY z názvu řádku.** Přejmenování `Control` nebo založení
 „Control (inactive VASH)" by jinak tiše vrátilo všechny kontroly na obyčejný marker —

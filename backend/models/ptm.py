@@ -3,7 +3,7 @@ from datetime import datetime
 from enum import Enum as PyEnum
 from typing import Optional
 
-from sqlalchemy import String, Text, DateTime, func
+from sqlalchemy import CheckConstraint, String, Text, DateTime, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from database import Base
@@ -36,6 +36,23 @@ class PTMKind(str, PyEnum):
     NONE = "none"
 
 
+def _kind_check_sql() -> str:
+    """`kind IN (...)`, generated from the enum so the two cannot drift.
+
+    A CHECK is NOT the thing the docstring above rules out — that is `CREATE
+    TYPE`, and `ensure_schema_updates()` already adds constraints elsewhere. It
+    matters because Pydantic guards only the API, while
+    `scripts/ptm_control_backfill.sql` writes these values as hand-typed
+    literals: a typo there (`'controls'`, `'Control'`) produces exactly the
+    silence this feature exists to prevent, and it is the writer that has
+    actually run against production.
+    """
+    return "kind IN (" + ", ".join(f"'{k.value}'" for k in PTMKind) + ")"
+
+
+PTM_KIND_CHECK = "ck_ptms_kind"
+
+
 class PTM(Base):
     """A post-translational modification of the microtubule lattice.
 
@@ -45,6 +62,9 @@ class PTM(Base):
     """
 
     __tablename__ = "ptms"
+    # Fresh databases get the constraint here; existing ones get the identical
+    # constraint from ensure_schema_updates(), both generated from PTMKind.
+    __table_args__ = (CheckConstraint(_kind_check_sql(), name=PTM_KIND_CHECK),)
 
     id: Mapped[int] = mapped_column(primary_key=True)
     name: Mapped[str] = mapped_column(String(100), unique=True, index=True)
@@ -193,9 +213,11 @@ DEFAULT_PTMS = [
             "out with a catalytically inactive enzyme, so the lattice is "
             "unmodified. Run alongside the modified sample it is compared to."
         ),
-        # Neutral grey on purpose. Under the default colour-by (protein) it is
-        # never seen; under colour-by PTM, grey is the right thing for a value
-        # that is not a modification.
+        # Neutral grey on purpose: for a value that is not a modification, grey
+        # is the right answer wherever the PTM's own colour is shown — the
+        # colour-by-PTM legend, the facet pills, and the dot on its card in
+        # /dashboard/ptms. (Under the default colour-by, protein, points take
+        # the protein's hue and this is not what draws them.)
         "color": "#94a3b8",
         "kind": PTMKind.CONTROL.value,
     },

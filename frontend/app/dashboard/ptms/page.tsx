@@ -5,9 +5,10 @@ import { motion, AnimatePresence } from "framer-motion";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useTranslations } from "next-intl";
 import { api, PTMDetailed, PTMCreate, PTMKind, PTMUpdate } from "@/lib/api";
-// The vocabulary's kinds and their normaliser live with the marker rules they
-// drive; a second copy here is a second place for the two to disagree.
-import { MARKER_KINDS, ptmKindOf } from "@/components/visualization/pointMarker";
+// The backend vocabulary lives with the marker rules it drives; a second copy
+// here is a second place for the two to disagree. PTM_KINDS, not the legend's
+// MARKER_CLASSES: that one carries a display-only member the API would reject.
+import { PTM_KINDS, ptmKindOf } from "@/components/visualization/pointMarker";
 import { ConfirmModal, Dialog, EmptyState, LoadingContainer } from "@/components/ui";
 import { staggerContainerVariants, staggerItemVariants } from "@/lib/animations";
 import {
@@ -111,6 +112,7 @@ export default function PtmsPage(): JSX.Element {
   };
 
   const openEditModal = (p: PTMDetailed) => {
+    const known = PTM_KINDS.includes(p.kind as PTMKind);
     setEditing(p);
     setFormData({
       name: p.name,
@@ -119,12 +121,16 @@ export default function PtmsPage(): JSX.Element {
       enzyme: p.enzyme || "",
       description: p.description || "",
       color: p.color || "",
-      // Through the same normaliser the plot uses, so the editor can never show
-      // a row as one kind while the projection draws it as another.
-      kind: ptmKindOf(p.kind),
+      // ⚠️ NOT normalised through ptmKindOf. Laundering an unreadable value into
+      // a valid one here would persist it on the next save: `rest` always
+      // carries `kind`, so a biologist fixing a typo in the description would
+      // silently reclassify the row -- and the backend cannot tell that from a
+      // deliberate change. Left undefined, `exclude_unset` leaves the column
+      // alone, which is the honest answer for a value we cannot represent.
+      kind: known ? (p.kind as PTMKind) : undefined,
     });
     setShowModal(true);
-    setError(null);
+    setError(known ? null : t("unknownKind", { kind: p.kind || "—" }));
   };
 
   const handleSubmit = (e: React.FormEvent) => {
@@ -208,11 +214,18 @@ export default function PtmsPage(): JSX.Element {
                           badge: labelling the other nine would be noise, and a
                           control filed as a modification is the mistake worth
                           seeing without opening the editor. */}
-                      {ptmKindOf(p.kind) !== "modification" && (
-                        <span className="inline-block mt-1 px-1.5 py-0.5 rounded text-[10px] uppercase tracking-wide bg-white/5 text-text-muted">
-                          {t(KIND_LABEL[ptmKindOf(p.kind)])}
+                      {/* An unreadable kind must NOT render as "No modification"
+                          — that is a classification the database does not hold,
+                          reported before anyone opens anything. */}
+                      {!PTM_KINDS.includes(p.kind as PTMKind) ? (
+                        <span className="inline-block mt-1 px-1.5 py-0.5 rounded text-[10px] uppercase tracking-wide bg-accent-red/10 text-accent-red">
+                          {t("kindUnreadable", { kind: p.kind || "—" })}
                         </span>
-                      )}
+                      ) : p.kind !== "modification" ? (
+                        <span className="inline-block mt-1 px-1.5 py-0.5 rounded text-[10px] uppercase tracking-wide bg-white/5 text-text-muted">
+                          {t(KIND_LABEL[p.kind as PTMKind])}
+                        </span>
+                      ) : null}
                     </div>
                   </div>
                   <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
@@ -274,7 +287,7 @@ export default function PtmsPage(): JSX.Element {
             <select value={formData.kind ?? "modification"}
               onChange={(e) => setFormData({ ...formData, kind: e.target.value as PTMKind })}
               className="input-field">
-              {MARKER_KINDS.map((kind) => (
+              {PTM_KINDS.map((kind) => (
                 <option key={kind} value={kind}>{t(KIND_LABEL[kind])}</option>
               ))}
             </select>

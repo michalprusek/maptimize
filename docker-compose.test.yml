@@ -60,6 +60,10 @@ services:
     volumes:
       - ./backend:/app
       - ./weights:/app/weights:ro
+      # One-off SQL that lives outside backend/ but is asserted on by
+      # tests/unit/test_ptm_seed.py — those guards must not quietly stop running
+      # just because the harness mounts a narrower tree than the repo.
+      - ./scripts:/scripts:ro
     tmpfs:
       - /app/data
     working_dir: /app
