@@ -1334,11 +1334,17 @@ tools:
     annotations: {readOnlyHint: true, openWorldHint: false}
     description: >
       List all microtubule post-translational modifications (shared reference
-      data): id, name, abbreviation, modified_residue, enzyme, and per-PTM
+      data): id, name, abbreviation, modified_residue, enzyme, kind, and per-PTM
       experiment count. A PTM is the tubulin-code state of the lattice the cells
       were grown on — tyrosination, detyrosination, Δ2, acetylation (K40),
       polyglutamylation, polyglycylation and so on. Use it to get a ptm_id for
       create_experiment or assign_experiment_ptm.
+
+      Not every entry is a modification: `kind` is "modification" for a tubulin
+      mark, "control" for a paired inactive-enzyme control run alongside a
+      modified sample, and "none" for the unmodified lattice. The lab compares a
+      PTM condition against its control, so do not treat the two as the same
+      thing.
     handler: http_json
     method: GET
     path: /api/ptms
@@ -1392,6 +1398,17 @@ tools:
         in: body
         type: string
         description: Hex color like "#1f77b4"; auto-picked if omitted.
+      - name: kind
+        in: body
+        type: string
+        enum: [modification, control, none]
+        description: >
+          What this entry is. "modification" (the default) is a tubulin mark such
+          as polyglutamylation; "control" is a paired control — the same
+          transfection with a catalytically inactive enzyme, run alongside a
+          modified sample; "none" is the unmodified lattice. The projections draw
+          the three as three different markers, so a control filed as a
+          modification becomes indistinguishable from the sample it controls.
 
   - name: update_ptm
     annotations: {readOnlyHint: false, destructiveHint: false}
@@ -1426,6 +1443,15 @@ tools:
         in: body
         type: string
         description: Hex color like "#1f77b4".
+      - name: kind
+        in: body
+        type: string
+        enum: [modification, control, none]
+        description: >
+          What this entry is: "modification" (a tubulin mark), "control" (a
+          paired control — the same transfection with a catalytically inactive
+          enzyme) or "none" (the unmodified lattice). Drives how the projections
+          draw points assigned to this PTM.
 
   - name: delete_ptm
     annotations: {readOnlyHint: false, destructiveHint: true, idempotentHint: false}
@@ -1514,8 +1540,10 @@ tools:
       sequence_length) [shared, no user filter];
       microscopes(id, name, manufacturer, model, objective, magnification)
       [shared, no user filter];
-      ptms(id, name, abbreviation, modified_residue, enzyme) [microtubule
-      post-translational modification; shared, no user filter];
+      ptms(id, name, abbreviation, modified_residue, enzyme, kind) [microtubule
+      post-translational modification; kind is 'modification' (a tubulin mark),
+      'control' (paired inactive-enzyme control) or 'none' (unmodified lattice);
+      shared, no user filter];
       comparisons(id, user_id, crop_a_id, crop_b_id, winner_id, response_time_ms,
       undone, timestamp);
       user_ratings(id, user_id, cell_crop_id, mu, sigma, comparison_count,
