@@ -31,10 +31,14 @@ import { DiscriminantMetricStrip } from "./DiscriminantMetricStrip";
 import {
   CroppedTooltip,
   FovTooltip,
+  MarkerLegend,
   ProjectionLegend,
+  ProjectionMarker,
+  type MarkerShapeProps,
   type PointContext,
   type ProjectionPoint,
 } from "./projectionShared";
+import { ptmKindOf, type PtmKind } from "./pointMarker";
 import { useProjectionData, type Projection } from "./useProjectionData";
 import {
   EMPTY_SELECTION,
@@ -305,6 +309,50 @@ export function UmapVisualization({
     [colorBy, experimentMeta, microscopeById, ptmById, t]
   );
 
+  /**
+   * Which sample kind a point is: a PTM, its paired control, or neither.
+   *
+   * Points carry only `experiment_id`; the PTM comes from the facet summary and
+   * its kind from the reference list the filter panel already loads, so nothing
+   * is added to the point payload for this. Independent of `styleOf`, on
+   * purpose: colour and sample kind are two channels and must stay separable.
+   */
+  const ptmKindOfPoint = useCallback(
+    (point: ProjectionPoint): PtmKind => {
+      const meta = experimentMeta.get(point.experiment_id);
+      const ptm = meta?.ptmId ? ptmById.get(meta.ptmId) : undefined;
+      return ptmKindOf(ptm?.kind);
+    },
+    [experimentMeta, ptmById]
+  );
+
+  // recharts types a custom `shape` as `(props: unknown) => Element`, so the
+  // narrowing has to be explicit here; MarkerShapeProps names only fields
+  // recharts documents on the point it builds.
+  const renderMarker = useCallback(
+    (props: unknown) => {
+      const marker = props as MarkerShapeProps;
+      return (
+        <ProjectionMarker
+          {...marker}
+          kind={marker.payload ? ptmKindOfPoint(marker.payload) : "none"}
+        />
+      );
+    },
+    [ptmKindOfPoint]
+  );
+
+  // How many points of each kind are on the plot, so the marker legend explains
+  // only the distinctions actually visible.
+  const markerCounts = useMemo(() => {
+    const counts = new Map<PtmKind, number>();
+    (view?.points ?? []).forEach((point) => {
+      const kind = ptmKindOfPoint(point);
+      counts.set(kind, (counts.get(kind) ?? 0) + 1);
+    });
+    return counts;
+  }, [view?.points, ptmKindOfPoint]);
+
   // Legend groups, derived from the same styleOf as the points themselves so a
   // swatch can never disagree with what is drawn.
   const legendGroups = useMemo(() => {
@@ -565,17 +613,14 @@ export function UmapVisualization({
               />
               <Scatter
                 data={view.points}
+                shape={renderMarker}
                 {...UMAP_SCATTER_ANIMATION}
               >
                 {view.points.map((point, index) => (
-                  <Cell
-                    key={`cell-${index}`}
-                    fill={styleOf(point).color}
-                    fillOpacity={0.75}
-                    stroke="rgba(255,255,255,0.3)"
-                    strokeWidth={1}
-                    cursor="pointer"
-                  />
+                  // Colour only. Opacity, stroke and the centre dot belong to
+                  // the marker; splitting them across both would give one point
+                  // two places to disagree with itself.
+                  <Cell key={`cell-${index}`} fill={styleOf(point).color} />
                 ))}
               </Scatter>
             </ScatterChart>
@@ -583,6 +628,7 @@ export function UmapVisualization({
         </div>
 
         <ProjectionLegend groups={legendGroups} />
+        <MarkerLegend counts={markerCounts} t={t} />
       </>
     );
   };
