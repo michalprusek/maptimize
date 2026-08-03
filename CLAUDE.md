@@ -527,7 +527,7 @@ takže starý klient, který `microscope_id` pošle tam, spadne na **422** míst
 zahození. `ExperimentCreate` ho naopak přijímá dál — zakládá vlastník.
 
 MCP: tool `assign_experiment_microscope` (`update_experiment` ho už **nemá**);
-`SERVER_VERSION` je od 2026-07-31 **3.0.0**. Testy pinují jmennou sadu i verzi — při
+`SERVER_VERSION` je od 2026-08-03 **3.2.0**. Testy pinují jmennou sadu i verzi — při
 změně kontraktu je uprav (`tests/test_registry.py`, `tests/test_protocol.py`,
 `tests/test_app_control_tools.py`).
 
@@ -566,6 +566,35 @@ z `DEFAULT_PTMS` v `models/ptm.py` přes `seed_default_data()` — jsou to **bě
 editovatelné řádky, ne enum**. Seed je podmíněný prázdností tabulky, ne existencí
 jednotlivých jmen: vrátit řádek, který laboratoř schválně smazala, je horší než mít
 slovník kratší.
+
+##### `ptms.kind` — slovník není homogenní (od 2026-08-03)
+
+`kind` ∈ `modification` (tubulinová značka) | `control` (párová kontrola: **táž
+transfekce s katalyticky neaktivním enzymem**, Theo ji pouští ke každé PTM podmínce) |
+`none` (`Unmodified`, tedy nepřítomnost modifikace). Řídí **druhý vizuální kanál** na
+projekcích: kontrola se kreslí jako **průsvitný prstenec v téže barvě**, modifikace
+dostane **černou tečku ve středu**, zbytek beze změny. Barva zůstává na `colorBy`,
+takže se ty dva kanály nikde nepřekrývají. SSOT pravidel je
+`frontend/components/visualization/pointMarker.ts` (čisté funkce, testy
+`e2e/unit/pointMarker.spec.ts`) — `/dashboard/ptms` si odtud importuje `ptmKindOf`
+i `MARKER_KINDS`, aby editor nemohl řádek ukazovat jako jiný druh, než jaký graf kreslí.
+
+⚠️ **Třída se čte z `kind`, NIKDY z názvu řádku.** Přejmenování `Control` nebo založení
+„Control (inactive VASH)" by jinak tiše vrátilo všechny kontroly na obyčejný marker —
+bez chyby kdekoliv.
+
+⚠️ **Kontrola nenese modifikaci, ke které patří.** Experiment je *buď* `Detyrosination`,
+*nebo* `Control`; párování drží jen názvy experimentů, a filtr `Detyrosination` tedy
+kontroly **nevrátí**. Vědomá cena za plochý slovník (rozhodnuto 2026-08-03), ne opomenutí.
+
+⚠️ **Řádek `Control` se při startu NESEEDUJE.** Platí pravidlo výše (seed jen prázdné
+tabulky), takže produkce ho dostala jednorázově přes `scripts/ptm_control_backfill.sql`
+— ten je idempotentní a aditivní. Čisté DB ho mají z `DEFAULT_PTMS`.
+
+⚠️ **Backend neví o projekcích vůbec nic.** Bod nese jen `experiment_id`, PTM si klient
+dojoinuje z `facets` a `kind` z `GET /api/ptms`, které si filtrační panel stejně načítá.
+`routers/embeddings.py` ani `UmapFacetRow` se **nesahaly** a nemají — třída na bodu by
+se opakovala stokrát a vznikla by druhá pravda o režimu experimentu.
 
 ⚠️ **`backend/migrations/*.sql` nikdo nespouští** — jsou to dokumentační artefakty.
 Reálně schéma aplikuje `create_all` (nové tabulky) + `ensure_schema_updates()` (nové
