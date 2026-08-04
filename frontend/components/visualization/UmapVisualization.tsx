@@ -58,20 +58,6 @@ interface UmapVisualizationProps {
   preferFovMode?: boolean;
 }
 
-/** Which message names each state. */
-function panelCopy(viewMode: UmapType) {
-  return {
-    title: "title",
-    loading: "loading",
-    loadingHint: "loadingHint",
-    computing: "computing",
-    computingHint: "computingHint",
-    computingPartial: "computingPartial",
-    empty: "noEmbeddings",
-    emptyHint: viewMode === "fov" ? "noEmbeddingsFov" : "noEmbeddingsCrops",
-  };
-}
-
 export function UmapVisualization({
   experimentId,
   height = 500,
@@ -166,25 +152,37 @@ export function UmapVisualization({
 
   const isRecomputing = view?.isComputing ?? false;
   const computeError = view?.computeError ?? null;
-  const copy = panelCopy(viewMode);
+  // The one panel message that depends on which corpus is on screen. This used
+  // to be a whole key map, which earned its keep when UMAP and the discriminant
+  // needed different copy at five render sites; with one projection the other
+  // seven entries mapped a name to itself.
+  const emptyHint = viewMode === "fov" ? "noEmbeddingsFov" : "noEmbeddingsCrops";
 
-  // The fit failed, so coordinates will never arrive on their own. BOTH backends
-  // record the failure and stop rescheduling precisely so a poll cannot restart a
-  // doomed multi-minute computation on a loop — which means a plain refetch
-  // returns the recorded error forever and the button does nothing. Each has to
-  // be asked explicitly.
+  // The fit failed, so coordinates will never arrive on their own: the backend
+  // records the failure and stops rescheduling, precisely so a poll cannot
+  // restart a doomed multi-minute computation on a loop. A plain refetch
+  // therefore returns the recorded error forever, and this button is the only
+  // way out of that state.
+  //
+  // ⚠️ Which is why its own failure must be visible. A bare console.error left
+  // the user watching the same error panel after clicking Retry, concluding the
+  // fit was still broken — when an expired session or a 502 meant the request
+  // never reached the server, and the fix was to log in again.
   const [isRetrying, setIsRetrying] = useState(false);
+  const [retryError, setRetryError] = useState<string | null>(null);
   const handleRetryRefresh = useCallback(async () => {
     setIsRetrying(true);
+    setRetryError(null);
     try {
       await api.triggerUmapRecomputation(viewMode);
       await queryClient.invalidateQueries({ queryKey: ["umap"] });
     } catch (e) {
       console.error("[UmapVisualization] Failed to trigger recomputation:", e);
+      setRetryError(e instanceof Error ? e.message : t("unknownError"));
     } finally {
       setIsRetrying(false);
     }
-  }, [viewMode, queryClient]);
+  }, [viewMode, queryClient, t]);
 
   // Handle click on a point - navigate to editor
   const handleChartClick = useCallback((state: { activePayload?: Array<{ payload: ProjectionPoint }> } | null) => {
@@ -385,10 +383,10 @@ export function UmapVisualization({
         >
           <Spinner size="lg" />
           <span className="mt-3 text-text-secondary">
-            {t(copy.loading)}
+            {t("loading")}
           </span>
           <span className="text-xs text-text-muted mt-1">
-            {t(copy.loadingHint)}
+            {t("loadingHint")}
           </span>
         </div>
       );
@@ -449,6 +447,11 @@ export function UmapVisualization({
             <RefreshCw className={`w-4 h-4 ${isRetrying ? "animate-spin" : ""}`} />
             {t("retry")}
           </button>
+          {/* The retry itself failed — say why, or the user reads the unchanged
+              panel above as "the fit is still broken". */}
+          {retryError && (
+            <p className="text-xs text-accent-red mt-3 max-w-md">{retryError}</p>
+          )}
         </div>
       );
     }
@@ -494,9 +497,9 @@ export function UmapVisualization({
           >
             <Spinner size="lg" />
             <h3 className="mt-3 text-lg font-semibold text-text-primary">
-              {t(copy.computing)}
+              {t("computing")}
             </h3>
-            <p className="text-text-secondary max-w-md">{t(copy.computingHint)}</p>
+            <p className="text-text-secondary max-w-md">{t("computingHint")}</p>
           </div>
         );
       }
@@ -508,9 +511,9 @@ export function UmapVisualization({
         >
           <Info className="w-12 h-12 text-text-muted mb-4" />
           <h3 className="text-lg font-semibold text-text-primary mb-2">
-            {t(copy.empty)}
+            {t("noEmbeddings")}
           </h3>
-          <p className="text-text-secondary max-w-md">{t(copy.emptyHint)}</p>
+          <p className="text-text-secondary max-w-md">{t(emptyHint)}</p>
         </div>
       );
     }
@@ -523,7 +526,7 @@ export function UmapVisualization({
           <div className="flex items-center gap-2 mb-3 px-3 py-2 rounded-md bg-accent-amber/10 border border-accent-amber/30">
             <Spinner size="sm" />
             <span className="text-xs text-text-secondary">
-              {t(copy.computingPartial)}
+              {t("computingPartial")}
             </span>
           </div>
         )}
@@ -532,7 +535,7 @@ export function UmapVisualization({
           <div className="flex items-center gap-2 mb-3 px-3 py-2 rounded-md bg-accent-red/10 border border-accent-red/30">
             <AlertCircle className="w-4 h-4 text-accent-red flex-shrink-0" />
             <span className="text-xs text-text-secondary flex-1">
-              {t("refreshFailedPartial")}
+              {retryError ?? t("refreshFailedPartial")}
             </span>
             <button
               onClick={handleRetryRefresh}
@@ -608,7 +611,7 @@ export function UmapVisualization({
       <div className="flex items-center justify-between mb-4">
         <div>
           <h3 className="font-display font-semibold text-text-primary">
-            {t(copy.title)}
+            {t("title")}
           </h3>
           {view && (
             <div className="flex items-center gap-3 text-sm text-text-secondary">

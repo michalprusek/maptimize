@@ -146,6 +146,34 @@ async def get_umap_visualization(
     )
 
 
+# -- Tombstone: the discriminant (LDA) projection, removed 2026-08-04 ---------
+#
+# A biologist can keep this dashboard open for days. Their cached bundle still
+# has the LDA button, and clicking it after the deploy would 404 — which the
+# client renders as "Unable to Generate Visualization / Not Found" beside a
+# Retry that can never succeed. That reads as "the analysis is broken", not
+# "this feature is gone; reload".
+#
+# 410 Gone carries a sentence the UNMODIFIED cached bundle will display, which
+# is the only channel that reaches a tab loaded before the deploy. Every hit is
+# logged, so this can be deleted once the log falls silent — it has no other
+# reason to exist and no client written after 2026-08-04 will ever call it.
+@router.get("/discriminant", status_code=status.HTTP_410_GONE)
+@router.post("/discriminant/recompute", status_code=status.HTTP_410_GONE)
+async def discriminant_removed(current_user: User = Depends(get_current_user)):
+    logger.info(
+        "stale client called the removed discriminant endpoint (user %s)",
+        current_user.id,
+    )
+    raise HTTPException(
+        status_code=status.HTTP_410_GONE,
+        detail=(
+            "The discriminant (LDA) projection was removed. Reload the page to "
+            "get the current dashboard."
+        ),
+    )
+
+
 def _take_precomputed(
     items: list[T],
     umap_type: UmapType,

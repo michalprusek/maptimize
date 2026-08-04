@@ -233,7 +233,22 @@ class ToolRegistry:
         self._reload()
         spec = self._specs.get(name)
         if spec is None:
-            return [types.TextContent(type="text", text=f"Unknown tool: {name}")]
+            # Log it for the same reason the except below does: this branch
+            # returns before that handler, so without this line the call
+            # vanishes into a string handed to the model and nothing reaches an
+            # operator. The realistic cause is a client whose cached tool list
+            # predates a rename or removal — tools.yaml hot-reloads and no
+            # tools/list_changed notification is sent, so a connected client can
+            # go on calling a tool that no longer exists indefinitely. This is
+            # the only signal that it is happening.
+            logger.warning("unknown tool requested: %s", name)
+            return [types.TextContent(
+                type="text",
+                text=(
+                    f"Unknown tool: {name}. Your tool list is out of date — "
+                    f"reconnect to refresh it."
+                ),
+            )]
         try:
             resolved = spec.resolve_args(arguments)
             return await HANDLERS[spec.handler](self, spec, resolved, token)

@@ -3,10 +3,11 @@
 /**
  * Pieces shared by the dashboard's scatter projections.
  *
- * The cropped and FOV views differ only in where their coordinates come from
- * and what a point identifies; the tooltips, the legend and the point styling
- * are the same work. They live here so the two cannot drift into disagreeing
- * about what a point means.
+ * The cropped and FOV views differ in what a point identifies — a cell crop or
+ * a whole field — so each has its own tooltip. Everything else is the same
+ * work: the legend, the marker channel, the acquisition-context rows. Those
+ * live here so the two views cannot drift into disagreeing about what a point
+ * means or how it is drawn.
  */
 import {
   api,
@@ -82,7 +83,8 @@ export function ContextRows({
   );
 }
 
-// Tooltip for cropped cell view.
+// Tooltip for the cropped-cell view. Unlike the FOV one it leads with the
+// protein rather than a filename, because a crop has no name of its own.
 interface CroppedTooltipProps extends TooltipProps<number, string> {
   t: Translate;
   contextOf: ContextResolver;

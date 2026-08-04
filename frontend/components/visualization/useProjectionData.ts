@@ -3,12 +3,12 @@
 /**
  * Fetching the dashboard's UMAP.
  *
- * A thin normalising layer over the two UMAP corpora: the cropped and the FOV
- * endpoints answer with different names for the same three ideas — the points,
- * the facet summary, and "a fit is running / the fit failed" — so they are
- * reduced to one shape here and everything downstream (the filter panel, the
- * legend, the tooltips, click-to-editor) works on either without knowing which
- * is on screen.
+ * One endpoint, two corpora. The cropped and FOV responses are near-identical —
+ * `points`, `facets`, `is_stale`, `refresh_error` and `silhouette_score` are
+ * named the same — and differ in exactly one field: `total_crops` vs
+ * `total_images`. That single difference is collapsed here into `totalCount`
+ * plus an `isFov` flag, so nothing downstream repeats the `in`-check to find out
+ * which corpus it is looking at.
  */
 import { useQuery } from "@tanstack/react-query";
 

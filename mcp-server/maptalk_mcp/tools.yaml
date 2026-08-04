@@ -848,7 +848,8 @@ tools:
       protein to all of the experiment's images and cell crops. Pass the protein
       id from list_proteins; omit map_protein_id to unassign. Any group member may
       do this, not only the owner — the protein is shared reference data the lab
-      curates collectively. ⚠️ It is also the label every plot colours by, so
+      curates collectively. ⚠️ Unlike the microscope and the PTM, this one
+      CASCADES — it rewrites the protein on every image and cell crop below — so
       changing it on a colleague's experiment changes their analysis: confirm
       before reassigning one that is already set.
     handler: http_json
@@ -1466,7 +1467,6 @@ tools:
         type: integer
         required: true
 
-  # -- Analysis --------------------------------------------------------------
   # -- Database (read-only) --------------------------------------------------
   - name: query_database
     annotations: {readOnlyHint: true, openWorldHint: false}

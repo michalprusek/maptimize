@@ -409,11 +409,12 @@ async def update_experiment_protein(
     Theo uploads the batch, Michal corrects it -- whoever can SEE an experiment
     may say which protein it carries.
 
-    ⚠️ Weightier than the other three: this label is what every plot colours
-    by, so a wrong edit propagates into the science rather than into a facet.
-    It also cascades to
-    every image and cell crop below. That is a reason to log it, not a reason to
-    lock the annotator out of their own data.
+    ⚠️ Weightier than the other three, and the reason is the cascade, not the
+    colour: microscope and PTM are colour-by options too, but they touch one
+    row. This one rewrites `map_protein_id` on every image and cell crop below,
+    so a wrong edit propagates into the science rather than sitting on a facet.
+    That is a reason to log it, not a reason to lock the annotator out of their
+    own data.
 
     ⚠️ Separate endpoint from the owner-only `PATCH /{experiment_id}` on purpose:
     one field must not have two paths with two different ACLs, or the narrower

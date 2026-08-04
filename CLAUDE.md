@@ -638,10 +638,11 @@ na kartě experimentu vracel 403 na 87 % karet.
 a 2026-07-29 zase odebrán.** Není to kolotoč — v PR #43 byl group-write *nezáměrný*
 (nikdo ho nezvážil), teď je *zvolený*. Nevracej ho zpátky jako „zapomenutou kontrolu".
 
-⚠️ **Váží víc než ostatní tři.** Protein je štítek, na kterém je fitovaná
-diskriminační projekce a podle kterého barví každý graf, a kaskáduje na všechny
-obrázky a cropy. Proto to endpoint loguje a MCP popis toolu říká, ať se přiřazení
-na cizím experimentu nejdřív potvrdí.
+⚠️ **Váží víc než ostatní tři — a důvod je kaskáda, ne barva.** Mikroskop i PTM
+jsou taky volby `colorBy`, ale sáhnou na jediný řádek. Přiřazení proteinu
+přepíše `map_protein_id` na **všech** obrázcích a cropech pod experimentem, takže
+chybná editace se propíše do vědy, ne do facety. Proto to endpoint loguje a MCP
+popis toolu říká, ať se přiřazení na cizím experimentu nejdřív potvrdí.
 
 `test_exp_update_protein_is_group_writable` a
 `test_exp_generic_update_and_delete_stay_owner_only` v `tests/unit/test_router_misc.py`
