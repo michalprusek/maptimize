@@ -1,17 +1,17 @@
 "use client";
 
 /**
- * Pieces shared by every scatter projection on the dashboard.
+ * Pieces shared by the dashboard's scatter projections.
  *
- * UMAP and the supervised discriminant differ only in where their coordinates
- * come from and what has to be said about them; the tooltips, the legend and
- * the point styling are the same work. They live here so the two views cannot
- * drift into disagreeing about what a point means.
+ * The cropped and FOV views differ in what a point identifies — a cell crop or
+ * a whole field — so each has its own tooltip. Everything else is the same
+ * work: the legend, the marker channel, the acquisition-context rows. Those
+ * live here so the two views cannot drift into disagreeing about what a point
+ * means or how it is drawn.
  */
 import {
   api,
   API_URL,
-  type DiscriminantPoint,
   type UmapFovPoint,
   type UmapPoint,
 } from "@/lib/api";
@@ -28,7 +28,7 @@ import {
 } from "./pointMarker";
 
 /** Any point one of the projections can draw. */
-export type ProjectionPoint = UmapPoint | UmapFovPoint | DiscriminantPoint;
+export type ProjectionPoint = UmapPoint | UmapFovPoint;
 
 /** next-intl's `t`, narrowed to what these components use. */
 export type Translate = (
@@ -83,8 +83,8 @@ export function ContextRows({
   );
 }
 
-// Tooltip for cropped cell view. Serves the discriminant projection too: its
-// points carry the same crop identity, so there is nothing extra to say.
+// Tooltip for the cropped-cell view. Unlike the FOV one it leads with the
+// protein rather than a filename, because a crop has no name of its own.
 interface CroppedTooltipProps extends TooltipProps<number, string> {
   t: Translate;
   contextOf: ContextResolver;

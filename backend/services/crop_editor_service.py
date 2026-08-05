@@ -141,8 +141,8 @@ def extract_crop_from_projection(
     ⚠️ **Interpolation order is a scientific choice, not a default.** An axis-aligned
     crop is an exact slice, a rotated one is resampled, so whatever the resampler
     does to texture becomes a systematic difference between rotated and unrotated
-    crops -- and that difference is readable by the DINOv3 embedding, the UMAP and the
-    discriminant projection, exactly the way the microscope turned out to be. Measured
+    crops -- and that difference is readable by the DINOv3 embedding and the UMAP,
+    exactly the way the microscope turned out to be. Measured
     on six real production crops (HMMR FOVs, 531-689 px boxes), change in texture
     statistics versus the exact slice at 30 deg / 45 deg:
 

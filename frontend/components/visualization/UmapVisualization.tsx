@@ -27,7 +27,6 @@ import {
   getSilhouetteScoreStyle,
 } from "./chartConfig";
 import { UmapFilterPanel, type ColorBy } from "./UmapFilterPanel";
-import { DiscriminantMetricStrip } from "./DiscriminantMetricStrip";
 import {
   CroppedTooltip,
   FovTooltip,
@@ -39,7 +38,7 @@ import {
   type RechartsShapeProps,
 } from "./projectionShared";
 import { classCounts, sampleClassOf, type SampleClass } from "./pointMarker";
-import { useProjectionData, type Projection } from "./useProjectionData";
+import { useProjectionData } from "./useProjectionData";
 import {
   EMPTY_SELECTION,
   experimentColor,
@@ -59,38 +58,6 @@ interface UmapVisualizationProps {
   preferFovMode?: boolean;
 }
 
-/**
- * Which message names each state, per projection.
- *
- * The two projections fail and wait for different reasons — UMAP re-fits after
- * an upload, the discriminant runs a minutes-long supervised fit — so the copy
- * is picked up front rather than branched at each of the five render sites.
- */
-function panelCopy(projection: Projection, viewMode: UmapType) {
-  if (projection === "lda") {
-    return {
-      title: "ldaTitle",
-      loading: "ldaLoading",
-      loadingHint: "ldaLoadingHint",
-      computing: "ldaComputing",
-      computingHint: "ldaComputingHint",
-      computingPartial: "ldaComputingPartial",
-      empty: "ldaNoProjection",
-      emptyHint: "ldaNoProjectionHint",
-    };
-  }
-  return {
-    title: "title",
-    loading: "loading",
-    loadingHint: "loadingHint",
-    computing: "computing",
-    computingHint: "computingHint",
-    computingPartial: "computingPartial",
-    empty: "noEmbeddings",
-    emptyHint: viewMode === "fov" ? "noEmbeddingsFov" : "noEmbeddingsCrops",
-  };
-}
-
 export function UmapVisualization({
   experimentId,
   height = 500,
@@ -98,10 +65,8 @@ export function UmapVisualization({
 }: UmapVisualizationProps): JSX.Element {
   const t = useTranslations("umap");
   const router = useRouter();
-  const [projection, setProjection] = useState<Projection>("umap");
   const [viewMode, setViewMode] = useState<UmapType>(preferFovMode ? "fov" : "cropped");
   const [colorBy, setColorBy] = useState<ColorBy>("protein");
-  const isLda = projection === "lda";
 
   // Only the dashboard's global plot round-trips its filter through the URL, so
   // a filtered view can be shared. On an experiment page the scope is the route
@@ -159,7 +124,6 @@ export function UmapVisualization({
   );
 
   const { view, isLoading, isFetching, error, refetch } = useProjectionData({
-    projection,
     viewMode,
     selection: effectiveSelection,
     experimentId,
@@ -188,30 +152,37 @@ export function UmapVisualization({
 
   const isRecomputing = view?.isComputing ?? false;
   const computeError = view?.computeError ?? null;
-  const copy = panelCopy(projection, viewMode);
+  // The one panel message that depends on which corpus is on screen. This used
+  // to be a whole key map, which earned its keep when UMAP and the discriminant
+  // needed different copy at five render sites; with one projection the other
+  // seven entries mapped a name to itself.
+  const emptyHint = viewMode === "fov" ? "noEmbeddingsFov" : "noEmbeddingsCrops";
 
-  // The fit failed, so coordinates will never arrive on their own. BOTH backends
-  // record the failure and stop rescheduling precisely so a poll cannot restart a
-  // doomed multi-minute computation on a loop — which means a plain refetch
-  // returns the recorded error forever and the button does nothing. Each has to
-  // be asked explicitly.
+  // The fit failed, so coordinates will never arrive on their own: the backend
+  // records the failure and stops rescheduling, precisely so a poll cannot
+  // restart a doomed multi-minute computation on a loop. A plain refetch
+  // therefore returns the recorded error forever, and this button is the only
+  // way out of that state.
+  //
+  // ⚠️ Which is why its own failure must be visible. A bare console.error left
+  // the user watching the same error panel after clicking Retry, concluding the
+  // fit was still broken — when an expired session or a 502 meant the request
+  // never reached the server, and the fix was to log in again.
   const [isRetrying, setIsRetrying] = useState(false);
+  const [retryError, setRetryError] = useState<string | null>(null);
   const handleRetryRefresh = useCallback(async () => {
     setIsRetrying(true);
+    setRetryError(null);
     try {
-      if (projection === "lda") {
-        await api.triggerDiscriminantRecomputation();
-        await queryClient.invalidateQueries({ queryKey: ["discriminant"] });
-      } else {
-        await api.triggerUmapRecomputation(viewMode);
-        await queryClient.invalidateQueries({ queryKey: ["umap"] });
-      }
+      await api.triggerUmapRecomputation(viewMode);
+      await queryClient.invalidateQueries({ queryKey: ["umap"] });
     } catch (e) {
       console.error("[UmapVisualization] Failed to trigger recomputation:", e);
+      setRetryError(e instanceof Error ? e.message : t("unknownError"));
     } finally {
       setIsRetrying(false);
     }
-  }, [projection, viewMode, queryClient]);
+  }, [viewMode, queryClient, t]);
 
   // Handle click on a point - navigate to editor
   const handleChartClick = useCallback((state: { activePayload?: Array<{ payload: ProjectionPoint }> } | null) => {
@@ -388,10 +359,9 @@ export function UmapVisualization({
     return Array.from(groups.values()).sort((a, b) => b.count - a.count);
   }, [view?.points, styleOf]);
 
-  const isFov = view?.isFov ?? (!isLda && viewMode === "fov");
+  const isFov = view?.isFov ?? viewMode === "fov";
   const totalCount = view?.totalCount ?? 0;
   const silhouetteScore = view?.silhouetteScore ?? null;
-  const axisPrefix = isLda ? "LDA" : "UMAP";
 
   // Error message parsing
   const errorMessage = error instanceof Error ? error.message : error ? t("unknownError") : null;
@@ -413,10 +383,10 @@ export function UmapVisualization({
         >
           <Spinner size="lg" />
           <span className="mt-3 text-text-secondary">
-            {t(copy.loading)}
+            {t("loading")}
           </span>
           <span className="text-xs text-text-muted mt-1">
-            {t(copy.loadingHint)}
+            {t("loadingHint")}
           </span>
         </div>
       );
@@ -456,12 +426,9 @@ export function UmapVisualization({
 
     // The background re-fit failed: nothing is coming, so say so instead of
     // spinning forever. Retry goes through the backend, which clears the
-    // recorded failure and lets reads schedule refreshes again.
-    //
-    // UMAP only: in LDA mode the metric strip above the plot is already the one
-    // place that reports the failure and offers the retry, and repeating it
-    // here would give the same error two voices.
-    if (!isLda && computeError && !view?.points.length) {
+    // recorded failure and lets reads schedule refreshes again — a plain
+    // refetch would return the recorded error forever.
+    if (computeError && !view?.points.length) {
       return (
         <div
           className="flex flex-col items-center justify-center text-center"
@@ -480,30 +447,16 @@ export function UmapVisualization({
             <RefreshCw className={`w-4 h-4 ${isRetrying ? "animate-spin" : ""}`} />
             {t("retry")}
           </button>
+          {/* The retry itself failed — say why, or the user reads the unchanged
+              panel above as "the fit is still broken". */}
+          {retryError && (
+            <p className="text-xs text-accent-red mt-3 max-w-md">{retryError}</p>
+          )}
         </div>
       );
     }
 
     if (!view || view.points.length === 0) {
-      // The LDA fit failed and produced no geometry. The metric strip above is
-      // the one place that carries the detail and the retry, so this only has
-      // to explain why the chart is empty — attributing it to "no proteins
-      // assigned" below would send the user to fix a problem they do not have.
-      if (isLda && computeError) {
-        return (
-          <div
-            className="flex flex-col items-center justify-center text-center"
-            style={{ height: height - 100 }}
-          >
-            <AlertCircle className="w-12 h-12 text-accent-red mb-4" />
-            <h3 className="text-lg font-semibold text-text-primary mb-2">
-              {t("ldaComputeFailed")}
-            </h3>
-            <p className="text-text-secondary max-w-md">{t("ldaComputeFailedHint")}</p>
-          </div>
-        );
-      }
-
       // The filter excluded everything. Saying "upload and process images" here
       // would send the user to fix a problem they do not have.
       //
@@ -544,9 +497,9 @@ export function UmapVisualization({
           >
             <Spinner size="lg" />
             <h3 className="mt-3 text-lg font-semibold text-text-primary">
-              {t(copy.computing)}
+              {t("computing")}
             </h3>
-            <p className="text-text-secondary max-w-md">{t(copy.computingHint)}</p>
+            <p className="text-text-secondary max-w-md">{t("computingHint")}</p>
           </div>
         );
       }
@@ -558,9 +511,9 @@ export function UmapVisualization({
         >
           <Info className="w-12 h-12 text-text-muted mb-4" />
           <h3 className="text-lg font-semibold text-text-primary mb-2">
-            {t(copy.empty)}
+            {t("noEmbeddings")}
           </h3>
-          <p className="text-text-secondary max-w-md">{t(copy.emptyHint)}</p>
+          <p className="text-text-secondary max-w-md">{t(emptyHint)}</p>
         </div>
       );
     }
@@ -573,17 +526,16 @@ export function UmapVisualization({
           <div className="flex items-center gap-2 mb-3 px-3 py-2 rounded-md bg-accent-amber/10 border border-accent-amber/30">
             <Spinner size="sm" />
             <span className="text-xs text-text-secondary">
-              {t(copy.computingPartial)}
+              {t("computingPartial")}
             </span>
           </div>
         )}
-        {/* Points are plotted, but the re-fit for the newer ones failed. In LDA
-            mode the metric strip already carries this. */}
-        {!isLda && computeError && (
+        {/* Points are plotted, but the re-fit for the newer ones failed. */}
+        {computeError && (
           <div className="flex items-center gap-2 mb-3 px-3 py-2 rounded-md bg-accent-red/10 border border-accent-red/30">
             <AlertCircle className="w-4 h-4 text-accent-red flex-shrink-0" />
             <span className="text-xs text-text-secondary flex-1">
-              {t("refreshFailedPartial")}
+              {retryError ?? t("refreshFailedPartial")}
             </span>
             <button
               onClick={handleRetryRefresh}
@@ -603,7 +555,7 @@ export function UmapVisualization({
               <XAxis
                 type="number"
                 dataKey="x"
-                name={`${axisPrefix} 1`}
+                name={"UMAP 1"}
                 tick={UMAP_AXIS_STYLE.tick}
                 axisLine={UMAP_AXIS_STYLE.axisLine}
                 tickLine={UMAP_AXIS_STYLE.tickLine}
@@ -613,7 +565,7 @@ export function UmapVisualization({
               <YAxis
                 type="number"
                 dataKey="y"
-                name={`${axisPrefix} 2`}
+                name={"UMAP 2"}
                 tick={UMAP_AXIS_STYLE.tick}
                 axisLine={UMAP_AXIS_STYLE.axisLine}
                 tickLine={UMAP_AXIS_STYLE.tickLine}
@@ -659,14 +611,14 @@ export function UmapVisualization({
       <div className="flex items-center justify-between mb-4">
         <div>
           <h3 className="font-display font-semibold text-text-primary">
-            {t(copy.title)}
+            {t("title")}
           </h3>
           {view && (
             <div className="flex items-center gap-3 text-sm text-text-secondary">
               <span>
                 {totalCount.toLocaleString()} {isFov ? t("fovImages") : t("cellCrops")}
               </span>
-              {!isLda && silhouetteScore !== null && (
+              {silhouetteScore !== null && (
                 <span
                   className={`px-2 py-0.5 rounded text-xs font-mono ${getSilhouetteScoreStyle(silhouetteScore)}`}
                   title={t("silhouetteTooltip")}
@@ -679,62 +631,33 @@ export function UmapVisualization({
         </div>
 
         <div className="flex items-center gap-3">
-          {/* Which projection: unsupervised UMAP or supervised discriminant */}
+          {/* FOV/Cropped */}
           <div className="flex items-center bg-bg-secondary rounded-lg p-1">
             <button
-              onClick={() => setProjection("umap")}
-              className={`px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${
-                !isLda
+              onClick={() => setViewMode("fov")}
+              className={`px-3 py-1.5 rounded-md text-sm font-medium transition-colors flex items-center gap-1.5 ${
+                viewMode === "fov"
                   ? "bg-primary-500 text-white"
                   : "text-text-secondary hover:text-text-primary"
               }`}
-              title={t("umapModeTooltip")}
+              title={t("fovTooltip")}
             >
-              {t("umapMode")}
+              <Grid className="w-4 h-4" />
+              {t("fov")}
             </button>
             <button
-              onClick={() => setProjection("lda")}
-              className={`px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${
-                isLda
+              onClick={() => setViewMode("cropped")}
+              className={`px-3 py-1.5 rounded-md text-sm font-medium transition-colors flex items-center gap-1.5 ${
+                viewMode === "cropped"
                   ? "bg-primary-500 text-white"
                   : "text-text-secondary hover:text-text-primary"
               }`}
-              title={t("ldaModeTooltip")}
+              title={t("croppedTooltip")}
             >
-              {t("ldaMode")}
+              <Layers className="w-4 h-4" />
+              {t("cropped")}
             </button>
           </div>
-
-          {/* FOV/Cropped. Hidden for LDA: its labels are per-crop protein
-              assignments, so there is no FOV-level projection to show. */}
-          {!isLda && (
-            <div className="flex items-center bg-bg-secondary rounded-lg p-1">
-              <button
-                onClick={() => setViewMode("fov")}
-                className={`px-3 py-1.5 rounded-md text-sm font-medium transition-colors flex items-center gap-1.5 ${
-                  viewMode === "fov"
-                    ? "bg-primary-500 text-white"
-                    : "text-text-secondary hover:text-text-primary"
-                }`}
-                title={t("fovTooltip")}
-              >
-                <Grid className="w-4 h-4" />
-                {t("fov")}
-              </button>
-              <button
-                onClick={() => setViewMode("cropped")}
-                className={`px-3 py-1.5 rounded-md text-sm font-medium transition-colors flex items-center gap-1.5 ${
-                  viewMode === "cropped"
-                    ? "bg-primary-500 text-white"
-                    : "text-text-secondary hover:text-text-primary"
-                }`}
-                title={t("croppedTooltip")}
-              >
-                <Layers className="w-4 h-4" />
-                {t("cropped")}
-              </button>
-            </div>
-          )}
 
           {/* Refresh button */}
           <button
@@ -798,20 +721,6 @@ export function UmapVisualization({
           showExperimentFacet={experimentId === undefined}
           shownCount={view.points.length}
           totalCount={totalPoints(facetRows)}
-        />
-      )}
-
-      {/* The honesty numbers. Unconditional in LDA mode — the separation must
-          never be visible without them — and suppressed only when the request
-          itself failed, where the panel below carries the whole message. */}
-      {isLda && !hasHardError && (
-        <DiscriminantMetricStrip
-          metrics={view?.metrics ?? null}
-          isComputing={view ? view.isComputing : isLoading}
-          computeError={computeError}
-          onRetry={handleRetryRefresh}
-          isRetrying={isRetrying}
-          t={t}
         />
       )}
 
