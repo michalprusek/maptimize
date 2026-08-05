@@ -1,0 +1,16 @@
+[Unit]
+Description=Daily Maptimize backup at 03:00
+Documentation=file:/home/cvat/maptimize/scripts/backup.sh
+
+[Timer]
+OnCalendar=*-*-* 03:00:00
+# Catch up after downtime. A server that was off at 03:00 otherwise silently
+# skips a day, and the gap only becomes visible when a restore is needed.
+Persistent=true
+# Small jitter so the backup does not start in lockstep with every other 03:00
+# job on the box competing for the same disk.
+RandomizedDelaySec=300
+AccuracySec=1min
+
+[Install]
+WantedBy=timers.target

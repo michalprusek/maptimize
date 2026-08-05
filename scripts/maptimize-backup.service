@@ -1,0 +1,32 @@
+[Unit]
+Description=Maptimize production backup (Postgres + data/ + weights)
+Documentation=file:/home/cvat/maptimize/scripts/backup.sh
+# Nothing to back up if the backup disk is not there. Without this the script
+# would happily write into the empty /backup mountpoint on the root disk —
+# producing "successful" backups that sit on the very disk they protect against.
+RequiresMountsFor=/backup
+After=docker.service
+Requires=docker.service
+# The script writes FAIL itself on the paths it survives. This covers the ones
+# it does not: killed before the trap runs, the unit failing before ExecStart,
+# or /backup read-only so its own status write did nothing.
+OnFailure=maptimize-backup-failed.service
+
+[Service]
+Type=oneshot
+User=cvat
+Group=cvat
+ExecStart=/home/cvat/maptimize/scripts/backup.sh
+
+# Type=oneshot has NO start timeout by default — systemd reports
+# TimeoutStartUSec=infinity for it, and DefaultTimeoutStartUSec (90s here)
+# does not apply. So this is not protection against being killed; it is an
+# explicit upper bound so a wedged `docker exec` or a hung rsync eventually
+# fails the unit instead of blocking the timer forever.
+TimeoutStartSec=4h
+
+Nice=10
+IOSchedulingClass=idle
+
+[Install]
+WantedBy=multi-user.target
