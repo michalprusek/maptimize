@@ -6,9 +6,8 @@ corpus, which multi-group membership ends: someone in groups A and B reads
 ``own ∪ A ∪ B`` while their colleague in A alone reads ``own ∪ A``, and both fits
 write the same columns. Nothing raises; the plot just degrades.
 
-So the fit corpus stops depending on who asked. This is the rule the discriminant
-projection already follows -- the filter selects which points are returned, never
-which are fitted.
+So the fit corpus stops depending on who asked: the filter selects which points
+are returned, never which are fitted.
 """
 import inspect
 

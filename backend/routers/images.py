@@ -1200,7 +1200,7 @@ async def batch_update_crops(
                             # crop while the DB already holds the new geometry.
                             # Appending regardless meant the embedding was computed
                             # from stale pixels and then marked "ready" -- silently
-                            # wrong data feeding the UMAP and the LDA, with no log
+                            # wrong data feeding the UMAP, with no log
                             # line anywhere.
                             regen = await do_regen(crop, crop.image, task_db)
                             if regen.get("success"):
