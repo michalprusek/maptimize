@@ -30,6 +30,10 @@ def _ptm(**kw):
         modified_residue="α/β-tubulin C-terminal tails",
         enzyme="TTLL1-TTLL7",
         color="#ec4899",
+        # Required on the response: a source object with no `kind` must fail
+        # loudly rather than serialise as "modification", which is the one value
+        # that would draw a control as the sample it controls.
+        kind="modification",
     )
     base.update(kw)
     return SimpleNamespace(**base)

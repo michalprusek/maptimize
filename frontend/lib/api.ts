@@ -1789,6 +1789,15 @@ export interface MicroscopeUpdate {
   color?: string | null;
 }
 
+/**
+ * What a PTM row is. Mirrors backend `PTMKind`.
+ *
+ * Not every entry in the vocabulary is a modification: `Unmodified` is the
+ * absence of one, and `control` is a transfection with a catalytically inactive
+ * enzyme, run alongside a modified sample.
+ */
+export type PTMKind = "modification" | "control" | "none";
+
 /** Basic PTM shape — mirrors backend PTMResponse (embedded in Experiment). */
 export interface PTM {
   id: number;
@@ -1797,6 +1806,12 @@ export interface PTM {
   modified_residue?: string;
   enzyme?: string;
   color?: string;
+  /**
+   * Widened to `string` on purpose: an older backend, or a kind added later,
+   * must degrade to the plain marker rather than fail to type-check. Normalise
+   * it through `pointMarker.ptmKindOf` before drawing anything.
+   */
+  kind?: string;
 }
 
 /** Detailed shape — mirrors backend PTMDetailedResponse (list/create/update). */
@@ -1813,6 +1828,8 @@ export interface PTMCreate {
   enzyme?: string;
   description?: string;
   color?: string;
+  /** Defaults to "modification" server-side when omitted. */
+  kind?: PTMKind;
 }
 
 export interface PTMUpdate {
@@ -1823,6 +1840,7 @@ export interface PTMUpdate {
   description?: string;
   /** null asks the backend to assign an unused colour; omit to leave unchanged. */
   color?: string | null;
+  kind?: PTMKind;
 }
 
 export interface UmapProteinPoint {

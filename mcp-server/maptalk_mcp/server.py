@@ -168,7 +168,7 @@ SERVER_INSTRUCTIONS = (
 # Bumped when the tool contract or capabilities change (see MCP versioning).
 # The pinning tests in tests/test_registry.py and tests/test_protocol.py record
 # what THIS version exposes — update them with the bump.
-SERVER_VERSION = "3.1.0"
+SERVER_VERSION = "3.2.0"
 
 
 def build_server(registry: ToolRegistry) -> Server:

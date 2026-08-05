@@ -31,10 +31,14 @@ import { DiscriminantMetricStrip } from "./DiscriminantMetricStrip";
 import {
   CroppedTooltip,
   FovTooltip,
+  MarkerLegend,
   ProjectionLegend,
+  ProjectionMarker,
   type PointContext,
   type ProjectionPoint,
+  type RechartsShapeProps,
 } from "./projectionShared";
+import { classCounts, sampleClassOf, type SampleClass } from "./pointMarker";
 import { useProjectionData, type Projection } from "./useProjectionData";
 import {
   EMPTY_SELECTION,
@@ -305,6 +309,70 @@ export function UmapVisualization({
     [colorBy, experimentMeta, microscopeById, ptmById, t]
   );
 
+  /**
+   * PTM ids an experiment names but the cached reference list has never seen.
+   *
+   * Not a missing assignment — a row a colleague created after this tab loaded.
+   * The `ptms` query has a 5-minute staleTime AND the app disables
+   * `refetchOnWindowFocus`, so on a dashboard that mounts once it effectively
+   * never refetches, while the projection query polls and its facets DO update.
+   * Drawing those points plain claims "not a PTM", which is a claim we cannot
+   * make, so it gets the same banner as a reference list that failed outright.
+   */
+  const [hasUnresolvedPtm, setHasUnresolvedPtm] = useState(false);
+  const noteUnresolvedPtm = useCallback(() => setHasUnresolvedPtm(true), []);
+
+  /**
+   * Which sample class a point is: a PTM, its paired control, the unmodified
+   * lattice, or an experiment nobody classified.
+   *
+   * Points carry only `experiment_id`; the rest is resolved by `sampleClassOf`,
+   * which lives in `pointMarker.ts` so it is reachable by a test — in here the
+   * whole composition could be replaced by `() => "none"` with 95 unit tests and
+   * `tsc` still green, and the failure would hide its own evidence because a
+   * single-class plot also removes its legend.
+   */
+  const classOfPoint = useCallback(
+    (point: ProjectionPoint): SampleClass =>
+      sampleClassOf(point.experiment_id, experimentMeta, ptmById, noteUnresolvedPtm),
+    [experimentMeta, ptmById, noteUnresolvedPtm]
+  );
+
+  // recharts' `ActiveShape` is a union of call signatures, one of them taking
+  // `unknown`, so contextual typing cannot pick one and the narrowing has to be
+  // explicit. It casts to RechartsShapeProps only — the class is not something
+  // recharts can supply, and `payload` is destructured out rather than spread so
+  // omitting `cls` cannot type-check.
+  //
+  // ⚠️ `fill` is NOT in recharts' documented `ScatterPointItem`. It reaches the
+  // shape only because `getComposedData` spreads the matching `<Cell>`'s props
+  // into the point last — undocumented behaviour that every point's colour
+  // depends on, and the first thing to check if a version bump greys the plot.
+  const renderMarker = useCallback(
+    (props: unknown) => {
+      const { payload, ...geometry } = props as RechartsShapeProps;
+      return (
+        <ProjectionMarker
+          {...geometry}
+          cls={payload ? classOfPoint(payload) : "unrecorded"}
+        />
+      );
+    },
+    [classOfPoint]
+  );
+
+  // Counted from the same points and the same resolver the markers use, so the
+  // key under the plot cannot describe a distinction the plot did not draw.
+  const markerCounts = useMemo(
+    () =>
+      classCounts(
+        (view?.points ?? []).map((point) => point.experiment_id),
+        experimentMeta,
+        ptmById
+      ),
+    [view?.points, experimentMeta, ptmById]
+  );
+
   // Legend groups, derived from the same styleOf as the points themselves so a
   // swatch can never disagree with what is drawn.
   const legendGroups = useMemo(() => {
@@ -565,17 +633,14 @@ export function UmapVisualization({
               />
               <Scatter
                 data={view.points}
+                shape={renderMarker}
                 {...UMAP_SCATTER_ANIMATION}
               >
                 {view.points.map((point, index) => (
-                  <Cell
-                    key={`cell-${index}`}
-                    fill={styleOf(point).color}
-                    fillOpacity={0.75}
-                    stroke="rgba(255,255,255,0.3)"
-                    strokeWidth={1}
-                    cursor="pointer"
-                  />
+                  // Colour only. Opacity, stroke and the centre dot belong to
+                  // the marker; splitting them across both would give one point
+                  // two places to disagree with itself.
+                  <Cell key={`cell-${index}`} fill={styleOf(point).color} />
                 ))}
               </Scatter>
             </ScatterChart>
@@ -583,6 +648,7 @@ export function UmapVisualization({
         </div>
 
         <ProjectionLegend groups={legendGroups} />
+        <MarkerLegend counts={markerCounts} t={t} />
       </>
     );
   };
@@ -694,7 +760,7 @@ export function UmapVisualization({
 
       {/* A reference list failed to load, so names and colours are wrong rather
           than missing — the plot looks like a lost backfill if we stay quiet. */}
-      {referencesFailed && (
+      {(referencesFailed || hasUnresolvedPtm) && (
         <div className="flex items-center gap-2 mb-3 px-3 py-2 rounded-md bg-accent-amber/10 border border-accent-amber/30">
           <AlertCircle className="w-4 h-4 text-accent-amber flex-shrink-0" />
           <span className="text-xs text-text-secondary">{t("referencesFailed")}</span>
