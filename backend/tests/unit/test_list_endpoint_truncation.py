@@ -96,12 +96,39 @@ async def _run_list_experiments(mock_db, **overrides):
     return _executed(mock_db)
 
 
-async def _run_search_documents(mock_db, **overrides):
-    """Drive the documents listing with the limit its router would pass on."""
+async def _run_list_documents(mock_db, **overrides):
+    """Drive the `list_documents` ROUTER as a request with no query string would.
+
+    Going through the router rather than straight to the service is the whole
+    point: reading the router's declared defaults and then handing them to
+    `search_documents_metadata` skips over the router body, so a cap re-imposed
+    there (`limit = 50 if limit is None else limit`) would sail past. That is
+    the same one-indirection-short mistake this file exists to catch, and it was
+    live in this helper until CodeRabbit flagged it on PR #57.
+    """
     kwargs = dict(
         skip=_query_default(rag_r.list_documents, "skip"),
         limit=_query_default(rag_r.list_documents, "limit"),
+        status_filter=None, name=None, doi=None, file_type=None,
+        min_pages=None, max_pages=None,
     )
+    kwargs.update(overrides)
+    mock_db.execute.return_value = SimpleNamespace(
+        scalars=lambda: SimpleNamespace(all=lambda: [])
+    )
+    # `response=None` keeps this to a single statement -- the listing -- so
+    # `_executed` cannot pick up the X-Total-Count query by mistake.
+    with patch.object(rag_r, "resolve_scope", new=AsyncMock(return_value=([], None))):
+        await rag_r.list_documents(
+            scope=rag_r.LibraryScope(), response=None,
+            current_user=SimpleNamespace(id=1), db=mock_db, **kwargs,
+        )
+    return _executed(mock_db)
+
+
+async def _run_search_documents(mock_db, **overrides):
+    """Drive the metadata SERVICE directly, for assertions below the router."""
+    kwargs = dict(skip=0, limit=None)
     kwargs.update(overrides)
     mock_db.execute.return_value = SimpleNamespace(
         scalars=lambda: SimpleNamespace(all=lambda: [])
@@ -125,8 +152,8 @@ async def test_experiment_listing_is_unbounded_when_limit_is_omitted(mock_db):
 
 
 async def test_document_listing_is_unbounded_when_limit_is_omitted(mock_db):
-    """Same guarantee on the documents path, driven as the router drives it."""
-    sql = _sql(await _run_search_documents(mock_db))
+    """Same guarantee on the documents path, through the real router body."""
+    sql = _sql(await _run_list_documents(mock_db))
     assert "LIMIT ALL" in sql, f"documents listing carries a cap: {sql}"
 
 
