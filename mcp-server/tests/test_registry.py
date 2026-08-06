@@ -246,3 +246,43 @@ def test_registry_rejects_unknown_array_items_type(tmp_path):
     )
     with pytest.raises(ValueError, match="items type"):
         ToolRegistry(str(yaml_file), _client_on(str(yaml_file)))
+
+
+def test_the_two_listings_cap_differently_and_that_is_deliberate(make_registry):
+    """`find_documents` still caps at 50; `list_experiments` deliberately does not.
+
+    Both back onto endpoints whose server-side default became "no limit" once
+    silent truncation was removed (backend PR #57). They diverge on purpose, and
+    the difference is only defensible because of how each one behaves when the
+    corpus outgrows one response:
+
+    * `find_documents` declares `limit: 50` and `skip`, and `resolve_args` puts
+      that default on the wire even when the model passes nothing. That is not
+      the silent kind of cap -- `handlers.find_documents` reads `X-Total-Count`
+      and appends "Showing 50 of N ... call again with skip=50", so the agent is
+      told what it is missing and how to fetch it.
+    * `list_experiments` offers `skip`/`limit` but declares NO default, so an
+      omitted argument fetches everything. The lab's experiment count is small
+      and the model normally wants all of it; the params exist as an escape
+      hatch, since `ExperimentResponse` carries `fasta_sequence` and the listing
+      can grow without bound once the lab populates sequences.
+
+    So: capped only where the agent can both SEE the cap and page past it. Both
+    tools route through `_paged_listing`, which reports `X-Total-Count`, so
+    neither can hand back a prefix that reads as the whole answer.
+    """
+    reg = make_registry(_noop)
+    docs = reg._specs["find_documents"]
+    exps = reg._specs["list_experiments"]
+
+    assert docs.resolve_args({}) == {"limit": 50, "skip": 0, "include_subfolders": True}
+    assert {p.name for p in docs.params} >= {"limit", "skip"}
+
+    # Offered, but never imposed: omitting them must not put a cap on the wire.
+    assert {p.name for p in exps.params} == {"limit", "skip"}
+    assert exps.resolve_args({}) == {}
+    assert exps.resolve_args({"limit": 10, "skip": 20}) == {"limit": 10, "skip": 20}
+
+    # Both must report the total, or a cap becomes indistinguishable from all.
+    assert docs.handler == "find_documents"
+    assert exps.handler == "list_experiments"

@@ -736,10 +736,25 @@ tools:
       List experiments you can see (your own plus any shared with you through
       your group). Returns id, name, description, status, assigned protein, and
       image/cell counts. Use it to find an experiment_id before reading or editing.
-    handler: http_json
+      Returns everything by default and reports the total, so you can tell a
+      complete answer from a page; pass limit/skip only if the listing is too
+      large to work with.
+    handler: list_experiments
     method: GET
     path: /api/experiments
-    params: []
+    params:
+      - name: limit
+        in: query
+        type: integer
+        description: >
+          Max experiments to return. Omit for all of them — the response says
+          how many matched in total either way.
+      - name: skip
+        in: query
+        type: integer
+        description: >
+          Offset for pagination. The response reports the total match count and
+          the next skip value when more pages exist.
 
   - name: get_experiment
     annotations: {readOnlyHint: true, openWorldHint: false}

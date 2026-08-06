@@ -144,15 +144,21 @@ async def resolve_folder_scope(
 ) -> Optional[list[int]]:
     """Expand a caller's folder selection into the list of folder ids to search.
 
-    Returns None when no folder filter was asked for -- meaning "everything the
-    caller can read", which is the default.
+    Returns None only when no folder filter was asked for at all -- meaning
+    "everything the caller can read", which is the default.
+
+    ``[]`` is NOT that. It means "restrict to these folders: none", and it must
+    resolve to an empty list, i.e. zero rows. Reading it as "no filter" is the
+    one failure in this path whose direction is WIDENING, and callers downstream
+    are careful to test the result with `is not None` precisely so that an empty
+    list narrows -- see the comment in rag_service._document_metadata_conditions.
 
     The expansion runs against ``visible_clause`` (the caller's folder ACL), so a
     folder id the caller cannot see contributes nothing rather than widening the
     search. That is why the resulting id list can be handed straight to the
     pgvector query: every id in it is already authorized.
     """
-    if not folder_ids:
+    if folder_ids is None:
         return None
 
     visible = list((await db.execute(

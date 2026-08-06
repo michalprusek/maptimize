@@ -551,7 +551,10 @@ async def list_fovs(
         .outerjoin(CellCrop, Image.id == CellCrop.image_id)
         .where(Image.experiment_id == experiment_id)
         .group_by(Image.id)
-        .order_by(Image.created_at.desc())
+        # `id` breaks ties: this listing takes skip/limit, and OFFSET/LIMIT is
+        # only correct over a total order. See
+        # tests/unit/test_list_endpoint_truncation.py.
+        .order_by(Image.created_at.desc(), Image.id.desc())
         .offset(skip)
     )
     if limit is not None:
@@ -608,7 +611,10 @@ async def list_images(
         .outerjoin(CellCrop, Image.id == CellCrop.image_id)
         .where(Image.experiment_id == experiment_id)
         .group_by(Image.id)
-        .order_by(Image.created_at.desc())
+        # `id` breaks ties: this listing takes skip/limit, and OFFSET/LIMIT is
+        # only correct over a total order. See
+        # tests/unit/test_list_endpoint_truncation.py.
+        .order_by(Image.created_at.desc(), Image.id.desc())
         .offset(skip)
     )
     if limit is not None:
@@ -645,7 +651,13 @@ async def list_cell_crops(
             selectinload(CellCrop.map_protein)
         )
         .where(Image.experiment_id == experiment_id)
-        .order_by(CellCrop.created_at.desc())
+        # `id` breaks ties, which on this table are real rather than theoretical:
+        # one detection run writes every crop of an image inside a single
+        # transaction and `func.now()` is the transaction clock, so they share a
+        # `created_at` exactly. Unpaged, so no row is ever dropped -- but without
+        # a tiebreaker the order is arbitrary and free to differ between
+        # requests, and it is the order the crop editor steps through.
+        .order_by(CellCrop.created_at.desc(), CellCrop.id.desc())
     )
 
     if exclude_excluded:
@@ -675,7 +687,13 @@ async def list_fov_crops(
             selectinload(CellCrop.map_protein)
         )
         .where(CellCrop.image_id == fov_id)
-        .order_by(CellCrop.created_at.desc())
+        # `id` breaks ties, which on this table are real rather than theoretical:
+        # one detection run writes every crop of an image inside a single
+        # transaction and `func.now()` is the transaction clock, so they share a
+        # `created_at` exactly. Unpaged, so no row is ever dropped -- but without
+        # a tiebreaker the order is arbitrary and free to differ between
+        # requests, and it is the order the crop editor steps through.
+        .order_by(CellCrop.created_at.desc(), CellCrop.id.desc())
     )
 
     if exclude_excluded:

@@ -2,7 +2,7 @@
 import logging
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, status, Query
+from fastapi import APIRouter, Depends, HTTPException, Response, status, Query
 from sqlalchemy import select, func, distinct, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -92,13 +92,34 @@ async def _verify_ptm_exists(ptm_id: int, db: AsyncSession) -> None:
 @router.get("", response_model=List[ExperimentResponse])
 async def list_experiments(
     skip: int = Query(0, ge=0),
-    limit: int = Query(50, ge=1, le=100),
+    limit: Optional[int] = Query(None, ge=1),
+    response: Response = None,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
-    """List user's experiments (and group experiments) with image and cell counts."""
+    """List user's experiments (and group experiments) with image and cell counts.
+
+    Unpaginated by default, like `list_images`/`list_fovs`. A capped default is
+    invisible to a caller that omits `limit`: it gets a short array, not an
+    error. That silently hid an entire microscope once the lab passed 50
+    experiments -- see tests/unit/test_list_endpoint_truncation.py.
+
+    The total matching count (ignoring skip/limit) goes in the ``X-Total-Count``
+    header, mirroring ``list_documents``; the body stays a bare array. Without
+    it a caller that DOES pass `limit` is back in the original hole -- holding a
+    prefix it cannot distinguish from the whole answer.
+    """
     group_ids = await get_user_group_ids(current_user.id, db)
     access_filter = experiment_owner_filter(current_user.id, group_ids)
+
+    if response is not None:
+        # Counted over the same access filter, so the total can never describe a
+        # different population than the rows. `response` is only ever None when a
+        # unit test calls this handler directly; FastAPI always injects it.
+        total = await db.scalar(
+            select(func.count()).select_from(Experiment).where(access_filter)
+        )
+        response.headers["X-Total-Count"] = str(total or 0)
 
     # Get experiments with counts using a single query with aggregates
     # Also count images with sum projections (sum_path IS NOT NULL)
@@ -120,8 +141,17 @@ async def list_experiments(
         .join(User, Experiment.user_id == User.id)
         .where(access_filter)
         .group_by(Experiment.id, User.name)
-        .order_by(Experiment.updated_at.desc())
+        # `id` breaks ties. `updated_at` carries no uniqueness constraint, so
+        # Postgres is free to order tied rows differently between the two
+        # queries that make up two pages -- dropping some rows and repeating
+        # others. Ties are absent from this table today (every row is written by
+        # its own request, so the transaction timestamps differ); the tiebreaker
+        # is defended by the schema guaranteeing nothing, not by their frequency.
+        .order_by(Experiment.updated_at.desc(), Experiment.id.desc())
         .offset(skip)
+        # `limit=None` renders `LIMIT ALL`, i.e. no cap -- which is why this can
+        # pass it straight through rather than guarding it the way list_images
+        # does. (Without the OFFSET the clause would vanish entirely.)
         .limit(limit)
     )
     rows = result.unique().all()
