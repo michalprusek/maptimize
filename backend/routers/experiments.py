@@ -92,11 +92,17 @@ async def _verify_ptm_exists(ptm_id: int, db: AsyncSession) -> None:
 @router.get("", response_model=List[ExperimentResponse])
 async def list_experiments(
     skip: int = Query(0, ge=0),
-    limit: int = Query(50, ge=1, le=100),
+    limit: Optional[int] = Query(None, ge=1),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
-    """List user's experiments (and group experiments) with image and cell counts."""
+    """List user's experiments (and group experiments) with image and cell counts.
+
+    Unpaginated by default, like `list_images`/`list_fovs`. A capped default is
+    invisible to a caller that omits `limit`: it gets a short array, not an
+    error. That silently hid an entire microscope once the lab passed 50
+    experiments -- see tests/unit/test_list_endpoint_truncation.py.
+    """
     group_ids = await get_user_group_ids(current_user.id, db)
     access_filter = experiment_owner_filter(current_user.id, group_ids)
 
@@ -120,7 +126,11 @@ async def list_experiments(
         .join(User, Experiment.user_id == User.id)
         .where(access_filter)
         .group_by(Experiment.id, User.name)
-        .order_by(Experiment.updated_at.desc())
+        # `id` breaks ties: `updated_at` is not unique and experiments really do
+        # get created in batches, and OFFSET/LIMIT over a partial order lets
+        # Postgres sort tied rows differently per page -- dropping some rows and
+        # repeating others. `limit=None` means no LIMIT clause at all.
+        .order_by(Experiment.updated_at.desc(), Experiment.id.desc())
         .offset(skip)
         .limit(limit)
     )

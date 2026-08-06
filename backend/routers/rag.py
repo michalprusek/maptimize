@@ -322,7 +322,7 @@ async def resolve_scope(
 @router.get("/documents", response_model=List[RAGDocumentResponse])
 async def list_documents(
     skip: int = Query(0, ge=0),
-    limit: int = Query(50, ge=1, le=100),
+    limit: Optional[int] = Query(None, ge=1),
     status_filter: Optional[str] = Query(None, alias="status"),
     name: Optional[str] = Query(None, description="Substring match on document name"),
     doi: Optional[str] = Query(None, description="Substring match on DOI"),
@@ -343,6 +343,10 @@ async def list_documents(
     narrow it and can never widen it. The total matching count (ignoring
     skip/limit) is returned in the ``X-Total-Count`` header so callers can
     paginate; the body stays a bare array.
+
+    Unpaginated unless ``limit`` is given: a capped default returns a short
+    array rather than an error, so the caller cannot tell it from a complete
+    answer -- see tests/unit/test_list_endpoint_truncation.py.
     """
     group_ids, resolved_folders = await resolve_scope(db, current_user.id, scope)
     filters = dict(
