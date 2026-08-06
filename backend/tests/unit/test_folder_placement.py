@@ -100,7 +100,19 @@ async def test_a_cycle_in_the_tree_does_not_hang_the_walk(mock_db):
 
 async def test_no_folder_filter_means_everything_the_caller_can_read(mock_db):
     assert await resolve_folder_scope(mock_db, None, True, None) is None
-    assert await resolve_folder_scope(mock_db, [], True, None) is None
+
+
+async def test_an_empty_selection_narrows_to_nothing_rather_than_everything(mock_db):
+    """`[]` is "these folders: none", not "no filter".
+
+    This used to return None -- collapsing "restrict to nothing" into "search
+    the whole library". Everything downstream is careful to test the resolved
+    scope with `is not None` so that an empty list narrows; the truthiness check
+    at the entry point undid that, and it is the one place in this path whose
+    failure direction WIDENS the answer instead of narrowing it.
+    """
+    mock_db.execute.return_value = make_result(scalars_all=[_folder(1)])
+    assert await resolve_folder_scope(mock_db, [], True, None) == []
 
 
 async def test_a_folder_selection_expands_to_its_subtree(mock_db):

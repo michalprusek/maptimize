@@ -261,13 +261,15 @@ def test_the_two_listings_cap_differently_and_that_is_deliberate(make_registry):
       the silent kind of cap -- `handlers.find_documents` reads `X-Total-Count`
       and appends "Showing 50 of N ... call again with skip=50", so the agent is
       told what it is missing and how to fetch it.
-    * `list_experiments` declares no params at all, so it has no `skip`, no
-      `limit` and no total to report. A cap there would be invisible and
-      unpageable -- which is exactly the bug that PR fixed for the UI.
+    * `list_experiments` offers `skip`/`limit` but declares NO default, so an
+      omitted argument fetches everything. The lab's experiment count is small
+      and the model normally wants all of it; the params exist as an escape
+      hatch, since `ExperimentResponse` carries `fasta_sequence` and the listing
+      can grow without bound once the lab populates sequences.
 
-    So: capped only where the agent can both SEE the cap and page past it.
-    Adding `limit` to `list_experiments` without also giving it a total-count
-    would recreate the silent truncation on the connector side.
+    So: capped only where the agent can both SEE the cap and page past it. Both
+    tools route through `_paged_listing`, which reports `X-Total-Count`, so
+    neither can hand back a prefix that reads as the whole answer.
     """
     reg = make_registry(_noop)
     docs = reg._specs["find_documents"]
@@ -276,5 +278,11 @@ def test_the_two_listings_cap_differently_and_that_is_deliberate(make_registry):
     assert docs.resolve_args({}) == {"limit": 50, "skip": 0, "include_subfolders": True}
     assert {p.name for p in docs.params} >= {"limit", "skip"}
 
-    assert exps.params == []
+    # Offered, but never imposed: omitting them must not put a cap on the wire.
+    assert {p.name for p in exps.params} == {"limit", "skip"}
     assert exps.resolve_args({}) == {}
+    assert exps.resolve_args({"limit": 10, "skip": 20}) == {"limit": 10, "skip": 20}
+
+    # Both must report the total, or a cap becomes indistinguishable from all.
+    assert docs.handler == "find_documents"
+    assert exps.handler == "list_experiments"

@@ -2,7 +2,7 @@
 import logging
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, status, Query
+from fastapi import APIRouter, Depends, HTTPException, Response, status, Query
 from sqlalchemy import select, func, distinct, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -93,6 +93,7 @@ async def _verify_ptm_exists(ptm_id: int, db: AsyncSession) -> None:
 async def list_experiments(
     skip: int = Query(0, ge=0),
     limit: Optional[int] = Query(None, ge=1),
+    response: Response = None,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
@@ -102,9 +103,23 @@ async def list_experiments(
     invisible to a caller that omits `limit`: it gets a short array, not an
     error. That silently hid an entire microscope once the lab passed 50
     experiments -- see tests/unit/test_list_endpoint_truncation.py.
+
+    The total matching count (ignoring skip/limit) goes in the ``X-Total-Count``
+    header, mirroring ``list_documents``; the body stays a bare array. Without
+    it a caller that DOES pass `limit` is back in the original hole -- holding a
+    prefix it cannot distinguish from the whole answer.
     """
     group_ids = await get_user_group_ids(current_user.id, db)
     access_filter = experiment_owner_filter(current_user.id, group_ids)
+
+    if response is not None:
+        # Counted over the same access filter, so the total can never describe a
+        # different population than the rows. `response` is only ever None when a
+        # unit test calls this handler directly; FastAPI always injects it.
+        total = await db.scalar(
+            select(func.count()).select_from(Experiment).where(access_filter)
+        )
+        response.headers["X-Total-Count"] = str(total or 0)
 
     # Get experiments with counts using a single query with aggregates
     # Also count images with sum projections (sum_path IS NOT NULL)

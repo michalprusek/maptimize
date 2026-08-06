@@ -218,6 +218,33 @@ def test_paged_image_listings_order_by_a_unique_tiebreaker():
 # The pagination total
 # --------------------------------------------------------------------------
 
+async def test_experiment_listing_reports_the_total_it_scoped_over(mock_db):
+    """`X-Total-Count` must exist, and must count the caller's own scope.
+
+    Without the header a caller that passes `limit` holds a prefix it cannot
+    tell from the whole answer -- the original bug, merely opt-in. Counting over
+    a different filter than the listing would be worse than omitting it: the
+    number would describe someone else's population.
+    """
+    headers = {}
+    response = SimpleNamespace(headers=headers)
+    mock_db.execute.return_value = _empty_rows()
+    mock_db.scalar.return_value = 75
+
+    with patch.object(exp_r, "get_user_group_ids", new=AsyncMock(return_value=[2])):
+        await exp_r.list_experiments(
+            skip=0, limit=None, response=response,
+            current_user=SimpleNamespace(id=1), db=mock_db,
+        )
+
+    assert headers["X-Total-Count"] == "75"
+    counted = mock_db.scalar.await_args[0][0]
+    listed = _executed(mock_db)
+    assert str(counted.whereclause) == str(listed.whereclause), (
+        "the total is scoped differently than the rows it describes"
+    )
+
+
 async def test_document_count_filters_identically_to_the_listing(mock_db):
     """`X-Total-Count` must count exactly the rows the listing would return.
 

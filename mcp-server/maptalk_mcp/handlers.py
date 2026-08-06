@@ -377,17 +377,22 @@ async def web_search(
     return [_text(formatted)]
 
 
-async def find_documents(
-    reg: "ToolRegistry", spec: "ToolSpec", args: dict, token: str | None = None
+async def _paged_listing(
+    reg: "ToolRegistry", spec: "ToolSpec", args: dict, token: str | None,
+    key: str, noun: str,
 ) -> HandlerResult:
-    """Metadata listing that also surfaces the total match count (from the
-    X-Total-Count header) so the model can page with `skip`. Returns the document
-    list + total as structuredContent."""
+    """A listing that surfaces its total match count from `X-Total-Count`.
+
+    This is what makes a capped listing honest. A truncated array is otherwise
+    indistinguishable from a complete one -- the model reads 50 rows and reports
+    them as the whole library. With the total it knows what it is missing, and
+    `skip` gives it a way to fetch the rest.
+    """
     path, query, _ = _route(spec, args)
     resp = await reg.client.request("GET", path, params=query, token=token)
-    docs = resp.json()
-    blocks: list[ContentBlock] = [_text(docs)]
-    structured: dict[str, Any] = {"documents": docs}
+    rows = resp.json()
+    blocks: list[ContentBlock] = [_text(rows)]
+    structured: dict[str, Any] = {key: rows}
     # The pagination total is a hint — a missing/malformed header degrades to
     # "no pagination note", it must never discard the already-fetched listing.
     total_raw = resp.headers.get("X-Total-Count")
@@ -397,13 +402,36 @@ async def find_documents(
         total = None
     if total is not None:
         skip = int(args.get("skip", 0) or 0)
-        shown = len(docs) if isinstance(docs, list) else 0
+        shown = len(rows) if isinstance(rows, list) else 0
         structured.update(total=total, skip=skip)
-        note = f"Showing {shown} of {total} matching document(s) (skip={skip})."
+        note = f"Showing {shown} of {total} matching {noun}(s) (skip={skip})."
         if shown and skip + shown < total:
             note += f" Call again with skip={skip + shown} for the next page."
         blocks.append(_text(note))
     return blocks, structured
+
+
+async def find_documents(
+    reg: "ToolRegistry", spec: "ToolSpec", args: dict, token: str | None = None
+) -> HandlerResult:
+    """Metadata listing over the document library. Caps at 50 by default and
+    says so, so the model can page with `skip`."""
+    return await _paged_listing(reg, spec, args, token, "documents", "document")
+
+
+async def list_experiments(
+    reg: "ToolRegistry", spec: "ToolSpec", args: dict, token: str | None = None
+) -> HandlerResult:
+    """Experiment listing, uncapped by default but reporting its total.
+
+    Deliberately different from `find_documents`: no default `limit`, because
+    the lab's experiment count is small and the model usually wants all of it.
+    `skip`/`limit` exist as an escape hatch for when it does not -- an
+    `ExperimentResponse` carries `fasta_sequence`, so once the lab starts
+    populating sequences this listing can grow without bound, and a model with
+    no way to cap it has no way to recover either.
+    """
+    return await _paged_listing(reg, spec, args, token, "experiments", "experiment")
 
 
 async def move_document(
@@ -433,5 +461,6 @@ HANDLERS = {
     "upload_image": upload_image,
     "read_page_region": read_page_region,
     "find_documents": find_documents,
+    "list_experiments": list_experiments,
     "move_document": move_document,
 }
