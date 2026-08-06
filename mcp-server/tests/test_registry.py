@@ -246,3 +246,35 @@ def test_registry_rejects_unknown_array_items_type(tmp_path):
     )
     with pytest.raises(ValueError, match="items type"):
         ToolRegistry(str(yaml_file), _client_on(str(yaml_file)))
+
+
+def test_the_two_listings_cap_differently_and_that_is_deliberate(make_registry):
+    """`find_documents` still caps at 50; `list_experiments` deliberately does not.
+
+    Both back onto endpoints whose server-side default became "no limit" once
+    silent truncation was removed (backend PR #57). They diverge on purpose, and
+    the difference is only defensible because of how each one behaves when the
+    corpus outgrows one response:
+
+    * `find_documents` declares `limit: 50` and `skip`, and `resolve_args` puts
+      that default on the wire even when the model passes nothing. That is not
+      the silent kind of cap -- `handlers.find_documents` reads `X-Total-Count`
+      and appends "Showing 50 of N ... call again with skip=50", so the agent is
+      told what it is missing and how to fetch it.
+    * `list_experiments` declares no params at all, so it has no `skip`, no
+      `limit` and no total to report. A cap there would be invisible and
+      unpageable -- which is exactly the bug that PR fixed for the UI.
+
+    So: capped only where the agent can both SEE the cap and page past it.
+    Adding `limit` to `list_experiments` without also giving it a total-count
+    would recreate the silent truncation on the connector side.
+    """
+    reg = make_registry(_noop)
+    docs = reg._specs["find_documents"]
+    exps = reg._specs["list_experiments"]
+
+    assert docs.resolve_args({}) == {"limit": 50, "skip": 0, "include_subfolders": True}
+    assert {p.name for p in docs.params} >= {"limit", "skip"}
+
+    assert exps.params == []
+    assert exps.resolve_args({}) == {}

@@ -367,7 +367,9 @@ async def search_documents_metadata(
     stmt = (
         select(RAGDocument).where(*conds)
         # `id` breaks ties on the non-unique `created_at`, so that OFFSET/LIMIT
-        # paging cannot skip one row and repeat another between two pages.
+        # paging cannot skip one row and repeat another between two pages. This
+        # is the half that really pages: MCP `find_documents` declares limit=50
+        # and walks the library with `skip`.
         .order_by(RAGDocument.created_at.desc(), RAGDocument.id.desc())
         .offset(skip).limit(limit)
     )

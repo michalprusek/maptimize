@@ -126,12 +126,17 @@ async def list_experiments(
         .join(User, Experiment.user_id == User.id)
         .where(access_filter)
         .group_by(Experiment.id, User.name)
-        # `id` breaks ties: `updated_at` is not unique and experiments really do
-        # get created in batches, and OFFSET/LIMIT over a partial order lets
-        # Postgres sort tied rows differently per page -- dropping some rows and
-        # repeating others. `limit=None` means no LIMIT clause at all.
+        # `id` breaks ties. `updated_at` carries no uniqueness constraint, so
+        # Postgres is free to order tied rows differently between the two
+        # queries that make up two pages -- dropping some rows and repeating
+        # others. Ties are absent from this table today (every row is written by
+        # its own request, so the transaction timestamps differ); the tiebreaker
+        # is defended by the schema guaranteeing nothing, not by their frequency.
         .order_by(Experiment.updated_at.desc(), Experiment.id.desc())
         .offset(skip)
+        # `limit=None` renders `LIMIT ALL`, i.e. no cap -- which is why this can
+        # pass it straight through rather than guarding it the way list_images
+        # does. (Without the OFFSET the clause would vanish entirely.)
         .limit(limit)
     )
     rows = result.unique().all()

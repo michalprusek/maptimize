@@ -7,66 +7,235 @@ silently: no error, no warning, just a shorter array.
 
 On 2026-08-06 that hid a whole microscope. The lab had 75 experiments; ordering
 by `updated_at DESC` put the 38 "Airyscan calibrate" and 12 "3D SIM" ones first,
-which is exactly 50, so all 25 plain "Airyscan" experiments fell off the end and
-a colleague reported them as missing. `rag_documents` was in the same state at
-79 rows.
+which happened to total exactly 50 that day, so all 25 plain "Airyscan"
+experiments fell off the end and a colleague reported them as missing.
+`rag_documents` sat one page-load from the same fate at 79 rows. (Counts are as
+measured on 2026-08-06 and will have drifted -- `updated_at` has `onupdate`, so
+editing any one experiment reshuffles the boundary. What survives is the shape
+of the failure, not the arithmetic.)
 
-The fix follows `list_images`/`list_fovs`, which already had it right: page only
-when a caller asks to, and otherwise answer in full.
+The fix follows `list_images`/`list_fovs`, which already had the limit right:
+page only when a caller asks to, and otherwise answer in full.
+
+These tests assert the SQL that comes out, not the signature that goes in. A
+signature check is one indirection short of the mechanism: re-capping inside the
+handler body (`limit = 50 if limit is None else limit`) restores the bug exactly
+while leaving every declared default untouched.
 """
 import inspect
 
-from unittest.mock import AsyncMock, patch
 from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
+
+import pytest
+from sqlalchemy.dialects import postgresql
 
 import routers.experiments as exp_r
+import routers.images as img_r
 import routers.rag as rag_r
-from tests.unit.conftest import make_result
+import services.rag_service as rag_s
 
 
 def _query_default(handler, param: str):
-    """The value a caller gets when it omits `param` entirely."""
+    """The value a caller gets when it omits `param` entirely.
+
+    Unit tests call handlers directly, so an omitted argument does NOT take the
+    FastAPI default -- the `params.Query` object itself leaks into the body.
+    Resolving it here is what lets these tests exercise the real default.
+    """
     default = inspect.signature(handler).parameters[param].default
-    # FastAPI wraps it: Query(None) is a params.Query carrying `.default`.
     return getattr(default, "default", default)
 
 
-def test_list_endpoints_do_not_truncate_unless_asked():
-    """An omitted `limit` must mean "all of it", never "the newest 50".
+def _sql(stmt) -> str:
+    """Render against Postgres specifically.
 
-    A capped default is indistinguishable from a complete answer at the call
-    site, so the client cannot notice it is being lied to -- which is precisely
-    how 25 experiments and 29 documents went missing while every test was green.
+    The dialect matters: `.limit(None)` compiles to `LIMIT ALL` here but to
+    `LIMIT -1` under SQLAlchemy's default dialect, and only the former is what
+    production runs.
     """
-    for handler in (exp_r.list_experiments, rag_r.list_documents):
-        assert _query_default(handler, "limit") is None, (
-            f"{handler.__name__} truncates by default; clients that omit "
-            "`limit` would silently receive a prefix of their data"
-        )
+    return str(stmt.compile(
+        dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True},
+    ))
 
 
-async def test_experiment_listing_orders_by_a_unique_tiebreaker(mock_db):
-    """`skip`/`limit` paging is only correct over a total order.
+def _order_by(stmt) -> str:
+    """Just the ORDER BY tail of the compiled statement.
 
-    `updated_at` carries no uniqueness constraint, and experiments really are
-    created in batches, so ties are expected rather than hypothetical. Under
-    OFFSET/LIMIT, Postgres may order tied rows differently between the two
-    queries -- which drops some rows from one page and repeats them on another.
+    Slicing first is the point. A bare `"experiments.id" in str(stmt)` passes on
+    the *broken* query, because every column of the SELECT list is in there too
+    -- the same trap CLAUDE.md records for the dedupe tests asserting on
+    `str(stmt)` instead of `stmt.whereclause`.
     """
-    mock_db.execute.return_value = SimpleNamespace(
-        unique=lambda: SimpleNamespace(all=lambda: [])
+    sql = _sql(stmt)
+    assert "ORDER BY" in sql, f"statement has no ORDER BY at all: {sql}"
+    return sql.split("ORDER BY", 1)[1]
+
+
+def _executed(mock_db):
+    """The statement the handler actually handed to the session."""
+    return mock_db.execute.await_args[0][0]
+
+
+def _empty_rows():
+    return SimpleNamespace(unique=lambda: SimpleNamespace(all=lambda: []))
+
+
+async def _run_list_experiments(mock_db, **overrides):
+    """Drive `list_experiments` the way a request with no query string would."""
+    kwargs = dict(
+        skip=_query_default(exp_r.list_experiments, "skip"),
+        limit=_query_default(exp_r.list_experiments, "limit"),
     )
+    kwargs.update(overrides)
+    mock_db.execute.return_value = _empty_rows()
     with patch.object(exp_r, "get_user_group_ids", new=AsyncMock(return_value=[])):
         await exp_r.list_experiments(
-            skip=0, limit=10,
-            current_user=SimpleNamespace(id=1), db=mock_db,
+            current_user=SimpleNamespace(id=1), db=mock_db, **kwargs
+        )
+    return _executed(mock_db)
+
+
+async def _run_search_documents(mock_db, **overrides):
+    """Drive the documents listing with the limit its router would pass on."""
+    kwargs = dict(
+        skip=_query_default(rag_r.list_documents, "skip"),
+        limit=_query_default(rag_r.list_documents, "limit"),
+    )
+    kwargs.update(overrides)
+    mock_db.execute.return_value = SimpleNamespace(
+        scalars=lambda: SimpleNamespace(all=lambda: [])
+    )
+    await rag_s.search_documents_metadata(1, mock_db, **kwargs)
+    return _executed(mock_db)
+
+
+# --------------------------------------------------------------------------
+# Truncation
+# --------------------------------------------------------------------------
+
+async def test_experiment_listing_is_unbounded_when_limit_is_omitted(mock_db):
+    """Omitting `limit` must emit no cap -- not "the newest 50".
+
+    Asserted on the compiled SQL rather than the signature, so that a cap
+    re-introduced anywhere between the parameter and the query still fails.
+    """
+    sql = _sql(await _run_list_experiments(mock_db))
+    assert "LIMIT ALL" in sql, f"experiments listing carries a cap: {sql}"
+
+
+async def test_document_listing_is_unbounded_when_limit_is_omitted(mock_db):
+    """Same guarantee on the documents path, driven as the router drives it."""
+    sql = _sql(await _run_search_documents(mock_db))
+    assert "LIMIT ALL" in sql, f"documents listing carries a cap: {sql}"
+
+
+async def test_document_service_default_is_unbounded_on_its_own(mock_db):
+    """And again with the service's OWN default, which is a separate value.
+
+    `list_documents` always forwards `limit=limit`, so the router's default
+    masks the service's: reverting `search_documents_metadata` to `limit=50`
+    truncates nothing today and the test above stays green. That makes this a
+    guard against a future second caller, not a restatement -- the endpoint is
+    one `limit=`-less call away from the original bug.
+    """
+    mock_db.execute.return_value = SimpleNamespace(
+        scalars=lambda: SimpleNamespace(all=lambda: [])
+    )
+    await rag_s.search_documents_metadata(1, mock_db)
+    sql = _sql(_executed(mock_db))
+    assert "LIMIT ALL" in sql, f"documents service caps by default: {sql}"
+
+
+@pytest.mark.parametrize("cap", [50, 100])
+async def test_the_guard_would_notice_a_reintroduced_cap(mock_db, cap):
+    """The assertion above is only worth as much as its ability to fail.
+
+    Pins that an explicit `limit` really does render as a LIMIT, so the
+    unbounded assertions cannot be passing for some unrelated reason (a renamed
+    parameter, a statement that never got a LIMIT applied at all).
+    """
+    sql = _sql(await _run_list_experiments(mock_db, limit=cap))
+    assert f"LIMIT {cap}" in sql and "LIMIT ALL" not in sql
+
+
+# --------------------------------------------------------------------------
+# Ordering
+# --------------------------------------------------------------------------
+#
+# `skip`/`limit` paging is only correct over a TOTAL order. None of these
+# timestamp columns carries a uniqueness constraint, and under OFFSET/LIMIT
+# Postgres is free to order tied rows differently between the two queries that
+# make up two pages -- dropping some rows and repeating others.
+#
+# Measured on production 2026-08-06, ties are not evenly spread: `experiments
+# .updated_at`, `rag_documents.created_at` and `images.created_at` had none at
+# all (each row is written by its own request, so the transaction timestamps
+# differ), while `cell_crops.created_at` had up to 6 rows sharing a value --
+# crops are written by one batch loop inside a single transaction, and
+# `func.now()` is the transaction clock. So the tiebreaker is defended by the
+# schema guaranteeing nothing, not by how often ties happen to show up today.
+
+async def test_experiment_listing_orders_by_a_unique_tiebreaker(mock_db):
+    ordering = _order_by(await _run_list_experiments(mock_db))
+    assert "experiments.id" in ordering, (
+        f"ORDER BY {ordering} has no unique tiebreaker, so paging over it can "
+        "skip and duplicate rows"
+    )
+
+
+async def test_document_listing_orders_by_a_unique_tiebreaker(mock_db):
+    """The documents half is the one that actually pages.
+
+    MCP `find_documents` declares `limit: 50` and pages with `skip`, so this
+    ordering is under OFFSET/LIMIT on every connector call -- unlike the
+    experiments listing, which every current caller fetches whole.
+    """
+    ordering = _order_by(await _run_search_documents(mock_db))
+    assert "rag_documents.id" in ordering, (
+        f"ORDER BY {ordering} has no unique tiebreaker, so paging over it can "
+        "skip and duplicate rows"
+    )
+
+
+def test_paged_image_listings_order_by_a_unique_tiebreaker():
+    """`list_fovs`/`list_images` take skip/limit and must be totally ordered too.
+
+    This PR's rationale covers them: they were cited as the precedent for
+    getting `limit` right, but they never had the ordering right. Asserted on
+    source rather than by driving the handlers, which would need an experiment
+    read-access check mocked for no extra signal.
+    """
+    source = inspect.getsource(img_r)
+    for handler in ("list_fovs", "list_images"):
+        body = source.split(f"async def {handler}(", 1)[1].split("\n@router", 1)[0]
+        assert "Image.id.desc()" in body, (
+            f"{handler} pages over a non-unique created_at with no tiebreaker"
         )
 
-    stmt = mock_db.execute.await_args[0][0]
-    # Stringify only the ORDER BY elements: rendering the whole statement would
-    # also drag in the SELECT list, where "id" appears no matter what.
-    ordering = [str(c) for c in stmt._order_by_clauses]
-    assert any("experiments.id" in c for c in ordering), (
-        f"ORDER BY {ordering} has no unique tiebreaker, so paging over it "
-        "can skip and duplicate rows"
+
+# --------------------------------------------------------------------------
+# The pagination total
+# --------------------------------------------------------------------------
+
+async def test_document_count_filters_identically_to_the_listing(mock_db):
+    """`X-Total-Count` must count exactly the rows the listing would return.
+
+    This header is the connector's ONLY protection: `find_documents` still caps
+    at 50 by design and tells the agent "Showing 50 of N -- call again with
+    skip=50". A total that drifts above the real match count therefore invents
+    documents the agent will page for and never find, which is the original bug
+    wearing the opposite sign. Both queries are meant to share
+    `_document_metadata_conditions`; this pins that they do.
+    """
+    filters = dict(name="tubulin", file_type="pdf", group_ids=[2], thread_id=None)
+
+    listing = await _run_search_documents(mock_db, **filters)
+
+    mock_db.execute.return_value = SimpleNamespace(scalar=lambda: 0)
+    await rag_s.count_documents_metadata(1, mock_db, **filters)
+    count = _executed(mock_db)
+
+    assert str(listing.whereclause) == str(count.whereclause), (
+        "the total counts a different set of rows than the listing returns"
     )
