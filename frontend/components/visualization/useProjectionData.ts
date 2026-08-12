@@ -4,7 +4,7 @@
  * Fetching the dashboard's UMAP.
  *
  * One endpoint, two corpora. The cropped and FOV responses are near-identical —
- * `points`, `facets`, `is_stale`, `refresh_error` and `silhouette_score` are
+ * `points`, `facets`, `is_stale`, `refresh_error` and `separability` are
  * named the same — and differ in exactly one field: `total_crops` vs
  * `total_images`. That single difference is collapsed here into `totalCount`
  * plus an `isFov` flag, so nothing downstream repeats the `in`-check to find out
@@ -12,7 +12,13 @@
  */
 import { useQuery } from "@tanstack/react-query";
 
-import { api, type UmapFacetRow, type UmapType } from "@/lib/api";
+import {
+  api,
+  type LabelAxis,
+  type Separability,
+  type UmapFacetRow,
+  type UmapType,
+} from "@/lib/api";
 import { UMAP_STALE_POLL_MS } from "./chartConfig";
 import { selectionKey, type FacetSelection } from "./umapFacets";
 import type { ProjectionPoint } from "./projectionShared";
@@ -28,7 +34,8 @@ export interface ProjectionView {
   isComputing: boolean;
   /** The fit failed, so nothing is coming on its own. */
   computeError: string | null;
-  silhouetteScore: number | null;
+  /** Null when too few of these points carry a value on the requested axis. */
+  separability: Separability | null;
 }
 
 export interface ProjectionDataResult {
@@ -43,16 +50,21 @@ export function useProjectionData({
   viewMode,
   selection,
   experimentId,
+  labelBy,
 }: {
   viewMode: UmapType;
   selection: FacetSelection;
   experimentId: number | undefined;
+  /** Axis the separability score groups by — the caller passes its colour-by. */
+  labelBy: LabelAxis;
 }): ProjectionDataResult {
   const key = selectionKey(selection);
 
   const umap = useQuery({
-    queryKey: ["umap", experimentId, viewMode, key],
-    queryFn: () => api.getUmapData({ umapType: viewMode, selection }),
+    // labelBy is part of the key because it changes the response, not just the
+    // rendering: leaving it out serves a cached score for the previous axis.
+    queryKey: ["umap", experimentId, viewMode, key, labelBy],
+    queryFn: () => api.getUmapData({ umapType: viewMode, selection, labelBy }),
     staleTime: 1000 * 60 * 5, // Cache for 5 minutes
     retry: false,
     // Keep the previous result on screen while a new filter loads. Without it
@@ -75,7 +87,7 @@ export function useProjectionData({
       isFov: "total_images" in data,
       isComputing: data.is_stale,
       computeError: data.refresh_error,
-      silhouetteScore: data.silhouette_score,
+      separability: data.separability,
     },
     isLoading: umap.isLoading,
     isFetching: umap.isFetching,

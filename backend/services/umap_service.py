@@ -9,6 +9,7 @@ SSOT for UMAP-related constants and computation functions.
 import asyncio
 import logging
 from datetime import datetime, timezone
+from dataclasses import dataclass
 from typing import Optional, Tuple
 
 import numpy as np
@@ -123,55 +124,92 @@ def _compute_umap_projection(
     return reducer.fit_transform(unique_rows)[inverse]
 
 
-def compute_silhouette(
-    embeddings: np.ndarray,
-    items: list,
-) -> Optional[float]:
-    """
-    Compute silhouette score on raw embeddings based on protein labels.
+@dataclass(frozen=True)
+class Separability:
+    """How cleanly a labelled set of points separates in embedding space.
 
-    Uses cosine metric on full-dimensional embeddings (not UMAP projections)
-    to measure cluster quality in the original feature space.
+    ``score`` is a silhouette, but it never travels alone: the value depends on
+    how many classes were scored and how many points carried a label, so two
+    scores are only comparable between subsets of comparable size. Returning the
+    three together is what lets the UI put them side by side and lets a reader
+    judge whether the comparison is fair.
+    """
+
+    score: float
+    n_classes: int
+    n_points: int
+
+
+# A silhouette over a handful of points is noise, and one class has nothing to
+# separate from.
+MIN_LABELED_FOR_SEPARABILITY = 10
+
+
+def protein_labels(items: list) -> list[Optional[int]]:
+    """Label each item by its MAP protein, ``None`` where none is assigned.
 
     Runs inside asyncio.to_thread (see _compute_and_store_umap), so it must touch
     only eagerly-loaded attributes. Reading a lazy relationship here fires a DB
     load off the event loop and raises MissingGreenlet.
+    """
+    return [
+        protein.id if (protein := getattr(item, "map_protein", None)) else None
+        for item in items
+    ]
+
+
+def compute_separability(
+    embeddings: np.ndarray,
+    labels: list[Optional[int]],
+) -> Optional[Separability]:
+    """
+    Score how well ``labels`` separate in the raw embedding space.
+
+    Uses a cosine silhouette on the **full-dimensional** embeddings, not on the
+    UMAP coordinates. UMAP does not preserve distance, so a silhouette taken from
+    the 2-D projection measures how good the projection is rather than how
+    separable the data are — which is the opposite of the question being asked.
+
+    ``labels`` is positional against ``embeddings``: entry *i* is the class of
+    row *i*, or ``None`` when that row carries no value on the chosen axis.
+    Unlabelled rows are dropped rather than pooled into a class of their own —
+    "nobody recorded this" is an absence, not a group that could separate from
+    anything.
 
     Args:
         embeddings: Raw embedding vectors (N x D)
-        items: List of CellCrop or Image objects with map_protein attribute
+        labels: Class of each row, ``None`` where unassigned
 
     Returns:
-        Silhouette score (-1 to 1) or None if not computable
+        Separability, or None when there is too little to say
     """
-    labeled_indices = []
-    labels = []
+    labeled_indices = [i for i, label in enumerate(labels) if label is not None]
+    labeled = [labels[i] for i in labeled_indices]
+    distinct = set(labeled)
 
-    for i, item in enumerate(items):
-        protein = getattr(item, 'map_protein', None)
-        if protein is not None:
-            labeled_indices.append(i)
-            labels.append(protein.id)
-
-    # Need at least 10 labeled items and 2 different labels
-    if len(labeled_indices) < 10 or len(set(labels)) < 2:
+    if len(labeled_indices) < MIN_LABELED_FOR_SEPARABILITY or len(distinct) < 2:
         return None
 
     try:
         from sklearn.metrics import silhouette_score
-        labeled_embeddings = embeddings[labeled_indices]
-        return float(silhouette_score(labeled_embeddings, labels, metric="cosine"))
+        score = silhouette_score(embeddings[labeled_indices], labeled, metric="cosine")
     except (ValueError, ImportError) as e:
-        logger.warning(f"Could not compute silhouette score: {e}")
+        logger.warning(f"Could not compute separability: {e}")
         return None
+
+    return Separability(
+        score=float(score),
+        n_classes=len(distinct),
+        n_points=len(labeled_indices),
+    )
 
 
 def compute_umap_online(
     embeddings: np.ndarray,
-    items: list,
+    labels: list[Optional[int]],
     n_neighbors: int = DEFAULT_N_NEIGHBORS,
     min_dist: float = DEFAULT_MIN_DIST,
-) -> Tuple[np.ndarray, Optional[float]]:
+) -> Tuple[np.ndarray, Optional[Separability]]:
     """
     Fit a UMAP projection over the given embeddings.
 
@@ -180,12 +218,13 @@ def compute_umap_online(
 
     Args:
         embeddings: Array of embedding vectors (N x D)
-        items: List of CellCrop or Image objects (for protein labels)
+        labels: Class of each row for the separability score, positionally
+            aligned with ``embeddings``; ``None`` where unassigned
         n_neighbors: UMAP n_neighbors parameter
         min_dist: UMAP min_dist parameter
 
     Returns:
-        Tuple of (projection array N x 2, silhouette score or None)
+        Tuple of (projection array N x 2, Separability or None)
 
     Raises:
         ValueError: If fewer than 3 samples are given
@@ -196,9 +235,9 @@ def compute_umap_online(
 
     embeddings_norm = _normalize_embeddings(embeddings)
     projection = _compute_umap_projection(embeddings_norm, n_neighbors, min_dist)
-    silhouette = compute_silhouette(embeddings_norm, items)
+    separability = compute_separability(embeddings_norm, labels)
 
-    return projection, silhouette
+    return projection, separability
 
 
 # =============================================================================
@@ -222,7 +261,7 @@ async def _compute_and_store_umap(
         db: AsyncSession database connection
 
     Returns:
-        dict with success count, silhouette score, and computed_at
+        dict with success count, separability, and computed_at
     """
     word = umap_type.item_word
 
@@ -233,14 +272,17 @@ async def _compute_and_store_umap(
         }
 
     embeddings = np.array([item.embedding for item in items])
+    # Labelled by protein because that is the axis worth logging after a fit; the
+    # read path scores whichever axis the caller asked for, over its own subset.
+    labels = protein_labels(items)
 
     # Fitting is CPU-bound and takes seconds, and blocking the event loop stalls
     # every other request this worker is serving (the API runs a single uvicorn
-    # process, so that is all of them). The thread only reads attributes the
-    # callers eagerly loaded, so no lazy IO escapes the loop — see
-    # compute_silhouette.
-    projection, silhouette = await asyncio.to_thread(
-        compute_umap_online, embeddings, items
+    # process, so that is all of them). protein_labels ran on this thread, so the
+    # only things crossing into the worker are plain numbers — no lazy IO can
+    # escape the loop.
+    projection, separability = await asyncio.to_thread(
+        compute_umap_online, embeddings, labels
     )
 
     now = datetime.now(timezone.utc)
@@ -251,14 +293,14 @@ async def _compute_and_store_umap(
 
     await db.commit()
 
-    silhouette_str = f"{silhouette:.3f}" if silhouette else "N/A"
+    score_str = f"{separability.score:.3f}" if separability else "N/A"
     logger.info(
-        f"Computed {word} UMAP: {len(items)} {word}, silhouette={silhouette_str}"
+        f"Computed {word} UMAP: {len(items)} {word}, separability={score_str}"
     )
 
     return {
         "success": len(items),
-        "silhouette_score": silhouette,
+        "separability": separability,
         "computed_at": now.isoformat(),
     }
 
@@ -498,9 +540,14 @@ def compute_protein_umap_online(
     embeddings: np.ndarray,
     n_neighbors: int = DEFAULT_N_NEIGHBORS,
     min_dist: float = DEFAULT_MIN_DIST,
-) -> Tuple[np.ndarray, Optional[float]]:
+) -> np.ndarray:
     """
     Compute UMAP projection for protein embeddings on-the-fly.
+
+    Returns the projection alone. A protein row is its own class, so there is
+    nothing for a separability score to separate — this used to return a second
+    value that was unconditionally ``None``, and the endpoint published it as a
+    real field that no reader could ever see populated.
 
     Args:
         embeddings: Array of protein embedding vectors (N x 1152)
@@ -508,17 +555,14 @@ def compute_protein_umap_online(
         min_dist: UMAP min_dist parameter
 
     Returns:
-        Tuple of (projection array N x 2, silhouette score or None)
+        Projection array N x 2
     """
     n_samples = len(embeddings)
     if n_samples < 3:
         raise ValueError(f"Need at least 3 proteins for UMAP, got {n_samples}")
 
     embeddings_norm = _normalize_embeddings(embeddings)
-    projection = _compute_umap_projection(embeddings_norm, n_neighbors, min_dist)
-
-    # Silhouette score not applicable for proteins (no labels)
-    return projection, None
+    return _compute_umap_projection(embeddings_norm, n_neighbors, min_dist)
 
 
 async def compute_protein_umap(db: AsyncSession) -> dict:
@@ -548,7 +592,7 @@ async def compute_protein_umap(db: AsyncSession) -> dict:
 
     embeddings = np.array([p.embedding for p in proteins])
     try:
-        projection, _ = compute_protein_umap_online(embeddings)
+        projection = compute_protein_umap_online(embeddings)
     except DegenerateEmbeddingsError as exc:
         # Storing a placeholder layout would leave umap_x/umap_y looking like a
         # real projection forever. Report it and write nothing.

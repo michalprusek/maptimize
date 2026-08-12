@@ -32,6 +32,21 @@ export const EMPTY_SELECTION: FacetSelection = Object.freeze({
   ptm: Object.freeze([]) as unknown as number[],
 });
 
+/**
+ * The i18n key holding each facet's display name.
+ *
+ * One map rather than a `t("facet…")` call spelled out at each site: the filter
+ * headings, the colour-by options and the separability badge must all name a
+ * dimension the same way, and the badge is the one place where a wrong name
+ * would misattribute a number rather than just read oddly.
+ */
+export const FACET_LABEL_KEY: Record<FacetKey, string> = {
+  experiment: "facetExperiment",
+  microscope: "facetMicroscope",
+  protein: "facetProtein",
+  ptm: "facetPtm",
+};
+
 export interface FacetOption {
   id: number;
   name: string;

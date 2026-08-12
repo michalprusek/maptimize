@@ -11,6 +11,7 @@ import {
   facetOptions,
   isSelectionEmpty,
   toggleFacetValue,
+  FACET_LABEL_KEY,
   type FacetKey,
   type FacetOption,
   type FacetSelection,
@@ -22,6 +23,17 @@ import type { UmapFacetRow } from "@/lib/api";
 const SEARCHABLE_THRESHOLD = 12;
 
 export type ColorBy = FacetKey;
+
+/**
+ * Colour-by options, most useful first — protein is what the plot has always
+ * been about, and experiment last because it produces the most classes.
+ */
+const COLOR_BY_ORDER: readonly ColorBy[] = [
+  "protein",
+  "microscope",
+  "ptm",
+  "experiment",
+];
 
 interface UmapFilterPanelProps {
   rows: UmapFacetRow[];
@@ -177,11 +189,14 @@ export function UmapFilterPanel({
 
   const activeCount = countActiveFilters(selection);
   const facets: Array<{ key: FacetKey; label: string; hidden?: boolean }> = [
-    { key: "experiment", label: t("facetExperiment"), hidden: !showExperimentFacet },
-    { key: "microscope", label: t("facetMicroscope") },
-    { key: "protein", label: t("facetProtein") },
-    { key: "ptm", label: t("facetPtm") },
-  ];
+    { key: "experiment", hidden: !showExperimentFacet },
+    { key: "microscope" },
+    { key: "protein" },
+    { key: "ptm" },
+  ].map((facet) => ({
+    ...facet,
+    label: t(FACET_LABEL_KEY[facet.key as FacetKey]),
+  })) as Array<{ key: FacetKey; label: string; hidden?: boolean }>;
 
   // Chips summarising what is active, so the filter is readable while collapsed.
   const activeChips = facets
@@ -259,10 +274,11 @@ export function UmapFilterPanel({
               onChange={(event) => onColorByChange(event.target.value as ColorBy)}
               className="input-field py-1 text-xs w-auto"
             >
-              <option value="protein">{t("facetProtein")}</option>
-              <option value="microscope">{t("facetMicroscope")}</option>
-              <option value="ptm">{t("facetPtm")}</option>
-              <option value="experiment">{t("facetExperiment")}</option>
+              {COLOR_BY_ORDER.map((key) => (
+                <option key={key} value={key}>
+                  {t(FACET_LABEL_KEY[key])}
+                </option>
+              ))}
             </select>
           </label>
         </div>

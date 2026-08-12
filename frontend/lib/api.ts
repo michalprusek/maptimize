@@ -57,6 +57,16 @@ export function describeApiError(detail: ApiError["detail"]): string {
  * umapFacets.ts aliases its FacetSelection to this type, so the keys are
  * declared once and this guard covers the caller too.
  */
+/**
+ * Which dimension the separability score groups points by.
+ *
+ * Aliased to the facet keys rather than declared as its own union: the backend
+ * accepts exactly the four facet names, and the UI scores whatever it is
+ * colouring by. A separate list here could accept a fifth value that the API
+ * would reject with a 422.
+ */
+export type LabelAxis = keyof UmapFacetSelection;
+
 const FACET_QUERY_PARAMS: Record<keyof UmapFacetSelection, string> = {
   experiment: "experiment_id",
   microscope: "microscope_id",
@@ -762,16 +772,22 @@ class ApiClient {
    * Each facet is a repeated query parameter: OR within a facet, AND across
    * facets. Id 0 means "not assigned" for microscope, protein and PTM — without
    * it the PTM facet would be unusable, since experiments start unassigned.
+   *
+   * `labelBy` picks the axis the separability score groups by. It narrows with
+   * the facets, which is the point: the score describes the subset that came
+   * back, so filtering to controls and then to one PTM compares those contexts.
    */
   async getUmapData({
     umapType = "cropped",
     selection,
+    labelBy = "protein",
   }: {
     umapType?: UmapType;
     selection?: UmapFacetSelection;
+    labelBy?: LabelAxis;
   } = {}): Promise<UmapDataResponse | UmapFovDataResponse> {
     const params = appendFacetParams(
-      new URLSearchParams({ umap_type: umapType }),
+      new URLSearchParams({ umap_type: umapType, label_by: labelBy }),
       selection
     );
     if (umapType === "fov") {
@@ -1820,7 +1836,6 @@ export interface UmapProteinPoint {
 export interface UmapProteinDataResponse {
   points: UmapProteinPoint[];
   total_proteins: number;
-  silhouette_score?: number;
   is_precomputed: boolean;
   computed_at?: string;
 }
@@ -2098,11 +2113,25 @@ export interface UmapFacetRow {
   count: number;
 }
 
+/**
+ * How cleanly the returned points separate along one labelled axis.
+ *
+ * The score never travels alone: a silhouette depends on how many classes were
+ * compared and how many points carried a label, so `n_classes` and `n_points`
+ * are what let a reader tell whether two scores are comparable at all.
+ */
+export interface Separability {
+  score: number;
+  label_by: LabelAxis;
+  n_classes: number;
+  n_points: number;
+}
+
 export interface UmapDataResponse {
   points: UmapPoint[];
   total_crops: number;
   facets: UmapFacetRow[];
-  silhouette_score: number | null;
+  separability: Separability | null;
   /** Coordinates are being refreshed in the background; poll until false. */
   is_stale: boolean;
   /** The refresh failed — coordinates won't arrive on their own. Stop polling. */
@@ -2124,7 +2153,7 @@ export interface UmapFovDataResponse {
   points: UmapFovPoint[];
   total_images: number;
   facets: UmapFacetRow[];
-  silhouette_score: number | null;
+  separability: Separability | null;
   computed_at: string | null;
   /** Coordinates are being refreshed in the background; poll until false. */
   is_stale: boolean;

@@ -46,6 +46,8 @@ def test_list_tools_builds_schema_from_yaml(make_registry):
         # application control: images + cell detection
         "upload_image", "list_fov_images", "get_image", "process_images",
         "reprocess_image", "redetect_cells", "delete_image", "list_cell_crops",
+        # analysis
+        "measure_separability",
         # application control: proteins
         "list_proteins", "get_protein", "create_protein", "update_protein",
         "delete_protein", "compute_protein_embedding",

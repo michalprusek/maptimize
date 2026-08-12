@@ -20,6 +20,8 @@ from models.user import User
 from schemas.embeddings import (
     FeatureExtractionStatus,
     FeatureExtractionTriggerResponse,
+    LabelAxis,
+    SeparabilityResponse,
     UmapDataResponse,
     UmapFacetRow,
     UmapFovDataResponse,
@@ -30,9 +32,11 @@ from schemas.embeddings import (
 from utils.facets import facet_clause, real_ids
 from services.umap_service import (
     MIN_POINTS_FOR_UMAP,
+    Separability,
     clear_refresh_error,
-    compute_silhouette,
+    compute_separability,
     get_refresh_error,
+    protein_labels,
     refresh_umap_scope,
 )
 from utils.security import get_current_user
@@ -100,6 +104,10 @@ def facet_selection(
 async def get_umap_visualization(
     umap_type: UmapType = Query(UmapType.CROPPED, description="Type: fov or cropped"),
     selection: FacetSelection = Depends(facet_selection),
+    label_by: LabelAxis = Query(
+        LabelAxis.PROTEIN,
+        description="Dimension the separability score groups points by",
+    ),
     background_tasks: BackgroundTasks = BackgroundTasks(),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
@@ -122,6 +130,13 @@ async def get_umap_visualization(
 
     The four filters are OR within a facet and AND across facets. Passing id 0
     for microscope, protein or PTM also matches rows with nothing assigned.
+
+    ``separability`` scores the points actually returned, so narrowing the
+    filters is how a caller compares one context against another — controls
+    only, one PTM, a single microscope. ``label_by`` chooses which dimension the
+    score groups by; the counts beside it say how many classes and how many
+    labelled points went into it, because a silhouette is not comparable across
+    subsets of different size.
     """
     # Validate references up front so a stale or deleted id fails with a clear
     # 404 instead of silently matching nothing and looking like an empty result.
@@ -139,11 +154,61 @@ async def get_umap_visualization(
 
     if umap_type is UmapType.FOV:
         return await _get_fov_umap(
-            selection, current_user, group_ids, background_tasks, db
+            selection, label_by, current_user, group_ids, background_tasks, db
         )
     return await _get_cropped_umap(
-        selection, current_user, group_ids, background_tasks, db
+        selection, label_by, current_user, group_ids, background_tasks, db
     )
+
+
+@router.get("/separability", response_model=SeparabilityResponse)
+async def get_separability(
+    umap_type: UmapType = Query(UmapType.CROPPED, description="Type: fov or cropped"),
+    selection: FacetSelection = Depends(facet_selection),
+    label_by: LabelAxis = Query(
+        LabelAxis.PROTEIN,
+        description="Dimension to group points by",
+    ),
+    background_tasks: BackgroundTasks = BackgroundTasks(),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> SeparabilityResponse:
+    """
+    How cleanly one subset of the corpus separates along one labelled axis.
+
+    The same number the dashboard shows, without the points — a projection is
+    thousands of coordinates, and a caller asking "do 3D SIM and Airyscan
+    separate?" wants one figure, not the plot. It delegates to the UMAP handler
+    rather than repeating the query, so the answer given here and the badge on
+    the chart can never drift apart.
+
+    Filters are the way to choose a context: narrow to controls, to one PTM, to
+    one microscope, and compare the results. ``n_classes`` and ``n_points`` come
+    back with the score because a silhouette is not comparable across subsets of
+    different size — a comparison that ignores them is not a comparison.
+
+    404 when nothing can be scored (fewer than 10 points carry a value on this
+    axis, or they all carry the same one). That is a different statement from a
+    score of zero, and returning null invites a caller to report it as one.
+    """
+    projection = await get_umap_visualization(
+        umap_type=umap_type,
+        selection=selection,
+        label_by=label_by,
+        background_tasks=background_tasks,
+        current_user=current_user,
+        db=db,
+    )
+    if projection.separability is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=(
+                f"Not enough labelled points to score separability by "
+                f"{label_by.value}: it needs at least 10 points carrying a "
+                f"value on that axis, spread over at least 2 distinct values."
+            ),
+        )
+    return projection.separability
 
 
 # -- Tombstone: the discriminant (LDA) projection, removed 2026-08-04 ---------
@@ -387,8 +452,70 @@ def _apply_facets(query, selection: FacetSelection, protein_column):
     return query
 
 
+# Which column of the facet summary carries each experiment-level axis. Protein
+# and experiment are not here because they live on the point itself.
+_EXPERIMENT_AXIS_COLUMN = {
+    LabelAxis.MICROSCOPE: "microscope_id",
+    LabelAxis.PTM: "ptm_id",
+}
+
+
+def _axis_labels(
+    axis: LabelAxis,
+    items: Sequence,
+    experiment_ids: Sequence[int],
+    facets: Sequence[UmapFacetRow],
+) -> List[Optional[int]]:
+    """The class of each point on ``axis``, positionally aligned with ``items``.
+
+    Protein lives on the point. Microscope and PTM are properties of the
+    experiment and are joined from the facet summary rather than fetched again:
+    ``_load_facets`` has already run in this handler, over the whole readable
+    scope, which is a superset of these points.
+
+    ``None`` means "nothing assigned on this axis" and ``compute_separability``
+    drops it. That is deliberate — pooling every unassigned experiment into one
+    class would let absence look like a group that separates from the rest.
+
+    Raises on an axis it cannot score. Every handler parameter with a
+    ``Query(...)`` default arrives as that Query object when the handler is
+    called directly, so a dispatch that fell through to protein would silently
+    label the score with the wrong axis.
+    """
+    if axis == LabelAxis.PROTEIN:
+        return protein_labels(items)
+    if axis == LabelAxis.EXPERIMENT:
+        return list(experiment_ids)
+
+    try:
+        column = _EXPERIMENT_AXIS_COLUMN[axis]
+    except (KeyError, TypeError):
+        raise ValueError(f"unsupported label axis: {axis!r}") from None
+
+    by_experiment = {row.experiment_id: getattr(row, column) for row in facets}
+    return [by_experiment.get(experiment_id) for experiment_id in experiment_ids]
+
+
+def _separability(
+    embeddings: np.ndarray,
+    labels: List[Optional[int]],
+    axis: LabelAxis,
+) -> Optional[SeparabilityResponse]:
+    """Score ``labels`` and tag the result with the axis they came from."""
+    scored = compute_separability(embeddings, labels)
+    if scored is None:
+        return None
+    return SeparabilityResponse(
+        score=scored.score,
+        label_by=axis,
+        n_classes=scored.n_classes,
+        n_points=scored.n_points,
+    )
+
+
 async def _get_cropped_umap(
     selection: FacetSelection,
+    axis: LabelAxis,
     current_user: User,
     group_ids: Sequence[int],
     background_tasks: BackgroundTasks,
@@ -433,14 +560,20 @@ async def _get_cropped_umap(
             points=[],
             total_crops=total_crops,
             facets=facets,
-            silhouette_score=None,
+            separability=None,
             is_stale=is_stale,
             refresh_error=refresh_error,
         )
 
     logger.info(f"Using pre-computed UMAP for {len(crops_with_umap)}/{total_crops} crops")
     embeddings = np.array([c.embedding for c in crops_with_umap])
-    silhouette = compute_silhouette(embeddings, crops_with_umap)
+    labels = _axis_labels(
+        axis,
+        crops_with_umap,
+        [crop.image.experiment_id for crop in crops_with_umap],
+        facets,
+    )
+    separability = _separability(embeddings, labels, axis)
 
     # Build response. Points carry only what varies per point; the experiment's
     # microscope and PTM are repeated far too often to send per point, so the
@@ -464,7 +597,7 @@ async def _get_cropped_umap(
         points=points,
         total_crops=total_crops,
         facets=facets,
-        silhouette_score=silhouette,
+        separability=separability,
         is_stale=is_stale,
         refresh_error=refresh_error,
     )
@@ -472,6 +605,7 @@ async def _get_cropped_umap(
 
 async def _get_fov_umap(
     selection: FacetSelection,
+    axis: LabelAxis,
     current_user: User,
     group_ids: Sequence[int],
     background_tasks: BackgroundTasks,
@@ -512,7 +646,7 @@ async def _get_fov_umap(
             points=[],
             total_images=total_images,
             facets=facets,
-            silhouette_score=None,
+            separability=None,
             computed_at=None,
             is_stale=is_stale,
             refresh_error=refresh_error,
@@ -520,7 +654,13 @@ async def _get_fov_umap(
 
     logger.info(f"Using pre-computed UMAP for {len(images_with_umap)}/{total_images} FOV images")
     embeddings = np.array([img.embedding for img in images_with_umap])
-    silhouette = compute_silhouette(embeddings, images_with_umap)
+    labels = _axis_labels(
+        axis,
+        images_with_umap,
+        [image.experiment_id for image in images_with_umap],
+        facets,
+    )
+    separability = _separability(embeddings, labels, axis)
     computed_times = [img.umap_computed_at for img in images_with_umap if img.umap_computed_at]
     computed_at = min(computed_times) if computed_times else None
 
@@ -542,7 +682,7 @@ async def _get_fov_umap(
         points=points,
         total_images=total_images,
         facets=facets,
-        silhouette_score=silhouette,
+        separability=separability,
         computed_at=computed_at,
         is_stale=is_stale,
         refresh_error=refresh_error,

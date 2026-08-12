@@ -49,7 +49,6 @@ def empty_protein_umap(total_proteins: int) -> UmapProteinDataResponse:
     return UmapProteinDataResponse(
         points=[],
         total_proteins=total_proteins,
-        silhouette_score=None,
         is_precomputed=False,
         computed_at=None,
     )
@@ -150,14 +149,13 @@ async def get_protein_umap(
         return UmapProteinDataResponse(
             points=points,
             total_proteins=len(proteins),
-            silhouette_score=None,
             is_precomputed=True,
             computed_at=computed_at.isoformat() if computed_at else None,
         )
 
     embeddings = np.array([p.embedding for p in proteins])
     try:
-        projection, silhouette = compute_protein_umap_online(embeddings)
+        projection = compute_protein_umap_online(embeddings)
     except DegenerateEmbeddingsError:
         # Every protein shares one or two embeddings, so there is nothing to
         # project. Report "no data" rather than serving a made-up layout the
@@ -184,7 +182,6 @@ async def get_protein_umap(
     return UmapProteinDataResponse(
         points=points,
         total_proteins=len(proteins),
-        silhouette_score=silhouette,
         is_precomputed=False,
         computed_at=None,
     )

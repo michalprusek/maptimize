@@ -24,7 +24,7 @@ import {
   UMAP_TOOLTIP_CURSOR,
   UMAP_SCATTER_ANIMATION,
   formatAxisTick,
-  getSilhouetteScoreStyle,
+  getSeparabilityScoreStyle,
 } from "./chartConfig";
 import { UmapFilterPanel, type ColorBy } from "./UmapFilterPanel";
 import {
@@ -41,6 +41,7 @@ import { classCounts, sampleClassOf, type SampleClass } from "./pointMarker";
 import { useProjectionData } from "./useProjectionData";
 import {
   EMPTY_SELECTION,
+  FACET_LABEL_KEY,
   experimentColor,
   experimentMetaById,
   isSelectionEmpty,
@@ -127,6 +128,10 @@ export function UmapVisualization({
     viewMode,
     selection: effectiveSelection,
     experimentId,
+    // The index scores whatever the plot is coloured by, so the legend always
+    // shows exactly the classes it compared. Measuring a dimension the reader
+    // cannot see is where these numbers get misread.
+    labelBy: colorBy,
   });
 
   // A reference value the user has ticked can be deleted by anyone (reference
@@ -361,7 +366,7 @@ export function UmapVisualization({
 
   const isFov = view?.isFov ?? viewMode === "fov";
   const totalCount = view?.totalCount ?? 0;
-  const silhouetteScore = view?.silhouetteScore ?? null;
+  const separability = view?.separability ?? null;
 
   // Error message parsing
   const errorMessage = error instanceof Error ? error.message : error ? t("unknownError") : null;
@@ -618,12 +623,20 @@ export function UmapVisualization({
               <span>
                 {totalCount.toLocaleString()} {isFov ? t("fovImages") : t("cellCrops")}
               </span>
-              {silhouetteScore !== null && (
+              {separability !== null && (
                 <span
-                  className={`px-2 py-0.5 rounded text-xs font-mono ${getSilhouetteScoreStyle(silhouetteScore)}`}
-                  title={t("silhouetteTooltip")}
+                  className={`px-2 py-0.5 rounded text-xs font-mono ${getSeparabilityScoreStyle(separability.score)}`}
+                  title={t("separabilityTooltip")}
                 >
-                  {t("silhouette")}: {silhouetteScore.toFixed(3)}
+                  {t("separability", {
+                    axis: t(FACET_LABEL_KEY[separability.label_by]),
+                  })}
+                  : {separability.score.toFixed(3)}
+                  {" · "}
+                  {t("separabilityCounts", {
+                    classes: separability.n_classes,
+                    points: separability.n_points,
+                  })}
                 </span>
               )}
             </div>

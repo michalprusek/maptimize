@@ -1100,6 +1100,65 @@ tools:
         type: boolean
         description: Skip crops flagged as excluded.
 
+  - name: measure_separability
+    annotations: {readOnlyHint: true, openWorldHint: false}
+    description: >
+      Measure how cleanly one slice of the image corpus separates along one
+      dimension. Returns a single silhouette score computed on the raw DINOv3
+      embeddings (-1..1, higher = better separated), with the number of classes
+      and labelled points that went into it. Use it to answer questions of the
+      form "do X and Y look different?" — e.g. do 3D SIM and Airyscan images
+      separate (label_by=microscope), do the MAP proteins separate within the
+      controls only (label_by=protein plus ptm_id of the control row).
+      HOW TO COMPARE CONTEXTS: run it once per context, narrowing with the
+      filters. The filters are OR within a facet and AND across facets, and id 0
+      means "not assigned". IMPORTANT: the score depends on how many classes and
+      how many points went into it, so only compare runs with comparable
+      n_classes and n_points — always report those two numbers alongside the
+      score, never the score on its own. Nothing here is hand-crafted: the
+      embedding is unsupervised and the labels are applied only afterwards, so a
+      separation is the images doing it, not the annotation.
+    handler: http_json
+    method: GET
+    path: /api/embeddings/separability
+    params:
+      - name: umap_type
+        in: query
+        type: string
+        enum: [cropped, fov]
+        default: cropped
+        description: >
+          Which corpus: individual cell crops (default, far more points) or
+          whole field-of-view images.
+      - name: label_by
+        in: query
+        type: string
+        enum: [protein, microscope, ptm, experiment]
+        default: protein
+        description: The dimension whose values are treated as the classes.
+      - name: experiment_id
+        in: query
+        type: array
+        items: integer
+        description: Restrict to these experiments (ids from list_experiments).
+      - name: microscope_id
+        in: query
+        type: array
+        items: integer
+        description: Restrict to these microscopes; 0 means "no microscope assigned".
+      - name: protein_id
+        in: query
+        type: array
+        items: integer
+        description: Restrict to these MAP proteins; 0 means "no protein assigned".
+      - name: ptm_id
+        in: query
+        type: array
+        items: integer
+        description: >
+          Restrict to these PTMs; 0 means "no PTM assigned". This is how you
+          slice to controls only, or to one modification.
+
   # -- Proteins (shared reference data) --------------------------------------
   - name: list_proteins
     annotations: {readOnlyHint: true, openWorldHint: false}

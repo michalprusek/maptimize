@@ -1060,10 +1060,9 @@ async def test_prot_umap_online(mock_db):
     import numpy as np
     proj = np.array([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]])
     with patch("services.umap_service.compute_protein_umap_online",
-               return_value=(proj, 0.42)):
+               return_value=proj):
         out = await prot_r.get_protein_umap(current_user=user(), db=mock_db)
     assert out.is_precomputed is False
-    assert out.silhouette_score == 0.42
     assert out.points[0].x == 1.0
 
 

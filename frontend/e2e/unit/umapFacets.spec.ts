@@ -2,6 +2,7 @@ import { expect, test } from "@playwright/test";
 
 import {
   EMPTY_SELECTION,
+  FACET_LABEL_KEY,
   UNASSIGNED_ID,
   countActiveFilters,
   experimentColor,
@@ -17,6 +18,8 @@ import {
   type FacetSelection,
 } from "../../components/visualization/umapFacets";
 import { appendFacetParams, describeApiError } from "../../lib/api";
+import en from "../../messages/en.json";
+import fr from "../../messages/fr.json";
 import type { UmapFacetRow, UmapFacetSelection } from "../../lib/api";
 
 /**
@@ -298,5 +301,37 @@ test.describe("appendFacetParams", () => {
 
   test("adds nothing when no filter is set", () => {
     expect(appendFacetParams(new URLSearchParams(), undefined).toString()).toBe("");
+  });
+});
+
+
+/**
+ * The separability badge names the dimension it scored, and that name comes from
+ * this map. A facet key with no entry renders the raw key beside a number, which
+ * reads as a real label and misattributes the score — the failure is a plausible
+ * wrong answer, not a crash, so it is worth pinning here.
+ */
+test.describe("FACET_LABEL_KEY", () => {
+  const FACETS = ["experiment", "microscope", "protein", "ptm"] as const;
+
+  test("covers every facet the plot can be coloured and scored by", () => {
+    expect(Object.keys(FACET_LABEL_KEY).sort()).toEqual([...FACETS].sort());
+  });
+
+  for (const [locale, messages] of Object.entries({ en, fr })) {
+    test(`every label key resolves in ${locale}.json`, () => {
+      const umap = messages.umap as Record<string, string>;
+      for (const facet of FACETS) {
+        expect(umap[FACET_LABEL_KEY[facet]], `${facet} in ${locale}`).toBeTruthy();
+      }
+    });
+  }
+
+  test("the separability strings carry the placeholders the badge fills", () => {
+    // next-intl leaves an unknown placeholder in place rather than throwing, so
+    // a renamed one shows up as literal "{axis}" in the UI.
+    expect(en.umap.separability).toContain("{axis}");
+    expect(en.umap.separabilityCounts).toContain("{classes}");
+    expect(en.umap.separabilityCounts).toContain("{points}");
   });
 });

@@ -281,7 +281,7 @@ async def _point_query(umap_type, selection, mock_db):
     runner = (
         mod._get_fov_umap if umap_type is mod.UmapType.FOV else mod._get_cropped_umap
     )
-    await runner(selection, user(), None, MagicMock(), mock_db)
+    await runner(selection, mod.LabelAxis.PROTEIN, user(), None, MagicMock(), mock_db)
     return _compiled(mock_db.execute.await_args_list[0].args[0])
 
 

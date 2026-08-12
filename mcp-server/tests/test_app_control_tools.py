@@ -250,6 +250,45 @@ async def test_list_cell_crops_passes_experiment_query(make_registry):
     assert "bundleness_score" in blocks[0].text
 
 
+async def test_measure_separability_offers_the_filters_as_integer_arrays(make_registry):
+    # What the YAML `type:` actually controls is the schema the MODEL reads. The
+    # wire format is httpx's doing and repeats a list either way, so declaring a
+    # scalar here would not break the request — it would just tell the model to
+    # send one id, and every multi-value slice would quietly never be asked for.
+    reg = make_registry(_with_login(lambda r: httpx.Response(404)))
+    schema = {t.name: t for t in reg.list_tools()}["measure_separability"].inputSchema
+    for facet in ["experiment_id", "microscope_id", "protein_id", "ptm_id"]:
+        assert schema["properties"][facet]["type"] == "array", facet
+        assert schema["properties"][facet]["items"]["type"] == "integer", facet
+    assert schema["properties"]["label_by"]["enum"] == [
+        "protein", "microscope", "ptm", "experiment",
+    ]
+
+
+async def test_measure_separability_repeats_array_filters_as_query_params(make_registry):
+    # FastAPI parses a repeated parameter into a list; a serialized list arrives
+    # as one unparseable value, so the slice the caller asked for would be
+    # silently ignored and the score would describe the whole corpus instead.
+    def routes(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/embeddings/separability":
+            params = request.url.params
+            assert params["label_by"] == "microscope"
+            assert params.get_list("ptm_id") == ["15", "0"]
+            return httpx.Response(200, json={
+                "score": 0.58, "label_by": "microscope",
+                "n_classes": 2, "n_points": 1204,
+            })
+        return httpx.Response(404)
+
+    reg = make_registry(_with_login(routes))
+    blocks = _blocks(await reg.dispatch(
+        "measure_separability", {"label_by": "microscope", "ptm_id": [15, 0]}))
+    # The counts must reach the model: a score reported without them cannot be
+    # compared against another subset.
+    assert "n_classes" in blocks[0].text
+    assert "n_points" in blocks[0].text
+
+
 # -- proteins & database ---------------------------------------------------
 
 async def test_create_protein_posts_body(make_registry):

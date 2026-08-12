@@ -106,7 +106,6 @@ class UmapProteinDataResponse(BaseModel):
     """Response for protein UMAP visualization."""
     points: List[UmapProteinPointResponse]
     total_proteins: int
-    silhouette_score: Optional[float] = None
     is_precomputed: bool = False
     computed_at: Optional[str] = None
 

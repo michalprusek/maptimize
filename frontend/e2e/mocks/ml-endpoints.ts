@@ -101,7 +101,7 @@ export const mockUmapData = {
     },
   ],
   total_crops: 100,
-  silhouette_score: 0.65,
+  separability: { score: 0.65, label_by: "protein", n_classes: 2, n_points: 100 },
   is_stale: false,
   refresh_error: null,
 };
