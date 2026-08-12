@@ -609,13 +609,14 @@ bod se nakreslí v plné barvě a velikosti v rohu grafu, k nerozeznání od dat
 „Control (inactive VASH)" by jinak tiše vrátilo všechny kontroly na obyčejný marker —
 bez chyby kdekoliv.
 
-⚠️ **Kontrola nenese modifikaci, ke které patří.** Experiment je *buď* `Detyrosination`,
-*nebo* `Control`; párování drží jen názvy experimentů, a filtr `Detyrosination` tedy
-kontroly **nevrátí**. Vědomá cena za plochý slovník (rozhodnuto 2026-08-03), ne opomenutí.
+⚠️ **Kontrola NESE modifikaci, ke které patří** (od 2026-08-12, viz níže). Experiment je
+pořád *buď* `Detyrosination`, *nebo* `Detyrosination control` — filtr `Detyrosination`
+kontroly **nevrátí**, a to je záměr: kolega je chce srovnávat, ne slučovat.
 
-⚠️ **Řádek `Control` se při startu NESEEDUJE.** Platí pravidlo výše (seed jen prázdné
+⚠️ **Kontrolní řádek se při startu NESEEDUJE.** Platí pravidlo výše (seed jen prázdné
 tabulky), takže produkce ho dostala jednorázově přes `scripts/ptm_control_backfill.sql`
-— ten je idempotentní a aditivní. Čisté DB ho mají z `DEFAULT_PTMS`.
+— ten je idempotentní a aditivní. Čisté DB ho mají z `DEFAULT_PTMS`, kde se partner
+zapisuje **jménem** (`"controls"`) a `seed_default_data` ho po flushi přeloží na id.
 
 ⚠️ **Backend neví o projekcích vůbec nic.** Bod nese jen `experiment_id`, PTM si klient
 dojoinuje z `facets` a `kind` z `GET /api/ptms`, které si filtrační panel stejně načítá.
@@ -626,6 +627,33 @@ se opakovala stokrát a vznikla by druhá pravda o režimu experimentu.
 Reálně schéma aplikuje `create_all` (nové tabulky) + `ensure_schema_updates()` (nové
 sloupce do existujících tabulek) při startu. Vynechání té prostřední nohy je tichá past:
 na čisté DB projde přes `create_all`, v produkci sloupec nikdy nevznikne.
+
+##### Kontrola patří ke KONKRÉTNÍ PTM (od 2026-08-12)
+
+`ptms.controls_ptm_id` je self-FK: řádek s `kind=control` říká, ke které modifikaci
+patří. Ruší to vědomou cenu plochého slovníku popsanou výše — kontrolní plazmid se
+mezi PTM podmínkami liší, takže jedna sdílená `Control` slučovala nesrovnatelné vzorky.
+
+⚠️ **Kontrola BEZ vazby je 400.** Nespárovaná kontrola JE ta sloučená kategorie, jen
+dosažená jinudy; API ji vytvořit nesmí. Kontroluje se **výsledný řádek, ne payload** —
+proto PATCH měnící jen popis link neposílá znovu, a proto se chytí i opačný směr
+(přehození `kind` na `modification`, když je link vyplněný).
+
+⚠️ **FK schválně nemá `ON DELETE`.** `SET NULL` by osiřelou kontrolu nechal ukazovat
+nikam — zase ta sloučená kategorie, tentokrát potichu. `delete_ptm` proto odmítne
+(409) a **jmenuje** kontroly, které překážejí.
+
+⚠️ **Nebezpečný směr je PRYČ od `modification`, ne k němu.** První verze té pojistky
+střílela na `kind == "modification"`, což je no-op — a editor `kind` posílá při každém
+uložení, takže editace popisu modifikace s kontrolou vracela 409, zatímco skutečné
+přeřazení na `none` prošlo. Chytlo to až spuštění handleru proti reálné DB; 1777 unit
+testů svítilo zeleně, protože ten, který to vypadal že pokrývá, testoval opačnou stranu.
+
+Migrace je složená do **stávajícího** `scripts/ptm_control_backfill.sql`, ne do druhého
+skriptu — dva skripty, které musí běžet v pořadí, jsou jedno zapomenutí od databáze
+s pooled `Control` i spárovanou zároveň. Přejmenovává řádek 15 na místě, takže **28
+experimentů se nesahá**. `pointMarker.ts` se neměnil: třída se čte z `kind`, nikdy ze
+jména ani z vazby.
 
 #### Přiřazení proteinu — čtvrtá výjimka (od 2026-07-29)
 
@@ -696,10 +724,71 @@ zmizela). Body nesou jen `experiment_id` — mikroskop a PTM si klient dojoinuje
 **Nepřidávej je na bod**: opakovaly by se stokrát a vznikla by druhá pravda o tom, jaký
 mikroskop experiment má.
 
+#### Separabilita se počítá podle toho, čím je graf obarvený (od 2026-08-12)
+
+`compute_separability(embeddings, labels)` (dřív `compute_silhouette`) bere **poziční
+seznam labelů**, ne ORM objekty — díky tomu je osa zaměnitelná a z výpočtu zmizelo čtení
+relací, takže do `asyncio.to_thread` letí jen čísla.
+
+`GET /api/embeddings/umap?label_by=protein|microscope|ptm|experiment`; UI to řídí z
+`colorBy`, takže legenda ukazuje přesně ty třídy, které index počítal. **Mikroskop a PTM
+se berou z `_load_facets`**, které v handleru už leží a pokrývá celý čitelný scope — žádný
+join navíc a žádné pole na bodu.
+
+⚠️ **Skóre necestuje samo.** Silueta závisí na počtu tříd a olabelovaných bodů, takže dvě
+hodnoty nejsou srovnatelné, pokud ty počty nesedí — `separability` nese `score`,
+`label_by`, `n_classes`, `n_points` a badge je tiskne pohromadě. `n_points` počítá
+**olabelované** body, ne nabídnuté.
+
+⚠️ **Neznámá osa MUSÍ vyhodit `ValueError`.** Parametr s `Query(...)` defaultem doteče do
+přímo volaného handleru jako objekt `Query`; dispatch, který by propadl na protein, by
+skóre tiše přiřadil špatné ose.
+
+`GET /api/embeddings/separability` vrací **jen** skóre (MCP tool `measure_separability`) —
+projekce jsou tisíce souřadnic a agent se ptá na jedno číslo. Vrací **404, ne null**, když
+není co skórovat: null si volající přečte jako nulu a takhle to i ohlásí.
+
 Parametry chodí do handleru jako jedna FastAPI dependency (`facet_selection` →
 `FacetSelection`). ⚠️ To je záměr: testy volají handlery **přímo**, a každý parametr
 s defaultem `Query(...)`, který test nepředá, doteče do těla jako objekt `Query` — ne
 `None`. Se čtyřmi filtry by to byla čtyřnásobná mina.
+
+### Složky experimentů — pátá skupinová výjimka (od 2026-08-12)
+
+`experiment_folders` + `experiments.folder_id`. `PATCH /api/experiments/{id}/folder` je
+**skupinový zápis** ze stejného důvodu jako mikroskop/PTM/protein: většinu korpusu vlastní
+anotátor, takže owner-only zakládání by nechalo strom pro ostatní prázdný. Samostatný
+endpoint, ne pole v `ExperimentUpdate`.
+
+⚠️ **Zařazení do složky NEMĚNÍ `experiments.group_id`.** Je to schválně opak knihovny
+dokumentů, kde přesun dokument přerazítkuje: dokument odvozuje publikum ze složky,
+experiment ho nese na řádku. Bez toho oddělení by upuštění kolegova experimentu do složky
+tiše změnilo, kdo ho vidí — a to je rozhodnutí jen vlastníka.
+
+⚠️ **`ExperimentFolder` NENÍ kopie `DocumentFolder`.** Nemá osu `visibility`: experiment je
+skupinově čitelný, ať leží kdekoliv, takže „soukromá složka" by skryla složku a ne obsah.
+Nemá ani seedované složky — umístění tu nerozhoduje o ničem, takže prázdný strom je
+poctivý začátek.
+
+⚠️ **Právě proto potřebuje `group_id` při zakládání.** `default_group_id` vrátí `None`
+členovi víc skupin (správně — hádat znamená publikovat cizímu publiku), a knihovna
+dokumentů to přežije jen díky seedovaným kořenům, pod které se dá zanořit. Tady žádné
+nejsou, takže bez explicitní volby by člen dvou skupin nemohl sdílenou složku založit
+vůbec. Michal je ve dvou skupinách. Podsložka `group_id` **ignoruje** (rodič je konkrétnější
+odpověď), nezamítá — klient posílá celý formulář.
+
+Mazání složku **rozpustí** (obsah nahoru k rodiči), takže za smazáním nic nezmizí.
+`folder_id` + `include_subfolders` chodí do `list_experiments` jako **jedna dependency**
+(`FolderScope`) — se dvěma volnými `Query` parametry je to dvojnásobná mina popsaná
+u facet filtru. `0` = „nezařazené"; `None`/`0`/id jsou tři různé odpovědi a truthiness
+by dvě z nich slila.
+
+⚠️ **Odpověď stromu nese `unfiled_count`.** Pod „nezařazené" nic nevisí, takže to klient
+nemá z čeho sečíst; alternativa byl druhý plný listing při načtení stránky kvůli jednomu
+číslu.
+
+Frontendová aritmetika stromu žije v `lib/folderTree.ts` a sdílí ji knihovna dokumentů
+i experimenty — nepiš třetí kopii.
 
 ### ⚠️ `MissingGreenlet` po zápisu: NIKDY neserializuj objekt ze session
 
