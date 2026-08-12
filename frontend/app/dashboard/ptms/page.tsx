@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback } from "react";
+import { useState, useCallback, useMemo } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useTranslations } from "next-intl";
@@ -38,6 +38,7 @@ const DEFAULT_FORM_DATA: PTMCreate = {
   // Most entries are tubulin marks; the two that are not are the exception the
   // user opts into.
   kind: "modification",
+  controls_ptm_id: null,
 };
 
 /** i18n key per kind, for the selector and the card badge. */
@@ -72,6 +73,25 @@ export default function PtmsPage(): JSX.Element {
     queryKey: ["ptms"],
     queryFn: () => api.getPtms(),
   });
+
+  // Only a modification can be a control's partner — no chains, and an
+  // `Unmodified` row has nothing to be the control for. Editing a control also
+  // excludes itself, which is otherwise the one self-reference the API rejects
+  // that the form could still offer.
+  const modifications = useMemo(
+    () =>
+      (ptms ?? []).filter(
+        (p) => p.kind === "modification" && p.id !== editing?.id
+      ),
+    [ptms, editing]
+  );
+
+  // The partner's name, for the card badge: the row carries only the id, and the
+  // list this page already holds is where that id is resolved.
+  const ptmNameById = useMemo(
+    () => new Map((ptms ?? []).map((p) => [p.id, p.name])),
+    [ptms]
+  );
 
   const closeModal = useCallback(() => {
     setShowModal(false);
@@ -128,6 +148,7 @@ export default function PtmsPage(): JSX.Element {
       // deliberate change. Left undefined, `exclude_unset` leaves the column
       // alone, which is the honest answer for a value we cannot represent.
       kind: known ? (p.kind as PTMKind) : undefined,
+      controls_ptm_id: p.controls_ptm_id ?? null,
     });
     setShowModal(true);
     setError(known ? null : t("unknownKind", { kind: p.kind || "—" }));
@@ -139,10 +160,17 @@ export default function PtmsPage(): JSX.Element {
     // a missing color as "auto-assign"; PATCH reads a missing field as "leave
     // unchanged", so an edit sends explicit null to mean "re-pick".
     const { color, ...rest } = formData;
+    // The pairing belongs to controls only; the backend rejects it (400) on
+    // anything else, so a row switched away from "control" must clear it here
+    // rather than carry a stale id the form no longer shows.
+    const paired = {
+      ...rest,
+      controls_ptm_id: rest.kind === "control" ? rest.controls_ptm_id ?? null : null,
+    };
     if (editing) {
-      updateMutation.mutate({ id: editing.id, data: { ...rest, color: color || null } });
+      updateMutation.mutate({ id: editing.id, data: { ...paired, color: color || null } });
     } else {
-      createMutation.mutate(color ? { ...rest, color } : rest);
+      createMutation.mutate(color ? { ...paired, color } : paired);
     }
   };
 
@@ -224,6 +252,16 @@ export default function PtmsPage(): JSX.Element {
                       ) : p.kind !== "modification" ? (
                         <span className="inline-block mt-1 px-1.5 py-0.5 rounded text-[10px] uppercase tracking-wide bg-white/5 text-text-muted">
                           {t(KIND_LABEL[p.kind as PTMKind])}
+                          {/* A control says which modification it pairs with,
+                              because "Control" on its own is exactly the pooled
+                              label this stopped being. A row that somehow lost
+                              its partner says so rather than reading as a
+                              general-purpose control. */}
+                          {p.kind === "control" &&
+                            ` · ${
+                              ptmNameById.get(p.controls_ptm_id ?? -1) ??
+                              t("controlsForMissing")
+                            }`}
                         </span>
                       ) : null}
                     </div>
@@ -293,6 +331,34 @@ export default function PtmsPage(): JSX.Element {
             </select>
             <p className="text-xs text-text-muted mt-1.5">{t("kindHint")}</p>
           </div>
+          {/* A control names the modification it pairs with. Shown only for a
+              control, and required there: the control plasmid differs between
+              PTM conditions, so a control naming nothing pools samples that are
+              not comparable — which is the bug this field exists to fix. */}
+          {formData.kind === "control" && (
+            <div>
+              <label className="block text-sm font-medium text-text-secondary mb-2">
+                {t("controlsFor")} *
+              </label>
+              <select
+                value={formData.controls_ptm_id ?? ""}
+                onChange={(e) =>
+                  setFormData({
+                    ...formData,
+                    controls_ptm_id: e.target.value ? Number(e.target.value) : null,
+                  })
+                }
+                className="input-field"
+                required
+              >
+                <option value="">{t("controlsForPlaceholder")}</option>
+                {modifications.map((m) => (
+                  <option key={m.id} value={m.id}>{m.name}</option>
+                ))}
+              </select>
+              <p className="text-xs text-text-muted mt-1.5">{t("controlsForHint")}</p>
+            </div>
+          )}
           <div>
             <label className="block text-sm font-medium text-text-secondary mb-2">{t("description")}</label>
             <textarea value={formData.description} onChange={(e) => setFormData({ ...formData, description: e.target.value })}
@@ -316,7 +382,12 @@ export default function PtmsPage(): JSX.Element {
           </div>
           <div className="flex gap-3 pt-4">
             <button type="button" onClick={closeModal} className="btn-secondary flex-1">{tCommon("cancel")}</button>
-            <button type="submit" disabled={isSubmitting || !formData.name.trim()}
+            <button type="submit"
+              disabled={
+                isSubmitting ||
+                !formData.name.trim() ||
+                (formData.kind === "control" && !formData.controls_ptm_id)
+              }
               className="btn-primary flex-1 flex items-center justify-center gap-2">
               {isSubmitting ? <Loader2 className="w-5 h-5 animate-spin" /> : tCommon(editing ? "save" : "create")}
             </button>

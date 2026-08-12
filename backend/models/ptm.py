@@ -3,7 +3,7 @@ from datetime import datetime
 from enum import Enum as PyEnum
 from typing import Optional
 
-from sqlalchemy import CheckConstraint, String, Text, DateTime, func
+from sqlalchemy import CheckConstraint, DateTime, ForeignKey, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from database import Base
@@ -83,6 +83,20 @@ class PTM(Base):
         default=PTMKind.MODIFICATION.value,
         server_default=PTMKind.MODIFICATION.value,
         nullable=False,
+    )
+    # For a control row: the modification it is the paired control FOR.
+    #
+    # The control plasmid differs between PTM conditions, so a single shared
+    # `Control` row asserts a sameness that does not exist — it was the flat
+    # vocabulary's known cost, paid back here. Set if and only if
+    # `kind == control`; the router holds that invariant, because it needs to
+    # read the target row's own kind to enforce it.
+    #
+    # No `ondelete` clause on purpose. SET NULL would leave a control naming
+    # nothing — the pooled row again, arrived at silently — so `delete_ptm`
+    # refuses while a control still points here, and says which one.
+    controls_ptm_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("ptms.id"), nullable=True, index=True
     )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
@@ -204,15 +218,18 @@ DEFAULT_PTMS = [
         "kind": PTMKind.NONE.value,
     },
     {
-        "name": "Control",
-        "abbreviation": "ctrl",
+        "name": "Detyrosination control",
+        "abbreviation": "deTyr ctrl",
         "modified_residue": None,
         "enzyme": None,
         "description": (
-            "Paired control for a PTM condition: the same transfection carried "
+            "Paired control for detyrosination: the same transfection carried "
             "out with a catalytically inactive enzyme, so the lattice is "
             "unmodified. Run alongside the modified sample it is compared to."
         ),
+        # Resolved to an id by seed_default_data — the partner's SERIAL id is
+        # not knowable while writing a literal.
+        "controls": "Detyrosination",
         # Neutral grey on purpose: for a value that is not a modification, grey
         # is the right answer wherever the PTM's own colour is shown — the
         # colour-by-PTM legend, the facet pills, and the dot on its card in

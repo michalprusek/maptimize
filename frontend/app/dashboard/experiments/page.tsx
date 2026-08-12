@@ -1,11 +1,11 @@
 "use client";
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import Link from "next/link";
 import { motion, AnimatePresence } from "framer-motion";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useTranslations } from "next-intl";
-import { api } from "@/lib/api";
+import { api, type ExperimentFolder } from "@/lib/api";
 import { ColorTagSelect, ConfirmModal, toColorTagOptions } from "@/components/ui";
 import {
   Plus,
@@ -22,6 +22,11 @@ import {
   User,
 } from "lucide-react";
 import { ExportModal, ImportModal } from "@/components/export";
+import {
+  ExperimentFolderPanel,
+  type FolderSelection,
+} from "@/components/experiment";
+import { trailTo } from "@/lib/folderTree";
 import { useAssignMicroscope, useAssignPtm } from "@/hooks";
 import { useAuthStore } from "@/stores/authStore";
 
@@ -35,6 +40,10 @@ export default function ExperimentsPage(): JSX.Element {
   const currentUserId = useAuthStore((state) => state.user?.id);
   const tExportImport = useTranslations("exportImport");
   const tGroups = useTranslations("groups");
+  const tFolders = useTranslations("experimentFolders");
+  // Which slice of the tree the grid is showing. "all" and "unfiled" are views,
+  // not folders — see ExperimentFolderPanel.
+  const [folderSelection, setFolderSelection] = useState<FolderSelection>("all");
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [showExportModal, setShowExportModal] = useState(false);
   const [showImportModal, setShowImportModal] = useState(false);
@@ -54,9 +63,97 @@ export default function ExperimentsPage(): JSX.Element {
   const [error, setError] = useState<string | null>(null);
   const queryClient = useQueryClient();
 
+  // 0 is the backend's "unfiled" sentinel; undefined means no filter at all.
+  // Three distinct answers, so this maps them explicitly rather than leaning on
+  // truthiness, which would merge "unfiled" into "everything".
+  const folderQuery =
+    folderSelection === "all"
+      ? undefined
+      : folderSelection === "unfiled"
+        ? 0
+        : folderSelection;
+
   const { data: experiments, isLoading } = useQuery({
-    queryKey: ["experiments"],
-    queryFn: () => api.getExperiments(),
+    // The folder is part of the key: it changes the response, not the rendering.
+    queryKey: ["experiments", folderQuery],
+    queryFn: () => api.getExperiments({ folderId: folderQuery }),
+  });
+
+  // Only used to decide whether a NEW top-level folder has to name a group.
+  const { data: myGroups } = useQuery({
+    queryKey: ["my-groups"],
+    queryFn: () => api.getMyGroups(),
+  });
+
+  const { data: tree } = useQuery({
+    queryKey: ["experiment-folders"],
+    queryFn: () => api.getExperimentFolders(),
+  });
+  const folders = tree?.folders ?? [];
+  const unfiledCount = tree?.unfiled_count ?? 0;
+  // Each experiment sits in at most one folder, so a flat sum over the folder
+  // rows is the filed total — no subtree walk, and no double counting.
+  const totalExperimentCount =
+    folders.reduce((sum, folder) => sum + folder.experiment_count, 0) +
+    unfiledCount;
+
+  const [folderToDelete, setFolderToDelete] =
+    useState<ExperimentFolder | null>(null);
+
+  // Folder names repeat between branches ("Batch 1" under two projects), so the
+  // chip shows the path above each one. Without it the menu offers two rows that
+  // read identically and file into different places.
+  const folderOptions = useMemo(
+    () =>
+      toColorTagOptions(folders, (folder) => {
+        const trail = trailTo(folders, folder.id);
+        return trail.length > 1
+          ? trail.slice(0, -1).map((f) => f.name).join(" / ")
+          : null;
+      }),
+    [folders]
+  );
+
+  const invalidateTree = () => {
+    queryClient.invalidateQueries({ queryKey: ["experiments"] });
+    queryClient.invalidateQueries({ queryKey: ["experiment-folders"] });
+  };
+
+  const folderMutation = useMutation({
+    mutationFn: ({ experimentId, folderId }: {
+      experimentId: number;
+      folderId: number | null;
+    }) => api.setExperimentFolder(experimentId, folderId),
+    onSuccess: invalidateTree,
+    onError: (err: Error) => setError(err.message),
+  });
+
+  const createFolderMutation = useMutation({
+    mutationFn: ({ name, parentId, groupId }: {
+      name: string;
+      parentId: number | null;
+      groupId: number | null;
+    }) => api.createExperimentFolder(name, parentId, groupId),
+    onSuccess: invalidateTree,
+    onError: (err: Error) => setError(err.message),
+  });
+
+  const renameFolderMutation = useMutation({
+    mutationFn: ({ id, name }: { id: number; name: string }) =>
+      api.updateExperimentFolder(id, { name }),
+    onSuccess: invalidateTree,
+    onError: (err: Error) => setError(err.message),
+  });
+
+  const deleteFolderMutation = useMutation({
+    mutationFn: (id: number) => api.deleteExperimentFolder(id),
+    onSuccess: () => {
+      // The folder dissolved into its parent, so whatever was selected may no
+      // longer exist. Fall back to the view that always does.
+      setFolderSelection("all");
+      invalidateTree();
+    },
+    onError: (err: Error) => setError(err.message),
   });
 
   const { data: proteins } = useQuery({
@@ -210,6 +307,28 @@ export default function ExperimentsPage(): JSX.Element {
         </motion.div>
       )}
 
+      {/* Folder tree beside the grid. The tree column keeps a fixed width so the
+          grid does not reflow every time a folder name changes length. */}
+      <div className="flex flex-col lg:flex-row gap-6 items-start">
+      <aside className="w-full lg:w-64 shrink-0 lg:sticky lg:top-4">
+        <ExperimentFolderPanel
+          folders={folders}
+          selection={folderSelection}
+          onSelect={setFolderSelection}
+          onCreate={(name, parentId, groupId) =>
+            createFolderMutation.mutate({ name, parentId, groupId })
+          }
+          groups={(myGroups?.items ?? []).map((m) => m.group)}
+          onRename={(folder, name) =>
+            renameFolderMutation.mutate({ id: folder.id, name })
+          }
+          onDelete={(folder) => setFolderToDelete(folder)}
+          unfiledCount={unfiledCount}
+          totalCount={totalExperimentCount}
+        />
+      </aside>
+
+      <div className="flex-1 min-w-0">
       {/* Experiments Grid */}
       {isLoading ? (
         <div className="flex justify-center py-12">
@@ -341,6 +460,25 @@ export default function ExperimentsPage(): JSX.Element {
                       size="sm"
                       align="right"
                     />
+                    {/* Filing is group-writable like the three chips above, so
+                        this stays enabled on a colleague's card. It changes
+                        where the experiment appears and nothing else — sharing
+                        is owner-only and lives on the detail page. */}
+                    <ColorTagSelect
+                      options={folderOptions}
+                      value={exp.folder_id ?? null}
+                      onChange={(folderId) =>
+                        folderMutation.mutate({ experimentId: exp.id, folderId })
+                      }
+                      onOpenChange={(open) =>
+                        setOpenMenuCardId(open ? exp.id : null)
+                      }
+                      placeholder={tFolders("unfiled")}
+                      clearLabel={tFolders("unfiled")}
+                      variant="chip"
+                      size="sm"
+                      align="right"
+                    />
                   </div>
                   {/* Deliberately NOT a second <Link>: the card would then expose
                       two anchors to the same href, and the e2e suite counts cards
@@ -373,6 +511,8 @@ export default function ExperimentsPage(): JSX.Element {
           </button>
         </div>
       )}
+      </div>
+      </div>
 
       {/* Create Modal */}
       <AnimatePresence>
@@ -505,6 +645,24 @@ export default function ExperimentsPage(): JSX.Element {
         confirmLabel={tCommon("delete")}
         cancelLabel={tCommon("cancel")}
         isLoading={deleteMutation.isPending}
+        variant="danger"
+      />
+
+      {/* Deleting a folder dissolves it — the wording says so, because "delete"
+          on a folder holding a batch reads as "delete the batch". */}
+      <ConfirmModal
+        isOpen={!!folderToDelete}
+        onClose={() => setFolderToDelete(null)}
+        onConfirm={() => {
+          if (folderToDelete) deleteFolderMutation.mutate(folderToDelete.id);
+          setFolderToDelete(null);
+        }}
+        title={tFolders("deleteFolder")}
+        message={tFolders("deleteConfirm")}
+        detail={folderToDelete?.name}
+        confirmLabel={tCommon("delete")}
+        cancelLabel={tCommon("cancel")}
+        isLoading={deleteFolderMutation.isPending}
         variant="danger"
       />
 

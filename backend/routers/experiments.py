@@ -1,9 +1,10 @@
 """Experiment routes."""
 import logging
-from typing import List, Optional
+from typing import List, Optional, Sequence
 
 from fastapi import APIRouter, Depends, HTTPException, Response, status, Query
-from sqlalchemy import select, func, distinct, update
+from sqlalchemy import and_, select, func, distinct, update
+from sqlalchemy.sql.elements import ColumnElement
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -19,6 +20,13 @@ from schemas.experiment import (
     ExperimentUpdate,
     ExperimentResponse,
     ExperimentDetailResponse,
+)
+from routers.experiment_folders import (
+    UNFILED_FOLDER_ID,
+    FolderScope,
+    _descendant_ids,
+    folder_scope,
+    get_folder_for_user,
 )
 from utils.reference_data import get_or_404
 from utils.security import get_current_user
@@ -89,10 +97,43 @@ async def _verify_ptm_exists(ptm_id: int, db: AsyncSession) -> None:
     await get_or_404(db, PTM, ptm_id, "PTM")
 
 
+async def _folder_filter(
+    scope: FolderScope,
+    user_id: int,
+    group_ids: Sequence[int],
+    db: AsyncSession,
+) -> Optional[ColumnElement]:
+    """The WHERE clause for a folder selection, or None when none was made.
+
+    A truthiness check on ``folder_id`` would read the unfiled sentinel (0) as
+    "no filter" and return the whole library instead of the unfiled subset --
+    the same trap `folder_ids` hit in the document library, which is why every
+    test here asserts on the emitted SQL rather than on the parameter.
+    """
+    if scope.folder_id is None:
+        return None
+
+    if scope.folder_id == UNFILED_FOLDER_ID:
+        return Experiment.folder_id.is_(None)
+
+    # 404 for a folder the caller cannot see, before it can narrow anything --
+    # otherwise "no results" and "not yours" are the same answer.
+    await get_folder_for_user(db, scope.folder_id, user_id, group_ids)
+
+    if not scope.include_subfolders:
+        return Experiment.folder_id == scope.folder_id
+
+    # A parent reading "0 experiments" while its children hold the batch is the
+    # failure this branch exists to avoid.
+    below = await _descendant_ids(db, scope.folder_id, user_id, group_ids)
+    return Experiment.folder_id.in_([scope.folder_id, *sorted(below)])
+
+
 @router.get("", response_model=List[ExperimentResponse])
 async def list_experiments(
     skip: int = Query(0, ge=0),
     limit: Optional[int] = Query(None, ge=1),
+    scope: FolderScope = Depends(folder_scope),
     response: Response = None,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
@@ -108,9 +149,17 @@ async def list_experiments(
     header, mirroring ``list_documents``; the body stays a bare array. Without
     it a caller that DOES pass `limit` is back in the original hole -- holding a
     prefix it cannot distinguish from the whole answer.
+
+    ``folder_id`` narrows to one folder; ``0`` means "unfiled". A real id is
+    never 0 (they come from a SERIAL), so the sentinel rides the same parameter
+    rather than adding a second one whose absence and whose false look identical
+    on the wire -- the same trick, and the same reason, as the UMAP facets.
     """
     group_ids = await get_user_group_ids(current_user.id, db)
     access_filter = experiment_owner_filter(current_user.id, group_ids)
+    folder_filter = await _folder_filter(scope, current_user.id, group_ids, db)
+    if folder_filter is not None:
+        access_filter = and_(access_filter, folder_filter)
 
     if response is not None:
         # Counted over the same access filter, so the total can never describe a
@@ -367,6 +416,51 @@ async def update_experiment_ptm(
 
     logger.info(
         f"User {current_user.id} set PTM for experiment {experiment_id} to {ptm_id}"
+    )
+
+    return await load_experiment_response(db, experiment_id)
+
+
+@router.patch("/{experiment_id}/folder", response_model=ExperimentResponse)
+async def update_experiment_folder(
+    experiment_id: int,
+    folder_id: Optional[int] = Query(
+        default=None, description="Folder to file into; omit to unfile"
+    ),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    File an experiment into a folder, or unfile it (owner OR group member).
+
+    Group-writable, the fifth such exception, and for the reason the other four
+    exist: most of the corpus belongs to one annotator, so owner-only filing
+    would leave the tree empty for everyone else. Whoever can see an experiment
+    can organise it.
+
+    ⚠️ This does NOT touch ``experiment.group_id``. Placement is organisation,
+    not publication — the opposite of the document library, where a folder move
+    re-stamps the document. Without that separation, dropping a colleague's
+    experiment into a folder would silently change who can read it, which is a
+    decision only the owner gets to make (``PATCH /{experiment_id}/group``).
+
+    A separate endpoint rather than a field on the owner-only generic PATCH, for
+    the same reason as the microscope and PTM assignments: one field must not
+    have two paths with two different ACLs.
+    """
+    experiment = await get_experiment_for_user(db, experiment_id, current_user.id)
+
+    if folder_id is not None:
+        group_ids = await get_user_group_ids(current_user.id, db)
+        # Scoped, so an experiment cannot be filed into a folder the caller
+        # cannot see -- which would make it vanish from their own tree.
+        await get_folder_for_user(db, folder_id, current_user.id, group_ids)
+
+    experiment.folder_id = folder_id
+    await db.commit()
+
+    logger.info(
+        f"User {current_user.id} filed experiment {experiment_id} into folder {folder_id}"
     )
 
     return await load_experiment_response(db, experiment_id)

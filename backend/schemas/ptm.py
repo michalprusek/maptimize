@@ -60,6 +60,9 @@ class PTMCreate(ReferenceCreate):
     description: Optional[str] = None
     color: Optional[str] = Field(None, pattern=r"^#[0-9A-Fa-f]{6}$")
     kind: PTMKind = PTMKind.MODIFICATION
+    # Required when kind is `control`, forbidden otherwise — enforced in the
+    # router, which has to read the target row's own kind to check it.
+    controls_ptm_id: Optional[int] = None
 
 
 class PTMUpdate(ReferenceUpdate):
@@ -76,6 +79,11 @@ class PTMUpdate(ReferenceUpdate):
     description: Optional[str] = None
     color: Optional[str] = Field(None, pattern=r"^#[0-9A-Fa-f]{6}$")
     kind: Optional[PTMKind] = None
+    # An explicit null clears the link; omitting the field leaves it alone. The
+    # router checks the ROW THAT RESULTS, so clearing it on a control is
+    # rejected there rather than here — a patch that only touches the
+    # description must not have to resend the link.
+    controls_ptm_id: Optional[int] = None
 
     @field_validator("kind", mode="before")
     @classmethod
@@ -106,6 +114,10 @@ class PTMResponse(BaseModel):
     # programming error and should say so, rather than silently reporting
     # "modification" — which is the one value that draws a control as a sample.
     kind: str
+    # The modification this row is the paired control for, or null. Only the id:
+    # every client that shows it already holds the PTM list and can join, and a
+    # denormalised name here would be a second place for the pairing to be wrong.
+    controls_ptm_id: Optional[int] = None
 
     _degrade_kind = field_validator("kind", mode="before")(_degrade_unknown_kind)
 
@@ -123,6 +135,7 @@ class PTMDetailedResponse(BaseModel):
     description: Optional[str] = None
     color: Optional[str] = None
     kind: str
+    controls_ptm_id: Optional[int] = None
     experiment_count: int = 0
     created_at: Optional[datetime] = None
 
@@ -142,6 +155,7 @@ class PTMDetailedResponse(BaseModel):
             description=ptm.description,
             color=ptm.color,
             kind=ptm.kind,
+            controls_ptm_id=ptm.controls_ptm_id,
             experiment_count=experiment_count,
             created_at=ptm.created_at,
         )

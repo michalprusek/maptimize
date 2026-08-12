@@ -22,6 +22,35 @@ class UmapType(str, Enum):
         return "images" if self is UmapType.FOV else "crops"
 
 
+class LabelAxis(str, Enum):
+    """Which dimension the separability score groups points by.
+
+    The same four dimensions the filter panel offers, so the axis a reader can
+    colour by is exactly the axis they can score by. Keeping them one vocabulary
+    is what stops the index from reporting on classes the legend does not show.
+    """
+
+    PROTEIN = "protein"
+    MICROSCOPE = "microscope"
+    PTM = "ptm"
+    EXPERIMENT = "experiment"
+
+
+class SeparabilityResponse(BaseModel):
+    """How cleanly the plotted points separate along one labelled axis.
+
+    ``score`` never travels alone. A silhouette depends on how many classes were
+    compared and how many points carried a label, so two scores are comparable
+    only between subsets of comparable size — the counts are what let a reader
+    see whether the comparison they are making is fair.
+    """
+
+    score: float = Field(..., description="Silhouette over the raw embeddings (-1 to 1)")
+    label_by: LabelAxis = Field(..., description="Dimension the points were grouped by")
+    n_classes: int = Field(..., description="Distinct values scored")
+    n_points: int = Field(..., description="Points carrying a value on this axis")
+
+
 class UmapFacetRow(BaseModel):
     """One (experiment, protein) bucket of the plot, with its point count.
 
@@ -70,9 +99,12 @@ class UmapDataResponse(BaseModel):
         default_factory=list,
         description="Filter options with counts, over the scope before facet filters",
     )
-    silhouette_score: Optional[float] = Field(
+    separability: Optional[SeparabilityResponse] = Field(
         None,
-        description="Silhouette score measuring cluster separation (-1 to 1)"
+        description=(
+            "How cleanly these points separate along the requested label axis, "
+            "or null when too few of them carry a value to say anything."
+        ),
     )
     is_stale: bool = Field(
         False,
@@ -113,9 +145,12 @@ class UmapFovDataResponse(BaseModel):
         default_factory=list,
         description="Filter options with counts, over the scope before facet filters",
     )
-    silhouette_score: Optional[float] = Field(
+    separability: Optional[SeparabilityResponse] = Field(
         None,
-        description="Silhouette score measuring cluster separation (-1 to 1)"
+        description=(
+            "How cleanly these points separate along the requested label axis, "
+            "or null when too few of them carry a value to say anything."
+        ),
     )
     computed_at: Optional[datetime] = Field(
         None,

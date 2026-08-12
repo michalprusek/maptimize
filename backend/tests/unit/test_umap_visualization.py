@@ -263,56 +263,80 @@ def test_compute_projection_use_random_init_flag_large():
 
 
 # =============================================================================
-# compute_silhouette
+# compute_separability
 # =============================================================================
-def test_silhouette_none_when_too_few_labeled():
-    items = [_item([0.0], protein_id=1) for _ in range(5)]  # < 10 labeled
-    assert umap_service.compute_silhouette(np.random.rand(5, 4), items) is None
-
-
-def test_silhouette_none_when_single_label():
-    # 10 labeled but all same protein → < 2 distinct labels.
-    items = [_item([0.0], protein_id=1) for _ in range(10)]
-    assert umap_service.compute_silhouette(np.random.rand(10, 4), items) is None
-
-
 def _patch_silhouette(value=0.42):
     """Patch the (lazily imported) sklearn silhouette_score with a stub.
 
     The real implementation pulls in sklearn's array-API compat layer, which
     raises ``AttributeError: numpy.dtypes has no attribute 'VoidDType'`` when run
     under coverage's C tracer (an environment-only interaction). Stubbing keeps
-    the success branch of compute_silhouette covered deterministically.
+    the success branch of compute_separability covered deterministically.
     """
     fake_metrics = MagicMock()
     fake_metrics.silhouette_score.return_value = value
     return patch.dict("sys.modules", {"sklearn.metrics": fake_metrics})
 
 
-def test_silhouette_success_two_labels():
-    items = [_item([0.0], protein_id=(i % 2)) for i in range(12)]
-    emb = np.random.rand(12, 6)
+def test_separability_none_when_too_few_labeled():
+    labels = [1] * 5  # < 10 labeled
+    assert umap_service.compute_separability(np.random.rand(5, 4), labels) is None
+
+
+def test_separability_none_when_single_class():
+    # 10 labeled but all the same value → < 2 distinct classes.
+    labels = [1] * 10
+    assert umap_service.compute_separability(np.random.rand(10, 4), labels) is None
+
+
+def test_separability_reports_score_with_class_and_point_counts():
+    # The counts are the whole reason this returns an object rather than a float:
+    # a silhouette is not comparable across subsets of different size and class
+    # count, so the two numbers that make it comparable travel with it.
+    labels = [i % 3 for i in range(12)]
     with _patch_silhouette(0.42):
-        score = umap_service.compute_silhouette(emb, items)
-    assert score == pytest.approx(0.42)
-    assert -1.0 <= score <= 1.0
+        result = umap_service.compute_separability(np.random.rand(12, 6), labels)
+    assert result.score == pytest.approx(0.42)
+    assert result.n_classes == 3
+    assert result.n_points == 12
 
 
-def test_silhouette_handles_value_error(monkeypatch):
-    items = [_item([0.0], protein_id=(i % 2)) for i in range(12)]
+def test_separability_counts_only_the_labeled_points():
+    # 10 labeled + 4 unlabeled. n_points must describe what was scored, not what
+    # was offered — otherwise a mostly-unassigned subset reports a confidence it
+    # does not have.
+    labels = [i % 2 for i in range(10)] + [None] * 4
+    with _patch_silhouette(0.1):
+        result = umap_service.compute_separability(np.random.rand(14, 5), labels)
+    assert result.n_points == 10
+    assert result.n_classes == 2
+
+
+def test_separability_scores_the_labeled_rows_only():
+    # Positional alignment between `labels` and `embeddings` is the contract; if
+    # the unlabeled rows were passed through, sklearn would score vectors that
+    # belong to no class.
+    labels = [None, None] + [i % 2 for i in range(10)]
+    embeddings = np.arange(24, dtype=float).reshape(12, 2)
+    fake_metrics = MagicMock()
+    fake_metrics.silhouette_score.return_value = 0.3
+    with patch.dict("sys.modules", {"sklearn.metrics": fake_metrics}):
+        umap_service.compute_separability(embeddings, labels)
+    scored = fake_metrics.silhouette_score.call_args.args[0]
+    assert np.array_equal(scored, embeddings[2:])
+
+
+def test_separability_handles_value_error():
+    labels = [i % 2 for i in range(12)]
     fake_metrics = MagicMock()
     fake_metrics.silhouette_score.side_effect = ValueError("bad")
     with patch.dict("sys.modules", {"sklearn.metrics": fake_metrics}):
-        assert umap_service.compute_silhouette(np.random.rand(12, 6), items) is None
+        assert umap_service.compute_separability(np.random.rand(12, 6), labels) is None
 
 
-def test_silhouette_ignores_unlabeled_items():
-    # Mix labeled + unlabeled; only labeled ones contribute.
-    items = [_item([0.0], protein_id=(i % 2)) for i in range(11)]
-    items.append(_item([0.0], protein_id=None))  # unlabeled, skipped
-    emb = np.random.rand(12, 5)
-    with _patch_silhouette(0.1):
-        assert umap_service.compute_silhouette(emb, items) is not None
+def test_protein_labels_reads_the_protein_id_and_leaves_gaps_none():
+    items = [_item([0.0], protein_id=7), _item([0.0], protein_id=None)]
+    assert umap_service.protein_labels(items) == [7, None]
 
 
 # =============================================================================
@@ -323,16 +347,16 @@ def test_compute_umap_online_too_few_raises():
         umap_service.compute_umap_online(np.random.rand(2, 4), [])
 
 
-def test_compute_umap_online_returns_projection_and_silhouette():
-    items = [_item([0.0], protein_id=(i % 2)) for i in range(12)]
+def test_compute_umap_online_returns_projection_and_separability():
+    labels = [i % 2 for i in range(12)]
     emb = np.random.rand(12, 6)
     with patch.object(
         umap_service, "_compute_umap_projection",
         return_value=np.zeros((12, 2)),
     ), _patch_silhouette(0.3):
-        proj, sil = umap_service.compute_umap_online(emb, items)
+        proj, sep = umap_service.compute_umap_online(emb, labels)
     assert proj.shape == (12, 2)
-    assert sil is not None
+    assert sep.score == pytest.approx(0.3)
 
 
 def test_protein_umap_online_too_few_raises():
@@ -340,15 +364,16 @@ def test_protein_umap_online_too_few_raises():
         umap_service.compute_protein_umap_online(np.random.rand(2, 4))
 
 
-def test_protein_umap_online_returns_none_silhouette():
+def test_protein_umap_online_returns_the_projection_alone():
+    # Protein rows carry no class labels, so there is nothing to score and no
+    # second return value pretending otherwise.
     emb = np.random.rand(5, 6)
     with patch.object(
         umap_service, "_compute_umap_projection",
         return_value=np.zeros((5, 2)),
     ):
-        proj, sil = umap_service.compute_protein_umap_online(emb)
+        proj = umap_service.compute_protein_umap_online(emb)
     assert proj.shape == (5, 2)
-    assert sil is None
 
 
 # =============================================================================
@@ -365,7 +390,7 @@ async def test_compute_crop_umap_too_few(mock_db):
 
 
 async def test_compute_crop_umap_success(mock_db):
-    # Labeled crops → also exercise the silhouette success branch (stubbed sklearn).
+    # Labeled crops → also exercise the separability success branch (stubbed sklearn).
     crops = [_item([float(i), float(i) + 1], protein_id=(i % 2)) for i in range(12)]
     mock_db.execute.side_effect = [make_result(scalars_all=crops)]
     with patch.object(
@@ -374,7 +399,7 @@ async def test_compute_crop_umap_success(mock_db):
     ), _patch_silhouette(0.55):
         result = await umap_service.compute_crop_umap(db=mock_db)
     assert result["success"] == 12
-    assert result["silhouette_score"] == pytest.approx(0.55)
+    assert result["separability"].score == pytest.approx(0.55)
     assert "computed_at" in result
     mock_db.commit.assert_awaited_once()
     # coordinates written back onto items
@@ -391,8 +416,8 @@ async def test_compute_fov_umap_success(mock_db):
     ):
         result = await umap_service.compute_fov_umap(db=mock_db)
     assert result["success"] == 11
-    # silhouette None (no labels) → still fine
-    assert result["silhouette_score"] is None
+    # separability None (no labels) → still fine
+    assert result["separability"] is None
     mock_db.commit.assert_awaited_once()
 
 

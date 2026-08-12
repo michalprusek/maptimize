@@ -49,8 +49,10 @@ export interface LegendGroup {
   count: number;
 }
 
-// Silhouette score color thresholds
-export function getSilhouetteScoreStyle(score: number): string {
+// Separability score colour thresholds. A silhouette runs -1..1; anything at or
+// below 0.25 means the classes overlap more than they separate, which is a
+// result worth showing plainly rather than dressing up.
+export function getSeparabilityScoreStyle(score: number): string {
   if (score > 0.5) {
     return "bg-green-500/20 text-green-400";
   }

@@ -961,7 +961,7 @@ async def test_cropped_umap_no_precomputed_schedules_refresh(mock_db, no_group):
         )
     assert out.points == []
     assert out.total_crops == 5
-    assert out.silhouette_score is None
+    assert out.separability is None
     assert out.is_stale is True
     bg.add_task.assert_called_once_with(e.refresh_umap_scope, e.UmapType.CROPPED)
 
@@ -1067,9 +1067,10 @@ async def test_cropped_umap_healthy_scope_reports_no_refresh_error(mock_db, no_g
     crops = [crop_obj(cid=i, umap_x=0.1, umap_y=0.2) for i in range(4)]
     mock_db.execute.return_value = make_result(scalars_all=crops)
     with patch.object(e, "MIN_POINTS_FOR_UMAP", 3), \
-         patch.object(e, "compute_silhouette", return_value=0.3):
+         patch.object(e, "compute_separability", return_value=None):
         out = await e.get_umap_visualization(
             umap_type=e.UmapType.CROPPED, selection=e.FacetSelection(),
+            label_by=e.LabelAxis.PROTEIN,
             background_tasks=MagicMock(), current_user=user(), db=mock_db,
         )
     assert out.refresh_error is None
@@ -1087,9 +1088,10 @@ async def test_cropped_umap_partially_stale_serves_existing_points(mock_db, no_g
     mock_db.execute.return_value = make_result(scalars_all=crops)
     bg = MagicMock()
     with patch.object(e, "MIN_POINTS_FOR_UMAP", 3), \
-         patch.object(e, "compute_silhouette", return_value=0.4):
+         patch.object(e, "compute_separability", return_value=None):
         out = await e.get_umap_visualization(
             umap_type=e.UmapType.CROPPED, selection=e.FacetSelection(),
+            label_by=e.LabelAxis.PROTEIN,
             background_tasks=bg,
             current_user=user(), db=mock_db,
         )
@@ -1101,7 +1103,7 @@ async def test_cropped_umap_partially_stale_serves_existing_points(mock_db, no_g
 
 
 async def test_cropped_umap_precomputed_with_experiment_filter(mock_db, no_group):
-    protein = SimpleNamespace(name="PRC1", color="#abc")
+    protein = SimpleNamespace(id=4, name="PRC1", color="#abc")
     crops = [
         crop_obj(cid=1, umap_x=0.1, umap_y=0.2, protein=protein),
         crop_obj(cid=2, umap_x=0.3, umap_y=0.4, protein=None),  # default color branch
@@ -1114,20 +1116,198 @@ async def test_cropped_umap_precomputed_with_experiment_filter(mock_db, no_group
     ]
     bg = MagicMock()
     with patch.object(e, "MIN_POINTS_FOR_UMAP", 3), \
-         patch.object(e, "compute_silhouette", return_value=0.42) as sil:
+         patch.object(
+             e, "compute_separability",
+             return_value=e.Separability(score=0.42, n_classes=2, n_points=3),
+         ) as sil:
         out = await e.get_umap_visualization(
             umap_type=e.UmapType.CROPPED, selection=e.FacetSelection(experiment_ids=[9]),
+            label_by=e.LabelAxis.PROTEIN,
             background_tasks=bg,
             current_user=user(), db=mock_db,
         )
     sil.assert_called_once()
-    assert out.silhouette_score == 0.42
+    assert out.separability.score == 0.42
     assert len(out.points) == 3
     assert out.points[0].protein_name == "PRC1"
     assert out.points[1].protein_color == "#888888"
     # Everything already projected -> nothing stale, no refresh scheduled.
     assert out.is_stale is False
     bg.add_task.assert_not_called()
+
+
+# =============================================================================
+# embeddings.py — the separability label axis
+#
+# The score is taken over whichever dimension the caller is colouring by. Only
+# protein and experiment live on a point; microscope and PTM are properties of
+# the experiment, and are joined from the facet summary the handler has already
+# loaded rather than from a second query.
+# =============================================================================
+def _facet_row(exp_id=1, microscope_id=None, ptm_id=None, protein_id=None, count=1):
+    """One row shaped as _load_facets selects it."""
+    return (exp_id, f"E{exp_id}", microscope_id, ptm_id, protein_id, count)
+
+
+def _protein(pid):
+    return SimpleNamespace(id=pid, name=f"P{pid}", color="#abcdef")
+
+
+async def _scored_labels(mock_db, crops, facet_rows, axis):
+    """Run the cropped handler and return the labels it scored."""
+    mock_db.execute.side_effect = [
+        make_result(scalars_all=crops),
+        make_result(fetchall=facet_rows),
+    ]
+    with patch.object(e, "MIN_POINTS_FOR_UMAP", 3), \
+         patch.object(e, "compute_separability", return_value=None) as sep:
+        await e.get_umap_visualization(
+            umap_type=e.UmapType.CROPPED, selection=e.FacetSelection(),
+            label_by=axis,
+            background_tasks=MagicMock(), current_user=user(), db=mock_db,
+        )
+    return sep.call_args.args[1]
+
+
+async def test_cropped_umap_scores_protein_labels(mock_db, no_group):
+    crops = [
+        crop_obj(cid=i, umap_x=0.1, umap_y=0.2, protein=_protein((i % 2) + 1))
+        for i in range(4)
+    ]
+    labels = await _scored_labels(mock_db, crops, [_facet_row()], e.LabelAxis.PROTEIN)
+    assert labels == [1, 2, 1, 2]
+
+
+async def test_cropped_umap_scores_microscope_from_the_facet_summary(mock_db, no_group):
+    # A crop carries no microscope — it is a property of its experiment. Joining
+    # it from the summary is what makes the 3D SIM vs Airyscan comparison
+    # expressible without a second query.
+    crops = [
+        crop_obj(cid=i, umap_x=0.1, umap_y=0.2, experiment_id=9 if i < 2 else 8)
+        for i in range(4)
+    ]
+    facets = [_facet_row(9, microscope_id=3), _facet_row(8, microscope_id=4)]
+    labels = await _scored_labels(mock_db, crops, facets, e.LabelAxis.MICROSCOPE)
+    assert labels == [3, 3, 4, 4]
+
+
+async def test_cropped_umap_scores_ptm_from_the_facet_summary(mock_db, no_group):
+    crops = [
+        crop_obj(cid=i, umap_x=0.1, umap_y=0.2, experiment_id=9 if i < 2 else 8)
+        for i in range(4)
+    ]
+    facets = [_facet_row(9, ptm_id=15), _facet_row(8, ptm_id=2)]
+    labels = await _scored_labels(mock_db, crops, facets, e.LabelAxis.PTM)
+    assert labels == [15, 15, 2, 2]
+
+
+async def test_cropped_umap_scores_experiment_labels(mock_db, no_group):
+    crops = [
+        crop_obj(cid=i, umap_x=0.1, umap_y=0.2, experiment_id=9 if i < 2 else 8)
+        for i in range(4)
+    ]
+    labels = await _scored_labels(mock_db, crops, [_facet_row()], e.LabelAxis.EXPERIMENT)
+    assert labels == [9, 9, 8, 8]
+
+
+async def test_cropped_umap_leaves_an_unassigned_facet_unlabelled(mock_db, no_group):
+    # "Nobody assigned a PTM" is an absence, not a class. It must arrive as None
+    # so compute_separability drops the point rather than pooling every
+    # unassigned experiment into one group that separates from the rest.
+    crops = [
+        crop_obj(cid=i, umap_x=0.1, umap_y=0.2, experiment_id=9 if i < 2 else 8)
+        for i in range(4)
+    ]
+    facets = [_facet_row(9, ptm_id=None), _facet_row(8, ptm_id=2)]
+    labels = await _scored_labels(mock_db, crops, facets, e.LabelAxis.PTM)
+    assert labels == [None, None, 2, 2]
+
+
+async def test_cropped_umap_rejects_a_label_axis_it_cannot_score(mock_db, no_group):
+    # Every handler parameter carrying a `Query(...)` default arrives as that
+    # Query object when the handler is called directly, so an axis dispatch that
+    # fell through to protein would silently mislabel the score. It must be loud.
+    crops = [crop_obj(cid=i, umap_x=0.1, umap_y=0.2) for i in range(4)]
+    mock_db.execute.side_effect = [
+        make_result(scalars_all=crops),
+        make_result(fetchall=[_facet_row()]),
+    ]
+    with patch.object(e, "MIN_POINTS_FOR_UMAP", 3), \
+         pytest.raises(ValueError, match="label axis"):
+        await e.get_umap_visualization(
+            umap_type=e.UmapType.CROPPED, selection=e.FacetSelection(),
+            label_by="bundleness",
+            background_tasks=MagicMock(), current_user=user(), db=mock_db,
+        )
+
+
+async def test_cropped_umap_reports_the_axis_alongside_the_score(mock_db, no_group):
+    # The counts and the axis travel with the value because a silhouette is not
+    # comparable across subsets of different size and class count.
+    crops = [crop_obj(cid=i, umap_x=0.1, umap_y=0.2) for i in range(4)]
+    mock_db.execute.side_effect = [
+        make_result(scalars_all=crops),
+        make_result(fetchall=[_facet_row()]),
+    ]
+    with patch.object(e, "MIN_POINTS_FOR_UMAP", 3), \
+         patch.object(
+             e, "compute_separability",
+             return_value=e.Separability(score=0.42, n_classes=2, n_points=4),
+         ):
+        out = await e.get_umap_visualization(
+            umap_type=e.UmapType.CROPPED, selection=e.FacetSelection(),
+            label_by=e.LabelAxis.MICROSCOPE,
+            background_tasks=MagicMock(), current_user=user(), db=mock_db,
+        )
+    assert out.separability.score == pytest.approx(0.42)
+    assert out.separability.label_by is e.LabelAxis.MICROSCOPE
+    assert out.separability.n_classes == 2
+    assert out.separability.n_points == 4
+
+
+async def test_separability_endpoint_returns_the_score_without_the_points(mock_db, no_group):
+    # The agent-facing entry point. It answers "how separable is this subset?"
+    # without shipping every point, which is the only reason it is separate from
+    # the UMAP endpoint — the numbers themselves must be the same ones the plot
+    # shows, so it delegates rather than recomputing.
+    crops = [crop_obj(cid=i, umap_x=0.1, umap_y=0.2) for i in range(4)]
+    mock_db.execute.side_effect = [
+        make_result(scalars_all=crops),
+        make_result(fetchall=[_facet_row(1, microscope_id=3)]),
+    ]
+    with patch.object(e, "MIN_POINTS_FOR_UMAP", 3), \
+         patch.object(
+             e, "compute_separability",
+             return_value=e.Separability(score=0.55, n_classes=2, n_points=4),
+         ):
+        out = await e.get_separability(
+            umap_type=e.UmapType.CROPPED, selection=e.FacetSelection(),
+            label_by=e.LabelAxis.MICROSCOPE,
+            background_tasks=MagicMock(), current_user=user(), db=mock_db,
+        )
+    assert out.score == pytest.approx(0.55)
+    assert out.label_by is e.LabelAxis.MICROSCOPE
+    assert out.n_classes == 2
+    assert out.n_points == 4
+
+
+async def test_separability_endpoint_404s_when_nothing_can_be_scored(mock_db, no_group):
+    # Returning null would read as "the score is zero" to a model that then
+    # reports it. Saying so in words is the only honest answer.
+    crops = [crop_obj(cid=i, umap_x=0.1, umap_y=0.2) for i in range(4)]
+    mock_db.execute.side_effect = [
+        make_result(scalars_all=crops),
+        make_result(fetchall=[_facet_row()]),
+    ]
+    with patch.object(e, "MIN_POINTS_FOR_UMAP", 3), \
+         patch.object(e, "compute_separability", return_value=None), \
+         pytest.raises(HTTPException) as ei:
+        await e.get_separability(
+            umap_type=e.UmapType.CROPPED, selection=e.FacetSelection(),
+            label_by=e.LabelAxis.PTM,
+            background_tasks=MagicMock(), current_user=user(), db=mock_db,
+        )
+    assert ei.value.status_code == 404
 
 
 # =============================================================================
@@ -1207,9 +1387,10 @@ async def test_fov_umap_partially_stale_reports_true_total(mock_db, no_group):
     mock_db.execute.return_value = make_result(scalars_all=imgs)
     bg = MagicMock()
     with patch.object(e, "MIN_POINTS_FOR_UMAP", 3), \
-         patch.object(e, "compute_silhouette", return_value=0.2):
+         patch.object(e, "compute_separability", return_value=None):
         out = await e.get_umap_visualization(
             umap_type=e.UmapType.FOV, selection=e.FacetSelection(),
+            label_by=e.LabelAxis.PROTEIN,
             background_tasks=bg,
             current_user=user(), db=mock_db,
         )
@@ -1226,16 +1407,40 @@ async def test_fov_umap_precomputed_success(mock_db, no_group):
     mock_db.execute.return_value = make_result(scalars_all=imgs)
     bg = MagicMock()
     with patch.object(e, "MIN_POINTS_FOR_UMAP", 3), \
-         patch.object(e, "compute_silhouette", return_value=0.1):
+         patch.object(
+             e, "compute_separability",
+             return_value=e.Separability(score=0.1, n_classes=2, n_points=3),
+         ):
         out = await e.get_umap_visualization(
             umap_type=e.UmapType.FOV, selection=e.FacetSelection(),
+            label_by=e.LabelAxis.PROTEIN,
             background_tasks=bg,
             current_user=user(), db=mock_db,
         )
     assert len(out.points) == 3
-    assert out.silhouette_score == 0.1
+    assert out.separability.score == 0.1
     assert out.is_stale is False
     bg.add_task.assert_not_called()
+
+
+async def test_fov_umap_scores_microscope_from_the_facet_summary(mock_db, no_group):
+    # Same join as the cropped path — an image carries no microscope either.
+    imgs = [
+        image_obj(iid=i, umap_x=0.1, umap_y=0.2, experiment_id=9 if i < 2 else 8)
+        for i in range(4)
+    ]
+    mock_db.execute.side_effect = [
+        make_result(scalars_all=imgs),
+        make_result(fetchall=[_facet_row(9, microscope_id=3), _facet_row(8, microscope_id=4)]),
+    ]
+    with patch.object(e, "MIN_POINTS_FOR_UMAP", 3), \
+         patch.object(e, "compute_separability", return_value=None) as sep:
+        await e.get_umap_visualization(
+            umap_type=e.UmapType.FOV, selection=e.FacetSelection(),
+            label_by=e.LabelAxis.MICROSCOPE,
+            background_tasks=MagicMock(), current_user=user(), db=mock_db,
+        )
+    assert sep.call_args.args[1] == [3, 3, 4, 4]
 
 
 # =============================================================================

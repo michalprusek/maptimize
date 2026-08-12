@@ -1,12 +1,18 @@
 /**
- * Ordering and labelling rules for the document-library tree.
+ * What a document-library folder *means*, on top of the shared tree arithmetic.
  *
- * Pure functions, no React: the tree's shape is derived from API data, and the
- * way that goes wrong is a quietly disagreeing UI -- a private folder rendered
- * without its badge, or a group's `common` buried below someone's scratch
- * folder -- rather than an exception. Types and tsc are happy either way, so the
- * rules live here and are unit-tested.
+ * The walking, ordering fallback, breadcrumb and rollup live in `lib/folderTree`
+ * and are shared with the experiment tree. Only the library's own rules are
+ * here: which folders the server refuses to touch, and the ordering that puts
+ * shared material above people's own.
  */
+import {
+  childrenOf,
+  descendantIdsOf,
+  rootsOf,
+  subtreeTotal,
+  trailTo,
+} from "@/lib/folderTree";
 import type { Folder, FolderKind } from "@/lib/api";
 
 /** Folders the server creates and refuses to rename, move or delete. */
@@ -41,64 +47,25 @@ function byDisplayOrder(a: Folder, b: Folder): number {
 
 /** Direct children of `parentId` (null = top level), in display order. */
 export function childFolders(folders: Folder[], parentId: number | null): Folder[] {
-  return folders.filter((f) => (f.parent_id ?? null) === parentId).sort(byDisplayOrder);
+  return childrenOf(folders, parentId, byDisplayOrder);
 }
 
-/**
- * Top-level rows. A folder whose parent is not in the visible set is surfaced
- * here rather than dropped: that happens legitimately (a folder nested under
- * someone else's private folder is invisible while its own child is not), and
- * silently hiding a folder that holds documents is worse than showing it at the
- * root.
- */
+/** Top-level rows, in display order. */
 export function rootFolders(folders: Folder[]): Folder[] {
-  const ids = new Set(folders.map((f) => f.id));
-  return folders
-    .filter((f) => f.parent_id == null || !ids.has(f.parent_id))
-    .sort(byDisplayOrder);
+  return rootsOf(folders, byDisplayOrder);
 }
 
 /** Path from the top down to (and including) `folderId`. */
 export function breadcrumbTrail(folders: Folder[], folderId: number | null): Folder[] {
-  const byId = new Map(folders.map((f) => [f.id, f]));
-  const trail: Folder[] = [];
-  const seen = new Set<number>();
-  let current = folderId != null ? byId.get(folderId) : undefined;
-  // parent_id has no FK server-side, so a cycle is possible; a hung render is
-  // worse than a short trail.
-  while (current && !seen.has(current.id)) {
-    seen.add(current.id);
-    trail.unshift(current);
-    current = current.parent_id != null ? byId.get(current.parent_id) : undefined;
-  }
-  return trail;
+  return trailTo(folders, folderId);
 }
 
 /** All descendant ids of `folderId` (used to block moving a folder into itself). */
 export function descendantIds(folders: Folder[], folderId: number): Set<number> {
-  const out = new Set<number>();
-  const walk = (id: number) => {
-    for (const f of folders) {
-      if (f.parent_id === id && !out.has(f.id)) {
-        out.add(f.id);
-        walk(f.id);
-      }
-    }
-  };
-  walk(folderId);
-  return out;
+  return descendantIdsOf(folders, folderId);
 }
 
-/**
- * Documents in a folder plus everything beneath it. The listing endpoint counts
- * one folder at a time, so a group root would otherwise read "0 documents" while
- * holding a full library.
- */
+/** Documents in a folder plus everything beneath it. */
 export function totalDocumentCount(folders: Folder[], folderId: number): number {
-  const counted = descendantIds(folders, folderId);
-  counted.add(folderId);
-  return folders.reduce(
-    (total, f) => (counted.has(f.id) ? total + f.document_count : total),
-    0
-  );
+  return subtreeTotal(folders, folderId, (f) => f.document_count);
 }

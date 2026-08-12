@@ -1060,10 +1060,9 @@ async def test_prot_umap_online(mock_db):
     import numpy as np
     proj = np.array([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]])
     with patch("services.umap_service.compute_protein_umap_online",
-               return_value=(proj, 0.42)):
+               return_value=proj):
         out = await prot_r.get_protein_umap(current_user=user(), db=mock_db)
     assert out.is_precomputed is False
-    assert out.silhouette_score == 0.42
     assert out.points[0].x == 1.0
 
 
@@ -1379,6 +1378,7 @@ async def test_exp_list(mock_db):
     mock_db.execute.return_value = _unique_result(rows)
     with patch.object(exp_r, "get_user_group_ids", new=AsyncMock(return_value=[5])):
         out = await exp_r.list_experiments(skip=0, limit=50,
+                                            scope=exp_r.FolderScope(),
                                            current_user=user(id=1), db=mock_db)
     assert len(out) == 1
     assert out[0].image_count == 3
@@ -1393,6 +1393,7 @@ async def test_exp_list_zero_counts(mock_db):
     mock_db.execute.return_value = _unique_result(rows)
     with patch.object(exp_r, "get_user_group_ids", new=AsyncMock(return_value=[])):
         out = await exp_r.list_experiments(skip=0, limit=50,
+                                            scope=exp_r.FolderScope(),
                                            current_user=user(id=1), db=mock_db)
     assert out[0].image_count == 0
     assert out[0].has_sum_projections is False

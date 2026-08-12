@@ -1100,6 +1100,166 @@ tools:
         type: boolean
         description: Skip crops flagged as excluded.
 
+  # -- Experiment folders (organisation, NOT access control) -----------------
+  - name: list_experiment_folders
+    annotations: {readOnlyHint: true, openWorldHint: false}
+    description: >
+      List the folder tree used to organise EXPERIMENTS, with the number of
+      experiments filed directly in each folder. Returns a flat list; build the
+      tree from parent_id (null = top level). Call this before filing anything,
+      to get folder ids. NOTE: this is a different tree from list_folders, which
+      is the document library.
+    handler: http_json
+    method: GET
+    path: /api/experiment-folders
+
+  - name: create_experiment_folder
+    annotations: {readOnlyHint: false, destructiveHint: false}
+    description: >
+      Create a folder for organising experiments, optionally nested under an
+      existing one. The folder is shared with your group automatically when you
+      belong to exactly one; a subfolder inherits its parent's group.
+    handler: http_post_json
+    method: POST
+    path: /api/experiment-folders
+    params:
+      - name: name
+        in: body
+        type: string
+        required: true
+        description: Folder name (1-255 chars).
+      - name: parent_id
+        in: body
+        type: integer
+        description: Nest under this folder; omit for a top-level folder.
+      - name: group_id
+        in: body
+        type: integer
+        description: >
+          Which group a TOP-LEVEL folder is shared with (ids from list_groups).
+          Ignored for a subfolder, which always inherits its parent. Omit it and
+          the server uses your only group, or leaves the folder private if you
+          belong to several — so pass it when you belong to more than one and
+          the folder is meant to be shared.
+
+  - name: update_experiment_folder
+    annotations: {readOnlyHint: false, destructiveHint: false}
+    description: >
+      Rename and/or move an experiment folder. Omitting parent_id leaves the
+      folder where it is. A folder cannot be moved inside its own subtree (400).
+    handler: http_post_json
+    method: PATCH
+    path: /api/experiment-folders/{folder_id}
+    params:
+      - name: folder_id
+        in: path
+        type: integer
+        required: true
+      - name: name
+        in: body
+        type: string
+        description: New name.
+      - name: parent_id
+        in: body
+        type: integer
+        description: New parent folder id.
+
+  - name: delete_experiment_folder
+    annotations: {readOnlyHint: false, destructiveHint: false, idempotentHint: false}
+    description: >
+      Delete an experiment folder. NOTHING IS LOST: the folder dissolves, and its
+      subfolders and experiments move up to its parent (or become unfiled if it
+      was top-level). Not marked destructive because no experiment is deleted —
+      only the folder itself.
+    handler: http_json
+    method: DELETE
+    path: /api/experiment-folders/{folder_id}
+    params:
+      - name: folder_id
+        in: path
+        type: integer
+        required: true
+
+  - name: file_experiment
+    annotations: {readOnlyHint: false, destructiveHint: false, idempotentHint: true}
+    description: >
+      File an experiment into a folder, or unfile it by omitting folder_id.
+      Allowed for any member of the group that can see the experiment, not just
+      its owner — organising shared work is shared. IMPORTANT: this does NOT
+      change who can see the experiment; that is a separate, owner-only decision
+      (assign_experiment_group). Filing is organisation only.
+    handler: http_json
+    method: PATCH
+    path: /api/experiments/{experiment_id}/folder
+    params:
+      - name: experiment_id
+        in: path
+        type: integer
+        required: true
+      - name: folder_id
+        in: query
+        type: integer
+        description: Folder to file into; omit to unfile.
+
+  - name: measure_separability
+    annotations: {readOnlyHint: true, openWorldHint: false}
+    description: >
+      Measure how cleanly one slice of the image corpus separates along one
+      dimension. Returns a single silhouette score computed on the raw DINOv3
+      embeddings (-1..1, higher = better separated), with the number of classes
+      and labelled points that went into it. Use it to answer questions of the
+      form "do X and Y look different?" — e.g. do 3D SIM and Airyscan images
+      separate (label_by=microscope), do the MAP proteins separate within the
+      controls only (label_by=protein plus ptm_id of the control row).
+      HOW TO COMPARE CONTEXTS: run it once per context, narrowing with the
+      filters. The filters are OR within a facet and AND across facets, and id 0
+      means "not assigned". IMPORTANT: the score depends on how many classes and
+      how many points went into it, so only compare runs with comparable
+      n_classes and n_points — always report those two numbers alongside the
+      score, never the score on its own. Nothing here is hand-crafted: the
+      embedding is unsupervised and the labels are applied only afterwards, so a
+      separation is the images doing it, not the annotation.
+    handler: http_json
+    method: GET
+    path: /api/embeddings/separability
+    params:
+      - name: umap_type
+        in: query
+        type: string
+        enum: [cropped, fov]
+        default: cropped
+        description: >
+          Which corpus: individual cell crops (default, far more points) or
+          whole field-of-view images.
+      - name: label_by
+        in: query
+        type: string
+        enum: [protein, microscope, ptm, experiment]
+        default: protein
+        description: The dimension whose values are treated as the classes.
+      - name: experiment_id
+        in: query
+        type: array
+        items: integer
+        description: Restrict to these experiments (ids from list_experiments).
+      - name: microscope_id
+        in: query
+        type: array
+        items: integer
+        description: Restrict to these microscopes; 0 means "no microscope assigned".
+      - name: protein_id
+        in: query
+        type: array
+        items: integer
+        description: Restrict to these MAP proteins; 0 means "no protein assigned".
+      - name: ptm_id
+        in: query
+        type: array
+        items: integer
+        description: >
+          Restrict to these PTMs; 0 means "no PTM assigned". This is how you
+          slice to controls only, or to one modification.
+
   # -- Proteins (shared reference data) --------------------------------------
   - name: list_proteins
     annotations: {readOnlyHint: true, openWorldHint: false}
@@ -1384,7 +1544,9 @@ tools:
       required (must be unique); a display color is auto-picked if you omit it.
       The canonical tubulin code is already seeded, so check list_ptms first —
       create one only for a modification the lab genuinely does not have yet, or
-      for a defined combination such as "deTyr + polyE".
+      for a defined combination such as "deTyr + polyE". To add the paired
+      control for a new modification, create a second row with kind="control"
+      and controls_ptm_id set to that modification's id.
     handler: http_post_json
     method: POST
     path: /api/ptms
@@ -1424,6 +1586,15 @@ tools:
           modified sample; "none" is the unmodified lattice. The projections draw
           the three as three different markers, so a control filed as a
           modification becomes indistinguishable from the sample it controls.
+      - name: controls_ptm_id
+        in: body
+        type: integer
+        description: >
+          REQUIRED when kind is "control", and must be omitted otherwise: the id
+          of the modification this row is the paired control FOR. The control
+          plasmid differs between PTM conditions, so there is one control row per
+          modification, not one shared "Control" — creating a control without
+          this is rejected (400).
 
   - name: update_ptm
     annotations: {readOnlyHint: false, destructiveHint: false}
@@ -1467,6 +1638,15 @@ tools:
           paired control — the same transfection with a catalytically inactive
           enzyme) or "none" (the unmodified lattice). Drives how the projections
           draw points assigned to this PTM.
+      - name: controls_ptm_id
+        in: body
+        type: integer
+        description: >
+          REQUIRED when kind is "control", and must be omitted otherwise: the id
+          of the modification this row is the paired control FOR. The control
+          plasmid differs between PTM conditions, so there is one control row per
+          modification, not one shared "Control" — creating a control without
+          this is rejected (400).
 
   - name: delete_ptm
     annotations: {readOnlyHint: false, destructiveHint: true, idempotentHint: false}

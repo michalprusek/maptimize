@@ -250,6 +250,98 @@ async def test_list_cell_crops_passes_experiment_query(make_registry):
     assert "bundleness_score" in blocks[0].text
 
 
+async def test_measure_separability_offers_the_filters_as_integer_arrays(make_registry):
+    # What the YAML `type:` actually controls is the schema the MODEL reads. The
+    # wire format is httpx's doing and repeats a list either way, so declaring a
+    # scalar here would not break the request — it would just tell the model to
+    # send one id, and every multi-value slice would quietly never be asked for.
+    reg = make_registry(_with_login(lambda r: httpx.Response(404)))
+    schema = {t.name: t for t in reg.list_tools()}["measure_separability"].inputSchema
+    for facet in ["experiment_id", "microscope_id", "protein_id", "ptm_id"]:
+        assert schema["properties"][facet]["type"] == "array", facet
+        assert schema["properties"][facet]["items"]["type"] == "integer", facet
+    assert schema["properties"]["label_by"]["enum"] == [
+        "protein", "microscope", "ptm", "experiment",
+    ]
+
+
+async def test_measure_separability_repeats_array_filters_as_query_params(make_registry):
+    # FastAPI parses a repeated parameter into a list; a serialized list arrives
+    # as one unparseable value, so the slice the caller asked for would be
+    # silently ignored and the score would describe the whole corpus instead.
+    def routes(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/embeddings/separability":
+            params = request.url.params
+            assert params["label_by"] == "microscope"
+            assert params.get_list("ptm_id") == ["15", "0"]
+            return httpx.Response(200, json={
+                "score": 0.58, "label_by": "microscope",
+                "n_classes": 2, "n_points": 1204,
+            })
+        return httpx.Response(404)
+
+    reg = make_registry(_with_login(routes))
+    blocks = _blocks(await reg.dispatch(
+        "measure_separability", {"label_by": "microscope", "ptm_id": [15, 0]}))
+    # The counts must reach the model: a score reported without them cannot be
+    # compared against another subset.
+    assert "n_classes" in blocks[0].text
+    assert "n_points" in blocks[0].text
+
+
+async def test_create_ptm_carries_the_control_pairing(make_registry):
+    # A control names the modification it pairs with. The tool has to offer the
+    # field, or the agent can only ever create the pooled row the API rejects.
+    reg = make_registry(_with_login(lambda r: httpx.Response(404)))
+    tools = {t.name: t for t in reg.list_tools()}
+    for name in ["create_ptm", "update_ptm"]:
+        props = tools[name].inputSchema["properties"]
+        assert props["controls_ptm_id"]["type"] == "integer", name
+
+    def routes(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/ptms":
+            body = json.loads(request.content)
+            assert body["kind"] == "control"
+            assert body["controls_ptm_id"] == 2
+            return httpx.Response(201, json={"id": 16, "name": "Acetylation control"})
+        return httpx.Response(404)
+
+    reg = make_registry(_with_login(routes))
+    blocks = _blocks(await reg.dispatch("create_ptm", {
+        "name": "Acetylation control", "kind": "control", "controls_ptm_id": 2,
+    }))
+    assert "Acetylation control" in blocks[0].text
+
+
+async def test_file_experiment_sends_the_folder_as_a_query_param(make_registry):
+    # PATCH with no body: the endpoint reads folder_id from the query string, so
+    # a JSON body would be silently ignored and the experiment would be unfiled.
+    def routes(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/experiments/5/folder":
+            assert request.method == "PATCH"
+            assert request.url.params["folder_id"] == "3"
+            return httpx.Response(200, json={"id": 5, "folder_id": 3})
+        return httpx.Response(404)
+
+    reg = make_registry(_with_login(routes))
+    blocks = _blocks(await reg.dispatch(
+        "file_experiment", {"experiment_id": 5, "folder_id": 3}))
+    assert "folder_id" in blocks[0].text
+
+
+async def test_unfiling_an_experiment_omits_the_folder_entirely(make_registry):
+    # "Unfile" is the absence of the parameter, not folder_id=0 — 0 is the
+    # listing's "unfiled" sentinel and would 404 here as a missing folder.
+    def routes(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/experiments/5/folder":
+            assert "folder_id" not in request.url.params
+            return httpx.Response(200, json={"id": 5, "folder_id": None})
+        return httpx.Response(404)
+
+    reg = make_registry(_with_login(routes))
+    await reg.dispatch("file_experiment", {"experiment_id": 5})
+
+
 # -- proteins & database ---------------------------------------------------
 
 async def test_create_protein_posts_body(make_registry):

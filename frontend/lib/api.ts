@@ -57,6 +57,16 @@ export function describeApiError(detail: ApiError["detail"]): string {
  * umapFacets.ts aliases its FacetSelection to this type, so the keys are
  * declared once and this guard covers the caller too.
  */
+/**
+ * Which dimension the separability score groups points by.
+ *
+ * Aliased to the facet keys rather than declared as its own union: the backend
+ * accepts exactly the four facet names, and the UI scores whatever it is
+ * colouring by. A separate list here could accept a fifth value that the API
+ * would reject with a 422.
+ */
+export type LabelAxis = keyof UmapFacetSelection;
+
 const FACET_QUERY_PARAMS: Record<keyof UmapFacetSelection, string> = {
   experiment: "experiment_id",
   microscope: "microscope_id",
@@ -228,8 +238,85 @@ class ApiClient {
   }
 
   // Experiments
-  async getExperiments() {
-    return this.request<Experiment[]>("/api/experiments");
+  /**
+   * List experiments, optionally narrowed to one folder.
+   *
+   * `folderId` 0 means "unfiled" — a real id is never 0, so the sentinel rides
+   * the same parameter. Passing `undefined` means no filter at all; the three
+   * are genuinely different answers and a truthiness check would merge two of
+   * them.
+   */
+  async getExperiments(options?: {
+    folderId?: number;
+    includeSubfolders?: boolean;
+  }) {
+    const params = new URLSearchParams();
+    if (options?.folderId !== undefined) {
+      params.set("folder_id", String(options.folderId));
+    }
+    if (options?.includeSubfolders !== undefined) {
+      params.set("include_subfolders", String(options.includeSubfolders));
+    }
+    const query = params.toString();
+    return this.request<Experiment[]>(
+      query ? `/api/experiments?${query}` : "/api/experiments"
+    );
+  }
+
+  // Experiment folders — organisation only. Filing an experiment never changes
+  // who can see it; that is `updateExperimentGroup`, and it is owner-only.
+  async getExperimentFolders() {
+    return this.request<ExperimentTree>("/api/experiment-folders");
+  }
+
+  /**
+   * Create a folder. `groupId` only applies to a top-level folder — a subfolder
+   * always inherits its parent's group. Omit it and the server picks the
+   * caller's only group, or leaves it private when they have several.
+   */
+  async createExperimentFolder(
+    name: string,
+    parentId?: number | null,
+    groupId?: number | null
+  ) {
+    return this.request<ExperimentFolder>("/api/experiment-folders", {
+      method: "POST",
+      body: JSON.stringify({
+        name,
+        parent_id: parentId ?? null,
+        group_id: groupId ?? null,
+      }),
+    });
+  }
+
+  /**
+   * Rename and/or move a folder. Omit `parent_id` to leave it where it is —
+   * sending null moves it to the top level, which is a different request.
+   */
+  async updateExperimentFolder(
+    folderId: number,
+    changes: { name?: string; parent_id?: number | null }
+  ) {
+    return this.request<ExperimentFolder>(
+      `/api/experiment-folders/${folderId}`,
+      { method: "PATCH", body: JSON.stringify(changes) }
+    );
+  }
+
+  /** Delete a folder. Its contents move up to its parent; nothing is lost. */
+  async deleteExperimentFolder(folderId: number) {
+    return this.request<void>(`/api/experiment-folders/${folderId}`, {
+      method: "DELETE",
+    });
+  }
+
+  /** File an experiment into a folder, or unfile it with `null`. */
+  async setExperimentFolder(experimentId: number, folderId: number | null) {
+    const query = folderId === null ? "" : `?folder_id=${folderId}`;
+    return this.request<Experiment>(
+      `/api/experiments/${experimentId}/folder${query}`,
+      { method: "PATCH" }
+    );
   }
 
   async createExperiment(data: {
@@ -762,16 +849,22 @@ class ApiClient {
    * Each facet is a repeated query parameter: OR within a facet, AND across
    * facets. Id 0 means "not assigned" for microscope, protein and PTM — without
    * it the PTM facet would be unusable, since experiments start unassigned.
+   *
+   * `labelBy` picks the axis the separability score groups by. It narrows with
+   * the facets, which is the point: the score describes the subset that came
+   * back, so filtering to controls and then to one PTM compares those contexts.
    */
   async getUmapData({
     umapType = "cropped",
     selection,
+    labelBy = "protein",
   }: {
     umapType?: UmapType;
     selection?: UmapFacetSelection;
+    labelBy?: LabelAxis;
   } = {}): Promise<UmapDataResponse | UmapFovDataResponse> {
     const params = appendFacetParams(
-      new URLSearchParams({ umap_type: umapType }),
+      new URLSearchParams({ umap_type: umapType, label_by: labelBy }),
       selection
     );
     if (umapType === "fov") {
@@ -1582,6 +1675,34 @@ export interface User {
   created_at: string;
 }
 
+/**
+ * A folder in the experiment tree.
+ *
+ * Simpler than the document library's `Folder` on purpose: no `visibility` and
+ * no seeded `kind`. An experiment is group-readable wherever it sits, so a
+ * private folder would hide the folder and not its contents, and there is
+ * nothing a folder has to exist for by default.
+ */
+export interface ExperimentFolder {
+  id: number;
+  name: string;
+  parent_id: number | null;
+  group_id: number | null;
+  owner_user_id: number;
+  /** Experiments filed DIRECTLY here. Roll up the subtree with `subtreeTotal`. */
+  experiment_count: number;
+  created_at: string | null;
+}
+
+/**
+ * The tree, plus the one count that cannot be rolled up from it: nothing is
+ * filed under "unfiled", so there is no row to sum.
+ */
+export interface ExperimentTree {
+  folders: ExperimentFolder[];
+  unfiled_count: number;
+}
+
 export interface Experiment {
   id: number;
   name: string;
@@ -1597,6 +1718,13 @@ export interface Experiment {
   cell_count: number;
   has_sum_projections: boolean;
   group_id?: number | null;
+  /**
+   * Where it sits in the organisational tree; null = unfiled.
+   *
+   * Deliberately separate from `group_id`: that decides who can read it, this
+   * decides only where it appears. Filing is group-writable, sharing is not.
+   */
+  folder_id?: number | null;
   creator_name?: string | null;
   /**
    * Owner. Reads are group-shared but most writes are owner-only, so controls
@@ -1776,6 +1904,13 @@ export interface PTM {
    * it through `pointMarker.ptmKindOf` before drawing anything.
    */
   kind?: string;
+  /**
+   * For a control row: the modification it is the paired control FOR. Null on
+   * everything else. Only the id — every view that shows it already holds the
+   * PTM list and can join, and a name here would be a second place for the
+   * pairing to be wrong.
+   */
+  controls_ptm_id?: number | null;
 }
 
 /** Detailed shape — mirrors backend PTMDetailedResponse (list/create/update). */
@@ -1794,6 +1929,8 @@ export interface PTMCreate {
   color?: string;
   /** Defaults to "modification" server-side when omitted. */
   kind?: PTMKind;
+  /** Required when kind is "control"; rejected (400) on anything else. */
+  controls_ptm_id?: number | null;
 }
 
 export interface PTMUpdate {
@@ -1805,6 +1942,12 @@ export interface PTMUpdate {
   /** null asks the backend to assign an unused colour; omit to leave unchanged. */
   color?: string | null;
   kind?: PTMKind;
+  /**
+   * Explicit null clears the pairing; omit to leave it alone. The backend judges
+   * the row that RESULTS, so clearing it on a control is a 400 — a patch that
+   * only touches the description does not have to resend it.
+   */
+  controls_ptm_id?: number | null;
 }
 
 export interface UmapProteinPoint {
@@ -1820,7 +1963,6 @@ export interface UmapProteinPoint {
 export interface UmapProteinDataResponse {
   points: UmapProteinPoint[];
   total_proteins: number;
-  silhouette_score?: number;
   is_precomputed: boolean;
   computed_at?: string;
 }
@@ -2098,11 +2240,25 @@ export interface UmapFacetRow {
   count: number;
 }
 
+/**
+ * How cleanly the returned points separate along one labelled axis.
+ *
+ * The score never travels alone: a silhouette depends on how many classes were
+ * compared and how many points carried a label, so `n_classes` and `n_points`
+ * are what let a reader tell whether two scores are comparable at all.
+ */
+export interface Separability {
+  score: number;
+  label_by: LabelAxis;
+  n_classes: number;
+  n_points: number;
+}
+
 export interface UmapDataResponse {
   points: UmapPoint[];
   total_crops: number;
   facets: UmapFacetRow[];
-  silhouette_score: number | null;
+  separability: Separability | null;
   /** Coordinates are being refreshed in the background; poll until false. */
   is_stale: boolean;
   /** The refresh failed — coordinates won't arrive on their own. Stop polling. */
@@ -2124,7 +2280,7 @@ export interface UmapFovDataResponse {
   points: UmapFovPoint[];
   total_images: number;
   facets: UmapFacetRow[];
-  silhouette_score: number | null;
+  separability: Separability | null;
   computed_at: string | null;
   /** Coordinates are being refreshed in the background; poll until false. */
   is_stale: boolean;
