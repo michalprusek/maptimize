@@ -172,7 +172,15 @@ fi
 # so this is the only way that case leaves a usable trace.
 set_status "RUNNING $(date '+%Y-%m-%d %H:%M:%S') pid=$$"
 
-log "=== backup start ($TIMESTAMP) ==="
+# Which copy of this script is running. The installed copy can drift from the
+# repo (see scripts/install-backup.sh); making that readable in the log beats
+# pretending it cannot happen.
+VERSION_FILE="$(dirname "$0")/backup.version"
+if [ -r "$VERSION_FILE" ]; then
+    log "=== backup start ($TIMESTAMP, $(grep -h VERSION "$VERSION_FILE" | cut -d= -f2-)) ==="
+else
+    log "=== backup start ($TIMESTAMP) ==="
+fi
 
 # --- retention first ---------------------------------------------------------
 # Expired backups are pruned BEFORE the new one so a nearly-full disk can still
