@@ -500,3 +500,48 @@ async def test_import_papers_sends_dois_as_a_list(make_registry):
     reg = make_registry(_with_login(routes))
     await reg.dispatch("import_papers", {"dois": ["10.1/a", "10.1/b"]})
     assert seen["body"]["dois"] == ["10.1/a", "10.1/b"]
+
+
+async def test_list_experiments_sends_no_cap_but_reports_the_total(make_registry):
+    """Omitting limit/skip must put NOTHING on the wire, and still report a total.
+
+    The backend answers an unparametrised call in full, so any query param this
+    tool invented would cap a listing the server was willing to give whole. The
+    total still matters: it is what lets the model tell "these are all of them"
+    from "this is a page", which a bare array cannot express.
+    """
+    seen = {}
+
+    def routes(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/experiments":
+            seen["params"] = dict(request.url.params)
+            return httpx.Response(
+                200, json=[{"id": 1}, {"id": 2}], headers={"X-Total-Count": "2"}
+            )
+        return httpx.Response(404)
+
+    reg = make_registry(_with_login(routes))
+    result = await reg.dispatch("list_experiments", {})
+    blocks = _blocks(result)
+    text = " ".join(b.text for b in blocks if b.type == "text")
+
+    assert seen["params"] == {}, f"tool imposed a cap the server did not ask for: {seen}"
+    assert "2 of 2" in text
+    assert "Call again" not in text  # nothing left to page for
+
+
+async def test_list_experiments_pages_when_asked(make_registry):
+    """The escape hatch works: an explicit limit caps and steers the next page."""
+    def routes(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/experiments":
+            assert request.url.params["limit"] == "2"
+            return httpx.Response(
+                200, json=[{"id": 3}, {"id": 4}], headers={"X-Total-Count": "9"}
+            )
+        return httpx.Response(404)
+
+    reg = make_registry(_with_login(routes))
+    blocks = _blocks(await reg.dispatch("list_experiments", {"limit": 2, "skip": 2}))
+    text = " ".join(b.text for b in blocks if b.type == "text")
+    assert "2 of 9" in text
+    assert "skip=4" in text

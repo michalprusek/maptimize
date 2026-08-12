@@ -90,7 +90,7 @@ SQL_SCHEMA_HINT = (
     "detection_confidence, bundleness_score, mean_intensity, skewness, kurtosis, excluded, created_at)  -- bbox_angle: degrees about the box centre, NULL = axis-aligned\n"
     "map_proteins(id, name, full_name, uniprot_id, gene_name, organism, sequence_length)  -- shared reference data, no user filter\n"
     "microscopes(id, name, manufacturer, model, objective, magnification)  -- shared reference data, no user filter\n"
-    "ptms(id, name, abbreviation, modified_residue, enzyme)  -- microtubule post-translational modification; shared reference data, no user filter\n"
+    "ptms(id, name, abbreviation, modified_residue, enzyme, kind)  -- microtubule post-translational modification; kind is 'modification' (a tubulin mark), 'control' (paired inactive-enzyme control) or 'none' (unmodified lattice); shared reference data, no user filter\n"
     "comparisons(id, user_id, crop_a_id, crop_b_id, winner_id, response_time_ms, undone, timestamp)\n"
     "user_ratings(id, user_id, cell_crop_id, mu, sigma, comparison_count, created_at, updated_at)\n"
     "rag_documents(id, name, file_type, status, page_count, thread_id, created_at)  -- thread_id NULL = library, set = attachment of that chat thread\n"

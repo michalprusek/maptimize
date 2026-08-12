@@ -4,7 +4,11 @@ import { useState, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useTranslations } from "next-intl";
-import { api, PTMDetailed, PTMCreate, PTMUpdate } from "@/lib/api";
+import { api, PTMDetailed, PTMCreate, PTMKind, PTMUpdate } from "@/lib/api";
+// The backend vocabulary lives with the marker rules it drives; a second copy
+// here is a second place for the two to disagree. PTM_KINDS, not the legend's
+// MARKER_CLASSES: that one carries a display-only member the API would reject.
+import { PTM_KINDS, ptmKindOf } from "@/components/visualization/pointMarker";
 import { ConfirmModal, Dialog, EmptyState, LoadingContainer } from "@/components/ui";
 import { staggerContainerVariants, staggerItemVariants } from "@/lib/animations";
 import {
@@ -31,6 +35,16 @@ const DEFAULT_FORM_DATA: PTMCreate = {
   enzyme: "",
   description: "",
   color: "",
+  // Most entries are tubulin marks; the two that are not are the exception the
+  // user opts into.
+  kind: "modification",
+};
+
+/** i18n key per kind, for the selector and the card badge. */
+const KIND_LABEL: Record<PTMKind, string> = {
+  modification: "kindModification",
+  control: "kindControl",
+  none: "kindNone",
 };
 
 export default function PtmsPage(): JSX.Element {
@@ -98,6 +112,7 @@ export default function PtmsPage(): JSX.Element {
   };
 
   const openEditModal = (p: PTMDetailed) => {
+    const known = PTM_KINDS.includes(p.kind as PTMKind);
     setEditing(p);
     setFormData({
       name: p.name,
@@ -106,9 +121,16 @@ export default function PtmsPage(): JSX.Element {
       enzyme: p.enzyme || "",
       description: p.description || "",
       color: p.color || "",
+      // ⚠️ NOT normalised through ptmKindOf. Laundering an unreadable value into
+      // a valid one here would persist it on the next save: `rest` always
+      // carries `kind`, so a biologist fixing a typo in the description would
+      // silently reclassify the row -- and the backend cannot tell that from a
+      // deliberate change. Left undefined, `exclude_unset` leaves the column
+      // alone, which is the honest answer for a value we cannot represent.
+      kind: known ? (p.kind as PTMKind) : undefined,
     });
     setShowModal(true);
-    setError(null);
+    setError(known ? null : t("unknownKind", { kind: p.kind || "—" }));
   };
 
   const handleSubmit = (e: React.FormEvent) => {
@@ -188,6 +210,22 @@ export default function PtmsPage(): JSX.Element {
                     <div>
                       <h3 className="font-display font-semibold text-lg text-text-primary">{p.name}</h3>
                       {p.abbreviation && <p className="text-sm text-text-secondary">{p.abbreviation}</p>}
+                      {/* Only the two entries that are not modifications get a
+                          badge: labelling the other nine would be noise, and a
+                          control filed as a modification is the mistake worth
+                          seeing without opening the editor. */}
+                      {/* An unreadable kind must NOT render as "No modification"
+                          — that is a classification the database does not hold,
+                          reported before anyone opens anything. */}
+                      {!PTM_KINDS.includes(p.kind as PTMKind) ? (
+                        <span className="inline-block mt-1 px-1.5 py-0.5 rounded text-[10px] uppercase tracking-wide bg-accent-red/10 text-accent-red">
+                          {t("kindUnreadable", { kind: p.kind || "—" })}
+                        </span>
+                      ) : p.kind !== "modification" ? (
+                        <span className="inline-block mt-1 px-1.5 py-0.5 rounded text-[10px] uppercase tracking-wide bg-white/5 text-text-muted">
+                          {t(KIND_LABEL[p.kind as PTMKind])}
+                        </span>
+                      ) : null}
                     </div>
                   </div>
                   <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
@@ -243,6 +281,17 @@ export default function PtmsPage(): JSX.Element {
             <label className="block text-sm font-medium text-text-secondary mb-2">{t("enzyme")}</label>
             <input type="text" value={formData.enzyme} onChange={(e) => setFormData({ ...formData, enzyme: e.target.value })}
               className="input-field" placeholder={t("enzymePlaceholder")} />
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-text-secondary mb-2">{t("kind")}</label>
+            <select value={formData.kind ?? "modification"}
+              onChange={(e) => setFormData({ ...formData, kind: e.target.value as PTMKind })}
+              className="input-field">
+              {PTM_KINDS.map((kind) => (
+                <option key={kind} value={kind}>{t(KIND_LABEL[kind])}</option>
+              ))}
+            </select>
+            <p className="text-xs text-text-muted mt-1.5">{t("kindHint")}</p>
           </div>
           <div>
             <label className="block text-sm font-medium text-text-secondary mb-2">{t("description")}</label>

@@ -38,7 +38,8 @@ export function extractCropFromImage(
       // ⚠️ The PIXELS are not identical: the backend resamples with a cubic spline
       // (order=3, clipped to the source range -- chosen by measurement because
       // bilinear cost ~40% of the crop's Laplacian variance and that loss is a
-      // confounder for the discriminant projection), whereas the canvas only has
+      // confounder for the DINOv3 embedding and the UMAP built on it), whereas
+      // the canvas only has
       // the browser's bilinear-ish smoothing. The backend also fills out-of-frame
       // with black and re-stretches intensity over the crop's own percentiles,
       // whereas the canvas leaves out-of-frame transparent and draws bytes that are

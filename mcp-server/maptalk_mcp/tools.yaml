@@ -736,10 +736,25 @@ tools:
       List experiments you can see (your own plus any shared with you through
       your group). Returns id, name, description, status, assigned protein, and
       image/cell counts. Use it to find an experiment_id before reading or editing.
-    handler: http_json
+      Returns everything by default and reports the total, so you can tell a
+      complete answer from a page; pass limit/skip only if the listing is too
+      large to work with.
+    handler: list_experiments
     method: GET
     path: /api/experiments
-    params: []
+    params:
+      - name: limit
+        in: query
+        type: integer
+        description: >
+          Max experiments to return. Omit for all of them — the response says
+          how many matched in total either way.
+      - name: skip
+        in: query
+        type: integer
+        description: >
+          Offset for pagination. The response reports the total match count and
+          the next skip value when more pages exist.
 
   - name: get_experiment
     annotations: {readOnlyHint: true, openWorldHint: false}
@@ -848,10 +863,10 @@ tools:
       protein to all of the experiment's images and cell crops. Pass the protein
       id from list_proteins; omit map_protein_id to unassign. Any group member may
       do this, not only the owner — the protein is shared reference data the lab
-      curates collectively. ⚠️ It is also the label the discriminant projection is
-      fitted on and every plot colours by, so changing it on a colleague's
-      experiment changes their analysis: confirm before reassigning one that is
-      already set.
+      curates collectively. ⚠️ Unlike the microscope and the PTM, this one
+      CASCADES — it rewrites the protein on every image and cell crop below — so
+      changing it on a colleague's experiment changes their analysis: confirm
+      before reassigning one that is already set.
     handler: http_json
     method: PATCH
     path: /api/experiments/{experiment_id}/protein
@@ -1334,11 +1349,17 @@ tools:
     annotations: {readOnlyHint: true, openWorldHint: false}
     description: >
       List all microtubule post-translational modifications (shared reference
-      data): id, name, abbreviation, modified_residue, enzyme, and per-PTM
+      data): id, name, abbreviation, modified_residue, enzyme, kind, and per-PTM
       experiment count. A PTM is the tubulin-code state of the lattice the cells
       were grown on — tyrosination, detyrosination, Δ2, acetylation (K40),
       polyglutamylation, polyglycylation and so on. Use it to get a ptm_id for
       create_experiment or assign_experiment_ptm.
+
+      Not every entry is a modification: `kind` is "modification" for a tubulin
+      mark, "control" for a paired inactive-enzyme control run alongside a
+      modified sample, and "none" for the unmodified lattice. The lab compares a
+      PTM condition against its control, so do not treat the two as the same
+      thing.
     handler: http_json
     method: GET
     path: /api/ptms
@@ -1392,6 +1413,17 @@ tools:
         in: body
         type: string
         description: Hex color like "#1f77b4"; auto-picked if omitted.
+      - name: kind
+        in: body
+        type: string
+        enum: [modification, control, none]
+        description: >
+          What this entry is. "modification" (the default) is a tubulin mark such
+          as polyglutamylation; "control" is a paired control — the same
+          transfection with a catalytically inactive enzyme, run alongside a
+          modified sample; "none" is the unmodified lattice. The projections draw
+          the three as three different markers, so a control filed as a
+          modification becomes indistinguishable from the sample it controls.
 
   - name: update_ptm
     annotations: {readOnlyHint: false, destructiveHint: false}
@@ -1426,6 +1458,15 @@ tools:
         in: body
         type: string
         description: Hex color like "#1f77b4".
+      - name: kind
+        in: body
+        type: string
+        enum: [modification, control, none]
+        description: >
+          What this entry is: "modification" (a tubulin mark), "control" (a
+          paired control — the same transfection with a catalytically inactive
+          enzyme) or "none" (the unmodified lattice). Drives how the projections
+          draw points assigned to this PTM.
 
   - name: delete_ptm
     annotations: {readOnlyHint: false, destructiveHint: true, idempotentHint: false}
@@ -1440,51 +1481,6 @@ tools:
         in: path
         type: integer
         required: true
-
-  # -- Analysis --------------------------------------------------------------
-  - name: get_protein_separation
-    annotations: {readOnlyHint: true, openWorldHint: false}
-    description: >
-      How well the MAP proteins separate in image-embedding space, as a single
-      cross-validated number with the null it must be read against.
-
-      A supervised projection (LDA) is fitted to the protein labels after
-      subtracting each microscope's mean, then scored by cross-validation that
-      holds whole EXPERIMENTS out. Each experiment carries one protein and one set
-      of acquisition conditions, so any split that puts an experiment on both sides
-      lets the model read the label off the batch and reports its own leakage
-      (0.68 where the honest answer is 0.30). `balanced_accuracy` is that score;
-      `chance` is 1/proteins; shuffling the labels between experiments gives
-      `null_mean`, `null_p95`, `null_max` and `p_value`.
-
-      ⚠️ Read the score against the NULL, not against chance, and say so when you
-      report it. Use `p_value` and `null_p95`: `null_max` is the maximum of a
-      small sample, and 17.5% of individual shuffles exceed the max of the 20 that
-      run, so a ratio quoted against it overstates the evidence. `p_value` is
-      floored at 1/(n_permutations+1) — 0.048 here — so report it as "p ≤" and
-      never claim p < 0.01. A score the shuffles reached is NO evidence of
-      separation however large it looks.
-
-      ⚠️ `balanced_accuracy` is a MEAN over proteins and hides its own shape —
-      two proteins carry most of it while several sit at chance. Quote `per_class`
-      before saying "the proteins separate"; naming which ones do is the useful
-      answer.
-
-      The first call returns is_computing=true and schedules the fit (minutes);
-      poll until it clears. Returns metrics only — the point cloud belongs to the
-      dashboard plot, not to a conversation.
-    handler: http_json
-    method: GET
-    path: /api/embeddings/discriminant
-    params:
-      - name: include_points
-        in: query
-        type: boolean
-        default: false
-        description: >
-          Leave false. Without an explicit default the param is omitted from the
-          request, the backend's own default (true) applies, and thousands of
-          plot coordinates land in the conversation.
 
   # -- Database (read-only) --------------------------------------------------
   - name: query_database
@@ -1514,8 +1510,10 @@ tools:
       sequence_length) [shared, no user filter];
       microscopes(id, name, manufacturer, model, objective, magnification)
       [shared, no user filter];
-      ptms(id, name, abbreviation, modified_residue, enzyme) [microtubule
-      post-translational modification; shared, no user filter];
+      ptms(id, name, abbreviation, modified_residue, enzyme, kind) [microtubule
+      post-translational modification; kind is 'modification' (a tubulin mark),
+      'control' (paired inactive-enzyme control) or 'none' (unmodified lattice);
+      shared, no user filter];
       comparisons(id, user_id, crop_a_id, crop_b_id, winner_id, response_time_ms,
       undone, timestamp);
       user_ratings(id, user_id, cell_crop_id, mu, sigma, comparison_count,

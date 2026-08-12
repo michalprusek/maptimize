@@ -567,7 +567,7 @@ takže starý klient, který `microscope_id` pošle tam, spadne na **422** míst
 zahození. `ExperimentCreate` ho naopak přijímá dál — zakládá vlastník.
 
 MCP: tool `assign_experiment_microscope` (`update_experiment` ho už **nemá**);
-`SERVER_VERSION` je od 2026-07-31 **3.0.0**. Testy pinují jmennou sadu i verzi — při
+`SERVER_VERSION` je od 2026-08-03 **3.2.0**. Testy pinují jmennou sadu i verzi — při
 změně kontraktu je uprav (`tests/test_registry.py`, `tests/test_protocol.py`,
 `tests/test_app_control_tools.py`).
 
@@ -607,6 +607,61 @@ editovatelné řádky, ne enum**. Seed je podmíněný prázdností tabulky, ne 
 jednotlivých jmen: vrátit řádek, který laboratoř schválně smazala, je horší než mít
 slovník kratší.
 
+##### `ptms.kind` — slovník není homogenní (od 2026-08-03)
+
+`kind` ∈ `modification` (tubulinová značka) | `control` (párová kontrola: **táž
+transfekce s katalyticky neaktivním enzymem**, Theo ji pouští ke každé PTM podmínce) |
+`none` (`Unmodified`, tedy nepřítomnost modifikace). Řídí **druhý vizuální kanál** na
+projekcích: kontrola se kreslí jako **průsvitný prstenec v téže barvě**, modifikace
+dostane **černou tečku ve středu**, zbytek beze změny. Barva zůstává na `colorBy`,
+takže jsou ty dva kanály nezávislé — **s jednou výjimkou: při `colorBy: ptm` nesou obě
+informace touž vlastnost a marker je pak redundantní, ne ortogonální.** SSOT pravidel je
+`frontend/components/visualization/pointMarker.ts` (čisté funkce, testy
+`e2e/unit/pointMarker.spec.ts`) — `/dashboard/ptms` si odtud importuje `ptmKindOf`
+i `PTM_KINDS`, aby editor nemohl řádek ukazovat jako jiný druh, než jaký graf kreslí.
+
+⚠️ **`PTM_KINDS` a `MARKER_CLASSES` jsou schválně dva seznamy.** První je *backendový
+slovník* (tři hodnoty, allow-list pro `ptmKindOf` a `<option>` v editoru), druhý je *co
+může být bod* a nese navíc `unrecorded` — experiment, kterému nikdo PTM nepřiřadil.
+Kreslí se stejně jako `none`, ale **počítá a popisuje se zvlášť**: „mřížka nenesla
+modifikaci" je výsledek, „nikdo PTM nezaznamenal" je absence, a označit druhé za
+„Non-PTM" tvrdí něco, co v DB není. Sloučení těch dvou seznamů nabídne laboratoři
+v editoru hodnotu, kterou API odmítne 422.
+
+⚠️ **Legenda markerů se skrývá podle toho, jestli je něco nakresleno jinak než výchozí
+— NE podle počtu tříd.** Odfiltrování na jediné PTM nechá všechny body s černou tečkou
+a `counts.size === 1`; se starým pravidlem zmizela vysvětlivka právě tehdy. U kontrol je
+to horší: vybledlé prstence jsou univerzální řeč pro „potlačeno / odfiltrováno", takže
+graf bez legendy čte úplně jinak, než co ukazuje.
+
+⚠️ **`ptms.kind` má CHECK (`ck_ptms_kind`), generovaný z `PTMKind`.** Pydantic hlídá jen
+API; `scripts/ptm_control_backfill.sql` píše ty hodnoty jako ručně psané literály a je to
+jediný writer, který reálně běžel proti produkci. CHECK **není** to, co docstring
+`PTMKind` vylučuje (to je `CREATE TYPE`) — `ensure_schema_updates()` constrainty přidává
+i jinde.
+
+⚠️ **`ProjectionMarker` musí guardovat `Number.isFinite`, ne `=== undefined`.** recharts
+vrací pro chybějící souřadnici **`null`**, React atribut zahodí a SVG dosadí `cx=0` —
+bod se nakreslí v plné barvě a velikosti v rohu grafu, k nerozeznání od dat. Výchozí
+`Symbols` má přesně tu numerickou kontrolu; custom shape ji musí zachovat.
+
+⚠️ **Třída se čte z `kind`, NIKDY z názvu řádku.** Přejmenování `Control` nebo založení
+„Control (inactive VASH)" by jinak tiše vrátilo všechny kontroly na obyčejný marker —
+bez chyby kdekoliv.
+
+⚠️ **Kontrola nenese modifikaci, ke které patří.** Experiment je *buď* `Detyrosination`,
+*nebo* `Control`; párování drží jen názvy experimentů, a filtr `Detyrosination` tedy
+kontroly **nevrátí**. Vědomá cena za plochý slovník (rozhodnuto 2026-08-03), ne opomenutí.
+
+⚠️ **Řádek `Control` se při startu NESEEDUJE.** Platí pravidlo výše (seed jen prázdné
+tabulky), takže produkce ho dostala jednorázově přes `scripts/ptm_control_backfill.sql`
+— ten je idempotentní a aditivní. Čisté DB ho mají z `DEFAULT_PTMS`.
+
+⚠️ **Backend neví o projekcích vůbec nic.** Bod nese jen `experiment_id`, PTM si klient
+dojoinuje z `facets` a `kind` z `GET /api/ptms`, které si filtrační panel stejně načítá.
+`routers/embeddings.py` ani `UmapFacetRow` se **nesahaly** a nemají — třída na bodu by
+se opakovala stokrát a vznikla by druhá pravda o režimu experimentu.
+
 ⚠️ **`backend/migrations/*.sql` nikdo nespouští** — jsou to dokumentační artefakty.
 Reálně schéma aplikuje `create_all` (nové tabulky) + `ensure_schema_updates()` (nové
 sloupce do existujících tabulek) při startu. Vynechání té prostřední nohy je tichá past:
@@ -623,10 +678,11 @@ na kartě experimentu vracel 403 na 87 % karet.
 a 2026-07-29 zase odebrán.** Není to kolotoč — v PR #43 byl group-write *nezáměrný*
 (nikdo ho nezvážil), teď je *zvolený*. Nevracej ho zpátky jako „zapomenutou kontrolu".
 
-⚠️ **Váží víc než ostatní tři.** Protein je štítek, na kterém je fitovaná
-diskriminační projekce a podle kterého barví každý graf, a kaskáduje na všechny
-obrázky a cropy. Proto to endpoint loguje a MCP popis toolu říká, ať se přiřazení
-na cizím experimentu nejdřív potvrdí.
+⚠️ **Váží víc než ostatní tři — a důvod je kaskáda, ne barva.** Mikroskop i PTM
+jsou taky volby `colorBy`, ale sáhnou na jediný řádek. Přiřazení proteinu
+přepíše `map_protein_id` na **všech** obrázcích a cropech pod experimentem, takže
+chybná editace se propíše do vědy, ne do facety. Proto to endpoint loguje a MCP
+popis toolu říká, ať se přiřazení na cizím experimentu nejdřív potvrdí.
 
 `test_exp_update_protein_is_group_writable` a
 `test_exp_generic_update_and_delete_stay_owner_only` v `tests/unit/test_router_misc.py`
@@ -671,15 +727,8 @@ sloupcích `cell_crops.umap_x/umap_y`, tedy **jedna projekce uložená na řádk
 je bezpečné jen dokud každý čtenář vidí stejný korpus. S členstvím ve více skupinách
 to přestalo platit: člen skupin A+B čte `vlastní ∪ A ∪ B`, kolega jen z A čte
 `vlastní ∪ A`, oba fity zapisují tytéž sloupce a **nic nespadne** — graf se jen tiše
-zhorší. Platí tedy totéž pravidlo jako u diskriminační projekce: ACL rozhoduje o tom,
-co request **vrátí**, nikdy o tom, co se fituje. **Nevracej sem filtr podle volajícího.**
-
-Diskriminační cache se naopak keyuje `u{user}|g{seřazené skupiny}` — dřív stačilo
-`g{group}`, protože adopce zaručovala, že členové čtou identický korpus. Adopce je
-pryč a členství je many-to-many, takže ani jedna půlka toho předpokladu neplatí;
-sdílet fit napříč uživateli by hlásilo skóre spočítané na korpusu, který volající
-nevidí. (Souřadnice diskriminantu se **neukládají do DB**, takže špatný klíč stojí
-přepočet, ne poškozená data.)
+zhorší. Platí tedy pravidlo: ACL rozhoduje o tom, co request **vrátí**, nikdy
+o tom, co se fituje. **Nevracej sem filtr podle volajícího.**
 
 Odpověď nese navíc `facets`: jeden řádek na dvojici (experiment, protein) s počtem bodů,
 počítaný nad scope **před** facetovými filtry (jinak by odškrtnutá hodnota z panelu
@@ -691,89 +740,6 @@ Parametry chodí do handleru jako jedna FastAPI dependency (`facet_selection` �
 `FacetSelection`). ⚠️ To je záměr: testy volají handlery **přímo**, a každý parametr
 s defaultem `Query(...)`, který test nepředá, doteče do těla jako objekt `Query` — ne
 `None`. Se čtyřmi filtry by to byla čtyřnásobná mina.
-
-### Diskriminační projekce (LDA) — od 2026-07-29
-
-`GET /api/embeddings/discriminant` promítá cropy tak, aby **maximálně separovala
-proteiny**. Na rozdíl od UMAPu je fitovaná na štítky, takže **vypadá separovaně
-vždycky** — proto se s body vrací i `metrics` a klient je vykresluje vedle grafu.
-Odpověď s body bez skóre není výsledek.
-
-Naměřeno na produkčním korpusu (balanced accuracy, 14 proteinů, náhoda 0,071):
-
-| dělení CV | surové | po korekci na mikroskop |
-|-----------|--------|--------------------------|
-| náhodně po cropech | 0,679 | 0,665 |
-| po obrázcích | 0,653 | 0,655 |
-| **po experimentech** | **0,183** | **0,300** |
-
-Uniformní priors, 20 promíchání: null mean 0,061, p95 0,080, max 0,081, **p = 0,048**
-(podlaha), poměr 3,75× vůči p95. Měřeno na živém nasazení 2026-07-29.
-
-⚠️ **Křížová validace MUSÍ dělit po experimentech** (`StratifiedGroupKFold` na
-`Experiment.id`). ⚠️ **Únik je na úrovni EXPERIMENTU, ne obrázku** — seskupení po
-obrázcích uzavře jen 0,026 z propasti 0,493 (~5 %), protože 40 % obrázků nese
-jediný crop. Uniká to, že každý experiment nese jeden protein a jednu sadu
-akvizičních podmínek: jakékoli dělení, které nechá experiment na obou stranách,
-umožní přečíst štítek z dávky. Proto **dělení po obrázcích nestačí** ani zdaleka.
-
-⚠️ **Permutační null míchá štítky mezi EXPERIMENTY, ne po cropech.** Míchání po
-cropech rozbije seskupení, na kterém dělení stojí, stlačí null pod náhodu a udělá
-signifikantní jakékoli skóre.
-
-⚠️ **`null_max` NENÍ strop a nesmí se z něj počítat poměr.** Je to maximum malého
-vzorku: na produkčním korpusu **17,5 % jednotlivých promíchání překročí maximum
-z těch 20**, která se počítají, takže „3,3× strop nullu" byl zamrzlý šťastný los
-seedu (poctivě ~2,4×). Hlásí se proto **p-hodnota** `(1 + #{null ≥ skóre}) / (n+1)`
-a 95. percentil. ⚠️ p má **podlahu 1/(n+1) = 0,048** při 20 promícháních — tenhle
-korpus umí doložit „mimo null", nikdy „p < 0,01".
-
-⚠️ **Souhrnné číslo schovává, jak nerovnoměrný ten signál je.** Naměřeno živě:
-CLIP170 0,79 a TRIM46 0,47 nahoře, ale MAP2d 0,05 (167 cropů!) a EML3 0,07 dole —
-rozptyl 0,05 až 0,79 kolem průměru 0,30. Proto se vrací i `per_class` a UI ho
-vypisuje; průměr je tu špatný souhrn. ⚠️ `per_class` musí nést **jména**, ne
-`map_protein_id` — proto `label_names` protéká až z dotazu do `compute_discriminant`.
-
-⚠️ **LDA dostává uniformní priors.** Skóre je balanced accuracy, která váží všech
-14 tříd stejně; s empirickými priors klasifikátor upřednostní velké třídy a stojí
-to 0,04 (0,260 → 0,300 naměřeno na živém nasazení). Metrika a klasifikátor musí
-mít stejný cíl.
-
-⚠️ **Per-microscope centering běží před fitem.** Dva proteiny existují jen na
-AeryScanu, takže bez korekce se oddělí podle přístroje a vypadá to jako biologie.
-Korekce zároveň skóre *zvyšuje* (0,183 → 0,300): mikroskop byl confounder, ne zdroj
-signálu. Dekódovatelnost mikroskopu spadne 0,551 → 0,117 (náhoda pro 4 třídy je 0,25).
-Střed se počítá na všech datech, tedy technicky mimo CV smyčku; naměřený dopad je
-+0,004, což je pod šumem CV — vědomě ponecháno, ale při přepisu to nezhoršuj.
-
-⚠️ **Geometrie grafu je in-sample, číslo je out-of-fold.** Osy jednotlivých foldů
-nespojuje **žádné** zarovnání (naměřené hlavní úhly 1,3° a 67°, druhá osa se liší
-10,7× v měřítku) — vykreslit je společně nedává smysl a Procrustes to nespraví.
-In-sample fit klasifikuje 0,76 proti poctivým 0,26, takže obrázek vypadá 3× lépe
-než skóre vedle něj; popisek v UI to říká.
-
-⚠️ **Protein v JEDINÉM experimentu nejde oskórovat vůbec.** Dělení po experimentech
-mu odebere z tréninku všechny cropy, takže recall je 0 aritmeticky, ne měřením.
-`scoreable_mask` takové třídy vyřadí ze **skóre i nullu** (do fitu a na graf jdou
-dál) a vrátí je jako `unscoreable_proteins`; když nezbydou aspoň dvě, endpoint
-odmítne s vysvětlením. Nalezeno v produkci: uživatel se 6 vlastními experimenty,
-každý s jiným proteinem, dostal **přesně 0,000** proti náhodě 0,167 — a UI to
-hlásilo jako „žádná separace". Skupinový korpus je v pořádku (každý protein má
-≥ 2 experimenty), past je v úzkých výběrech a ve vlastním scope.
-
-⚠️ **Filtr vybírá, které body se vrátí, nikdy které se fitují.** Přefitování podle
-filtru by dalo dvěma filtrovaným pohledům neporovnatelné souřadnice a osy by měnily
-význam podle klikání.
-
-Fit trvá minuty, takže běží na pozadí a cachuje se v procesu podle scope
-(`u{user}|g{seřazené skupiny}`, viz výše), ne v DB — je to analýza scope, ne atribut cropu. První
-volání vrací `is_computing`; selhání se zaznamená a **nepřeplánovává** se, jinak
-by každý poll spouštěl další odsouzený výpočet.
-
-Testy (`tests/unit/test_discriminant_service.py`) pinují všechny tři vědecké volby
-perturbačně. ⚠️ Syntetický fixture dává každému experimentu **velký** offset
-schválně: s malým procházely testy se seskupením i bez něj, takže ta nejdůležitější
-pojistka byla neúčinná.
 
 ### ⚠️ `MissingGreenlet` po zápisu: NIKDY neserializuj objekt ze session
 
@@ -1093,13 +1059,6 @@ Na stacku torch 2.11 + coverage 7.x + greenlet + asyncpg narazíš na tvrdé pá
 2. SQLAlchemy-async (asyncpg) běží v greenletu → coverage C-tracer při přepínání greenlet stacku **segfaultuje**. **Fix:** server importuje appku před coverage; unit testy mockují DB (`mock_db` AsyncMock → žádný greenlet).
 3. `concurrency = greenlet` v `.coveragerc` + ctrace core (NE sysmon).
 4. Unit testy běží **offline + CPU-only** (`HF_HUB_OFFLINE=1`, `CUDA_VISIBLE_DEVICES=`) — nikdy nestahuj modely ani neber prod GPU.
-5. ⚠️ **`tests/unit/test_discriminant_service.py` padá 10× JEN pod coverage tracerem**
-   (`AttributeError: module 'numpy.dtypes' has no attribute 'VoidDType'` uvnitř
-   sklearn 1.8 / numpy 1.26). Bez coverage projde a **produkce je v pořádku**
-   (`balanced_accuracy_score` v `maptimize-backend` ověřeno ručně) — je to další
-   položka do téhle sbírky, ne regrese. Ověřeno 2026-07-31, že padá i na commitu
-   `f075680`, tedy dávno před multi-group změnami. Neopravuj to změnou pinu bez
-   měření: sklearn a numpy jsou tu připnuté kvůli reprodukovatelnosti skóre.
 
 ### Psaní unit testů (`backend/tests/unit/`)
 - `tests/unit/conftest.py` dává `mock_db` (AsyncMock AsyncSession) a `make_result(scalar=, scalars_all=, first=, fetchall=, rowcount=)`.

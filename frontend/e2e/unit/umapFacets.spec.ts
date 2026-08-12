@@ -16,8 +16,8 @@ import {
   totalPoints,
   type FacetSelection,
 } from "../../components/visualization/umapFacets";
-import { describeApiError } from "../../lib/api";
-import type { UmapFacetRow } from "../../lib/api";
+import { appendFacetParams, describeApiError } from "../../lib/api";
+import type { UmapFacetRow, UmapFacetSelection } from "../../lib/api";
 
 /**
  * The dashboard filter's pure logic.
@@ -239,5 +239,64 @@ test.describe("describeApiError", () => {
   test("returns empty for shapes it cannot describe, so the caller can fall back", () => {
     expect(describeApiError([])).toBe("");
     expect(describeApiError([{}])).toBe("");
+  });
+});
+
+/**
+ * How the filter is spelled ON THE WIRE.
+ *
+ * ⚠️ A separate map from the one `selectionToQuery` above uses. That one writes
+ * the browser URL (`experiment`, `microscope`, …); this one writes the request
+ * (`experiment_id`, `microscope_id`, …). Two maps, and only one of them is
+ * checked by anything the compiler can see: `FACET_QUERY_PARAMS` is typed
+ * `Record<keyof UmapFacetSelection, string>`, which constrains the KEYS and not
+ * the VALUES — so renaming a wire name type-checks, FastAPI ignores the unknown
+ * query param, and the plot comes back UNFILTERED with the pills still ticked.
+ *
+ * These four cases lived in the discriminant spec and were deleted with it; the
+ * function they cover did not go away.
+ */
+test.describe("appendFacetParams", () => {
+  const selection: UmapFacetSelection = {
+    experiment: [3, 4],
+    microscope: [10],
+    protein: [],
+    ptm: [0],
+  };
+
+  test("spells each facet with the wire name the backend reads", () => {
+    const params = appendFacetParams(new URLSearchParams(), selection);
+    expect(params.getAll("experiment_id")).toEqual(["3", "4"]);
+    expect(params.getAll("microscope_id")).toEqual(["10"]);
+    expect(params.getAll("protein_id")).toEqual([]);
+    expect(params.getAll("ptm_id")).toEqual(["0"]);
+  });
+
+  test("repeats the parameter rather than joining, which is what FastAPI parses", () => {
+    // `?experiment_id=3&experiment_id=4`, not `?experiment_id=3,4` — a joined
+    // list arrives as one unparseable value and the filter silently widens.
+    const query = appendFacetParams(new URLSearchParams(), selection).toString();
+    expect(query).toContain("experiment_id=3&experiment_id=4");
+  });
+
+  test("keeps the unassigned sentinel", () => {
+    // Id 0 means "not assigned". Any `.filter(Boolean)` tidy-up drops it, and
+    // the PTM facet is useless without it — experiments start unassigned.
+    const params = appendFacetParams(new URLSearchParams(), selection);
+    expect(params.getAll("ptm_id")).toEqual(["0"]);
+  });
+
+  test("leaves parameters already on the query string alone", () => {
+    // `getUmapData` passes `umap_type` IN. Losing it is not a 422 — the server
+    // defaults to `cropped`, so the FOV view would silently render crops.
+    const params = appendFacetParams(
+      new URLSearchParams({ umap_type: "fov" }),
+      selection
+    );
+    expect(params.get("umap_type")).toBe("fov");
+  });
+
+  test("adds nothing when no filter is set", () => {
+    expect(appendFacetParams(new URLSearchParams(), undefined).toString()).toBe("");
   });
 });

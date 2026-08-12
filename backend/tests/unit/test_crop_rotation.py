@@ -170,7 +170,7 @@ def test_rotation_can_also_make_an_overflowing_box_fit():
 # ----- the interpolation order is a measured choice -------------------------
 # An axis-aligned crop is an exact slice, a rotated one is resampled, so whatever the
 # resampler does to texture becomes a systematic rotated-vs-unrotated difference that
-# the embedding, the UMAP and the discriminant projection can all read. Measured on
+# the embedding and the UMAP can both read. Measured on
 # real production crops: bilinear loses ~40% of Laplacian variance and 12% of mean
 # gradient at 30-45 deg; cubic loses 17.7% and 3.6%. These pin that choice.
 

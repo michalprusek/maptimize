@@ -350,10 +350,14 @@ async def search_documents_metadata(
     group_ids: Sequence[int] = (),
     thread_id: Optional[int] = None,
     skip: int = 0,
-    limit: int = 50,
+    limit: Optional[int] = None,
 ) -> List:
     """Filter documents by metadata (name/doi/type/status/date/page-range).
-    Returns RAGDocument ORM rows. (Vision-RAG: no OCR text to full-text search.)"""
+    Returns RAGDocument ORM rows. (Vision-RAG: no OCR text to full-text search.)
+
+    `limit=None` means no LIMIT: a caller that does not ask to paginate gets the
+    whole library rather than a silent prefix of it.
+    """
     conds = _document_metadata_conditions(
         user_id, name=name, doi=doi, file_type=file_type, status=status,
         created_after=created_after, created_before=created_before,
@@ -362,7 +366,12 @@ async def search_documents_metadata(
     )
     stmt = (
         select(RAGDocument).where(*conds)
-        .order_by(RAGDocument.created_at.desc()).offset(skip).limit(limit)
+        # `id` breaks ties on the non-unique `created_at`, so that OFFSET/LIMIT
+        # paging cannot skip one row and repeat another between two pages. This
+        # is the half that really pages: MCP `find_documents` declares limit=50
+        # and walks the library with `skip`.
+        .order_by(RAGDocument.created_at.desc(), RAGDocument.id.desc())
+        .offset(skip).limit(limit)
     )
     return list((await db.execute(stmt)).scalars().all())
 

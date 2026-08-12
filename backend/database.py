@@ -216,6 +216,11 @@ async def ensure_schema_updates():
             # group-shared and user-made, which is exactly what the defaults say.
             ("document_folders", "visibility", "VARCHAR(20) DEFAULT 'group' NOT NULL"),
             ("document_folders", "kind", "VARCHAR(20) DEFAULT 'custom' NOT NULL"),
+            # What a PTM row is: a tubulin mark, an inactive-enzyme control, or
+            # the unmodified state. Every existing row is a mark, which is what
+            # the default says; `Unmodified` is corrected once by
+            # scripts/ptm_control_backfill.sql.
+            ("ptms", "kind", "VARCHAR(20) DEFAULT 'modification' NOT NULL"),
         ]
 
         for table, column, col_type in updates:
@@ -235,6 +240,31 @@ async def ensure_schema_updates():
                 else:
                     logger.error(f"Failed to add column {table}.{column}: {e}")
                     failed_updates.append(f"{table}.{column}")
+
+        # Constrain ptms.kind to the three values a client can draw. Generated
+        # from PTMKind so the constraint cannot drift from the enum, and added
+        # separately from the column above because an inline CHECK on
+        # `ADD COLUMN IF NOT EXISTS` is a no-op wherever the column already
+        # exists — i.e. everywhere it matters.
+        from models.ptm import PTM_KIND_CHECK, _kind_check_sql
+
+        try:
+            await conn.execute(text("SAVEPOINT ptm_kind_check"))
+            await conn.execute(text(
+                f"ALTER TABLE ptms ADD CONSTRAINT {PTM_KIND_CHECK} "
+                f"CHECK ({_kind_check_sql()})"
+            ))
+            await conn.execute(text("RELEASE SAVEPOINT ptm_kind_check"))
+            logger.info("Added CHECK constraint %s", PTM_KIND_CHECK)
+        except Exception as e:
+            await conn.execute(text("ROLLBACK TO SAVEPOINT ptm_kind_check"))
+            if "already exists" in str(e).lower():
+                logger.debug("Constraint %s already exists", PTM_KIND_CHECK)
+            else:
+                # A row already violating it is the interesting case: the
+                # constraint cannot be added and something is drawing wrong.
+                logger.error("Failed to add %s: %s", PTM_KIND_CHECK, e)
+                failed_updates.append(f"ptms.{PTM_KIND_CHECK}")
 
         # Migrate unique constraint on metric_ratings (old: metric_id+metric_image_id, new: +user_id)
         try:

@@ -1187,7 +1187,7 @@ async def test_run_embedding_extraction_task_propagates_system_exit(mock_db):
 # stayed green: the de-rotation was only ever tested on the leaf function in
 # isolation, never from the production path. These tests connect a crop's stored
 # angle to the bytes written for it -- which is the entire feature, and which also
-# feeds mean_intensity, the DINOv3 embedding, the UMAP and the LDA.
+# feeds mean_intensity, the DINOv3 embedding and the UMAP.
 
 
 def _asymmetric_mip(path: Path, shape=(100, 100)):
