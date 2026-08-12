@@ -47,7 +47,18 @@ interface Props {
   folders: ExperimentFolder[];
   selection: FolderSelection;
   onSelect: (selection: FolderSelection) => void;
-  onCreate: (name: string, parentId: number | null) => void;
+  onCreate: (
+    name: string,
+    parentId: number | null,
+    groupId: number | null
+  ) => void;
+  /**
+   * Groups the caller belongs to. With two or more, a top-level folder has to
+   * say which one it joins — the server will otherwise make it private, and this
+   * tree seeds no group roots to nest under, so they could never start a shared
+   * one.
+   */
+  groups: { id: number; name: string }[];
   onRename: (folder: ExperimentFolder, name: string) => void;
   onDelete: (folder: ExperimentFolder) => void;
   unfiledCount: number;
@@ -176,6 +187,7 @@ function FolderRow({
 
 export function ExperimentFolderPanel({
   folders,
+  groups,
   selection,
   onSelect,
   onCreate,
@@ -188,6 +200,15 @@ export function ExperimentFolderPanel({
   const tCommon = useTranslations("common");
   const [naming, setNaming] = useState<NameRequest | null>(null);
   const [draftName, setDraftName] = useState("");
+  const [draftGroup, setDraftGroup] = useState<number | null>(null);
+
+  // Only ever asked for a NEW top-level folder: a subfolder inherits, and a
+  // rename is not a move. With one group there is nothing to choose.
+  const askForGroup =
+    naming !== null &&
+    naming.folder === null &&
+    naming.parentId === null &&
+    groups.length > 1;
 
   // Top level via the shared helper: a folder whose parent is invisible is
   // surfaced here rather than dropped, so nothing can hide behind an ACL edge.
@@ -195,6 +216,7 @@ export function ExperimentFolderPanel({
 
   const openNaming = (request: NameRequest) => {
     setDraftName(request.folder?.name ?? "");
+    setDraftGroup(groups.length === 1 ? groups[0].id : null);
     setNaming(request);
   };
 
@@ -207,7 +229,7 @@ export function ExperimentFolderPanel({
       // write and a pointless refetch of the whole tree.
       if (name !== naming.folder.name) onRename(naming.folder, name);
     } else {
-      onCreate(name, naming.parentId);
+      onCreate(name, naming.parentId, askForGroup ? draftGroup : null);
     }
     setNaming(null);
   };
@@ -296,6 +318,29 @@ export function ExperimentFolderPanel({
             // cost a click on every single use.
             autoFocus
           />
+          {askForGroup && (
+            <div>
+              <label className="block text-xs text-text-secondary mb-1.5">
+                {t("shareWith")}
+              </label>
+              <select
+                className="input-field"
+                value={draftGroup ?? ""}
+                onChange={(event) =>
+                  setDraftGroup(
+                    event.target.value ? Number(event.target.value) : null
+                  )
+                }
+              >
+                <option value="">{t("shareWithNobody")}</option>
+                {groups.map((group) => (
+                  <option key={group.id} value={group.id}>
+                    {group.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
           <div className="flex gap-3">
             <button
               type="button"

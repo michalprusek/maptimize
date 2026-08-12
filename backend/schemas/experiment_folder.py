@@ -12,6 +12,12 @@ class ExperimentFolderCreate(BaseModel):
 
     name: str = Field(..., min_length=1, max_length=255)
     parent_id: Optional[int] = None
+    # Which group's tree a TOP-LEVEL folder joins. Ignored for a subfolder, which
+    # always inherits its parent. Omit it and the server picks the caller's only
+    # group, or leaves the folder private when they have several — the same rule
+    # as everywhere else. Naming it is how someone in two groups starts a shared
+    # tree at all; this tree has no seeded roots to nest under.
+    group_id: Optional[int] = None
 
 
 class ExperimentFolderUpdate(BaseModel):

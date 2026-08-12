@@ -1132,6 +1132,15 @@ tools:
         in: body
         type: integer
         description: Nest under this folder; omit for a top-level folder.
+      - name: group_id
+        in: body
+        type: integer
+        description: >
+          Which group a TOP-LEVEL folder is shared with (ids from list_groups).
+          Ignored for a subfolder, which always inherits its parent. Omit it and
+          the server uses your only group, or leaves the folder private if you
+          belong to several — so pass it when you belong to more than one and
+          the folder is meant to be shared.
 
   - name: update_experiment_folder
     annotations: {readOnlyHint: false, destructiveHint: false}

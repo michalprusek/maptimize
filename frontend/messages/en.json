@@ -86,7 +86,9 @@
     "deleteConfirm": "The folder is removed, but nothing inside it is: its subfolders and experiments move up to the folder above.",
     "expand": "Expand",
     "collapse": "Collapse",
-    "emptyHint": "No folders yet. Create one to group experiments by batch, condition or whatever fits how you work."
+    "emptyHint": "No folders yet. Create one to group experiments by batch, condition or whatever fits how you work.",
+    "shareWith": "Share with",
+    "shareWithNobody": "Only me"
   },
   "experiments": {
     "title": "Experiments",

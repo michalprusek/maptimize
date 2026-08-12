@@ -269,10 +269,23 @@ class ApiClient {
     return this.request<ExperimentTree>("/api/experiment-folders");
   }
 
-  async createExperimentFolder(name: string, parentId?: number | null) {
+  /**
+   * Create a folder. `groupId` only applies to a top-level folder — a subfolder
+   * always inherits its parent's group. Omit it and the server picks the
+   * caller's only group, or leaves it private when they have several.
+   */
+  async createExperimentFolder(
+    name: string,
+    parentId?: number | null,
+    groupId?: number | null
+  ) {
     return this.request<ExperimentFolder>("/api/experiment-folders", {
       method: "POST",
-      body: JSON.stringify({ name, parent_id: parentId ?? null }),
+      body: JSON.stringify({
+        name,
+        parent_id: parentId ?? null,
+        group_id: groupId ?? null,
+      }),
     });
   }
 

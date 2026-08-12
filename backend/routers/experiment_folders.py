@@ -160,15 +160,31 @@ async def create_folder(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Create a folder, optionally nested under a folder the caller can see."""
+    """Create a folder, optionally nested under a folder the caller can see.
+
+    A top-level folder joins the caller's only group, or none when they belong to
+    several -- guessing would publish work to an audience nobody chose. Someone
+    in several groups says which one with ``group_id``; without that they could
+    never start a shared tree, because unlike the document library this one seeds
+    no group roots to nest under.
+    """
     group_ids = await get_user_group_ids(current_user.id, db)
 
     if data.parent_id is not None:
         parent = await get_folder_for_user(
             db, data.parent_id, current_user.id, group_ids
         )
-        # Inherited, not chosen: a subtree must not straddle two groups.
+        # Inherited, not chosen: a subtree must not straddle two groups. An
+        # explicit group_id is ignored here rather than rejected -- the client
+        # sends the whole form, and the parent is the more specific answer.
         group_id = parent.group_id
+    elif data.group_id is not None:
+        if data.group_id not in group_ids:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="You are not a member of that group",
+            )
+        group_id = data.group_id
     else:
         group_id = default_group_id(group_ids)
 

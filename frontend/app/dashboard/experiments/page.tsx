@@ -79,6 +79,12 @@ export default function ExperimentsPage(): JSX.Element {
     queryFn: () => api.getExperiments({ folderId: folderQuery }),
   });
 
+  // Only used to decide whether a NEW top-level folder has to name a group.
+  const { data: myGroups } = useQuery({
+    queryKey: ["my-groups"],
+    queryFn: () => api.getMyGroups(),
+  });
+
   const { data: tree } = useQuery({
     queryKey: ["experiment-folders"],
     queryFn: () => api.getExperimentFolders(),
@@ -123,8 +129,11 @@ export default function ExperimentsPage(): JSX.Element {
   });
 
   const createFolderMutation = useMutation({
-    mutationFn: ({ name, parentId }: { name: string; parentId: number | null }) =>
-      api.createExperimentFolder(name, parentId),
+    mutationFn: ({ name, parentId, groupId }: {
+      name: string;
+      parentId: number | null;
+      groupId: number | null;
+    }) => api.createExperimentFolder(name, parentId, groupId),
     onSuccess: invalidateTree,
     onError: (err: Error) => setError(err.message),
   });
@@ -306,9 +315,10 @@ export default function ExperimentsPage(): JSX.Element {
           folders={folders}
           selection={folderSelection}
           onSelect={setFolderSelection}
-          onCreate={(name, parentId) =>
-            createFolderMutation.mutate({ name, parentId })
+          onCreate={(name, parentId, groupId) =>
+            createFolderMutation.mutate({ name, parentId, groupId })
           }
+          groups={(myGroups?.items ?? []).map((m) => m.group)}
           onRename={(folder, name) =>
             renameFolderMutation.mutate({ id: folder.id, name })
           }

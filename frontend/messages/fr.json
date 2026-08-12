@@ -86,7 +86,9 @@
     "deleteConfirm": "Le dossier est supprimé, mais pas son contenu : ses sous-dossiers et ses expériences remontent dans le dossier parent.",
     "expand": "Déplier",
     "collapse": "Replier",
-    "emptyHint": "Aucun dossier pour l'instant. Créez-en un pour regrouper les expériences par série, condition ou ce qui correspond à votre façon de travailler."
+    "emptyHint": "Aucun dossier pour l'instant. Créez-en un pour regrouper les expériences par série, condition ou ce qui correspond à votre façon de travailler.",
+    "shareWith": "Partager avec",
+    "shareWithNobody": "Moi uniquement"
   },
   "experiments": {
     "title": "Experiences",

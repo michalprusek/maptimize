@@ -345,3 +345,46 @@ async def test_the_unfiled_count_is_scoped_like_the_folders(mock_db, one_group):
     counted = str(mock_db.scalar.await_args[0][0].whereclause)
     assert "folder_id IS NULL" in counted
     assert "group_id" in counted and "user_id" in counted
+
+
+# =============================================================================
+# Naming a group explicitly
+#
+# `default_group_id` returns None for someone in several groups — correct, since
+# guessing would publish to an audience they never chose. But the document
+# library's escape hatch is a SEEDED group root to nest under, and this tree has
+# none: without an explicit choice, a member of two groups could not start a
+# shared tree at all. One of the two people who would use this is in two groups.
+# =============================================================================
+
+async def test_a_multi_group_member_can_name_the_group(mock_db):
+    with patch.object(mod, "get_user_group_ids", new=AsyncMock(return_value=[7, 9])):
+        mock_db.refresh.side_effect = lambda obj: setattr(obj, "id", 3)
+        await mod.create_folder(
+            ExperimentFolderCreate(name="Shared", group_id=9),
+            current_user=_user(), db=mock_db,
+        )
+    assert mock_db.add.call_args[0][0].group_id == 9
+
+
+async def test_naming_a_group_you_do_not_belong_to_is_rejected(mock_db, one_group):
+    # Otherwise the folder is a way to publish into a group you cannot see.
+    with pytest.raises(HTTPException) as ei:
+        await mod.create_folder(
+            ExperimentFolderCreate(name="Shared", group_id=9),
+            current_user=_user(), db=mock_db,
+        )
+    assert ei.value.status_code == 400
+
+
+async def test_a_named_group_is_ignored_for_a_subfolder(mock_db):
+    # The parent decides, always: a subtree that straddled two groups would give
+    # "which group is this in?" two answers depending on where you start.
+    with patch.object(mod, "get_user_group_ids", new=AsyncMock(return_value=[7, 9])):
+        mock_db.execute.return_value = make_result(scalar=_folder(fid=1, group_id=7))
+        mock_db.refresh.side_effect = lambda obj: setattr(obj, "id", 3)
+        await mod.create_folder(
+            ExperimentFolderCreate(name="Sub", parent_id=1, group_id=9),
+            current_user=_user(), db=mock_db,
+        )
+    assert mock_db.add.call_args[0][0].group_id == 7
