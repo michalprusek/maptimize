@@ -31,6 +31,7 @@ def _ptm(**kw):
         description=None,
         color="#ec4899",
         kind="modification",
+        controls_ptm_id=None,
         created_at=None,
     )
     base.update(kw)
@@ -159,6 +160,7 @@ async def test_delete_succeeds_when_unreferenced(mock_db):
     mock_db.execute.side_effect = [
         make_result(scalar=ptm),
         make_result(scalar=0),
+        make_result(scalars_all=[]),  # no control points at it
     ]
     await mod.delete_ptm(3, current_user=_user(), db=mock_db)
     mock_db.delete.assert_awaited_once_with(ptm)
@@ -199,11 +201,16 @@ async def test_create_defaults_to_a_modification(mock_db):
 
 
 async def test_create_persists_the_control_kind(mock_db):
-    mock_db.execute.return_value = make_result(scalar=None)
+    mock_db.execute.side_effect = [
+        make_result(scalar=None),                             # name uniqueness
+        make_result(scalar=_ptm(id=2, kind="modification")),  # link target
+    ]
     _populate_pk(mock_db)
     with patch.object(mod, "pick_color", new=AsyncMock(return_value="#94a3b8")):
         out = await mod.create_ptm(
-            PTMCreate(name="Control", kind="control"), current_user=_user(), db=mock_db
+            PTMCreate(name="Detyrosination control", kind="control",
+                      controls_ptm_id=2),
+            current_user=_user(), db=mock_db,
         )
     assert out.kind == "control"
     assert type(mock_db.add.call_args[0][0].kind) is str
@@ -295,7 +302,7 @@ async def test_a_patch_that_omits_kind_leaves_it_alone(mock_db):
     # `exclude_unset` is what makes this work. Without it the field's default —
     # None, not "modification" — would reach the NOT NULL column and 500 the
     # request; the same is true of every other omitted field on this schema.
-    ptm = _ptm(kind="control")
+    ptm = _ptm(kind="control", controls_ptm_id=2)
     mock_db.execute.side_effect = [
         make_result(scalar=ptm),   # get_or_404
         make_result(scalar=None),  # uniqueness re-check for the new name
@@ -305,3 +312,130 @@ async def test_a_patch_that_omits_kind_leaves_it_alone(mock_db):
         3, PTMUpdate(name="Renamed"), current_user=_user(), db=mock_db
     )
     assert ptm.kind == "control"
+
+
+# =============================================================================
+# Controls are paired to the modification they control (2026-08-12)
+#
+# The vocabulary was flat: one `Control` row shared by every PTM condition. But
+# the control plasmid differs per modification, so pooling them asserts a
+# sameness that does not exist. `controls_ptm_id` names the partner, and the
+# rules below exist so a control can never be created without one — which is the
+# bug being fixed, not a lesser version of it.
+# =============================================================================
+
+def _control(**kw):
+    return _ptm(id=15, name="Detyrosination control", abbreviation="deTyr ctrl",
+                kind="control", controls_ptm_id=2, **kw)
+
+
+async def test_create_control_links_it_to_a_modification(mock_db):
+    mock_db.execute.side_effect = [
+        make_result(scalar=None),                       # name uniqueness
+        make_result(scalar=_ptm(id=2, kind="modification")),  # link target
+    ]
+    _populate_pk(mock_db, 15)
+    out = await mod.create_ptm(
+        PTMCreate(name="Acetylation control", kind="control",
+                  controls_ptm_id=2, color="#94a3b8"),
+        current_user=_user(), db=mock_db,
+    )
+    assert out.controls_ptm_id == 2
+
+
+async def test_create_control_without_a_target_is_rejected(mock_db):
+    # A control that names no modification is exactly the pooled `Control` row
+    # this feature replaces, so the API must not be able to produce one.
+    mock_db.execute.return_value = make_result(scalar=None)
+    with pytest.raises(HTTPException) as ei:
+        await mod.create_ptm(
+            PTMCreate(name="Some control", kind="control"),
+            current_user=_user(), db=mock_db,
+        )
+    assert ei.value.status_code == 400
+    assert "controls_ptm_id" in ei.value.detail
+
+
+async def test_create_rejects_a_link_on_a_row_that_is_not_a_control(mock_db):
+    mock_db.execute.return_value = make_result(scalar=None)
+    with pytest.raises(HTTPException) as ei:
+        await mod.create_ptm(
+            PTMCreate(name="Acetylation", kind="modification", controls_ptm_id=2),
+            current_user=_user(), db=mock_db,
+        )
+    assert ei.value.status_code == 400
+
+
+async def test_create_rejects_a_control_of_a_control(mock_db):
+    # No chains: a control's partner is the mark it is compared against.
+    mock_db.execute.side_effect = [
+        make_result(scalar=None),
+        make_result(scalar=_control()),
+    ]
+    with pytest.raises(HTTPException) as ei:
+        await mod.create_ptm(
+            PTMCreate(name="Control of a control", kind="control", controls_ptm_id=15),
+            current_user=_user(), db=mock_db,
+        )
+    assert ei.value.status_code == 400
+    assert "modification" in ei.value.detail
+
+
+async def test_create_rejects_a_link_to_a_missing_row(mock_db):
+    mock_db.execute.side_effect = [
+        make_result(scalar=None),
+        make_result(scalar=None),  # target does not exist
+    ]
+    with pytest.raises(HTTPException) as ei:
+        await mod.create_ptm(
+            PTMCreate(name="Ghost control", kind="control", controls_ptm_id=999),
+            current_user=_user(), db=mock_db,
+        )
+    assert ei.value.status_code == 404
+
+
+async def test_update_leaves_the_link_alone_when_another_field_changes(mock_db):
+    # The rule is about the ROW AFTER the patch, not about the payload. A PATCH
+    # that only touches the description must not demand the link be resent.
+    ptm = _control()
+    mock_db.execute.side_effect = [
+        make_result(scalar=ptm),  # get_or_404
+        make_result(scalar=1),    # experiment count
+    ]
+    await mod.update_ptm(
+        15, PTMUpdate(description="Inactive VASH1"), current_user=_user(), db=mock_db
+    )
+    assert ptm.controls_ptm_id == 2
+
+
+async def test_update_rejects_clearing_the_link_of_a_control(mock_db):
+    mock_db.execute.side_effect = [make_result(scalar=_control())]
+    with pytest.raises(HTTPException) as ei:
+        await mod.update_ptm(
+            15, PTMUpdate(controls_ptm_id=None), current_user=_user(), db=mock_db
+        )
+    assert ei.value.status_code == 400
+
+
+async def test_update_rejects_turning_a_linked_control_into_a_modification(mock_db):
+    # kind and the link move together: the resulting row is what is checked.
+    mock_db.execute.side_effect = [make_result(scalar=_control())]
+    with pytest.raises(HTTPException) as ei:
+        await mod.update_ptm(
+            15, PTMUpdate(kind="modification"), current_user=_user(), db=mock_db
+        )
+    assert ei.value.status_code == 400
+
+
+async def test_delete_refuses_a_modification_a_control_still_points_at(mock_db):
+    # ON DELETE SET NULL would leave a control naming nothing — the pooled row
+    # again, arrived at silently. Refusing says which rows are in the way.
+    mock_db.execute.side_effect = [
+        make_result(scalar=_ptm(id=2, kind="modification")),  # get_or_404
+        make_result(scalar=0),                                 # no experiments
+        make_result(scalars_all=["Detyrosination control"]),   # controls pointing here
+    ]
+    with pytest.raises(HTTPException) as ei:
+        await mod.delete_ptm(2, current_user=_user(), db=mock_db)
+    assert ei.value.status_code == 409
+    assert "Detyrosination control" in ei.value.detail

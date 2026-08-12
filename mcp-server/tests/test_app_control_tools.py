@@ -289,6 +289,30 @@ async def test_measure_separability_repeats_array_filters_as_query_params(make_r
     assert "n_points" in blocks[0].text
 
 
+async def test_create_ptm_carries_the_control_pairing(make_registry):
+    # A control names the modification it pairs with. The tool has to offer the
+    # field, or the agent can only ever create the pooled row the API rejects.
+    reg = make_registry(_with_login(lambda r: httpx.Response(404)))
+    tools = {t.name: t for t in reg.list_tools()}
+    for name in ["create_ptm", "update_ptm"]:
+        props = tools[name].inputSchema["properties"]
+        assert props["controls_ptm_id"]["type"] == "integer", name
+
+    def routes(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/ptms":
+            body = json.loads(request.content)
+            assert body["kind"] == "control"
+            assert body["controls_ptm_id"] == 2
+            return httpx.Response(201, json={"id": 16, "name": "Acetylation control"})
+        return httpx.Response(404)
+
+    reg = make_registry(_with_login(routes))
+    blocks = _blocks(await reg.dispatch("create_ptm", {
+        "name": "Acetylation control", "kind": "control", "controls_ptm_id": 2,
+    }))
+    assert "Acetylation control" in blocks[0].text
+
+
 # -- proteins & database ---------------------------------------------------
 
 async def test_create_protein_posts_body(make_registry):

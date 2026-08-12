@@ -1792,6 +1792,13 @@ export interface PTM {
    * it through `pointMarker.ptmKindOf` before drawing anything.
    */
   kind?: string;
+  /**
+   * For a control row: the modification it is the paired control FOR. Null on
+   * everything else. Only the id — every view that shows it already holds the
+   * PTM list and can join, and a name here would be a second place for the
+   * pairing to be wrong.
+   */
+  controls_ptm_id?: number | null;
 }
 
 /** Detailed shape — mirrors backend PTMDetailedResponse (list/create/update). */
@@ -1810,6 +1817,8 @@ export interface PTMCreate {
   color?: string;
   /** Defaults to "modification" server-side when omitted. */
   kind?: PTMKind;
+  /** Required when kind is "control"; rejected (400) on anything else. */
+  controls_ptm_id?: number | null;
 }
 
 export interface PTMUpdate {
@@ -1821,6 +1830,12 @@ export interface PTMUpdate {
   /** null asks the backend to assign an unused colour; omit to leave unchanged. */
   color?: string | null;
   kind?: PTMKind;
+  /**
+   * Explicit null clears the pairing; omit to leave it alone. The backend judges
+   * the row that RESULTS, so clearing it on a control is a 400 — a patch that
+   * only touches the description does not have to resend it.
+   */
+  controls_ptm_id?: number | null;
 }
 
 export interface UmapProteinPoint {

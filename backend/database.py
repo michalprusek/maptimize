@@ -221,6 +221,10 @@ async def ensure_schema_updates():
             # the default says; `Unmodified` is corrected once by
             # scripts/ptm_control_backfill.sql.
             ("ptms", "kind", "VARCHAR(20) DEFAULT 'modification' NOT NULL"),
+            # Which modification a control row is the paired control FOR. Null
+            # everywhere until scripts/ptm_control_link_backfill.sql runs, and
+            # null forever on rows that are not controls.
+            ("ptms", "controls_ptm_id", "INTEGER REFERENCES ptms(id)"),
         ]
 
         for table, column, col_type in updates:
@@ -482,8 +486,22 @@ async def seed_default_data():
         # than leaving the vocabulary short.
         result = await db.execute(select(PTM).limit(1))
         if not result.scalar_one_or_none():
+            # `controls` names the partner rather than giving an id, because a
+            # SERIAL id is not knowable while writing a literal. Insert every row
+            # first, flush to assign the ids, then resolve the names.
+            by_name = {}
+            pairings = {}
             for ptm_data in DEFAULT_PTMS:
-                db.add(PTM(**ptm_data))
+                values = dict(ptm_data)
+                partner = values.pop("controls", None)
+                row = PTM(**values)
+                db.add(row)
+                by_name[row.name] = row
+                if partner:
+                    pairings[row.name] = partner
+            await db.flush()
+            for control_name, partner_name in pairings.items():
+                by_name[control_name].controls_ptm_id = by_name[partner_name].id
             print("Created default PTMs")
 
         await db.commit()

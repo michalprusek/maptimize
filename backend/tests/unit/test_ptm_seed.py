@@ -34,11 +34,33 @@ def _named(kind: PTMKind) -> list[str]:
     return [p["name"] for p in DEFAULT_PTMS if p.get("kind") == kind.value]
 
 
-def test_the_seed_offers_exactly_one_control():
-    # The lab runs an inactive-enzyme control alongside every PTM condition, so
-    # this is a value they reach for constantly — it belongs in the seed, not in
-    # a row each person creates for themselves with a different name.
-    assert _named(PTMKind.CONTROL) == ["Control"]
+def test_the_seed_offers_a_control_named_for_the_condition_it_pairs_with():
+    # The control plasmid differs between PTM conditions, so a row called plain
+    # "Control" pools samples that are not comparable. The seed ships the one
+    # pairing the lab actually runs; the rest are created through the API, which
+    # refuses a control that names no modification.
+    assert _named(PTMKind.CONTROL) == ["Detyrosination control"]
+
+
+def test_every_seeded_control_names_the_modification_it_controls():
+    # The link is by NAME here and resolved to an id after the flush: a SERIAL
+    # id is not knowable while writing a literal. A name that matches no seeded
+    # row would KeyError at seed time, which is the loud end of the failure.
+    seeded = {p["name"] for p in DEFAULT_PTMS}
+    for entry in DEFAULT_PTMS:
+        if entry.get("kind") == PTMKind.CONTROL.value:
+            assert entry.get("controls") in seeded, entry["name"]
+
+
+def test_only_controls_carry_a_pairing():
+    # A modification that "controls" something, or an `Unmodified` row that
+    # does, means nothing — and the router rejects it, so the seed must not be
+    # the one place that shape exists.
+    strays = [
+        p["name"] for p in DEFAULT_PTMS
+        if p.get("controls") and p.get("kind") != PTMKind.CONTROL.value
+    ]
+    assert strays == []
 
 
 def test_unmodified_is_seeded_as_the_absence_of_a_modification():
@@ -119,6 +141,15 @@ def test_the_backfill_script_classifies_a_pre_existing_control_row():
     assert "SET kind = 'control' WHERE name = 'Control'" in sql
 
 
+def test_the_backfill_script_pairs_every_control_it_leaves_behind():
+    # An unpaired control IS the pooled row this migration removes, so the
+    # script must fail rather than leave one — reaching that state in silence is
+    # the whole failure mode.
+    sql = _backfill_sql().read_text()
+    assert "controls_ptm_id" in sql
+    assert "c.kind = 'control'" in sql and "m.kind <> 'modification'" in sql
+
+
 def test_the_script_and_the_seed_agree_on_the_control_row():
     """Two copies of one vocabulary row; nothing else keeps them matching.
 
@@ -126,7 +157,8 @@ def test_the_script_and_the_seed_agree_on_the_control_row():
     the script, so a drift here means the same row is a different colour in
     production than in dev.
     """
-    seeded = next(p for p in DEFAULT_PTMS if p["name"] == "Control")
+    seeded = next(p for p in DEFAULT_PTMS if p["kind"] == PTMKind.CONTROL.value)
     sql = _backfill_sql().read_text()
+    assert f"'{seeded['name']}'" in sql
     assert f"'{seeded['color']}'" in sql
     assert f"'{seeded['abbreviation']}'" in sql

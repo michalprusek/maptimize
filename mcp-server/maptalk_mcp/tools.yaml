@@ -1443,7 +1443,9 @@ tools:
       required (must be unique); a display color is auto-picked if you omit it.
       The canonical tubulin code is already seeded, so check list_ptms first —
       create one only for a modification the lab genuinely does not have yet, or
-      for a defined combination such as "deTyr + polyE".
+      for a defined combination such as "deTyr + polyE". To add the paired
+      control for a new modification, create a second row with kind="control"
+      and controls_ptm_id set to that modification's id.
     handler: http_post_json
     method: POST
     path: /api/ptms
@@ -1483,6 +1485,15 @@ tools:
           modified sample; "none" is the unmodified lattice. The projections draw
           the three as three different markers, so a control filed as a
           modification becomes indistinguishable from the sample it controls.
+      - name: controls_ptm_id
+        in: body
+        type: integer
+        description: >
+          REQUIRED when kind is "control", and must be omitted otherwise: the id
+          of the modification this row is the paired control FOR. The control
+          plasmid differs between PTM conditions, so there is one control row per
+          modification, not one shared "Control" — creating a control without
+          this is rejected (400).
 
   - name: update_ptm
     annotations: {readOnlyHint: false, destructiveHint: false}
@@ -1526,6 +1537,15 @@ tools:
           paired control — the same transfection with a catalytically inactive
           enzyme) or "none" (the unmodified lattice). Drives how the projections
           draw points assigned to this PTM.
+      - name: controls_ptm_id
+        in: body
+        type: integer
+        description: >
+          REQUIRED when kind is "control", and must be omitted otherwise: the id
+          of the modification this row is the paired control FOR. The control
+          plasmid differs between PTM conditions, so there is one control row per
+          modification, not one shared "Control" — creating a control without
+          this is rejected (400).
 
   - name: delete_ptm
     annotations: {readOnlyHint: false, destructiveHint: true, idempotentHint: false}
