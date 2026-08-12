@@ -181,14 +181,27 @@ async def update_ptm(
     )
     if update_data.get("controls_ptm_id") is not None:
         await _verify_control_target(db, update_data["controls_ptm_id"])
-    if update_data.get("kind") == PTMKind.MODIFICATION.value:
+    # The dangerous direction is AWAY from `modification`. A control's partner
+    # must be one, so declassifying that partner strands the control on a row
+    # that is no longer a valid target — the invariant broken from the end
+    # `_check_pairing_shape` cannot see, because it only ever looks at the row
+    # being written. Restating an unchanged kind must stay free: the editor sends
+    # `kind` on every save, so guarding the no-op would reject an ordinary
+    # description edit on any modification that has a control.
+    changing_away = (
+        "kind" in update_data
+        and update_data["kind"] != PTMKind.MODIFICATION.value
+        and ptm.kind == PTMKind.MODIFICATION.value
+    )
+    if changing_away:
         dependents = await _controls_pointing_at(db, ptm_id)
         if dependents:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail=(
-                    f"Cannot change this PTM while it is the partner of "
-                    f"{', '.join(dependents)}."
+                    f"Cannot reclassify this PTM while it is the partner of "
+                    f"{', '.join(dependents)} — a control pairs with a "
+                    f"modification. Re-point or delete those first."
                 ),
             )
 

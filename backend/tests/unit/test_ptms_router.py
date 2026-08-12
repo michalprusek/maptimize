@@ -288,8 +288,9 @@ def test_a_missing_kind_is_an_error_rather_than_a_guess(schema):
 async def test_update_can_change_the_kind(mock_db):
     ptm = _ptm(kind="modification")
     mock_db.execute.side_effect = [
-        make_result(scalar=ptm),  # get_or_404
-        make_result(scalar=0),    # experiment count
+        make_result(scalar=ptm),       # get_or_404
+        make_result(scalars_all=[]),   # no control depends on it
+        make_result(scalar=0),         # experiment count
     ]
     out = await mod.update_ptm(
         3, PTMUpdate(kind="none"), current_user=_user(), db=mock_db
@@ -439,3 +440,43 @@ async def test_delete_refuses_a_modification_a_control_still_points_at(mock_db):
         await mod.delete_ptm(2, current_user=_user(), db=mock_db)
     assert ei.value.status_code == 409
     assert "Detyrosination control" in ei.value.detail
+
+
+async def test_update_refuses_to_declassify_a_modification_a_control_points_at(mock_db):
+    """The dangerous direction is AWAY from `modification`, not towards it.
+
+    A control's partner must be a modification. Flipping that partner to `none`
+    or `control` strands the control on a row that is no longer a valid target —
+    the invariant broken from the other end, where `_check_pairing_shape` on the
+    control's own row cannot see it.
+
+    Found by running the handler against the real database: the first version of
+    this guard fired on `kind == "modification"`, which is the no-op case, and
+    let the actual one through.
+    """
+    mock_db.execute.side_effect = [
+        make_result(scalar=_ptm(id=2, kind="modification")),   # get_or_404
+        make_result(scalars_all=["Detyrosination control"]),   # dependents
+    ]
+    with pytest.raises(HTTPException) as ei:
+        await mod.update_ptm(2, PTMUpdate(kind="none"), current_user=_user(), db=mock_db)
+    assert ei.value.status_code == 409
+    assert "Detyrosination control" in ei.value.detail
+
+
+async def test_update_allows_a_patch_that_restates_the_kind_unchanged(mock_db):
+    """The editor sends `kind` on every save, so a no-op must not 409.
+
+    Also found live: with the guard on the wrong side, editing the description of
+    a modification that any control pointed at was rejected outright.
+    """
+    ptm = _ptm(id=2, kind="modification")
+    mock_db.execute.side_effect = [
+        make_result(scalar=ptm),   # get_or_404
+        make_result(scalar=26),    # experiment count
+    ]
+    await mod.update_ptm(
+        2, PTMUpdate(kind="modification", description="Glu-tubulin"),
+        current_user=_user(), db=mock_db,
+    )
+    assert ptm.description == "Glu-tubulin"
