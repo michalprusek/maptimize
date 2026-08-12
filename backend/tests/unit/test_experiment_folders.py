@@ -130,8 +130,8 @@ async def test_move_into_own_descendant_is_rejected(mock_db, one_group):
     child = _folder(fid=2, parent_id=1)
     mock_db.execute.side_effect = [
         make_result(scalar=parent),                 # the folder being moved
+        make_result(scalars_all=[parent, child]),   # tree, loaded once
         make_result(scalar=child),                  # the new parent
-        make_result(scalars_all=[parent, child]),   # tree for the cycle check
     ]
     with pytest.raises(HTTPException) as ei:
         await mod.update_folder(
@@ -303,7 +303,7 @@ async def test_listing_a_folder_with_subfolders_includes_the_whole_subtree(mock_
     child = _folder(fid=4, parent_id=3)
     mock_db.execute.side_effect = [
         make_result(scalar=parent),                # visibility check
-        make_result(scalars_all=[parent, child]),  # tree walk
+        make_result(scalars_all=[parent, child]),  # tree, loaded once
         make_result(fetchall=[]),
     ]
     await _list(mock_db, exp_mod.FolderScope(folder_id=3, include_subfolders=True))
@@ -388,3 +388,68 @@ async def test_a_named_group_is_ignored_for_a_subfolder(mock_db):
             current_user=_user(), db=mock_db,
         )
     assert mock_db.add.call_args[0][0].group_id == 7
+
+
+# =============================================================================
+# Moving a folder — the success paths, and what has to move WITH it
+# =============================================================================
+
+async def test_move_reparents_and_inherits_the_new_group(mock_db, one_group):
+    moved = _folder(fid=4, parent_id=1, group_id=7)
+    target = _folder(fid=9, group_id=9)
+    mock_db.execute.side_effect = [
+        make_result(scalar=moved),                    # get_or_404
+        make_result(scalars_all=[moved, target]),     # tree, loaded once
+        make_result(scalar=target),                   # new parent
+        make_result(scalar=0),                        # experiment count
+    ]
+    await mod.update_folder(
+        4, ExperimentFolderUpdate(parent_id=9), current_user=_user(), db=mock_db
+    )
+    assert moved.parent_id == 9
+    assert moved.group_id == 9
+
+
+async def test_moving_a_folder_restamps_its_whole_subtree(mock_db, one_group):
+    """A move carries the branch with it, or the tree straddles two groups.
+
+    Only the moved folder used to be restamped, so a child kept the old group:
+    the parent said "group 9" and its own child said "group 7", and which group
+    the subtree belonged to depended on where you started reading. Nothing
+    failed — the child simply stayed visible to the group it had left.
+    """
+    moved = _folder(fid=4, parent_id=1, group_id=7)
+    child = _folder(fid=5, parent_id=4, group_id=7)
+    grandchild = _folder(fid=6, parent_id=5, group_id=7)
+    target = _folder(fid=9, group_id=9)
+    mock_db.execute.side_effect = [
+        make_result(scalar=moved),
+        make_result(scalars_all=[moved, child, grandchild, target]),  # tree
+        make_result(scalar=target),
+        make_result(scalar=0),
+    ]
+    await mod.update_folder(
+        4, ExperimentFolderUpdate(parent_id=9), current_user=_user(), db=mock_db
+    )
+    assert child.group_id == 9
+    assert grandchild.group_id == 9
+
+
+async def test_moving_to_the_top_level_restamps_from_the_default(mock_db):
+    # Leaving a parent means leaving its group; the folder falls back to the
+    # same rule a brand-new top-level folder gets. For a member of two groups
+    # that means private, which is the safe direction.
+    moved = _folder(fid=4, parent_id=1, group_id=7)
+    child = _folder(fid=5, parent_id=4, group_id=7)
+    with patch.object(mod, "get_user_group_ids", new=AsyncMock(return_value=[7, 9])):
+        mock_db.execute.side_effect = [
+            make_result(scalar=moved),
+            make_result(scalars_all=[moved, child]),   # tree
+            make_result(scalar=0),
+        ]
+        await mod.update_folder(
+            4, ExperimentFolderUpdate(parent_id=None), current_user=_user(), db=mock_db
+        )
+    assert moved.parent_id is None
+    assert moved.group_id is None
+    assert child.group_id is None

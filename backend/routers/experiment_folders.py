@@ -200,32 +200,39 @@ async def create_folder(
     return _response(folder, 0)
 
 
-async def _descendant_ids(
-    db: AsyncSession,
-    folder_id: int,
-    user_id: int,
-    group_ids: Sequence[int],
-) -> set:
-    """Every folder below ``folder_id``, walked in Python over the visible tree.
+async def visible_tree(
+    db: AsyncSession, user_id: int, group_ids: Sequence[int]
+) -> List[ExperimentFolder]:
+    """Every folder the caller may see, as objects.
 
-    ``parent_id`` is a plain Integer with no FK, so the tree is small and
-    unconstrained; loading the visible folders once and walking them beats a
-    recursive CTE here and keeps the cycle check and the walk on the same data.
+    Returned rather than reduced to ids because both callers want the rows: the
+    move restamps them, and a second SELECT for instances this session already
+    holds would leave it with stale group_ids for rows it had just changed.
     """
     result = await db.execute(
-        select(ExperimentFolder).where(
-            experiment_folder_scope(user_id, group_ids)
-        )
+        select(ExperimentFolder).where(experiment_folder_scope(user_id, group_ids))
     )
-    folders = list(result.scalars().all())
+    return list(result.scalars().all())
 
-    below = set()
+
+def descendants_of(
+    folders: Sequence[ExperimentFolder], folder_id: int
+) -> List[ExperimentFolder]:
+    """Everything below ``folder_id``, walked in Python.
+
+    ``parent_id`` is a plain Integer with no FK, so the tree is small and
+    unconstrained; one walk over the loaded rows beats a recursive CTE and keeps
+    the cycle check and the restamp working from exactly the same data.
+    """
+    below: List[ExperimentFolder] = []
+    seen = {folder_id}
     frontier = [folder_id]
     while frontier:
         current = frontier.pop()
         for folder in folders:
-            if folder.parent_id == current and folder.id not in below:
-                below.add(folder.id)
+            if folder.parent_id == current and folder.id not in seen:
+                seen.add(folder.id)
+                below.append(folder)
                 frontier.append(folder.id)
     return below
 
@@ -251,12 +258,21 @@ async def update_folder(
 
     if "parent_id" in changes:
         new_parent_id = changes["parent_id"]
+        # Pure comparison, so it runs before anything is loaded: the cheapest
+        # rejection should not cost a query.
         if new_parent_id == folder_id:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="A folder cannot be its own parent.",
             )
+        # Loaded once and used twice: the cycle check and the restamp must agree
+        # about the shape of the tree, and re-reading between them would let the
+        # second disagree with the first.
+        tree = await visible_tree(db, current_user.id, group_ids)
+        subtree = descendants_of(tree, folder_id)
         if new_parent_id is None:
+            # Leaving a parent means leaving its group, so the folder falls back
+            # to the rule a brand-new top-level folder gets.
             folder.parent_id = None
             folder.group_id = default_group_id(group_ids)
         else:
@@ -266,15 +282,22 @@ async def update_folder(
             # A cycle detaches the whole subtree from every listing at once and
             # makes the breadcrumb walk non-terminating. There is no FK to catch
             # it, so it is caught here.
-            if new_parent_id in await _descendant_ids(
-                db, folder_id, current_user.id, group_ids
-            ):
+            if any(child.id == new_parent_id for child in subtree):
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail="A folder cannot be moved inside one of its own subfolders.",
                 )
             folder.parent_id = new_parent_id
             folder.group_id = parent.group_id
+
+        # The branch moves WITH the folder. Restamping only the folder itself
+        # left its children on the group it had just left: the parent said one
+        # group and its own child said another, so which group the subtree
+        # belonged to depended on where you started reading -- and the child
+        # stayed visible to people the move was taking it away from. Nothing
+        # failed, which is why it needed a test rather than a comment.
+        for child in subtree:
+            child.group_id = folder.group_id
 
     if changes.get("name"):
         folder.name = changes["name"]

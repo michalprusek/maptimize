@@ -24,9 +24,10 @@ from schemas.experiment import (
 from routers.experiment_folders import (
     UNFILED_FOLDER_ID,
     FolderScope,
-    _descendant_ids,
+    descendants_of,
     folder_scope,
     get_folder_for_user,
+    visible_tree,
 )
 from utils.reference_data import get_or_404
 from utils.security import get_current_user
@@ -125,7 +126,8 @@ async def _folder_filter(
 
     # A parent reading "0 experiments" while its children hold the batch is the
     # failure this branch exists to avoid.
-    below = await _descendant_ids(db, scope.folder_id, user_id, group_ids)
+    tree = await visible_tree(db, user_id, group_ids)
+    below = [child.id for child in descendants_of(tree, scope.folder_id)]
     return Experiment.folder_id.in_([scope.folder_id, *sorted(below)])
 
 

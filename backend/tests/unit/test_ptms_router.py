@@ -480,3 +480,46 @@ async def test_update_allows_a_patch_that_restates_the_kind_unchanged(mock_db):
         current_user=_user(), db=mock_db,
     )
     assert ptm.description == "Glu-tubulin"
+
+
+async def test_a_control_cannot_be_its_own_control(mock_db):
+    # Reachable through the API by passing the row's own id, and the FK cannot
+    # refuse it — a self-referencing row is perfectly valid to Postgres.
+    ptm = _control()
+    mock_db.execute.side_effect = [make_result(scalar=ptm)]
+    with pytest.raises(HTTPException) as ei:
+        await mod.update_ptm(
+            15, PTMUpdate(controls_ptm_id=15), current_user=_user(), db=mock_db
+        )
+    assert ei.value.status_code == 400
+    assert "its own control" in ei.value.detail
+
+
+async def test_a_control_can_be_repointed_at_another_modification(mock_db):
+    # The lab renames and re-pairs; the target is re-validated on the way in
+    # rather than trusted because it was valid when the row was created.
+    ptm = _control()
+    mock_db.execute.side_effect = [
+        make_result(scalar=ptm),                              # get_or_404
+        make_result(scalar=_ptm(id=5, kind="modification")),  # new target
+        make_result(scalar=1),                                # experiment count
+    ]
+    out = await mod.update_ptm(
+        15, PTMUpdate(controls_ptm_id=5), current_user=_user(), db=mock_db
+    )
+    assert ptm.controls_ptm_id == 5
+    assert out.controls_ptm_id == 5
+
+
+async def test_repointing_a_control_at_a_non_modification_is_rejected(mock_db):
+    ptm = _control()
+    mock_db.execute.side_effect = [
+        make_result(scalar=ptm),
+        make_result(scalar=_ptm(id=10, name="Unmodified", kind="none")),
+    ]
+    with pytest.raises(HTTPException) as ei:
+        await mod.update_ptm(
+            15, PTMUpdate(controls_ptm_id=10), current_user=_user(), db=mock_db
+        )
+    assert ei.value.status_code == 400
+    assert "modification" in ei.value.detail
