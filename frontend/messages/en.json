@@ -74,6 +74,20 @@
     "createExperiment": "Create Experiment",
     "featureSpace": "Feature Space Visualization"
   },
+  "experimentFolders": {
+    "title": "Folders",
+    "all": "All experiments",
+    "unfiled": "Unfiled",
+    "newFolder": "New folder",
+    "newSubfolder": "New subfolder",
+    "newFolderPrompt": "Folder name",
+    "rename": "Rename",
+    "deleteFolder": "Delete folder",
+    "deleteConfirm": "The folder is removed, but nothing inside it is: its subfolders and experiments move up to the folder above.",
+    "expand": "Expand",
+    "collapse": "Collapse",
+    "emptyHint": "No folders yet. Create one to group experiments by batch, condition or whatever fits how you work."
+  },
   "experiments": {
     "title": "Experiments",
     "create": "New Experiment",

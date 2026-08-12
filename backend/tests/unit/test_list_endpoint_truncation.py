@@ -86,6 +86,10 @@ async def _run_list_experiments(mock_db, **overrides):
     kwargs = dict(
         skip=_query_default(exp_r.list_experiments, "skip"),
         limit=_query_default(exp_r.list_experiments, "limit"),
+        # The folder filter is one dependency rather than two Query params, so a
+        # direct call supplies the object. Its default is "no filter", which is
+        # what a request with no query string means.
+        scope=exp_r.FolderScope(),
     )
     kwargs.update(overrides)
     mock_db.execute.return_value = _empty_rows()
@@ -260,7 +264,7 @@ async def test_experiment_listing_reports_the_total_it_scoped_over(mock_db):
 
     with patch.object(exp_r, "get_user_group_ids", new=AsyncMock(return_value=[2])):
         await exp_r.list_experiments(
-            skip=0, limit=None, response=response,
+            skip=0, limit=None, scope=exp_r.FolderScope(), response=response,
             current_user=SimpleNamespace(id=1), db=mock_db,
         )
 

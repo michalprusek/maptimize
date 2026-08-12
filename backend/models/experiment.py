@@ -50,6 +50,17 @@ class Experiment(Base):
         nullable=True,
         index=True
     )
+    # Where this experiment sits in the organisational tree. NULL = unfiled.
+    #
+    # ⚠️ Organisation only. Unlike a document, whose group is re-stamped from its
+    # folder, an experiment's audience lives on `group_id` above and filing never
+    # touches it — otherwise dropping a colleague's experiment into a folder
+    # would silently change who can read it. See models/experiment_folder.py.
+    folder_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("experiment_folders.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True
+    )
     fasta_sequence: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     status: Mapped[ExperimentStatus] = mapped_column(
         Enum(ExperimentStatus),

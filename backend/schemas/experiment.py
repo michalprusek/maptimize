@@ -59,6 +59,10 @@ class ExperimentResponse(BaseModel):
     description: Optional[str] = None
     status: ExperimentStatus
     group_id: Optional[int] = None
+    # Where this sits in the organisational tree; null = unfiled. Separate from
+    # `group_id` on purpose: that one decides who can read it, this one only
+    # decides where it appears. See models/experiment_folder.py.
+    folder_id: Optional[int] = None
     map_protein: Optional[MapProteinResponse] = None
     microscope: Optional[MicroscopeResponse] = None
     ptm: Optional[PTMResponse] = None

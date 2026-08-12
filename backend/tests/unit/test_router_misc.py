@@ -1378,6 +1378,7 @@ async def test_exp_list(mock_db):
     mock_db.execute.return_value = _unique_result(rows)
     with patch.object(exp_r, "get_user_group_ids", new=AsyncMock(return_value=[5])):
         out = await exp_r.list_experiments(skip=0, limit=50,
+                                            scope=exp_r.FolderScope(),
                                            current_user=user(id=1), db=mock_db)
     assert len(out) == 1
     assert out[0].image_count == 3
@@ -1392,6 +1393,7 @@ async def test_exp_list_zero_counts(mock_db):
     mock_db.execute.return_value = _unique_result(rows)
     with patch.object(exp_r, "get_user_group_ids", new=AsyncMock(return_value=[])):
         out = await exp_r.list_experiments(skip=0, limit=50,
+                                            scope=exp_r.FolderScope(),
                                            current_user=user(id=1), db=mock_db)
     assert out[0].image_count == 0
     assert out[0].has_sum_projections is False

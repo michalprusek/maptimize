@@ -225,6 +225,10 @@ async def ensure_schema_updates():
             # everywhere until scripts/ptm_control_link_backfill.sql runs, and
             # null forever on rows that are not controls.
             ("ptms", "controls_ptm_id", "INTEGER REFERENCES ptms(id)"),
+            # Where an experiment sits in the organisational tree; NULL =
+            # unfiled, which is where every existing row correctly starts.
+            ("experiments", "folder_id",
+             "INTEGER REFERENCES experiment_folders(id) ON DELETE SET NULL"),
         ]
 
         for table, column, col_type in updates:

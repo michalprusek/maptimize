@@ -48,6 +48,9 @@ def test_list_tools_builds_schema_from_yaml(make_registry):
         "reprocess_image", "redetect_cells", "delete_image", "list_cell_crops",
         # analysis
         "measure_separability",
+        # application control: experiment folders
+        "list_experiment_folders", "create_experiment_folder",
+        "update_experiment_folder", "delete_experiment_folder", "file_experiment",
         # application control: proteins
         "list_proteins", "get_protein", "create_protein", "update_protein",
         "delete_protein", "compute_protein_embedding",

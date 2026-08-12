@@ -313,6 +313,35 @@ async def test_create_ptm_carries_the_control_pairing(make_registry):
     assert "Acetylation control" in blocks[0].text
 
 
+async def test_file_experiment_sends_the_folder_as_a_query_param(make_registry):
+    # PATCH with no body: the endpoint reads folder_id from the query string, so
+    # a JSON body would be silently ignored and the experiment would be unfiled.
+    def routes(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/experiments/5/folder":
+            assert request.method == "PATCH"
+            assert request.url.params["folder_id"] == "3"
+            return httpx.Response(200, json={"id": 5, "folder_id": 3})
+        return httpx.Response(404)
+
+    reg = make_registry(_with_login(routes))
+    blocks = _blocks(await reg.dispatch(
+        "file_experiment", {"experiment_id": 5, "folder_id": 3}))
+    assert "folder_id" in blocks[0].text
+
+
+async def test_unfiling_an_experiment_omits_the_folder_entirely(make_registry):
+    # "Unfile" is the absence of the parameter, not folder_id=0 — 0 is the
+    # listing's "unfiled" sentinel and would 404 here as a missing folder.
+    def routes(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/experiments/5/folder":
+            assert "folder_id" not in request.url.params
+            return httpx.Response(200, json={"id": 5, "folder_id": None})
+        return httpx.Response(404)
+
+    reg = make_registry(_with_login(routes))
+    await reg.dispatch("file_experiment", {"experiment_id": 5})
+
+
 # -- proteins & database ---------------------------------------------------
 
 async def test_create_protein_posts_body(make_registry):

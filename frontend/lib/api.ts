@@ -238,8 +238,72 @@ class ApiClient {
   }
 
   // Experiments
-  async getExperiments() {
-    return this.request<Experiment[]>("/api/experiments");
+  /**
+   * List experiments, optionally narrowed to one folder.
+   *
+   * `folderId` 0 means "unfiled" — a real id is never 0, so the sentinel rides
+   * the same parameter. Passing `undefined` means no filter at all; the three
+   * are genuinely different answers and a truthiness check would merge two of
+   * them.
+   */
+  async getExperiments(options?: {
+    folderId?: number;
+    includeSubfolders?: boolean;
+  }) {
+    const params = new URLSearchParams();
+    if (options?.folderId !== undefined) {
+      params.set("folder_id", String(options.folderId));
+    }
+    if (options?.includeSubfolders !== undefined) {
+      params.set("include_subfolders", String(options.includeSubfolders));
+    }
+    const query = params.toString();
+    return this.request<Experiment[]>(
+      query ? `/api/experiments?${query}` : "/api/experiments"
+    );
+  }
+
+  // Experiment folders — organisation only. Filing an experiment never changes
+  // who can see it; that is `updateExperimentGroup`, and it is owner-only.
+  async getExperimentFolders() {
+    return this.request<ExperimentTree>("/api/experiment-folders");
+  }
+
+  async createExperimentFolder(name: string, parentId?: number | null) {
+    return this.request<ExperimentFolder>("/api/experiment-folders", {
+      method: "POST",
+      body: JSON.stringify({ name, parent_id: parentId ?? null }),
+    });
+  }
+
+  /**
+   * Rename and/or move a folder. Omit `parent_id` to leave it where it is —
+   * sending null moves it to the top level, which is a different request.
+   */
+  async updateExperimentFolder(
+    folderId: number,
+    changes: { name?: string; parent_id?: number | null }
+  ) {
+    return this.request<ExperimentFolder>(
+      `/api/experiment-folders/${folderId}`,
+      { method: "PATCH", body: JSON.stringify(changes) }
+    );
+  }
+
+  /** Delete a folder. Its contents move up to its parent; nothing is lost. */
+  async deleteExperimentFolder(folderId: number) {
+    return this.request<void>(`/api/experiment-folders/${folderId}`, {
+      method: "DELETE",
+    });
+  }
+
+  /** File an experiment into a folder, or unfile it with `null`. */
+  async setExperimentFolder(experimentId: number, folderId: number | null) {
+    const query = folderId === null ? "" : `?folder_id=${folderId}`;
+    return this.request<Experiment>(
+      `/api/experiments/${experimentId}/folder${query}`,
+      { method: "PATCH" }
+    );
   }
 
   async createExperiment(data: {
@@ -1598,6 +1662,34 @@ export interface User {
   created_at: string;
 }
 
+/**
+ * A folder in the experiment tree.
+ *
+ * Simpler than the document library's `Folder` on purpose: no `visibility` and
+ * no seeded `kind`. An experiment is group-readable wherever it sits, so a
+ * private folder would hide the folder and not its contents, and there is
+ * nothing a folder has to exist for by default.
+ */
+export interface ExperimentFolder {
+  id: number;
+  name: string;
+  parent_id: number | null;
+  group_id: number | null;
+  owner_user_id: number;
+  /** Experiments filed DIRECTLY here. Roll up the subtree with `subtreeTotal`. */
+  experiment_count: number;
+  created_at: string | null;
+}
+
+/**
+ * The tree, plus the one count that cannot be rolled up from it: nothing is
+ * filed under "unfiled", so there is no row to sum.
+ */
+export interface ExperimentTree {
+  folders: ExperimentFolder[];
+  unfiled_count: number;
+}
+
 export interface Experiment {
   id: number;
   name: string;
@@ -1613,6 +1705,13 @@ export interface Experiment {
   cell_count: number;
   has_sum_projections: boolean;
   group_id?: number | null;
+  /**
+   * Where it sits in the organisational tree; null = unfiled.
+   *
+   * Deliberately separate from `group_id`: that decides who can read it, this
+   * decides only where it appears. Filing is group-writable, sharing is not.
+   */
+  folder_id?: number | null;
   creator_name?: string | null;
   /**
    * Owner. Reads are group-shared but most writes are owner-only, so controls

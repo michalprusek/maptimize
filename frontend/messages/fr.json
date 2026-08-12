@@ -74,6 +74,20 @@
     "createExperiment": "Creer une experience",
     "featureSpace": "Visualisation de l'espace des caracteristiques"
   },
+  "experimentFolders": {
+    "title": "Dossiers",
+    "all": "Toutes les expériences",
+    "unfiled": "Non classées",
+    "newFolder": "Nouveau dossier",
+    "newSubfolder": "Nouveau sous-dossier",
+    "newFolderPrompt": "Nom du dossier",
+    "rename": "Renommer",
+    "deleteFolder": "Supprimer le dossier",
+    "deleteConfirm": "Le dossier est supprimé, mais pas son contenu : ses sous-dossiers et ses expériences remontent dans le dossier parent.",
+    "expand": "Déplier",
+    "collapse": "Replier",
+    "emptyHint": "Aucun dossier pour l'instant. Créez-en un pour regrouper les expériences par série, condition ou ce qui correspond à votre façon de travailler."
+  },
   "experiments": {
     "title": "Experiences",
     "create": "Nouvelle experience",

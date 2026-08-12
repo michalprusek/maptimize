@@ -16,6 +16,7 @@ from .group import Group, GroupMember
 from .group_join_request import GroupJoinRequest, JoinRequestStatus
 from .oauth_client import OAuthClient
 from .document_folder import DocumentFolder
+from .experiment_folder import ExperimentFolder
 
 __all__ = [
     "User",
@@ -53,4 +54,5 @@ __all__ = [
     "JoinRequestStatus",
     "OAuthClient",
     "DocumentFolder",
+    "ExperimentFolder",
 ]

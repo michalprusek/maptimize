@@ -1100,6 +1100,98 @@ tools:
         type: boolean
         description: Skip crops flagged as excluded.
 
+  # -- Experiment folders (organisation, NOT access control) -----------------
+  - name: list_experiment_folders
+    annotations: {readOnlyHint: true, openWorldHint: false}
+    description: >
+      List the folder tree used to organise EXPERIMENTS, with the number of
+      experiments filed directly in each folder. Returns a flat list; build the
+      tree from parent_id (null = top level). Call this before filing anything,
+      to get folder ids. NOTE: this is a different tree from list_folders, which
+      is the document library.
+    handler: http_json
+    method: GET
+    path: /api/experiment-folders
+
+  - name: create_experiment_folder
+    annotations: {readOnlyHint: false, destructiveHint: false}
+    description: >
+      Create a folder for organising experiments, optionally nested under an
+      existing one. The folder is shared with your group automatically when you
+      belong to exactly one; a subfolder inherits its parent's group.
+    handler: http_post_json
+    method: POST
+    path: /api/experiment-folders
+    params:
+      - name: name
+        in: body
+        type: string
+        required: true
+        description: Folder name (1-255 chars).
+      - name: parent_id
+        in: body
+        type: integer
+        description: Nest under this folder; omit for a top-level folder.
+
+  - name: update_experiment_folder
+    annotations: {readOnlyHint: false, destructiveHint: false}
+    description: >
+      Rename and/or move an experiment folder. Omitting parent_id leaves the
+      folder where it is. A folder cannot be moved inside its own subtree (400).
+    handler: http_post_json
+    method: PATCH
+    path: /api/experiment-folders/{folder_id}
+    params:
+      - name: folder_id
+        in: path
+        type: integer
+        required: true
+      - name: name
+        in: body
+        type: string
+        description: New name.
+      - name: parent_id
+        in: body
+        type: integer
+        description: New parent folder id.
+
+  - name: delete_experiment_folder
+    annotations: {readOnlyHint: false, destructiveHint: false, idempotentHint: false}
+    description: >
+      Delete an experiment folder. NOTHING IS LOST: the folder dissolves, and its
+      subfolders and experiments move up to its parent (or become unfiled if it
+      was top-level). Not marked destructive because no experiment is deleted —
+      only the folder itself.
+    handler: http_json
+    method: DELETE
+    path: /api/experiment-folders/{folder_id}
+    params:
+      - name: folder_id
+        in: path
+        type: integer
+        required: true
+
+  - name: file_experiment
+    annotations: {readOnlyHint: false, destructiveHint: false, idempotentHint: true}
+    description: >
+      File an experiment into a folder, or unfile it by omitting folder_id.
+      Allowed for any member of the group that can see the experiment, not just
+      its owner — organising shared work is shared. IMPORTANT: this does NOT
+      change who can see the experiment; that is a separate, owner-only decision
+      (assign_experiment_group). Filing is organisation only.
+    handler: http_json
+    method: PATCH
+    path: /api/experiments/{experiment_id}/folder
+    params:
+      - name: experiment_id
+        in: path
+        type: integer
+        required: true
+      - name: folder_id
+        in: query
+        type: integer
+        description: Folder to file into; omit to unfile.
+
   - name: measure_separability
     annotations: {readOnlyHint: true, openWorldHint: false}
     description: >
