@@ -126,6 +126,46 @@ Validace anotací v `registry.py` proto přijímá jména polí SDK **i jejich a
 - Před jakýmikoliv změnami v DB vždy udělat zálohu
 - Při úpravách schématu používat pouze additivní migrace
 
+### Zálohy (od 2026-08-01) — `docs/backup-restore.md`
+
+Denně 03:00 běží `maptimize-backup.timer` → `scripts/backup.sh` na **samostatný
+disk `/dev/sdb1`** (`/backup/maptimize/`, retence 14 dní ale vždy min. 3 nejnovější,
+bez výpadku aplikace; ustálený stav ~21 GB — dumpy se nededuplikují, soubory ano).
+Ad-hoc zálohu před rizikovou migrací uděláš prostě `scripts/backup.sh` — je
+idempotentní a zamčená flockem. Stav: `cat /backup/maptimize/LAST_RESULT`
+(`OK`/`FAIL`/`RUNNING`; **kontroluj datum, ne slovo** — mrtvý timer si drží
+poslední `OK` navždy). Testy: `scripts/test-backup.sh`.
+
+⚠️ **`pg_restore --list` NEDETEKUJE zkrácený dump.** TOC je na začátku
+custom-format archivu, takže `--list` datové bloky vůbec nečte: dump zkrácený na
+3 % ohlásí všech 335 objektů a exit 0, a obnoví se jako 31 tabulek s nula řádky.
+Skript proto ověřuje **plným čtením** (`pg_restore -f /dev/null`, ~12 s) a
+`--list` používá jen jako druhou, jinou kontrolu (ztráta schématu). Tohle byla
+reálná díra v první verzi.
+
+⚠️ **EXIT trap sám o sobě nestačí.** Bash ho spustí i při fatálním signálu, ale
+`$?` v tu chvíli drží status posledního *dokončeného* příkazu, tedy 0 — takže
+SIGTERM (reboot, `systemctl stop`) zapsal `OK` přes běh zabitý v půlce. Proto
+explicitní `trap 'exit 143' TERM` a spol.
+
+⚠️ **Retence nesmí být jen podle stáří.** Prune běží před zápisem nové zálohy, takže
+série selhání delší než retenční okno smaže i tu poslední dobrou. Drží to `KEEP_MIN`.
+
+⚠️ **`pg_dump` sám o sobě NENÍ záloha téhle aplikace.** Řádky v DB odkazují na
+soubory v `data/` **cestou**, takže dump obnovený bez nich je databáze plná
+mrtvých odkazů (přesně to se v malém stalo u `rag_documents/`, viz níže). Skript
+proto zálohuje tři úložiště naráz — Postgres, `data/`, `weights/best.pt` — plus
+gitignorované `.env`. **Když přidáš nové perzistentní úložiště, přidej ho tam
+taky**, jinak vznikne čtvrtá věc, kterou nikdo nezálohuje.
+
+⚠️ Snapshoty souborů jsou pospojované **hardlinky** (14 dní stojí ~4,7 GB, ne
+66 GB). Editace souboru přímo v `/backup/maptimize/files/*/` se propíše do
+**všech** snapshotů — vždycky kopíruj ven.
+
+⚠️ Zálohy leží na **jiném disku, ale témže stroji**. Chrání před smrtí disku,
+rozbitou migrací a `rm -rf`; **ne** před ztrátou serveru. Off-site kopie
+vědomě není.
+
 ## Zakázané porty (používá Spheroseg)
 
 ### Blue environment (produkce)

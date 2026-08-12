@@ -1,0 +1,20 @@
+[Unit]
+Description=Record a Maptimize backup failure
+# Triggered via OnFailure= from maptimize-backup.service.
+#
+# Exists because every other failure signal in this system is PULL-based: a
+# journal entry, a unit in `failed` state, a status file. All of them require a
+# human to remember to look. This unit runs on the paths the script itself
+# cannot cover — killed before its EXIT trap, unit failing before ExecStart, or
+# the backup disk gone read-only so the script's own status write silently did
+# nothing.
+
+[Service]
+Type=oneshot
+User=cvat
+Group=cvat
+# `|| true` on the write: if /backup is unwritable — which is one of the
+# failures being reported — this unit must still reach the journal line below
+# rather than failing itself and vanishing.
+ExecStart=/bin/sh -c 'printf "FAIL %%s (systemd OnFailure) — journalctl -u maptimize-backup.service\\n" "$(date +%%F\\ %%T)" > /backup/maptimize/LAST_RESULT.tmp 2>/dev/null && mv /backup/maptimize/LAST_RESULT.tmp /backup/maptimize/LAST_RESULT || true'
+ExecStart=/bin/sh -c 'echo "MAPTIMIZE BACKUP FAILED — see journalctl -u maptimize-backup.service" | systemd-cat -t maptimize-backup -p err'
