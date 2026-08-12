@@ -54,12 +54,32 @@ MIN_OBJECTS="${MIN_OBJECTS:-50}"
 # after that reports OK while capturing nothing.
 MIN_ROWS="${MIN_ROWS:-100}"
 ROW_CHECK_TABLE="${ROW_CHECK_TABLE:-cell_crops}"
-RETENTION_DAYS="${RETENTION_DAYS:-14}"
+# Retention is grandfather-father-son, not a flat window. A dump is ~1.4 GB and
+# a file snapshot is hardlinked against its predecessor, so the expensive thing
+# is DUMPS and the cheap thing is HISTORY: thinning older backups out instead of
+# deleting them buys roughly a year of recoverable points for about twice the
+# space a flat fortnight used.
+#
+# Why that matters here and not in the abstract: the failures this archive has to
+# survive are not "the disk died last night". They are a bad migration, a
+# cascading delete, an experiment reprocessed with the wrong parameters — damage
+# that is discovered weeks later, by which point a 14-day window has already
+# overwritten the last good state.
+#
+# The three tiers are horizons, not additions: every backup from the newest
+# KEEP_DAILY days, plus the newest one in each of the newest KEEP_WEEKLY ISO
+# weeks, plus the newest one in each of the newest KEEP_MONTHLY months. A backup
+# survives if ANY tier wants it.
+KEEP_DAILY="${KEEP_DAILY:-14}"
+KEEP_WEEKLY="${KEEP_WEEKLY:-8}"
+KEEP_MONTHLY="${KEEP_MONTHLY:-12}"
 MIN_FREE_GB="${MIN_FREE_GB:-40}"
-# Retention floor. Age alone is not a safe rule: if every run fails for longer
-# than RETENTION_DAYS (a renamed DB container, a wedged timer), an age-only prune
-# deletes the last good backup and then the run fails too, leaving nothing. The
-# floor makes "we have no backups at all" unreachable by pruning.
+# Retention floor, and it outranks every tier above. Age alone is not a safe
+# rule: if every run fails for longer than the daily horizon (a renamed DB
+# container, a wedged timer, a script that vanished with a branch switch — all
+# three have happened), an age-only prune deletes the last good backup and then
+# the run fails too, leaving nothing. The floor makes "we have no backups at
+# all" unreachable by pruning.
 KEEP_MIN="${KEEP_MIN:-3}"
 # Sanity floor for the file snapshot, mirroring MIN_OBJECTS for the database.
 # Guards against pointing `latest` at a snapshot of an empty or wrong SOURCE_DIR.
@@ -158,30 +178,60 @@ log "=== backup start ($TIMESTAMP) ==="
 # Expired backups are pruned BEFORE the new one so a nearly-full disk can still
 # make progress.
 #
-# Two conditions must BOTH hold before anything is deleted: older than
-# RETENTION_DAYS *and* outside the newest KEEP_MIN. Age alone is not enough.
-# Pruning runs before the new backup exists, so with an age-only rule a run of
-# failures longer than the retention window deletes the last good backup and
-# then fails as well — ending with zero backups and no alert. The free-space
-# guard below made that worse, since it aborts *after* the prune: a full disk
-# would empty the archive one night at a time while never writing anything.
+# Nothing is deleted while it is inside ANY tier, and the newest KEEP_MIN are
+# never candidates at all. Pruning runs before the new backup exists, so a rule
+# resting on age alone would, after a run of failures longer than the window,
+# delete the last good backup and then fail as well — ending with zero backups
+# and no alert. The free-space guard below made that worse, since it aborts
+# *after* the prune: a full disk would empty the archive one night at a time
+# while never writing anything.
+#
+# Buckets are walked newest-first and counted for EVERY entry, including the
+# ones the KEEP_MIN floor already saved. Counting only the entries that reach
+# the tier logic would let the floor silently shift the horizons.
 prune() {  # $1 = label, $2 = directory, rest = find predicates
     local label="$1" dir="$2"; shift 2
-    local kept=0 old
-    while IFS= read -r old; do
-        kept=$((kept + 1))
-        if [ "$kept" -le "$KEEP_MIN" ]; then
+    local seen=0 line stamp path day week month
+    local days=0 weeks=0 months=0
+    local fresh_day fresh_week fresh_month keep
+    local -A seen_day=() seen_week=() seen_month=()
+
+    while IFS= read -r line; do
+        stamp=${line%%$'\t'*}
+        path=${line#*$'\t'}
+        seen=$((seen + 1))
+
+        # `date` is asked once per entry; these archives number in the tens.
+        day=$(date -d "@${stamp%.*}" +%Y%m%d)
+        # ISO week, with its own year: %Y-%V puts the days either side of New
+        # Year in the same bucket as the week 52 weeks away.
+        week=$(date -d "@${stamp%.*}" +%G-%V)
+        month=$(date -d "@${stamp%.*}" +%Y%m)
+
+        fresh_day=0; fresh_week=0; fresh_month=0
+        if [ -z "${seen_day[$day]:-}" ];     then seen_day[$day]=1;     days=$((days + 1));     fresh_day=1;   fi
+        if [ -z "${seen_week[$week]:-}" ];   then seen_week[$week]=1;   weeks=$((weeks + 1));   fresh_week=1;  fi
+        if [ -z "${seen_month[$month]:-}" ]; then seen_month[$month]=1; months=$((months + 1)); fresh_month=1; fi
+
+        if [ "$seen" -le "$KEEP_MIN" ]; then
             continue
         fi
-        # Age is tested per entry rather than inside the find, so the newest
-        # KEEP_MIN are skipped before age is ever consulted.
-        if [ -z "$(find "$old" -maxdepth 0 -mtime "+$RETENTION_DAYS")" ]; then
+
+        keep=0
+        # Daily tier keeps EVERY backup in the newest KEEP_DAILY days, not one
+        # per day: a manual dump taken just before a migration is exactly the
+        # one worth having, and it shares its day with the nightly run.
+        [ "$days"   -le "$KEEP_DAILY"   ]                          && keep=1
+        [ "$fresh_week"  = 1 ] && [ "$weeks"  -le "$KEEP_WEEKLY"  ] && keep=1
+        [ "$fresh_month" = 1 ] && [ "$months" -le "$KEEP_MONTHLY" ] && keep=1
+        if [ "$keep" = 1 ]; then
             continue
         fi
-        log "pruned $label: $(basename "$old")"
-        rm -rf "$old"
+
+        log "pruned $label: $(basename "$path")"
+        rm -rf "$path"
     done < <(find "$dir" -mindepth 1 -maxdepth 1 "$@" -printf '%T@\t%p\n' 2>/dev/null \
-             | sort -rn | cut -f2-)
+             | sort -rn)
 }
 # -type d skips the `latest` symlink, so the pointer is never pruned.
 prune dump     "$BACKUP_ROOT/db"    -type f -name '*.dump'

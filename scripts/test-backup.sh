@@ -61,7 +61,8 @@ docker exec "$DB" psql -U maptimize -d maptimize -q -c \
 run() {
     BACKUP_ROOT="$TMP/root" SOURCE_DIR="$TMP/src" DB_CONTAINER="$DB" \
     MIN_FREE_GB=1 MIN_OBJECTS=10 MIN_ROWS=1 ROW_CHECK_TABLE=t1 REQUIRE_MOUNT=0 \
-    KEEP_MIN="${KEEP_MIN:-3}" RETENTION_DAYS="${RETENTION_DAYS:-14}" \
+    KEEP_MIN="${KEEP_MIN:-3}" KEEP_DAILY="${KEEP_DAILY:-14}" \
+    KEEP_WEEKLY="${KEEP_WEEKLY:-8}" KEEP_MONTHLY="${KEEP_MONTHLY:-12}" \
     "$SCRIPT" >>"$TMP/out.log" 2>&1
 }
 
@@ -134,6 +135,51 @@ check "expired snapshots survive a failed run" \
       "$([ "$(find "$TMP/root/files" -mindepth 1 -maxdepth 1 -type d | wc -l)" -ge 1 ] && echo yes)" "yes"
 check "latest still resolves" "$([ -d "$TMP/root/files/latest" ] && echo yes)" "yes"
 [ "$AGED" -ge 1 ] || bad "fixture bug: nothing was aged, the test above proves nothing"
+
+# --- 4b. retention thins instead of truncating -------------------------------
+# The whole reason for tiers: the damage this archive protects against — a bad
+# migration, a cascading delete — is usually found weeks later, by which point a
+# flat fortnight has already overwritten the last good state.
+#
+# Fabricate a year of nightly dumps and prune them with a run that FAILS, so the
+# only thing that touched the directory is the prune. (A succeeding run writes
+# its own backup, which masks an over-eager prune.)
+GFS="$TMP/gfs"; mkdir -p "$GFS/db" "$GFS/files"
+for d in $(seq 0 364); do
+    f="$GFS/db/maptimize_$(date -d "$d days ago" +%Y%m%d_030000).dump"
+    printf 'x' > "$f"
+    touch -d "$d days ago" "$f"
+done
+BEFORE=$(find "$GFS/db" -name '*.dump' | wc -l)
+BACKUP_ROOT="$GFS" SOURCE_DIR="$TMP/src" DB_CONTAINER=no-such-container-$$ \
+    MIN_FREE_GB=1 MIN_OBJECTS=10 MIN_ROWS=1 ROW_CHECK_TABLE=t1 REQUIRE_MOUNT=0 \
+    KEEP_MIN=3 KEEP_DAILY=14 KEEP_WEEKLY=8 KEEP_MONTHLY=12 \
+    "$SCRIPT" >>"$TMP/out.log" 2>&1 && bad "gfs prune run should have failed" || true
+
+kept_between() {  # $1 = days ago (inclusive), $2 = days ago (exclusive)
+    local n=0 f age
+    for f in "$GFS"/db/*.dump; do
+        [ -e "$f" ] || continue
+        age=$(( ( $(date +%s) - $(stat -c %Y "$f") ) / 86400 ))
+        [ "$age" -ge "$1" ] && [ "$age" -lt "$2" ] && n=$((n + 1))
+    done
+    echo "$n"
+}
+
+check "fixture really spans a year" "$([ "$BEFORE" -eq 365 ] && echo yes)" "yes"
+# Every night of the last fortnight survives: this is the window where you still
+# want the exact day, not the nearest week.
+check "last 14 days kept in full" "$(kept_between 0 14)" "14"
+# Weeks 3-8 thin to one each. Exactly 6 buckets fit between day 14 and day 56.
+check "weeks 3-8 thin to one per week" \
+      "$([ "$(kept_between 14 56)" -ge 5 ] && [ "$(kept_between 14 56)" -le 7 ] && echo yes)" "yes"
+# A year back still has something, which a flat window would have deleted.
+check "a dump older than six months survives" \
+      "$([ "$(kept_between 180 365)" -ge 1 ] && echo yes)" "yes"
+# And it is thinned, not kept whole — otherwise "retention" deletes nothing.
+check "the year is thinned, not kept whole" \
+      "$([ "$(find "$GFS/db" -name '*.dump' | wc -l)" -lt 60 ] && echo yes)" "yes"
+rm -rf "$GFS"
 
 # --- 5. first run must not abort ---------------------------------------------
 # link_dest_for ends in a test that fails when no previous snapshot exists;
