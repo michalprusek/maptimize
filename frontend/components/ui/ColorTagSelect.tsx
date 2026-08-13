@@ -8,11 +8,23 @@ export interface ColorTagOption {
   name: string;
   color?: string | null;
   /**
-   * A muted second line under the name (manufacturer, full protein name, the
-   * folder above this one). Its own line on purpose -- beside the name it
-   * competes with it for the row, and wins whenever it is the longer of the two.
+   * A muted second line under the name (manufacturer, full protein name, PTM
+   * abbreviation, the folder above this one). Its own line on purpose -- beside
+   * the name it competes with it for the row, and wins whenever it is the
+   * longer of the two.
    */
   secondary?: string | null;
+  /**
+   * The unabbreviated `secondary`, when what is rendered is a shortened form.
+   * Defaults to `secondary`.
+   *
+   * A folder path renders as `… / controles` so the row stays readable, and
+   * that elision is lossy -- two folders under different grandparents can
+   * produce the same string. Without the whole thing somewhere, the rows are
+   * not merely cramped, they are indistinguishable, and this picker files
+   * experiments.
+   */
+  secondaryFull?: string | null;
 }
 
 /**
@@ -23,13 +35,15 @@ export interface ColorTagOption {
  */
 export function toColorTagOptions<T extends { id: number; name: string; color?: string | null }>(
   items: T[] | undefined,
-  secondary?: (item: T) => string | null | undefined
+  secondary?: (item: T) => string | null | undefined,
+  secondaryFull?: (item: T) => string | null | undefined
 ): ColorTagOption[] | undefined {
   return items?.map((item) => ({
     id: item.id,
     name: item.name,
     color: item.color,
     secondary: secondary?.(item),
+    secondaryFull: secondaryFull?.(item),
   }));
 }
 
@@ -69,12 +83,15 @@ interface ColorTagSelectProps {
 const NO_COLOR = "#888";
 
 /**
- * The whole of an option, for a `title`. Every label here truncates -- the
- * trigger against the card it sits in, the menu rows against the menu -- so the
- * full text has to stay reachable on hover rather than being simply lost.
+ * The whole of an option, for a `title`. Every label here is abbreviated
+ * somewhere -- the chip against its own ceiling, the field against its
+ * container, the menu rows against the menu, and `secondary` itself may already
+ * be a shortened form -- so the full text has to stay reachable on hover rather
+ * than being simply lost.
  */
-function fullLabel(option: ColorTagOption): string {
-  return option.secondary ? `${option.name} — ${option.secondary}` : option.name;
+export function fullLabel(option: ColorTagOption): string {
+  const detail = option.secondaryFull ?? option.secondary;
+  return detail ? `${option.name} — ${detail}` : option.name;
 }
 
 /**
@@ -164,8 +181,11 @@ export function ColorTagSelect({
   // The chip's menu is not tied to the trigger's width (a chip is as wide as its
   // own label), so it sizes to its longest row between a floor and a ceiling
   // rather than sitting at a fixed 224px that long folder paths cannot fit. The
-  // ceiling keeps it on screen; rows truncate inside it. The field variant spans
-  // its trigger, which is already the width of the form.
+  // field variant spans its trigger, which is already the width of the form.
+  //
+  // The ceiling bounds the menu's WIDTH, not where it lands: a `left-0` menu on
+  // a chip far into the page still grows past the right edge, which is why the
+  // callers deep in a card pass `align="right"`.
   const menuPosition = isChip
     ? `w-max min-w-56 max-w-[min(22rem,calc(100vw-2rem))] ${
         align === "right" ? "right-0" : "left-0"
@@ -182,8 +202,9 @@ export function ColorTagSelect({
         style={triggerStyle}
         title={selected ? fullLabel(selected) : placeholder}
       >
-        {/* `min-w-0` so the label can truncate rather than push the chevron out
-            of the field, or stretch a chip past the card it sits in. */}
+        {/* `min-w-0` so a long label truncates rather than pushing the chevron
+            out of the field. It does nothing for the chip, which is sized by its
+            own label -- that one is held by the ceiling below. */}
         <span className="flex items-center gap-2 min-w-0">
           {selected ? (
             <>
@@ -214,20 +235,27 @@ export function ColorTagSelect({
         <div
           className={`absolute top-full mt-1 ${menuPosition} bg-bg-elevated border border-white/10 rounded-lg shadow-xl z-50 py-1 max-h-60 overflow-y-auto`}
         >
+          {/* Capped at the menu's floor so the hint wraps instead of setting the
+              width for everything below it. `w-max` sizes the menu to its
+              widest child, and a sentence that never truncates resolves to its
+              full single-line width -- so without this the hint, not the
+              options, decided how wide the menu was, and more so in French. */}
           {hint && (
-            <div className="px-3 py-2 text-xs text-text-muted border-b border-white/10">
+            <div className="px-3 py-2 text-xs text-text-muted border-b border-white/10 max-w-56">
               {hint}
             </div>
           )}
           <button
             type="button"
             onClick={() => pick(null)}
+            title={clearLabel ?? placeholder}
             className="w-full px-3 py-2 text-left text-sm hover:bg-white/5 transition-colors flex items-center gap-2"
           >
             <span className="w-3 h-3 rounded-full bg-text-muted/30 flex-shrink-0" />
-            {/* Truncates like every other row: the menu is now sized by its
-                content, so a row that refuses to shrink would widen it past the
-                ceiling and spill instead. */}
+            {/* Truncates like every other row, and carries the same `title`.
+                This is the row that UNASSIGNS -- misreading it cascades a NULL
+                through every image and crop -- so it is the last one that should
+                be left clipped with no way to read it. */}
             <span className="text-text-muted truncate flex-1">
               {clearLabel ?? placeholder}
             </span>

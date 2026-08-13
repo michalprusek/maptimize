@@ -1,6 +1,10 @@
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+
 import { expect, test } from "@playwright/test";
 
-import { parentLabel } from "../../lib/folderTree";
+import { fullLabel } from "../../components/ui/ColorTagSelect";
+import { ancestorPath, parentLabel } from "../../lib/folderTree";
 
 /**
  * The label a folder picker shows under each folder name.
@@ -59,13 +63,59 @@ test("the label still tells branches apart after the row truncates it", () => {
   // top-down trail passes a plain distinctness check (the strings do differ)
   // and still collapses to one visible value, which is what shipped.
   const CUTOFF = 24; // roughly what a row of this menu fits
+  // Every row the picker offers, not just the leaves: ids 18 and 20 are BOTH
+  // named `détyrosination` (20 nested inside 18) and collided too.
   // Siblings share a parent and are told apart by name, so a row is both.
-  const leaves = [15, 16, 17, 21, 22, 23, 24, 25, 26];
-  const rows = leaves.map((id) => {
-    const name = PROD.find((f) => f.id === id)!.name;
-    return `${name} | ${(parentLabel(PROD, id) ?? "").slice(0, CUTOFF)}`;
-  });
-  expect(new Set(rows).size).toBe(leaves.length);
+  const rows = PROD.map(
+    (f) => `${f.name} | ${(parentLabel(PROD, f.id) ?? "").slice(0, CUTOFF)}`
+  );
+  expect(new Set(rows).size).toBe(PROD.length);
+});
+
+test("the whole trail survives for the tooltip, because the elision is lossy", () => {
+  // Two folders under different grandparents whose parents share a name render
+  // the SAME row -- this tree is one folder away from it, since 18 and 20 are
+  // both `détyrosination` and `manip1` already exists under 20. Eliding is a
+  // rendering choice; it must not be the only copy, or the picker that files
+  // experiments offers two identical rows that file into different branches.
+  const withSibling = [...PROD, { id: 99, parent_id: 18, name: "manip1" }];
+  expect(parentLabel(withSibling, 24)).toBe(parentLabel(withSibling, 99));
+  expect(ancestorPath(withSibling, 24)).not.toBe(ancestorPath(withSibling, 99));
+});
+
+test("ancestorPath keeps the top-down trail and the same null contract", () => {
+  expect(ancestorPath(PROD, 21)).toBe(
+    "Airy scan with same parameters per maps / détyrosination / controles"
+  );
+  expect(ancestorPath(PROD, 11)).toBeNull();
+  expect(ancestorPath(PROD, 999)).toBeNull();
+  expect(ancestorPath(PROD, null)).toBeNull();
+});
+
+test("the tooltip prefers the unabbreviated form over the rendered one", () => {
+  // The elision is only safe because this prefers `secondaryFull`. Reading
+  // `secondary` here would put the lossy string in both places and leave the
+  // collision above with nowhere to be resolved.
+  expect(
+    fullLabel({ id: 1, name: "manip1", secondary: "… / dét", secondaryFull: "a / b / dét" })
+  ).toBe("manip1 — a / b / dét");
+  // Falls back for the pickers that have nothing to abbreviate.
+  expect(fullLabel({ id: 1, name: "CLIP170", secondary: "Zeiss" })).toBe("CLIP170 — Zeiss");
+  expect(fullLabel({ id: 1, name: "3D sim" })).toBe("3D sim");
+});
+
+test("the experiments page derives folder rows from the helpers, not by hand", () => {
+  // A pure test of parentLabel cannot catch a call site that stops calling it,
+  // and inline trail-building in this very file is how the bug shipped. Same
+  // guard, and for the same reason, as `withGeometryFrom.spec.ts`.
+  const source = readFileSync(
+    join(__dirname, "../../app/dashboard/experiments/page.tsx"),
+    "utf8"
+  );
+  expect(source).toContain("parentLabel(folders,");
+  expect(source).toContain("ancestorPath(folders,");
+  // The hand-rolled top-down join that used to live here, in any spelling.
+  expect(source).not.toMatch(/trailTo\([^)]*\)[\s\S]{0,40}\.slice\(0,\s*-1\)/);
 });
 
 test("an unknown id has no label rather than a broken one", () => {
@@ -81,10 +131,14 @@ test("a parent outside the visible set is not invented", () => {
   expect(parentLabel(hidden, 5)).toBeNull();
 });
 
-test("a cycle in parent_id does not hang the label", () => {
+test("a cycle in parent_id yields a short label rather than hanging", () => {
+  // The parent named is still genuinely the parent -- only the depth is
+  // understated, because `trailTo` stops at the repeat. A short label beats a
+  // hung render, and the API rejects cycles anyway.
   const cyclic: Node[] = [
     { id: 1, name: "a", parent_id: 2 },
     { id: 2, name: "b", parent_id: 1 },
   ];
   expect(parentLabel(cyclic, 1)).toBe("b");
+  expect(ancestorPath(cyclic, 1)).toBe("b");
 });
