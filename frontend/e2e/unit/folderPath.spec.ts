@@ -104,6 +104,21 @@ test("the tooltip prefers the unabbreviated form over the rendered one", () => {
   expect(fullLabel({ id: 1, name: "3D sim" })).toBe("3D sim");
 });
 
+test("the trigger announces the full label, not just the visible name", () => {
+  // The chip shows only `name`, so for a folder the parent is nowhere on
+  // screen. `title` does not reach touch, and on a button with text content it
+  // is only the accessible description -- the NAME is what gets announced, so
+  // both have to be present and both have to come from `fullLabel`.
+  const source = readFileSync(
+    join(__dirname, "../../components/ui/ColorTagSelect.tsx"),
+    "utf8"
+  );
+  const trigger = source.slice(source.indexOf("<button"), source.indexOf("<ChevronDown"));
+  expect(trigger).toContain("title={triggerLabel}");
+  expect(trigger).toContain("aria-label={triggerLabel}");
+  expect(source).toMatch(/const triggerLabel =[\s\S]{0,80}fullLabel\(selected\)/);
+});
+
 test("the experiments page derives folder rows from the helpers, not by hand", () => {
   // A pure test of parentLabel cannot catch a call site that stops calling it,
   // and inline trail-building in this very file is how the bug shipped. Same

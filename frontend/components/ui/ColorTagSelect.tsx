@@ -192,6 +192,17 @@ export function ColorTagSelect({
       }`
     : "left-0 right-0";
 
+  // The trigger renders only `name`, never `secondary` -- a chip has one line.
+  // So for the folder chip the parent exists nowhere on screen, and every card
+  // in a batch reads `manip2`. `title` alone does not carry it: it is absent on
+  // touch, and on a button that already has text content it maps to the
+  // accessible DESCRIPTION, which screen readers announce only at raised
+  // verbosity or not at all. Putting it in the NAME is what gets it spoken.
+  //
+  // Safe against WCAG 2.5.3 (label in name) because `fullLabel` starts with the
+  // visible `name`, so "click manip2" still matches.
+  const triggerLabel = selected ? fullLabel(selected) : placeholder;
+
   return (
     <div ref={containerRef} className={`relative ${className}`}>
       <button
@@ -200,7 +211,8 @@ export function ColorTagSelect({
         onClick={() => setOpenState(!open)}
         className={`flex items-center disabled:opacity-50 ${triggerClass}`}
         style={triggerStyle}
-        title={selected ? fullLabel(selected) : placeholder}
+        title={triggerLabel}
+        aria-label={triggerLabel}
       >
         {/* `min-w-0` so a long label truncates rather than pushing the chevron
             out of the field. It does nothing for the chip, which is sized by its
