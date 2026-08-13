@@ -26,7 +26,7 @@ import {
   ExperimentFolderPanel,
   type FolderSelection,
 } from "@/components/experiment";
-import { trailTo } from "@/lib/folderTree";
+import { parentLabel } from "@/lib/folderTree";
 import { useAssignMicroscope, useAssignPtm } from "@/hooks";
 import { useAuthStore } from "@/stores/authStore";
 
@@ -100,17 +100,12 @@ export default function ExperimentsPage(): JSX.Element {
   const [folderToDelete, setFolderToDelete] =
     useState<ExperimentFolder | null>(null);
 
-  // Folder names repeat between branches ("Batch 1" under two projects), so the
-  // chip shows the path above each one. Without it the menu offers two rows that
-  // read identically and file into different places.
+  // Folder names repeat between branches (nine folders named manip1..3 under
+  // three parents), so each row names the folder above it. The immediate parent
+  // and not the whole trail -- a row is one line wide, and a top-down trail
+  // truncates away exactly the part that differs. See `parentLabel`.
   const folderOptions = useMemo(
-    () =>
-      toColorTagOptions(folders, (folder) => {
-        const trail = trailTo(folders, folder.id);
-        return trail.length > 1
-          ? trail.slice(0, -1).map((f) => f.name).join(" / ")
-          : null;
-      }),
+    () => toColorTagOptions(folders, (folder) => parentLabel(folders, folder.id)),
     [folders]
   );
 

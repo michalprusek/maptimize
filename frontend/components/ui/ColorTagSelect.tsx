@@ -7,7 +7,11 @@ export interface ColorTagOption {
   id: number;
   name: string;
   color?: string | null;
-  /** Rendered in muted parentheses after the name (manufacturer, full protein name). */
+  /**
+   * A muted second line under the name (manufacturer, full protein name, the
+   * folder above this one). Its own line on purpose -- beside the name it
+   * competes with it for the row, and wins whenever it is the longer of the two.
+   */
   secondary?: string | null;
 }
 
@@ -63,6 +67,15 @@ interface ColorTagSelectProps {
 
 /** Fallback dot colour for records that have none assigned yet. */
 const NO_COLOR = "#888";
+
+/**
+ * The whole of an option, for a `title`. Every label here truncates -- the
+ * trigger against the card it sits in, the menu rows against the menu -- so the
+ * full text has to stay reachable on hover rather than being simply lost.
+ */
+function fullLabel(option: ColorTagOption): string {
+  return option.secondary ? `${option.name} — ${option.secondary}` : option.name;
+}
 
 /**
  * Dropdown for picking one colour-tagged record (MAP protein, microscope).
@@ -148,7 +161,16 @@ export function ColorTagSelect({
         }
       : undefined;
 
-  const menuPosition = isChip ? `w-56 ${align === "right" ? "right-0" : "left-0"}` : "left-0 right-0";
+  // The chip's menu is not tied to the trigger's width (a chip is as wide as its
+  // own label), so it sizes to its longest row between a floor and a ceiling
+  // rather than sitting at a fixed 224px that long folder paths cannot fit. The
+  // ceiling keeps it on screen; rows truncate inside it. The field variant spans
+  // its trigger, which is already the width of the form.
+  const menuPosition = isChip
+    ? `w-max min-w-56 max-w-[min(22rem,calc(100vw-2rem))] ${
+        align === "right" ? "right-0" : "left-0"
+      }`
+    : "left-0 right-0";
 
   return (
     <div ref={containerRef} className={`relative ${className}`}>
@@ -158,28 +180,33 @@ export function ColorTagSelect({
         onClick={() => setOpenState(!open)}
         className={`flex items-center disabled:opacity-50 ${triggerClass}`}
         style={triggerStyle}
+        title={selected ? fullLabel(selected) : placeholder}
       >
-        <span className="flex items-center gap-2">
+        {/* `min-w-0` so the label can truncate rather than push the chevron out
+            of the field, or stretch a chip past the card it sits in. */}
+        <span className="flex items-center gap-2 min-w-0">
           {selected ? (
             <>
               <span
                 className="w-3 h-3 rounded-full flex-shrink-0"
                 style={{ backgroundColor: selected.color || NO_COLOR }}
               />
-              {/* The chip tints its label to match the dot; the field does not. */}
+              {/* The chip tints its label to match the dot; the field does not.
+                  A chip is sized by its own label, so it needs a ceiling of its
+                  own; the field already has one from its container. */}
               <span
-                className={isChip ? "font-medium" : undefined}
+                className={`truncate ${isChip ? "font-medium max-w-[12rem]" : ""}`}
                 style={isChip && selected.color ? { color: selected.color } : undefined}
               >
                 {selected.name}
               </span>
             </>
           ) : (
-            <span className="text-text-muted">{placeholder}</span>
+            <span className="text-text-muted truncate">{placeholder}</span>
           )}
         </span>
         <ChevronDown
-          className={`w-4 h-4 text-text-muted transition-transform ${open ? "rotate-180" : ""}`}
+          className={`w-4 h-4 flex-shrink-0 text-text-muted transition-transform ${open ? "rotate-180" : ""}`}
         />
       </button>
 
@@ -198,14 +225,20 @@ export function ColorTagSelect({
             className="w-full px-3 py-2 text-left text-sm hover:bg-white/5 transition-colors flex items-center gap-2"
           >
             <span className="w-3 h-3 rounded-full bg-text-muted/30 flex-shrink-0" />
-            <span className="text-text-muted">{clearLabel ?? placeholder}</span>
-            {value === null && <Check className="w-4 h-4 ml-auto text-text-muted" />}
+            {/* Truncates like every other row: the menu is now sized by its
+                content, so a row that refuses to shrink would widen it past the
+                ceiling and spill instead. */}
+            <span className="text-text-muted truncate flex-1">
+              {clearLabel ?? placeholder}
+            </span>
+            {value === null && <Check className="w-4 h-4 flex-shrink-0 text-text-muted" />}
           </button>
           {options?.map((option) => (
             <button
               key={option.id}
               type="button"
               onClick={() => pick(option.id)}
+              title={fullLabel(option)}
               className={`w-full px-3 py-2 text-left text-sm hover:bg-white/5 transition-colors flex items-center gap-2 ${
                 option.id === value ? "bg-white/5" : ""
               }`}
@@ -214,11 +247,20 @@ export function ColorTagSelect({
                 className="w-3 h-3 rounded-full flex-shrink-0"
                 style={{ backgroundColor: option.color || NO_COLOR }}
               />
-              <span className="text-text-primary truncate">{option.name}</span>
-              {option.secondary && (
-                <span className="text-xs text-text-muted truncate">({option.secondary})</span>
-              )}
-              {option.id === value && <Check className="w-4 h-4 ml-auto flex-shrink-0" />}
+              {/* Stacked, not side by side. Sharing one line, the name and the
+                  secondary both truncate, and flexbox shrinks them in
+                  proportion to their length -- so a short name beside a long
+                  path collapses to a character or two while the path keeps most
+                  of the row. The name is what is being picked, and it was the
+                  one disappearing. `min-w-0` lets the column truncate inside
+                  the row instead of forcing the row wider. */}
+              <span className="flex flex-col min-w-0 flex-1">
+                <span className="text-text-primary truncate">{option.name}</span>
+                {option.secondary && (
+                  <span className="text-xs text-text-muted truncate">{option.secondary}</span>
+                )}
+              </span>
+              {option.id === value && <Check className="w-4 h-4 flex-shrink-0" />}
             </button>
           ))}
         </div>

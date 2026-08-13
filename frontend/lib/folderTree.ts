@@ -70,6 +70,28 @@ export function trailTo<T extends TreeNode>(
   return trail;
 }
 
+/**
+ * How a folder is placed, for a picker row that has one line to say it.
+ *
+ * The immediate parent, marked with a leading elision when the trail runs
+ * deeper. NOT the full top-down trail: a dropdown row is finite, and a trail
+ * truncates from the tail, so it spends the width on the root -- which every
+ * sibling shares -- and drops the parent, which is the only part that tells them
+ * apart. Six folders named `manip1..3` shipped reading identically for exactly
+ * that reason. Anything wider than one line wants `trailTo` instead.
+ */
+export function parentLabel<T extends TreeNode>(
+  nodes: T[],
+  id: number | null
+): string | null {
+  const trail = trailTo(nodes, id);
+  // Nothing above it, or its parent is outside the visible set -- and a parent
+  // the caller was never shown is not a name worth inventing.
+  if (trail.length < 2) return null;
+  const parent = trail[trail.length - 2];
+  return trail.length > 2 ? `… / ${parent.name}` : parent.name;
+}
+
 /** Every id below `id`. Also what blocks moving a folder into its own subtree. */
 export function descendantIdsOf<T extends TreeNode>(
   nodes: T[],
