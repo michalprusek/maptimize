@@ -70,6 +70,49 @@ export function trailTo<T extends TreeNode>(
   return trail;
 }
 
+/**
+ * How a folder is placed, for a picker row that has one line to say it.
+ *
+ * The immediate parent, marked with a leading elision when the trail runs
+ * deeper. NOT the full top-down trail: a dropdown row is finite, and a trail
+ * truncates from the tail, so it spends the width on the root -- which every
+ * sibling shares -- and drops the parent, the cheapest thing that tells them
+ * apart. Nine folders named `manip1..3` shipped reading identically for exactly
+ * that reason.
+ *
+ * ⚠️ The elision is lossy, so this is a rendering, not an identity. The parent
+ * name is not unique either -- this very tree holds two folders named
+ * `détyrosination`, one inside the other -- so two folders under different
+ * grandparents can render the same row. Whatever shows this must keep
+ * `ancestorPath` reachable, or filing into the wrong branch becomes
+ * unrecoverable rather than merely cramped.
+ */
+export function parentLabel<T extends TreeNode>(
+  nodes: T[],
+  id: number | null
+): string | null {
+  const trail = trailTo(nodes, id);
+  // Nothing above it, or its parent is outside the visible set -- and a parent
+  // the caller was never shown is not a name worth inventing.
+  if (trail.length < 2) return null;
+  const parent = trail[trail.length - 2];
+  return trail.length > 2 ? `… / ${parent.name}` : parent.name;
+}
+
+/**
+ * Everything above a folder, top down. The unabbreviated form of
+ * `parentLabel` -- for a tooltip, a confirmation, anywhere a second line is
+ * cheap. Never for a dropdown row: that is the shape that shipped unreadable.
+ */
+export function ancestorPath<T extends TreeNode>(
+  nodes: T[],
+  id: number | null
+): string | null {
+  const trail = trailTo(nodes, id);
+  if (trail.length < 2) return null;
+  return trail.slice(0, -1).map((node) => node.name).join(" / ");
+}
+
 /** Every id below `id`. Also what blocks moving a folder into its own subtree. */
 export function descendantIdsOf<T extends TreeNode>(
   nodes: T[],

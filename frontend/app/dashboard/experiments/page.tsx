@@ -26,7 +26,7 @@ import {
   ExperimentFolderPanel,
   type FolderSelection,
 } from "@/components/experiment";
-import { trailTo } from "@/lib/folderTree";
+import { ancestorPath, parentLabel } from "@/lib/folderTree";
 import { useAssignMicroscope, useAssignPtm } from "@/hooks";
 import { useAuthStore } from "@/stores/authStore";
 
@@ -100,17 +100,21 @@ export default function ExperimentsPage(): JSX.Element {
   const [folderToDelete, setFolderToDelete] =
     useState<ExperimentFolder | null>(null);
 
-  // Folder names repeat between branches ("Batch 1" under two projects), so the
-  // chip shows the path above each one. Without it the menu offers two rows that
-  // read identically and file into different places.
+  // Folder names repeat between branches (nine folders named manip1..3 under
+  // three parents), so each row names the folder above it. The immediate parent
+  // and not the whole trail -- a row is one line wide, and a top-down trail
+  // truncates away exactly the part that differs. See `parentLabel`.
+  //
+  // The whole trail still goes along, for the title: eliding to the parent is
+  // lossy, and two folders under same-named parents would otherwise be
+  // indistinguishable in a menu that files experiments.
   const folderOptions = useMemo(
     () =>
-      toColorTagOptions(folders, (folder) => {
-        const trail = trailTo(folders, folder.id);
-        return trail.length > 1
-          ? trail.slice(0, -1).map((f) => f.name).join(" / ")
-          : null;
-      }),
+      toColorTagOptions(
+        folders,
+        (folder) => parentLabel(folders, folder.id),
+        (folder) => ancestorPath(folders, folder.id)
+      ),
     [folders]
   );
 
@@ -412,6 +416,12 @@ export default function ExperimentsPage(): JSX.Element {
                 </Link>
 
                 <div className="flex items-center justify-between gap-2 mt-4 pt-4 border-t border-white/5">
+                  {/* Every chip here right-aligns its menu. These cards sit in
+                      the third column of a three-column grid beside a fixed
+                      sidebar and a fixed folder aside, so at 1536px a card
+                      starts ~1230px in -- a left-aligned menu grew off the right
+                      of the viewport once the menu stopped being a fixed 224px.
+                      Right-aligned it opens back over the card instead. */}
                   <div className="flex items-center gap-2 min-w-0 flex-wrap">
                     <ColorTagSelect
                       options={proteinOptions}
@@ -430,6 +440,7 @@ export default function ExperimentsPage(): JSX.Element {
                       hint={t("experimentProteinHint")}
                       variant="chip"
                       size="sm"
+                      align="right"
                     />
                     <ColorTagSelect
                       options={microscopeOptions}
@@ -443,9 +454,8 @@ export default function ExperimentsPage(): JSX.Element {
                       placeholder={t("unassignedMicroscope")}
                       variant="chip"
                       size="sm"
+                      align="right"
                     />
-                    {/* Right-aligned because this chip sits further into the card:
-                        a left-aligned menu would hang off the card's edge. */}
                     <ColorTagSelect
                       options={ptmOptions}
                       value={exp.ptm?.id ?? null}
