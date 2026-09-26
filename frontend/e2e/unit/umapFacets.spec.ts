@@ -1,8 +1,10 @@
 import { expect, test } from "@playwright/test";
 
 import {
+  COLOR_BY_ORDER,
   EMPTY_SELECTION,
   FACET_LABEL_KEY,
+  FACET_ORDER,
   UNASSIGNED_ID,
   countActiveFilters,
   experimentColor,
@@ -362,5 +364,36 @@ test.describe("FACET_LABEL_KEY", () => {
     expect(en.umap.separability).toContain("{axis}");
     expect(en.umap.separabilityCounts).toContain("{classes}");
     expect(en.umap.separabilityCounts).toContain("{points}");
+  });
+});
+
+
+/**
+ * The two ordered lists the filter panel renders from.
+ *
+ * ⚠️ This exists because the cell-line facet shipped to production with its
+ * options computed, its wire param sent, and NO pills rendered: the panel kept a
+ * second, hand-written array of which sections to draw, and that array was never
+ * updated. tsc was happy (the array was cast) and every pure-function test
+ * passed. Both lists are now derived from a `Record<FacetKey, …>`, so the type
+ * system covers completeness — these tests cover the derivation itself, so
+ * replacing it with a literal again fails here rather than in the browser.
+ */
+test.describe("the panel's ordered facet lists", () => {
+  const ALL = Object.keys(EMPTY_SELECTION).sort();
+
+  test("every facet gets a filter section", () => {
+    expect([...FACET_ORDER].sort()).toEqual(ALL);
+  });
+
+  test("every facet can be coloured by", () => {
+    expect([...COLOR_BY_ORDER].sort()).toEqual(ALL);
+  });
+
+  test("protein leads the colour-by list and experiment trails it", () => {
+    // Protein is what the plot has always been about; experiment produces the
+    // most classes, so it reads worst as a default.
+    expect(COLOR_BY_ORDER[0]).toBe("protein");
+    expect(COLOR_BY_ORDER[COLOR_BY_ORDER.length - 1]).toBe("experiment");
   });
 });

@@ -778,13 +778,22 @@ ta nepřítomnost JE způsob, jak se vyjádří „čte každý, ACL predikát s
 AND napříč facetami**. Klauzule staví jediný helper `utils/facets.py::facet_clause`, aby
 se facety nerozešly.
 
-⚠️ **Přidání facety je pět míst na backendu a šest na frontendu, a ani jedno nespadne
-samo.** Backend: `FacetSelection`, dependency `facet_selection`, `_verify_reference_ids`,
+⚠️ **Přidání facety je pět míst na backendu a šest na frontendu, a většina nespadne
+sama.** Backend: `FacetSelection`, dependency `facet_selection`, `_verify_reference_ids`,
 `_apply_facets`, `_load_facets` (sloupec do `buckets` **i** do rozbalení n-tice — to
 rozbalení AsyncMock nezachytí, spadne až na reálných datech). Frontend: `EMPTY_SELECTION`,
-`FACET_LABEL_KEY`, `facetIdOf`, `FACET_PARAMS`, `FACET_BY_ERROR_LABEL`, `experimentMetaById`
-— plus `FACET_QUERY_PARAMS` a `UmapFacetSelection` v `lib/api.ts`, které jsou jako
-`Record<keyof UmapFacetSelection, …>` jediné dvě, co **nepřidání odchytí compile-time**.
+`FACET_LABEL_KEY`, `facetIdOf`, `FACET_PARAMS`, `FACET_BY_ERROR_LABEL`, `experimentMetaById`.
+Compile-time to odchytí jen tam, kde je to psané jako `Record<FacetKey, …>`:
+`FACET_QUERY_PARAMS` a `UmapFacetSelection` v `lib/api.ts`, `FACET_LABEL_KEY` a
+`COLOR_BY_RANK` v `umapFacets.ts`.
+
+⚠️ **`UmapFilterPanel` NESMÍ mít vlastní seznam facet k vykreslení.** Měl ho — ruční pole
+`[{key:"experiment"},…]` vedle `options` — a buněčná linie se kvůli němu nasadila do
+produkce s hotovými `options`, odeslaným `cell_line_id` a **nulou vykreslených pilulek**.
+Nespadlo nic: pole bylo přetypované, takže tsc mlčel, a unit testy koukají na čisté funkce,
+ne na render. Teď se sekce i colorBy odvozují z `FACET_ORDER` / `COLOR_BY_ORDER`
+v `umapFacets.ts`; `e2e/unit/umapFacets.spec.ts` zamyká, že obě pokrývají klíče
+`EMPTY_SELECTION`. Chytlo to až ověření v prohlížeči.
 
 ⚠️ **Id `0` = „nepřiřazeno"** (`UNASSIGNED_FACET_ID`). Funguje to jen proto, že reálná
 id jsou SERIAL od 1. Bez toho by byla facета PTM od začátku k ničemu — všechny experimenty

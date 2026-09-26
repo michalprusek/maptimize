@@ -49,6 +49,39 @@ export const FACET_LABEL_KEY: Record<FacetKey, string> = {
   cell_line: "facetCellLine",
 };
 
+/**
+ * Every facet, in the order the filter panel stacks their sections.
+ *
+ * ⚠️ Derived from `FACET_LABEL_KEY`, never written out again. That map is a
+ * `Record<FacetKey, string>`, so the type system guarantees it covers every
+ * facet — and a second hand-written list is exactly how the cell-line facet
+ * reached production with its options computed, its wire param sent, and no
+ * pills drawn. Nothing failed: the array was cast, so tsc was satisfied, and the
+ * pure-function tests never look at what the component renders.
+ */
+export const FACET_ORDER = Object.keys(FACET_LABEL_KEY) as FacetKey[];
+
+/**
+ * Rank of each facet in the colour-by selector. A different order from
+ * `FACET_ORDER` on purpose: protein is what the plot has always been about, and
+ * experiment goes last because it produces by far the most classes.
+ *
+ * A `Record`, not a list, for the same reason as above — a missing facet is a
+ * compile error rather than a silently short dropdown.
+ */
+const COLOR_BY_RANK: Record<FacetKey, number> = {
+  protein: 0,
+  microscope: 1,
+  ptm: 2,
+  cell_line: 3,
+  experiment: 4,
+};
+
+/** The colour-by options, most useful first. */
+export const COLOR_BY_ORDER: readonly FacetKey[] = (
+  Object.keys(COLOR_BY_RANK) as FacetKey[]
+).sort((a, b) => COLOR_BY_RANK[a] - COLOR_BY_RANK[b]);
+
 export interface FacetOption {
   id: number;
   name: string;
