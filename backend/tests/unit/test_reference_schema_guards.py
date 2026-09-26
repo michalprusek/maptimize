@@ -6,7 +6,7 @@ reached the column and came back 500.
 
 ⚠️ This file exists because both guards were once removed again with all 1512
 other tests still green — they are configuration, not code, so nothing else
-observes them. Parametrised over every schema that carries them, so a fourth
+observes them. Parametrised over every schema that carries them, so a fifth
 entity, or one that forgets to inherit the base, is covered by construction.
 """
 import pytest
@@ -14,11 +14,12 @@ from pydantic import ValidationError
 
 from schemas.experiment import ExperimentUpdate
 from schemas.image import MapProteinCreate, MapProteinUpdate
+from schemas.cell_line import CellLineCreate, CellLineUpdate
 from schemas.microscope import MicroscopeCreate, MicroscopeUpdate
 from schemas.ptm import PTMCreate, PTMUpdate
 
-REFERENCE_UPDATES = [MapProteinUpdate, MicroscopeUpdate, PTMUpdate]
-CREATE_SCHEMAS = [MapProteinCreate, MicroscopeCreate, PTMCreate]
+REFERENCE_UPDATES = [MapProteinUpdate, MicroscopeUpdate, PTMUpdate, CellLineUpdate]
+CREATE_SCHEMAS = [MapProteinCreate, MicroscopeCreate, PTMCreate, CellLineCreate]
 # ExperimentUpdate maps to a NOT NULL name too, and was the family that kept the
 # extra="forbid" but never gained the null guard.
 UPDATE_SCHEMAS = REFERENCE_UPDATES + [ExperimentUpdate]

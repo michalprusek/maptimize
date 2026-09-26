@@ -64,6 +64,7 @@ function facetRow(over: Partial<UmapFacetRow> = {}): UmapFacetRow {
     experiment_name: "E1",
     microscope_id: null,
     ptm_id: null,
+    cell_line_id: null,
     protein_id: null,
     count: 1,
     ...over,

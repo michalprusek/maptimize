@@ -166,6 +166,8 @@ async def ensure_schema_updates():
             ("experiments", "microscope_id", "INTEGER REFERENCES microscopes(id)"),
             # Microtubule post-translational modification at experiment level
             ("experiments", "ptm_id", "INTEGER REFERENCES ptms(id)"),
+            # Cultured cell line the MAP was expressed in
+            ("experiments", "cell_line_id", "INTEGER REFERENCES cell_lines(id)"),
             # MAP protein extended fields for protein page
             ("map_proteins", "uniprot_id", "VARCHAR(20)"),
             ("map_proteins", "fasta_sequence", "TEXT"),
@@ -459,6 +461,7 @@ async def seed_default_data():
     from models.image import DEFAULT_PROTEINS, MapProtein
     from models.experiment import Experiment
     from models.ptm import DEFAULT_PTMS, PTM
+    from models.cell_line import DEFAULT_CELL_LINES, CellLine
     from utils.security import hash_password
 
     async with async_session_maker() as db:
@@ -507,5 +510,13 @@ async def seed_default_data():
             for control_name, partner_name in pairings.items():
                 by_name[control_name].controls_ptm_id = by_name[partner_name].id
             print("Created default PTMs")
+
+        # Same "empty table only" guard, same reason: a line the lab deleted must
+        # not come back on the next restart.
+        result = await db.execute(select(CellLine).limit(1))
+        if not result.scalar_one_or_none():
+            for cl_data in DEFAULT_CELL_LINES:
+                db.add(CellLine(**cl_data))
+            print("Created default cell lines")
 
         await db.commit()

@@ -36,6 +36,7 @@ function row(over: Partial<UmapFacetRow> = {}): UmapFacetRow {
     experiment_name: "E1",
     microscope_id: null,
     ptm_id: null,
+    cell_line_id: null,
     protein_id: null,
     count: 1,
     ...over,
@@ -43,9 +44,9 @@ function row(over: Partial<UmapFacetRow> = {}): UmapFacetRow {
 }
 
 const ROWS: UmapFacetRow[] = [
-  row({ experiment_id: 1, experiment_name: "AeryScan MAP7", microscope_id: 10, ptm_id: 20, protein_id: 30, count: 5 }),
-  row({ experiment_id: 1, experiment_name: "AeryScan MAP7", microscope_id: 10, ptm_id: 20, protein_id: 31, count: 2 }),
-  row({ experiment_id: 2, experiment_name: "SIM Tau", microscope_id: 11, ptm_id: null, protein_id: 30, count: 4 }),
+  row({ experiment_id: 1, experiment_name: "AeryScan MAP7", microscope_id: 10, ptm_id: 20, cell_line_id: 40, protein_id: 30, count: 5 }),
+  row({ experiment_id: 1, experiment_name: "AeryScan MAP7", microscope_id: 10, ptm_id: 20, cell_line_id: 40, protein_id: 31, count: 2 }),
+  row({ experiment_id: 2, experiment_name: "SIM Tau", microscope_id: 11, ptm_id: null, cell_line_id: null, protein_id: 30, count: 4 }),
 ];
 
 test.describe("facetOptions", () => {
@@ -101,8 +102,13 @@ test.describe("facetOptions", () => {
 test.describe("experimentMetaById", () => {
   test("maps an experiment to its acquisition metadata", () => {
     const meta = experimentMetaById(ROWS);
-    expect(meta.get(1)).toEqual({ name: "AeryScan MAP7", microscopeId: 10, ptmId: 20 });
+    expect(meta.get(1)).toEqual({
+      name: "AeryScan MAP7", microscopeId: 10, ptmId: 20, cellLineId: 40,
+    });
     expect(meta.get(2)?.ptmId).toBeNull();
+    // A point carries only its experiment id, so this map is the only route the
+    // plot has to the cell line it should be coloured by.
+    expect(meta.get(2)?.cellLineId).toBeNull();
   });
 });
 
@@ -115,8 +121,8 @@ test.describe("selection helpers", () => {
   });
 
   test("counts every ticked value across facets", () => {
-    const selection: FacetSelection = { experiment: [1], microscope: [2, 3], protein: [], ptm: [0] };
-    expect(countActiveFilters(selection)).toBe(4);
+    const selection: FacetSelection = { experiment: [1], microscope: [2, 3], protein: [], ptm: [0], cell_line: [9] };
+    expect(countActiveFilters(selection)).toBe(5);
     expect(isSelectionEmpty(selection)).toBe(false);
     expect(isSelectionEmpty(EMPTY_SELECTION)).toBe(true);
   });
@@ -133,12 +139,13 @@ test.describe("selection helpers", () => {
 
 test.describe("URL round-trip", () => {
   test("survives a round trip", () => {
-    const selection: FacetSelection = { experiment: [2, 1], microscope: [], protein: [7], ptm: [0] };
+    const selection: FacetSelection = { experiment: [2, 1], microscope: [], protein: [7], ptm: [0], cell_line: [4, 2] };
     expect(selectionFromQuery(selectionToQuery(selection))).toEqual({
       experiment: [1, 2],
       microscope: [],
       protein: [7],
       ptm: [0],
+      cell_line: [2, 4],
     });
   });
 
@@ -168,6 +175,13 @@ test.describe("URL round-trip", () => {
     expect(selectionFromQuery("?ptm=%20").ptm).toEqual([]);
   });
 
+  test("the cell line accepts the unassigned sentinel like the other reference facets", () => {
+    // Until the backfill has run, "no cell line" is the only value most of the
+    // corpus has -- reading 0 as a blank would make the facet unusable exactly
+    // when it matters.
+    expect(selectionFromQuery("?cell_line=0,3").cell_line).toEqual([0, 3]);
+  });
+
   test("the unassigned sentinel is not accepted for experiments", () => {
     // experiment_id is NOT NULL, so 0 there can only produce a 404 the client
     // then has to undo.
@@ -177,13 +191,23 @@ test.describe("URL round-trip", () => {
 });
 
 test.describe("selectionWithoutDeadIds", () => {
-  const selection: FacetSelection = { experiment: [], microscope: [5], protein: [2], ptm: [] };
+  const selection: FacetSelection = { experiment: [], microscope: [5], protein: [2], ptm: [], cell_line: [] };
 
   test("drops only the ids the error names", () => {
     // A colleague deleting microscope 5 must not cost the user their protein
     // filter as well.
     const pruned = selectionWithoutDeadIds(selection, "Microscope not found: 5");
-    expect(pruned).toEqual({ experiment: [], microscope: [], protein: [2], ptm: [] });
+    expect(pruned).toEqual({ experiment: [], microscope: [], protein: [2], ptm: [], cell_line: [] });
+  });
+
+  test("recognises the cell line error", () => {
+    // There is no cell-line admin page, so deletes arrive only from the API and
+    // the connector -- but a stale ticked id 404s the whole request all the
+    // same, and an unrecognised message clears nothing and loops.
+    const stale: FacetSelection = { ...EMPTY_SELECTION, cell_line: [5, 6], ptm: [1] };
+    const pruned = selectionWithoutDeadIds(stale, "Cell line not found: 5");
+    expect(pruned?.cell_line).toEqual([6]);
+    expect(pruned?.ptm).toEqual([1]);
   });
 
   test("handles several dead ids at once", () => {
@@ -265,6 +289,7 @@ test.describe("appendFacetParams", () => {
     microscope: [10],
     protein: [],
     ptm: [0],
+    cell_line: [7],
   };
 
   test("spells each facet with the wire name the backend reads", () => {
@@ -273,6 +298,10 @@ test.describe("appendFacetParams", () => {
     expect(params.getAll("microscope_id")).toEqual(["10"]);
     expect(params.getAll("protein_id")).toEqual([]);
     expect(params.getAll("ptm_id")).toEqual(["0"]);
+    // `cell_line_id`, not `cell_line`: the URL key and the wire key differ, and
+    // sending the UI spelling means FastAPI ignores it and returns the whole
+    // corpus while the panel shows the filter ticked.
+    expect(params.getAll("cell_line_id")).toEqual(["7"]);
   });
 
   test("repeats the parameter rather than joining, which is what FastAPI parses", () => {
@@ -312,7 +341,7 @@ test.describe("appendFacetParams", () => {
  * wrong answer, not a crash, so it is worth pinning here.
  */
 test.describe("FACET_LABEL_KEY", () => {
-  const FACETS = ["experiment", "microscope", "protein", "ptm"] as const;
+  const FACETS = ["experiment", "microscope", "protein", "ptm", "cell_line"] as const;
 
   test("covers every facet the plot can be coloured and scored by", () => {
     expect(Object.keys(FACET_LABEL_KEY).sort()).toEqual([...FACETS].sort());

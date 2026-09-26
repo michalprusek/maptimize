@@ -803,6 +803,12 @@ tools:
         description: >
           Optional microtubule post-translational modification to assign
           (id from list_ptms).
+      - name: cell_line_id
+        in: body
+        type: integer
+        description: >
+          Optional cultured cell line the MAP was expressed in
+          (id from list_cell_lines; U2OS is the lab's default).
       - name: fasta_sequence
         in: body
         type: string
@@ -814,7 +820,8 @@ tools:
       Update an experiment's name, description, status, or FASTA sequence. Only
       the fields you pass are changed. Owner-only. Use assign_experiment_protein
       to change the protein, assign_experiment_microscope to change the
-      microscope and assign_experiment_ptm to change the PTM — this tool rejects
+      microscope, assign_experiment_ptm to change the PTM and
+      assign_experiment_cell_line to change the cell line — this tool rejects
       those fields.
     handler: http_post_json
     method: PATCH
@@ -923,6 +930,31 @@ tools:
         in: query
         type: integer
         description: PTM id to assign; omit to clear the assignment.
+
+  - name: assign_experiment_cell_line
+    annotations: {readOnlyHint: false, destructiveHint: false}
+    description: >
+      Assign (or change) the cultured cell line the experiment's MAP was
+      expressed in — U2OS, HeLa, HEK293T and so on. Pass the id from
+      list_cell_lines; omit cell_line_id to clear it. If the line you want is not
+      in the list yet, create_cell_line it first. Like
+      assign_experiment_microscope and assign_experiment_ptm, and unlike the
+      other experiment writes, this is NOT owner-only — any member of the group
+      may set it, so the lab can backfill the cell line across shared experiments
+      and make the dashboard UMAP cell-line filter useful. It touches one row
+      only: nothing cascades down to the images or crops.
+    handler: http_json
+    method: PATCH
+    path: /api/experiments/{experiment_id}/cell-line
+    params:
+      - name: experiment_id
+        in: path
+        type: integer
+        required: true
+      - name: cell_line_id
+        in: query
+        type: integer
+        description: Cell line id to assign; omit to clear the assignment.
 
   - name: assign_experiment_group
     annotations: {readOnlyHint: false, destructiveHint: false}
@@ -1234,7 +1266,7 @@ tools:
       - name: label_by
         in: query
         type: string
-        enum: [protein, microscope, ptm, experiment]
+        enum: [protein, microscope, ptm, cell_line, experiment]
         default: protein
         description: The dimension whose values are treated as the classes.
       - name: experiment_id
@@ -1259,6 +1291,13 @@ tools:
         description: >
           Restrict to these PTMs; 0 means "no PTM assigned". This is how you
           slice to controls only, or to one modification.
+      - name: cell_line_id
+        in: query
+        type: array
+        items: integer
+        description: >
+          Restrict to these cell lines; 0 means "no cell line assigned". Use it
+          to ask whether a difference holds within one biological background.
 
   # -- Proteins (shared reference data) --------------------------------------
   - name: list_proteins
@@ -1662,6 +1701,103 @@ tools:
         type: integer
         required: true
 
+  # -- Cell lines (shared reference data) -------------------------------------
+  #
+  # ⚠️ There is no cell-line admin page in the UI: a line is created straight
+  # from the experiment form by typing a name the list does not hold. So these
+  # tools are the only way to RENAME or DELETE one. If the lab reports a typo in
+  # the facet, this is where it gets fixed.
+  - name: list_cell_lines
+    annotations: {readOnlyHint: true, openWorldHint: false}
+    description: >
+      List all cell lines (shared reference data): id, name, description, color
+      and per-line experiment count. A cell line is the cultured biological
+      background the MAP was expressed in — U2OS (the lab's default), HeLa,
+      HEK293T and so on. Use it to get a cell_line_id for create_experiment or
+      assign_experiment_cell_line.
+    handler: http_json
+    method: GET
+    path: /api/cell-lines
+    params: []
+
+  - name: get_cell_line
+    annotations: {readOnlyHint: true, openWorldHint: false}
+    description: Get one cell line by id, with its description and experiment count.
+    handler: http_json
+    method: GET
+    path: /api/cell-lines/{cell_line_id}
+    params:
+      - name: cell_line_id
+        in: path
+        type: integer
+        required: true
+
+  - name: create_cell_line
+    annotations: {readOnlyHint: false, destructiveHint: false}
+    description: >
+      Create a cell line (shared reference data — visible to everyone). Only
+      `name` is required and it must be unique; a display color is auto-picked if
+      you omit it. Check list_cell_lines first: near-duplicates ("U2OS" vs
+      "U-2 OS") split one population into two facet values that no longer
+      compare.
+    handler: http_post_json
+    method: POST
+    path: /api/cell-lines
+    params:
+      - name: name
+        in: body
+        type: string
+        required: true
+        description: Unique cell line name (1-100 chars), e.g. "HeLa".
+      - name: description
+        in: body
+        type: string
+        description: Optional free text, e.g. "Human cervical adenocarcinoma".
+      - name: color
+        in: body
+        type: string
+        description: Hex color like "#1f77b4"; auto-picked if omitted.
+
+  - name: update_cell_line
+    annotations: {readOnlyHint: false, destructiveHint: false}
+    description: >
+      Update a cell line's name, description or color (only the fields you pass
+      are changed). Shared reference data — changes are visible to everyone, and
+      renaming re-labels every experiment already on that line.
+    handler: http_post_json
+    method: PATCH
+    path: /api/cell-lines/{cell_line_id}
+    params:
+      - name: cell_line_id
+        in: path
+        type: integer
+        required: true
+      - name: name
+        in: body
+        type: string
+        description: New unique name (1-100 chars).
+      - name: description
+        in: body
+        type: string
+      - name: color
+        in: body
+        type: string
+        description: Hex color like "#1f77b4".
+
+  - name: delete_cell_line
+    annotations: {readOnlyHint: false, destructiveHint: true, idempotentHint: false}
+    description: >
+      Permanently delete a cell line. IRREVERSIBLE. Refused (409) if any
+      experiment still references it — reassign those first. Shared reference data.
+    handler: http_json
+    method: DELETE
+    path: /api/cell-lines/{cell_line_id}
+    params:
+      - name: cell_line_id
+        in: path
+        type: integer
+        required: true
+
   # -- Database (read-only) --------------------------------------------------
   - name: query_database
     annotations: {readOnlyHint: true, openWorldHint: false}
@@ -1679,7 +1815,8 @@ tools:
       which MUST JOIN experiments (cell_crops.image_id = images.id, then
       images.experiment_id = experiments.id). Allowed tables and columns:
       experiments(id, name, description, status, map_protein_id, microscope_id,
-      ptm_id, group_id, fasta_sequence, created_at, updated_at);
+      ptm_id, cell_line_id, group_id, folder_id, fasta_sequence, created_at,
+      updated_at);
       images(id, experiment_id, map_protein_id, original_filename, width, height,
       z_slices, file_size, status, created_at, processed_at);
       cell_crops(id, image_id, map_protein_id, bbox_x, bbox_y, bbox_w, bbox_h,
@@ -1694,6 +1831,8 @@ tools:
       post-translational modification; kind is 'modification' (a tubulin mark),
       'control' (paired inactive-enzyme control) or 'none' (unmodified lattice);
       shared, no user filter];
+      cell_lines(id, name, description) [cultured line the MAP was expressed in,
+      e.g. U2OS; shared, no user filter];
       comparisons(id, user_id, crop_a_id, crop_b_id, winner_id, response_time_ms,
       undone, timestamp);
       user_ratings(id, user_id, cell_crop_id, mu, sigma, comparison_count,

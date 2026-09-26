@@ -113,7 +113,13 @@ export function UmapVisualization({
     queryFn: () => api.getPtms(),
     staleTime: 1000 * 60 * 5,
   });
-  const referencesFailed = microscopesFailed || proteinsFailed || ptmsFailed;
+  const { data: cellLines, isError: cellLinesFailed } = useQuery({
+    queryKey: ["cellLines"],
+    queryFn: () => api.getCellLines(),
+    staleTime: 1000 * 60 * 5,
+  });
+  const referencesFailed =
+    microscopesFailed || proteinsFailed || ptmsFailed || cellLinesFailed;
 
   // An experimentId prop scopes the plot; the user filters within it.
   const effectiveSelection = useMemo(
@@ -222,7 +228,7 @@ export function UmapVisualization({
       : rows.filter((row) => row.experiment_id === experimentId);
   }, [view?.facets, experimentId]);
 
-  // Microscope and PTM live on the experiment, so points carry only
+  // Microscope, PTM and cell line live on the experiment, so points carry only
   // experiment_id and the rest is looked up here.
   const experimentMeta = useMemo(() => experimentMetaById(view?.facets ?? []), [view?.facets]);
   const microscopeById = useMemo(
@@ -230,21 +236,27 @@ export function UmapVisualization({
     [microscopes]
   );
   const ptmById = useMemo(() => new Map((ptms ?? []).map((p) => [p.id, p])), [ptms]);
+  const cellLineById = useMemo(
+    () => new Map((cellLines ?? []).map((c) => [c.id, c])),
+    [cellLines]
+  );
 
   const contextOf = useCallback(
     (point: ProjectionPoint): PointContext => {
       const meta = experimentMeta.get(point.experiment_id);
       const microscope = meta?.microscopeId ? microscopeById.get(meta.microscopeId) : undefined;
       const ptm = meta?.ptmId ? ptmById.get(meta.ptmId) : undefined;
+      const cellLine = meta?.cellLineId ? cellLineById.get(meta.cellLineId) : undefined;
       return {
         experimentName: meta?.name ?? `#${point.experiment_id}`,
         microscopeName: microscope?.name ?? null,
         // Full name, matching the legend: an abbreviation here and a name
         // there reads as two different PTMs on the same plot.
         ptmName: ptm?.name ?? null,
+        cellLineName: cellLine?.name ?? null,
       };
     },
-    [experimentMeta, microscopeById, ptmById]
+    [experimentMeta, microscopeById, ptmById, cellLineById]
   );
 
   /** The label and colour a point takes under the current colour-by dimension. */
@@ -269,6 +281,15 @@ export function UmapVisualization({
             color: ptm?.color || DEFAULT_POINT_COLOR,
           };
         }
+        case "cell_line": {
+          const cellLine = meta?.cellLineId
+            ? cellLineById.get(meta.cellLineId)
+            : undefined;
+          return {
+            name: cellLine?.name ?? t("unassigned"),
+            color: cellLine?.color || DEFAULT_POINT_COLOR,
+          };
+        }
         case "experiment":
           return {
             name: meta?.name ?? `#${point.experiment_id}`,
@@ -282,7 +303,7 @@ export function UmapVisualization({
           };
       }
     },
-    [colorBy, experimentMeta, microscopeById, ptmById, t]
+    [colorBy, experimentMeta, microscopeById, ptmById, cellLineById, t]
   );
 
   /**
@@ -731,6 +752,7 @@ export function UmapVisualization({
           microscopes={microscopes}
           proteins={proteins}
           ptms={ptms}
+          cellLines={cellLines}
           showExperimentFacet={experimentId === undefined}
           shownCount={view.points.length}
           totalCount={totalPoints(facetRows)}

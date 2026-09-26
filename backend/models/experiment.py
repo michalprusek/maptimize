@@ -14,6 +14,7 @@ if TYPE_CHECKING:
     from .group import Group
     from .microscope import Microscope
     from .ptm import PTM
+    from .cell_line import CellLine
 
 
 class ExperimentStatus(str, PyEnum):
@@ -43,6 +44,10 @@ class Experiment(Base):
     )
     ptm_id: Mapped[Optional[int]] = mapped_column(
         ForeignKey("ptms.id"),
+        nullable=True
+    )
+    cell_line_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("cell_lines.id"),
         nullable=True
     )
     group_id: Mapped[Optional[int]] = mapped_column(
@@ -82,6 +87,7 @@ class Experiment(Base):
     map_protein: Mapped[Optional["MapProtein"]] = relationship()
     microscope: Mapped[Optional["Microscope"]] = relationship()
     ptm: Mapped[Optional["PTM"]] = relationship()
+    cell_line: Mapped[Optional["CellLine"]] = relationship()
     images: Mapped[List["Image"]] = relationship(
         back_populates="experiment",
         cascade="all, delete-orphan"

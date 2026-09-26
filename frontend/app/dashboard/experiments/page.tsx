@@ -27,7 +27,12 @@ import {
   type FolderSelection,
 } from "@/components/experiment";
 import { ancestorPath, parentLabel } from "@/lib/folderTree";
-import { useAssignMicroscope, useAssignPtm } from "@/hooks";
+import {
+  useAssignCellLine,
+  useAssignMicroscope,
+  useAssignPtm,
+  useCreateCellLine,
+} from "@/hooks";
 import { useAuthStore } from "@/stores/authStore";
 
 export default function ExperimentsPage(): JSX.Element {
@@ -52,6 +57,7 @@ export default function ExperimentsPage(): JSX.Element {
   const [selectedProteinId, setSelectedProteinId] = useState<number | null>(null);
   const [selectedMicroscopeId, setSelectedMicroscopeId] = useState<number | null>(null);
   const [selectedPtmId, setSelectedPtmId] = useState<number | null>(null);
+  const [selectedCellLineId, setSelectedCellLineId] = useState<number | null>(null);
   // Which card has one of its tag menus (microscope, PTM) open. Each card is a
   // framer-motion element, so it creates a stacking context the menu cannot
   // escape -- without lifting the open card, the next card in the grid paints
@@ -175,12 +181,26 @@ export default function ExperimentsPage(): JSX.Element {
     queryFn: () => api.getPtms(),
   });
 
+  const { data: cellLines } = useQuery({
+    queryKey: ["cellLines"],
+    queryFn: () => api.getCellLines(),
+  });
+
   const proteinOptions = toColorTagOptions(proteins, (p) => p.full_name);
   const microscopeOptions = toColorTagOptions(microscopes, (m) => m.manufacturer);
   const ptmOptions = toColorTagOptions(ptms, (p) => p.abbreviation);
+  const cellLineOptions = toColorTagOptions(cellLines, (c) => c.description);
+
+  // The only way a cell line comes into existence -- there is no admin page for
+  // them. Shared with the experiment detail page, which offers the same picker.
+  const createCellLine = useCreateCellLine({
+    fallbackMessage: t("createCellLineError"),
+    onError: setError,
+    onSuccess: () => setError(null),
+  });
 
   const createMutation = useMutation({
-    mutationFn: (data: { name: string; description?: string; map_protein_id?: number; microscope_id?: number; ptm_id?: number }) =>
+    mutationFn: (data: { name: string; description?: string; map_protein_id?: number; microscope_id?: number; ptm_id?: number; cell_line_id?: number }) =>
       api.createExperiment(data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["experiments"] });
@@ -190,6 +210,7 @@ export default function ExperimentsPage(): JSX.Element {
       setSelectedProteinId(null);
       setSelectedMicroscopeId(null);
       setSelectedPtmId(null);
+      setSelectedCellLineId(null);
       setError(null);
     },
     onError: (err: Error) => {
@@ -240,6 +261,12 @@ export default function ExperimentsPage(): JSX.Element {
     onSuccess: () => setError(null),
   });
 
+  const assignCellLineMutation = useAssignCellLine({
+    fallbackMessage: t("assignCellLineError"),
+    onError: setError,
+    onSuccess: () => setError(null),
+  });
+
   const handleCreate = (e: React.FormEvent) => {
     e.preventDefault();
     createMutation.mutate({
@@ -248,6 +275,7 @@ export default function ExperimentsPage(): JSX.Element {
       map_protein_id: selectedProteinId ?? undefined,
       microscope_id: selectedMicroscopeId ?? undefined,
       ptm_id: selectedPtmId ?? undefined,
+      cell_line_id: selectedCellLineId ?? undefined,
     });
   };
 
@@ -470,6 +498,27 @@ export default function ExperimentsPage(): JSX.Element {
                       size="sm"
                       align="right"
                     />
+                    {/* Group-writable like the microscope and PTM chips, so it
+                        stays enabled on a colleague's card. */}
+                    <ColorTagSelect
+                      options={cellLineOptions}
+                      value={exp.cell_line?.id ?? null}
+                      onChange={(cellLineId) =>
+                        assignCellLineMutation.mutate({ experimentId: exp.id, cellLineId })
+                      }
+                      onOpenChange={(open) =>
+                        setOpenMenuCardId(open ? exp.id : null)
+                      }
+                      create={{
+                        onCreate: createCellLine,
+                        searchPlaceholder: t("searchOrTypeCellLine"),
+                        label: (name) => t("createCellLine", { name }),
+                      }}
+                      placeholder={t("unassignedCellLine")}
+                      variant="chip"
+                      size="sm"
+                      align="right"
+                    />
                     {/* Filing is group-writable like the three chips above, so
                         this stays enabled on a colleague's card. It changes
                         where the experiment appears and nothing else — sharing
@@ -615,6 +664,27 @@ export default function ExperimentsPage(): JSX.Element {
                     value={selectedPtmId}
                     onChange={setSelectedPtmId}
                     placeholder={t("unassignedPtm")}
+                  />
+                </div>
+
+                {/* Cell line selector. The only picker here that can also
+                    create: type a line the lab has not used before and it is
+                    minted on the spot. */}
+                <div>
+                  <label className="block text-sm font-medium text-text-secondary mb-2">
+                    {t("assignCellLine")}
+                  </label>
+                  <ColorTagSelect
+                    options={cellLineOptions}
+                    value={selectedCellLineId}
+                    onChange={setSelectedCellLineId}
+                    create={{
+                      onCreate: createCellLine,
+                      searchPlaceholder: t("searchOrTypeCellLine"),
+                      label: (name) => t("createCellLine", { name }),
+                    }}
+                    hint={t("cellLineHint")}
+                    placeholder={t("unassignedCellLine")}
                   />
                 </div>
 

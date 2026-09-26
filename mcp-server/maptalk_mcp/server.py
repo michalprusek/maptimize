@@ -149,26 +149,29 @@ SERVER_INSTRUCTIONS = (
     "why the URL and DOI routes exist.\n\n"
     "B) Application control: list/create/update/delete experiments; upload_image then "
     "process_images to run YOLO cell detection; read results with list_cell_crops; "
-    "manage the shared reference data — proteins, microscopes and PTMs (microtubule "
-    "post-translational modifications) — and assign them to experiments; "
+    "manage the shared reference data — proteins, microscopes, PTMs (microtubule "
+    "post-translational modifications) and cell lines (the cultured background the "
+    "MAP was expressed in, e.g. U2OS) — and assign them to experiments; "
     "query_database runs a READ-ONLY SQL SELECT over your data. A typical pipeline is "
     "create_experiment → upload_image → process_images → list_cell_crops. Image "
     "processing runs in the background, so poll get_image / list_fov_images for status.\n\n"
     "Access control mirrors the UI exactly: reads are group-shared (you see your own "
     "data plus your group's), and query_database injects a per-user filter so you never "
     "see other users' private rows. Writes to experiments and images are OWNER-ONLY, "
-    "with three deliberate exceptions any group member may perform on a colleague's "
-    "experiment: assign_experiment_protein, assign_experiment_microscope and "
-    "assign_experiment_ptm — these are shared labelling, acquisition and sample-prep "
-    "metadata the lab curates collectively. Proteins, microscopes and PTMs are themselves shared "
-    "reference data anyone may edit. Deletes are IRREVERSIBLE and cascade (deleting an "
+    "with four deliberate exceptions any group member may perform on a colleague's "
+    "experiment: assign_experiment_protein, assign_experiment_microscope, "
+    "assign_experiment_ptm and assign_experiment_cell_line — these are shared "
+    "labelling, acquisition and sample-prep metadata the lab curates collectively. "
+    "Proteins, microscopes, PTMs and cell lines are themselves shared reference data "
+    "anyone may edit; cell lines have no admin page in the UI, so update_cell_line and "
+    "delete_cell_line are the only way to fix a mistyped one. Deletes are IRREVERSIBLE and cascade (deleting an "
     "experiment deletes its images and cell crops)."
 )
 
 # Bumped when the tool contract or capabilities change (see MCP versioning).
 # The pinning tests in tests/test_registry.py and tests/test_protocol.py record
 # what THIS version exposes — update them with the bump.
-SERVER_VERSION = "4.4.0"
+SERVER_VERSION = "4.5.0"
 
 
 def build_server(registry: ToolRegistry) -> Server:

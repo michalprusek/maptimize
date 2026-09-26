@@ -3,6 +3,7 @@ from .user import User
 from .user_settings import UserSettings, DisplayMode, Theme, Language
 from .experiment import Experiment
 from .microscope import Microscope
+from .cell_line import CellLine
 from .ptm import PTM
 from .image import Image, MapProtein
 from .cell_crop import CellCrop
@@ -26,6 +27,7 @@ __all__ = [
     "Language",
     "Experiment",
     "Microscope",
+    "CellLine",
     "PTM",
     "Image",
     "MapProtein",

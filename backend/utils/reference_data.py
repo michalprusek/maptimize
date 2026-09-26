@@ -1,9 +1,11 @@
 """Shared CRUD helpers for the lab's shared reference tables.
 
-`map_proteins`, `microscopes` and `ptms` are all the same kind of thing: a
-lab-wide lookup list with a unique name and a legend colour, referenced by a
-nullable FK from another table. Their routers were drifting into three copies of
-the same four helpers, so the copies live here once, parameterised by model.
+`map_proteins`, `microscopes`, `ptms` and `cell_lines` are all the same kind of
+thing: a lab-wide lookup list with a unique name and a legend colour, referenced
+by a nullable FK from another table. Their routers were drifting into three
+copies of the same helpers, so the copies live here once, parameterised by
+model -- and `cell_lines` was written against them rather than becoming a
+fourth.
 
 These deliberately stay dumb about authorisation. Reference data carries no
 `user_id` — any authenticated user may read and write it — so the routers supply
@@ -71,9 +73,24 @@ async def ensure_name_unique(
     name: str,
     label: str,
     exclude_id: Optional[int] = None,
+    case_insensitive: bool = False,
 ) -> None:
-    """Raise 400 if another row of this model already has ``name``."""
-    query = select(model).where(model.name == name)
+    """Raise 400 if another row of this model already has ``name``.
+
+    ``case_insensitive`` is off by default because three of the four families are
+    picked from a list on their own admin page, where a case variant takes
+    deliberate effort. Cell lines have no such page -- a name is typed freely
+    into the experiment form -- so "U2OS" and "u2os" are one keystroke apart
+    there, and two rows would split one population into two facet values that
+    never compare again, with nothing failing anywhere.
+
+    ⚠️ The comparison has to happen in the DATABASE. Lowering only the incoming
+    string still asks for `name = 'u2os'`, which matches nothing and creates the
+    duplicate this exists to prevent.
+    """
+    column = func.lower(model.name) if case_insensitive else model.name
+    wanted = name.lower() if case_insensitive else name
+    query = select(model).where(column == wanted)
     # `is not None`, not truthiness: id 0 is the one value that must not be
     # read as "no exclusion" in a codebase where 0 is a live sentinel elsewhere.
     if exclude_id is not None:
@@ -94,12 +111,12 @@ async def pick_color(db: AsyncSession, model: Type[T]) -> str:
     duplicate legend colour, while a unique constraint on colour would reject
     perfectly legitimate user-chosen values.
 
-    ⚠️ Colours are unique per table only, so a protein, a microscope and a PTM
-    can share a hex — in production ``#3b82f6`` is MAP9, 3D SIM and Tyrosination
-    at once. The scatter plot colours by one dimension at a time and never shows
-    the clash; the dashboard filter panel renders all four facets together and
-    does. Widening uniqueness across tables would need one shared "colour in use"
-    query, not a change here.
+    ⚠️ Colours are unique per table only, so a protein, a microscope, a PTM and a
+    cell line can share a hex — in production ``#3b82f6`` is MAP9, 3D SIM,
+    Tyrosination and U2OS at once. The scatter plot colours by one dimension at a
+    time and never shows the clash; the dashboard filter panel renders every
+    facet together and does. Widening uniqueness across tables would need one
+    shared "colour in use" query, not a change here.
     """
     result = await db.execute(select(model.color).where(model.color.isnot(None)))
     used = {row[0].lower() for row in result.all() if row[0]}

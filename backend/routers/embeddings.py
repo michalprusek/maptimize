@@ -12,6 +12,7 @@ from sqlalchemy.orm import selectinload
 
 from database import get_db
 from models.cell_crop import CellCrop
+from models.cell_line import CellLine
 from models.experiment import Experiment
 from models.image import Image, MapProtein
 from models.microscope import Microscope
@@ -62,12 +63,19 @@ class FacetSelection:
     microscope_ids: List[int] = field(default_factory=list)
     protein_ids: List[int] = field(default_factory=list)
     ptm_ids: List[int] = field(default_factory=list)
+    cell_line_ids: List[int] = field(default_factory=list)
 
     @property
     def is_active(self) -> bool:
         """True when the user has narrowed the plot at all."""
         return any(
-            (self.experiment_ids, self.microscope_ids, self.protein_ids, self.ptm_ids)
+            (
+                self.experiment_ids,
+                self.microscope_ids,
+                self.protein_ids,
+                self.ptm_ids,
+                self.cell_line_ids,
+            )
         )
 
 
@@ -84,19 +92,23 @@ def facet_selection(
     ptm_id: Optional[List[int]] = Query(
         None, description="Filter by PTM; repeat for several, 0 = unassigned"
     ),
+    cell_line_id: Optional[List[int]] = Query(
+        None, description="Filter by cell line; repeat for several, 0 = unassigned"
+    ),
 ) -> FacetSelection:
-    """Collect the four dashboard filters into one value.
+    """Collect the dashboard filters into one value.
 
-    A dependency rather than four parameters on the handler: it keeps the facets
+    A dependency rather than five parameters on the handler: it keeps the facets
     together as the single thing they are, lets a future endpoint take the same
     filter without re-declaring them, and means a caller that constructs the
-    handler's arguments itself supplies one object instead of four lists.
+    handler's arguments itself supplies one object instead of five lists.
     """
     return FacetSelection(
         experiment_ids=experiment_id or [],
         microscope_ids=microscope_id or [],
         protein_ids=protein_id or [],
         ptm_ids=ptm_id or [],
+        cell_line_ids=cell_line_id or [],
     )
 
 
@@ -128,8 +140,9 @@ async def get_umap_visualization(
     Filtering therefore never changes where a point sits — it only chooses which
     points of the one shared projection are returned.
 
-    The four filters are OR within a facet and AND across facets. Passing id 0
-    for microscope, protein or PTM also matches rows with nothing assigned.
+    The filters are OR within a facet and AND across facets. Passing id 0 for
+    microscope, protein, PTM or cell line also matches rows with nothing
+    assigned.
 
     ``separability`` scores the points actually returned, so narrowing the
     filters is how a caller compares one context against another — controls
@@ -145,6 +158,7 @@ async def get_umap_visualization(
     await _verify_reference_ids(db, Microscope, selection.microscope_ids, "Microscope")
     await _verify_reference_ids(db, MapProtein, selection.protein_ids, "MAP protein")
     await _verify_reference_ids(db, PTM, selection.ptm_ids, "PTM")
+    await _verify_reference_ids(db, CellLine, selection.cell_line_ids, "Cell line")
 
     group_ids = await get_user_group_ids(current_user.id, db)
     if selection.experiment_ids:
@@ -359,10 +373,10 @@ async def _load_facets(
     Deliberately ignores the active facet selection: the panel has to keep
     offering a value after you untick it, and has to show how many points each
     *other* value would bring back. Grouping by (experiment, protein) is the
-    coarsest grouping that still separates every facet, because microscope and
-    PTM live on the experiment while protein is per point — roughly one row per
-    experiment, so this stays far cheaper than the point query and loads no
-    embeddings.
+    coarsest grouping that still separates every facet, because microscope, PTM
+    and cell line all live on the experiment while protein is per point —
+    roughly one row per experiment, so this stays far cheaper than the point
+    query and loads no embeddings.
     """
     if umap_type is UmapType.FOV:
         protein_col = Image.map_protein_id
@@ -383,6 +397,7 @@ async def _load_facets(
         Experiment.name,
         Experiment.microscope_id,
         Experiment.ptm_id,
+        Experiment.cell_line_id,
         protein_col,
     )
     source = select(*buckets, func.count(count_col))
@@ -402,10 +417,12 @@ async def _load_facets(
             experiment_name=exp_name,
             microscope_id=microscope_id,
             ptm_id=ptm_id,
+            cell_line_id=cell_line_id,
             protein_id=protein_id,
             count=count,
         )
-        for exp_id, exp_name, microscope_id, ptm_id, protein_id, count in result.all()
+        for exp_id, exp_name, microscope_id, ptm_id, cell_line_id, protein_id, count
+        in result.all()
     ]
 
 
@@ -444,6 +461,7 @@ def _apply_facets(query, selection: FacetSelection, protein_column):
         facet_clause(Image.experiment_id, selection.experiment_ids),
         facet_clause(Experiment.microscope_id, selection.microscope_ids),
         facet_clause(Experiment.ptm_id, selection.ptm_ids),
+        facet_clause(Experiment.cell_line_id, selection.cell_line_ids),
         facet_clause(protein_column, selection.protein_ids),
     ]
     for clause in clauses:
@@ -457,6 +475,7 @@ def _apply_facets(query, selection: FacetSelection, protein_column):
 _EXPERIMENT_AXIS_COLUMN = {
     LabelAxis.MICROSCOPE: "microscope_id",
     LabelAxis.PTM: "ptm_id",
+    LabelAxis.CELL_LINE: "cell_line_id",
 }
 
 
@@ -468,8 +487,9 @@ def _axis_labels(
 ) -> List[Optional[int]]:
     """The class of each point on ``axis``, positionally aligned with ``items``.
 
-    Protein lives on the point. Microscope and PTM are properties of the
-    experiment and are joined from the facet summary rather than fetched again:
+    Protein lives on the point. Microscope, PTM and cell line are properties of
+    the experiment and are joined from the facet summary rather than fetched
+    again:
     ``_load_facets`` has already run in this handler, over the whole readable
     scope, which is a superset of these points.
 

@@ -61,9 +61,9 @@ export function describeApiError(detail: ApiError["detail"]): string {
  * Which dimension the separability score groups points by.
  *
  * Aliased to the facet keys rather than declared as its own union: the backend
- * accepts exactly the four facet names, and the UI scores whatever it is
- * colouring by. A separate list here could accept a fifth value that the API
- * would reject with a 422.
+ * accepts exactly the facet names, and the UI scores whatever it is colouring
+ * by. A separate list here could accept a value that the API would reject with
+ * a 422.
  */
 export type LabelAxis = keyof UmapFacetSelection;
 
@@ -72,6 +72,7 @@ const FACET_QUERY_PARAMS: Record<keyof UmapFacetSelection, string> = {
   microscope: "microscope_id",
   protein: "protein_id",
   ptm: "ptm_id",
+  cell_line: "cell_line_id",
 };
 
 /**
@@ -412,6 +413,24 @@ class ApiClient {
     );
   }
 
+  /**
+   * Assign the cultured cell line for an experiment. Pass null to clear it.
+   *
+   * Group-writable like the microscope and the PTM, so the lab can backfill the
+   * line across each other's experiments. Unlike the protein it touches one row
+   * only -- nothing cascades to the images or crops.
+   */
+  async updateExperimentCellLine(experimentId: number, cellLineId: number | null) {
+    const params = new URLSearchParams();
+    if (cellLineId !== null) {
+      params.set("cell_line_id", cellLineId.toString());
+    }
+    return this.request<Experiment>(
+      `/api/experiments/${experimentId}/cell-line?${params.toString()}`,
+      { method: "PATCH" }
+    );
+  }
+
   // Images
 
   /**
@@ -560,6 +579,34 @@ class ApiClient {
   /** An unused colour to pre-fill the create form (same picker create uses). */
   async getSuggestedProteinColor() {
     return this.request<{ color: string }>("/api/proteins/suggested-color");
+  }
+
+  // Cell lines
+  //
+  // There is no admin page for these: a line is created from the experiment
+  // form by typing a name the list does not hold, so `createCellLine` runs on
+  // the picker's "create" action. Rename and delete exist for the API and the
+  // MCP connector.
+  async getCellLines() {
+    return this.request<CellLineDetailed[]>("/api/cell-lines");
+  }
+
+  async createCellLine(data: CellLineCreate) {
+    return this.request<CellLineDetailed>("/api/cell-lines", {
+      method: "POST",
+      body: JSON.stringify(data),
+    });
+  }
+
+  async updateCellLine(id: number, data: CellLineUpdate) {
+    return this.request<CellLineDetailed>(`/api/cell-lines/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(data),
+    });
+  }
+
+  async deleteCellLine(id: number) {
+    return this.request<void>(`/api/cell-lines/${id}`, { method: "DELETE" });
   }
 
   // Microscopes
@@ -1711,6 +1758,7 @@ export interface Experiment {
   map_protein?: MapProtein;
   microscope?: Microscope | null;
   ptm?: PTM | null;
+  cell_line?: CellLine | null;
   fasta_sequence?: string;
   created_at: string;
   updated_at: string;
@@ -1840,6 +1888,40 @@ export interface MapProteinUpdate {
   fasta_sequence?: string;
   gene_name?: string;
   organism?: string;
+}
+
+/**
+ * Basic cell line shape — mirrors backend CellLineResponse (embedded in Experiment).
+ *
+ * The cultured background the MAP was expressed in. Any name may be typed into
+ * it, but it is a row rather than a string on the experiment so that the
+ * dashboard's id-based facet machinery covers it like the other four — and so
+ * "U2OS" and "U-2 OS" cannot become two silently unmerged populations.
+ */
+export interface CellLine {
+  id: number;
+  name: string;
+  color?: string;
+}
+
+/** Detailed shape — mirrors backend CellLineDetailedResponse (list/create/update). */
+export interface CellLineDetailed extends CellLine {
+  description?: string;
+  experiment_count: number;
+  created_at?: string;
+}
+
+export interface CellLineCreate {
+  name: string;
+  description?: string;
+  color?: string;
+}
+
+export interface CellLineUpdate {
+  name?: string;
+  description?: string;
+  /** null asks the backend to assign an unused colour; omit to leave unchanged. */
+  color?: string | null;
 }
 
 /** Basic microscope shape — mirrors backend MicroscopeResponse (embedded in Experiment). */
@@ -2220,6 +2302,7 @@ export interface UmapFacetSelection {
   microscope: number[];
   protein: number[];
   ptm: number[];
+  cell_line: number[];
 }
 
 /**
@@ -2236,6 +2319,7 @@ export interface UmapFacetRow {
   experiment_name: string;
   microscope_id: number | null;
   ptm_id: number | null;
+  cell_line_id: number | null;
   protein_id: number | null;
   count: number;
 }

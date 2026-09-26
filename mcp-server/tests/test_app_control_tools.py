@@ -127,6 +127,47 @@ async def test_assign_ptm_omitted_id_clears(make_registry):
     _blocks(await reg.dispatch("assign_experiment_ptm", {"experiment_id": 3}))
 
 
+async def test_assign_cell_line_uses_dedicated_endpoint(make_registry):
+    """Must hit /cell-line, not the generic PATCH.
+
+    The generic PATCH is owner-only and forbids the field outright (422), so a
+    tool pointed at it would fail on every experiment -- including the 40+ the
+    annotator owns, which are most of the ones worth assigning.
+    """
+    # ⚠️ The `hit` flag is load-bearing. `dispatch` answers an unknown tool with
+    # a readable "your tool list is out of date" string rather than raising, so a
+    # test that only inspects the transport would pass with the tool absent and
+    # the route never called.
+    hit = []
+
+    def routes(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/experiments/3/cell-line" and request.method == "PATCH":
+            assert request.url.params["cell_line_id"] == "2"
+            hit.append(request.url.path)
+            return httpx.Response(200, json={"ok": True})
+        return httpx.Response(404)
+
+    reg = make_registry(_with_login(routes))
+    _blocks(await reg.dispatch(
+        "assign_experiment_cell_line", {"experiment_id": 3, "cell_line_id": 2}))
+    assert hit == ["/api/experiments/3/cell-line"]
+
+
+async def test_assign_cell_line_omitted_id_clears(make_registry):
+    hit = []
+
+    def routes(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/experiments/3/cell-line" and request.method == "PATCH":
+            assert "cell_line_id" not in request.url.params
+            hit.append(request.url.path)
+            return httpx.Response(200, json={"ok": True})
+        return httpx.Response(404)
+
+    reg = make_registry(_with_login(routes))
+    _blocks(await reg.dispatch("assign_experiment_cell_line", {"experiment_id": 3}))
+    assert hit == ["/api/experiments/3/cell-line"]
+
+
 async def test_generic_update_experiment_no_longer_takes_microscope_id(make_registry):
     """One field, one endpoint. Re-adding either would resurrect a 422 path."""
     reg = make_registry(_with_login(lambda r: httpx.Response(404)))
@@ -135,8 +176,11 @@ async def test_generic_update_experiment_no_longer_takes_microscope_id(make_regi
     assert "microscope_id" in tools["assign_experiment_microscope"].inputSchema["properties"]
     assert "ptm_id" not in tools["update_experiment"].inputSchema["properties"]
     assert "ptm_id" in tools["assign_experiment_ptm"].inputSchema["properties"]
-    # create_experiment is the exception: the owner sets both at creation time.
+    assert "cell_line_id" not in tools["update_experiment"].inputSchema["properties"]
+    assert "cell_line_id" in tools["assign_experiment_cell_line"].inputSchema["properties"]
+    # create_experiment is the exception: the owner sets all three at creation time.
     assert "ptm_id" in tools["create_experiment"].inputSchema["properties"]
+    assert "cell_line_id" in tools["create_experiment"].inputSchema["properties"]
 
 
 # -- images & detection ----------------------------------------------------
@@ -257,11 +301,15 @@ async def test_measure_separability_offers_the_filters_as_integer_arrays(make_re
     # send one id, and every multi-value slice would quietly never be asked for.
     reg = make_registry(_with_login(lambda r: httpx.Response(404)))
     schema = {t.name: t for t in reg.list_tools()}["measure_separability"].inputSchema
-    for facet in ["experiment_id", "microscope_id", "protein_id", "ptm_id"]:
+    for facet in ["experiment_id", "microscope_id", "protein_id", "ptm_id",
+                  "cell_line_id"]:
         assert schema["properties"][facet]["type"] == "array", facet
         assert schema["properties"][facet]["items"]["type"] == "integer", facet
+    # The axis vocabulary must match the backend LabelAxis enum exactly: a value
+    # the backend does not know raises, and one it knows but the tool omits is an
+    # axis the agent can never score by.
     assert schema["properties"]["label_by"]["enum"] == [
-        "protein", "microscope", "ptm", "experiment",
+        "protein", "microscope", "ptm", "cell_line", "experiment",
     ]
 
 
@@ -370,6 +418,21 @@ async def test_delete_protein_issues_delete(make_registry):
     assert seen["method"] == "DELETE"
 
 
+async def test_query_database_description_mirrors_the_backend_schema_hint(make_registry):
+    """The model writes SQL from this description and nothing else.
+
+    `SQL_SCHEMA_HINT` in services/sql_query_service.py is the other copy of this
+    list, and the two live in different trees so no import can bind them. A
+    table or column present in the whitelist but missing here is access the
+    agent can never use -- it will answer "cell line" questions from the four
+    older columns instead, with nothing failing.
+    """
+    reg = make_registry(_with_login(lambda r: httpx.Response(404)))
+    description = {t.name: t for t in reg.list_tools()}["query_database"].description
+    assert "cell_lines(" in description
+    assert "cell_line_id" in description
+
+
 async def test_query_database_posts_sql_body(make_registry):
     def routes(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/api/query" and request.method == "POST":
@@ -402,17 +465,19 @@ async def test_new_tools_are_registered_with_correct_schema(make_registry):
     assert proc["properties"]["image_ids"]["items"]["type"] == "integer"
 
     # destructive tools carry the hint so the client asks for confirmation
-    for name in ["delete_experiment", "delete_image", "delete_protein", "delete_ptm"]:
+    for name in ["delete_experiment", "delete_image", "delete_protein", "delete_ptm",
+                 "delete_cell_line"]:
         assert tools[name].annotations.destructiveHint is True
     # reads are marked read-only
     for name in ["list_experiments", "get_image", "list_cell_crops", "list_proteins",
-                 "list_ptms", "get_ptm"]:
+                 "list_ptms", "get_ptm", "list_cell_lines", "get_cell_line"]:
         assert tools[name].annotations.readOnlyHint is True
     # mutating (non-destructive) writes must NOT be readOnly, or the client would
     # skip consent for a mutation
     for name in ["create_experiment", "update_experiment", "assign_experiment_protein",
                  "assign_experiment_microscope", "assign_experiment_ptm",
                  "create_ptm", "update_ptm",
+                 "assign_experiment_cell_line", "create_cell_line", "update_cell_line",
                  "upload_image", "process_images", "reprocess_image", "redetect_cells",
                  "create_protein", "update_protein", "compute_protein_embedding"]:
         assert tools[name].annotations.readOnlyHint is False

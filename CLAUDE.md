@@ -65,8 +65,8 @@ connector projde. Endpoint chráněný `require_interactive_user` do MCP nepatř
 **ACL se propisuje samo.** MCP je čistý HTTP klient; token protéká do backendu, kde
 platí stejná pravidla jako pro člověka: **čtení skupinově sdílené**
 (`experiment_owner_filter`, SSOT `utils/groups.py`), **zápisy do experimentů/obrázků
-owner-only** (re-check `obj.user_id == current_user.id` → 403). ⚠️ **Čtyři výjimky:
-cropy, mikroskop, PTM a protein smí měnit celá skupina** (viz
+owner-only** (re-check `obj.user_id == current_user.id` → 403). ⚠️ **Šest výjimek:
+cropy, mikroskop, PTM, protein, složka a buněčná linie smí měnit celá skupina** (viz
 „Kurátorování cropů" níže). ⚠️ **Proteiny jsou
 sdílená referenční data** — `MapProtein` nemá `user_id`, takže je smí měnit/mazat
 kdokoliv přihlášený (není to bug). Když přidáš write endpoint, zkontroluj, že re-check
@@ -719,22 +719,72 @@ owner-only** — kontejner patří tomu, kdo ho nahrál. Karta experimentu proto
 smazat na cizím experimentu **nezobrazuje** (dřív ho nabízela všem a 403 přišla až po
 kliknutí); chip proteinu naopak zůstává aktivní pro celou skupinu.
 
-#### Sdílená referenční data: proteiny / mikroskopy / PTM
+#### Přiřazení buněčné linie — šestá výjimka (od 2026-09-26)
 
-Všechny tři jsou tentýž tvar (unikátní jméno, barva do legendy, nullable FK odjinud,
+`PATCH /api/experiments/{id}/cell-line` (`update_experiment_cell_line`) je **skupinový
+zápis** ze stejného důvodu jako mikroskop a PTM: `cell_lines` nemá `user_id` a většinu
+ze 181 experimentů vlastní anotátor. Samostatný endpoint, `cell_line_id` v
+`ExperimentCreate` ale **ne** v `ExperimentUpdate` (`extra="forbid"` → 422),
+`cell_line_id` jako **query** parametr, odpověď přes `load_experiment_response()`.
+Na rozdíl od proteinu sahá na **jediný řádek** — nic nekaskáduje na obrázky ani cropy —
+takže nepotřebuje potvrzení navíc.
+
+⚠️ **Je to tabulka, i když se do ní píše volný text.** Zadání znělo „ať tam jde napsat
+cokoliv"; stringový sloupec by ale znamenal druhou, paralelní implementaci celé facetové
+mašinerie (`facet_clause` staví `IN (:ids)`, `UNASSIGNED_FACET_ID` je `0`, URL round-trip
+parsuje `Number()`). Jméno se navíc zapíše **jednou**, takže „U2OS" / „U2os" / „U-2 OS"
+nejsou tři tiše nesloučené populace.
+
+⚠️ **Tohle je JEDINÁ referenční tabulka bez admin stránky.** Linie vzniká tím, že ji
+někdo napíše do pickeru při zakládání experimentu (`ColorTagSelect` s `onCreate`;
+čistá logika je v `components/ui/colorTagFilter.ts`, testy `e2e/unit/colorTagFilter.spec.ts`).
+**Přejmenovat ani smazat ji z UI nejde** — jen přes API nebo MCP (`update_cell_line`,
+`delete_cell_line`). Když laboratoř nahlásí překlep ve facetě, opravuje se tudy.
+
+⚠️ **Proto a jen proto je `ensure_name_unique` volaný s `case_insensitive=True`.**
+U ostatních tří se jméno vybírá ze seznamu na vlastní stránce, tady se píše při každém
+zakládání experimentu — „u2os" je jeden překlep, ne konstrukce. Musí to porovnávat
+**databáze** (`func.lower(model.name)`); snížit jen vstupní string se ptá na
+`name = 'u2os'`, což nenajde nic a duplicitu právě vyrobí. Schéma navíc má
+`str_strip_whitespace=True`, protože mezera na konci je v inputu neviditelná.
+Frontendový picker tu shodu dělá taky (nabídne existující řádek místo „vytvořit"), ale
+sám o sobě je to guard jen naoko — API i konektor jdou přímo na router.
+
+⚠️ **Backfill je `scripts/cell_line_backfill.sql`, jednorázově a ručně** (stejně jako
+`ptm_control_backfill.sql`, a **až po** restartu backendu, který teprve vytvoří tabulku
+i sloupec). Idempotenci nedělá `WHERE cell_line_id IS NULL`, ale
+`AND NOT EXISTS (SELECT 1 FROM experiments WHERE cell_line_id IS NOT NULL)` — samotné
+`IS NULL` by při druhém běhu přerazítkovalo řádky, které někdo schválně vyprázdnil.
+Čisté DB dostanou U2OS ze `DEFAULT_CELL_LINES` přes `seed_default_data()`.
+
+MCP: `list/get/create/update/delete_cell_line` + `assign_experiment_cell_line`;
+`SERVER_VERSION` je od 2026-09-26 **4.5.0**.
+
+#### Sdílená referenční data: proteiny / mikroskopy / PTM / buněčné linie
+
+Všechny čtyři jsou tentýž tvar (unikátní jméno, barva do legendy, nullable FK odjinud,
 žádné `user_id`), takže jejich CRUD helpery žijí **jednou** v `utils/reference_data.py`
 (`get_or_404`, `count_referencing`, `count_referencing_grouped`, `ensure_name_unique`,
-`pick_color`). `microscopes.py` a `ptms.py` na nich stojí. Nepiš čtvrtou kopii.
+`pick_color`). `microscopes.py`, `ptms.py` a `cell_lines.py` na nich stojí. Nepiš pátou
+kopii.
 
 V `sql_query_service` patří do `ALLOWED_SQL_TABLES` a do **žádné** ze scoping množin —
 ta nepřítomnost JE způsob, jak se vyjádří „čte každý, ACL predikát se neinjektuje".
 
 ### Pokročilý filtr dashboard UMAPu (od 2026-07-28)
 
-`GET /api/embeddings/umap` bere čtyři **opakovatelné** parametry — `experiment_id`,
-`microscope_id`, `protein_id`, `ptm_id`. Sémantika: **OR uvnitř facety, AND napříč
-facetami**. Klauzule staví jediný helper `utils/facets.py::facet_clause`, aby se čtyři
-facety nerozešly.
+`GET /api/embeddings/umap` bere pět **opakovatelných** parametrů — `experiment_id`,
+`microscope_id`, `protein_id`, `ptm_id`, `cell_line_id`. Sémantika: **OR uvnitř facety,
+AND napříč facetami**. Klauzule staví jediný helper `utils/facets.py::facet_clause`, aby
+se facety nerozešly.
+
+⚠️ **Přidání facety je pět míst na backendu a šest na frontendu, a ani jedno nespadne
+samo.** Backend: `FacetSelection`, dependency `facet_selection`, `_verify_reference_ids`,
+`_apply_facets`, `_load_facets` (sloupec do `buckets` **i** do rozbalení n-tice — to
+rozbalení AsyncMock nezachytí, spadne až na reálných datech). Frontend: `EMPTY_SELECTION`,
+`FACET_LABEL_KEY`, `facetIdOf`, `FACET_PARAMS`, `FACET_BY_ERROR_LABEL`, `experimentMetaById`
+— plus `FACET_QUERY_PARAMS` a `UmapFacetSelection` v `lib/api.ts`, které jsou jako
+`Record<keyof UmapFacetSelection, …>` jediné dvě, co **nepřidání odchytí compile-time**.
 
 ⚠️ **Id `0` = „nepřiřazeno"** (`UNASSIGNED_FACET_ID`). Funguje to jen proto, že reálná
 id jsou SERIAL od 1. Bez toho by byla facета PTM od začátku k ničemu — všechny experimenty

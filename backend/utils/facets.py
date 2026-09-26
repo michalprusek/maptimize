@@ -39,8 +39,8 @@ def facet_clause(
     clause to also match rows where the column is NULL, which is the only way the
     PTM facet is usable at all before the lab has backfilled it.
 
-    ⚠️ Meaningful for microscope, protein and PTM only. The experiment facet
-    filters a NOT NULL column, so ``IS NULL`` there can never match; the client
+    ⚠️ Meaningful for microscope, protein, PTM and cell line only. The experiment
+    facet filters a NOT NULL column, so ``IS NULL`` there can never match; the client
     does not offer the option and `_verify_experiments_visible` rejects a stray 0
     rather than stripping it.
     """

@@ -14,7 +14,12 @@ import {
 } from "@/lib/animations";
 import { ColorTagSelect, ConfirmModal, MicroscopyImage, Pagination, ImagePreviewModal, toColorTagOptions, type PreviewImage } from "@/components/ui";
 import { FOVGallery } from "@/components/experiment";
-import { useAssignMicroscope, useAssignPtm } from "@/hooks";
+import {
+  useAssignCellLine,
+  useAssignMicroscope,
+  useAssignPtm,
+  useCreateCellLine,
+} from "@/hooks";
 import {
   ImageGalleryFilters,
   SortOrder,
@@ -135,6 +140,11 @@ export default function ExperimentDetailPage(): JSX.Element {
     queryFn: () => api.getPtms(),
   });
 
+  const { data: cellLines } = useQuery({
+    queryKey: ["cellLines"],
+    queryFn: () => api.getCellLines(),
+  });
+
   // Auto-select view mode based on available data
   useEffect(() => {
     if (viewMode === null && experiment) {
@@ -195,6 +205,21 @@ export default function ExperimentDetailPage(): JSX.Element {
 
   const assignPtmMutation = useAssignPtm({
     fallbackMessage: t("assignPtmError"),
+    onError: setMutationError,
+    onSuccess: () => {
+      setMutationError(null);
+      invalidateExperimentQueries();
+    },
+  });
+
+  const createCellLine = useCreateCellLine({
+    fallbackMessage: t("createCellLineError"),
+    onError: setMutationError,
+    onSuccess: () => setMutationError(null),
+  });
+
+  const assignCellLineMutation = useAssignCellLine({
+    fallbackMessage: t("assignCellLineError"),
     onError: setMutationError,
     onSuccess: () => {
       setMutationError(null);
@@ -726,6 +751,24 @@ export default function ExperimentDetailPage(): JSX.Element {
           placeholder={t("assignPtm")}
           clearLabel={t("unassignedPtm")}
           hint={t("experimentPtmHint")}
+          variant="chip"
+          align="right"
+        />
+
+        <ColorTagSelect
+          options={toColorTagOptions(cellLines, (c) => c.description)}
+          value={experiment.cell_line?.id ?? null}
+          onChange={(cellLineId) =>
+            assignCellLineMutation.mutate({ experimentId, cellLineId })
+          }
+          create={{
+            onCreate: createCellLine,
+            searchPlaceholder: t("searchOrTypeCellLine"),
+            label: (name) => t("createCellLine", { name }),
+          }}
+          placeholder={t("assignCellLine")}
+          clearLabel={t("unassignedCellLine")}
+          hint={t("cellLineHint")}
           variant="chip"
           align="right"
         />

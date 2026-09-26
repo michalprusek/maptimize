@@ -1,4 +1,4 @@
-"""The dashboard UMAP faceted filter: experiment / microscope / protein / PTM.
+"""The dashboard UMAP faceted filter: experiment / microscope / protein / PTM / cell line.
 
 Covers the two things that are easy to get subtly wrong and impossible to notice
 from the UI: the combination semantics (OR within a facet, AND across facets,
@@ -141,6 +141,7 @@ def test_selection_is_inactive_when_nothing_is_ticked():
         {"microscope_ids": [1]},
         {"protein_ids": [1]},
         {"ptm_ids": [UNASSIGNED_FACET_ID]},
+        {"cell_line_ids": [1]},
     ],
 )
 def test_any_ticked_facet_makes_the_selection_active(kwargs):
@@ -225,8 +226,8 @@ async def test_facet_summary_ignores_the_active_selection(mock_db):
 async def test_facet_summary_unpacks_the_rows_it_selects(mock_db):
     """Every other summary test feeds zero rows, so the unpack never runs.
 
-    What this pins is the column ORDER: the six positions are unlabelled, and
-    transposing `ptm_id` with `protein_id` mislabels every filter pill with no
+    What this pins is the column ORDER: the seven positions are unlabelled, and
+    transposing `ptm_id` with `cell_line_id` mislabels every filter pill with no
     error anywhere.
 
     ⚠️ It cannot pin the column COUNT. Under an AsyncMock the row shape comes
@@ -236,18 +237,21 @@ async def test_facet_summary_unpacks_the_rows_it_selects(mock_db):
     """
     mock_db.execute.return_value = make_result(
         fetchall=[
-            (1, "AeryScan MAP7", 10, 20, 30, 5),
-            (1, "AeryScan MAP7", 10, 20, None, 2),
-            (2, "SIM Tau", None, None, 30, 4),
+            (1, "AeryScan MAP7", 10, 20, 40, 30, 5),
+            (1, "AeryScan MAP7", 10, 20, 40, None, 2),
+            (2, "SIM Tau", None, None, None, 30, 4),
         ]
     )
     rows = await mod._load_facets(mod.UmapType.CROPPED, 7, None, mock_db)
 
     assert [r.experiment_id for r in rows] == [1, 1, 2]
     assert rows[0].experiment_name == "AeryScan MAP7"
-    assert (rows[0].microscope_id, rows[0].ptm_id, rows[0].protein_id) == (10, 20, 30)
+    assert (rows[0].microscope_id, rows[0].ptm_id, rows[0].cell_line_id,
+            rows[0].protein_id) == (10, 20, 40, 30)
     assert rows[1].protein_id is None  # a bucket of crops with no protein
-    assert (rows[2].microscope_id, rows[2].ptm_id) == (None, None)
+    assert (rows[2].microscope_id, rows[2].ptm_id, rows[2].cell_line_id) == (
+        None, None, None
+    )
     assert sum(r.count for r in rows) == 11
 
 
@@ -290,7 +294,8 @@ async def test_every_facet_reaches_the_point_query(mock_db, no_group, umap_type)
     sql = await _point_query(
         umap_type,
         mod.FacetSelection(
-            experiment_ids=[1], microscope_ids=[2], protein_ids=[3], ptm_ids=[4]
+            experiment_ids=[1], microscope_ids=[2], protein_ids=[3], ptm_ids=[4],
+            cell_line_ids=[5],
         ),
         mock_db,
     )
@@ -298,6 +303,7 @@ async def test_every_facet_reaches_the_point_query(mock_db, no_group, umap_type)
     assert "microscope_id IN" in sql
     assert "map_protein_id IN" in sql
     assert "ptm_id IN" in sql
+    assert "cell_line_id IN" in sql
     # And the ACL is still there alongside them.
     assert "experiments.user_id" in sql
 
@@ -355,18 +361,19 @@ def test_endpoint_takes_the_selection_as_one_dependency():
     assert "selection" in sig.parameters
 
 
-def test_dependency_exposes_all_four_facets_as_query_params():
+def test_dependency_exposes_every_facet_as_a_query_param():
     sig = inspect.signature(mod.facet_selection)
     assert set(sig.parameters) == {
         "experiment_id",
         "microscope_id",
         "protein_id",
         "ptm_id",
+        "cell_line_id",
     }
 
 
 def test_dependency_turns_missing_params_into_empty_lists():
-    assert mod.facet_selection(None, None, None, None) == mod.FacetSelection()
+    assert mod.facet_selection(None, None, None, None, None) == mod.FacetSelection()
 
 
 async def test_stale_microscope_id_returns_404(mock_db):
@@ -397,6 +404,27 @@ async def test_stale_ptm_id_returns_404(mock_db):
         )
     assert ei.value.status_code == 404
     assert ei.value.detail == "PTM not found: 999"
+
+
+async def test_stale_cell_line_id_returns_404(mock_db):
+    """A colleague can delete a line another open tab still has ticked.
+
+    There is no cell-line admin page, so the only deletes come from the API and
+    the MCP connector -- but the tab holding the stale id is the same tab either
+    way, and silently matching nothing would read as "this line has no data".
+    """
+    mock_db.execute.return_value = make_result(scalars_all=[])
+    with pytest.raises(HTTPException) as ei:
+        await mod.get_umap_visualization(
+            umap_type=mod.UmapType.CROPPED,
+            selection=mod.FacetSelection(cell_line_ids=[404]),
+            label_by=mod.LabelAxis.PROTEIN,
+            background_tasks=MagicMock(),
+            current_user=user(),
+            db=mock_db,
+        )
+    assert ei.value.status_code == 404
+    assert "Cell line not found: 404" in ei.value.detail
 
 
 async def test_stale_protein_id_returns_404(mock_db):

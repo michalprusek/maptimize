@@ -13,7 +13,7 @@ import type { UmapFacetRow, UmapFacetSelection } from "@/lib/api";
 export const UNASSIGNED_ID = 0;
 
 /**
- * The four dimensions the plot can be filtered and coloured by.
+ * The dimensions the plot can be filtered and coloured by.
  *
  * Aliased to the request type rather than re-declared: this used to be a third,
  * independent copy, and structural typing meant adding a facet here alone still
@@ -30,6 +30,7 @@ export const EMPTY_SELECTION: FacetSelection = Object.freeze({
   microscope: Object.freeze([]) as unknown as number[],
   protein: Object.freeze([]) as unknown as number[],
   ptm: Object.freeze([]) as unknown as number[],
+  cell_line: Object.freeze([]) as unknown as number[],
 });
 
 /**
@@ -45,6 +46,7 @@ export const FACET_LABEL_KEY: Record<FacetKey, string> = {
   microscope: "facetMicroscope",
   protein: "facetProtein",
   ptm: "facetPtm",
+  cell_line: "facetCellLine",
 };
 
 export interface FacetOption {
@@ -99,6 +101,8 @@ function facetIdOf(row: UmapFacetRow, facet: FacetKey): number | null {
       return row.protein_id;
     case "ptm":
       return row.ptm_id;
+    case "cell_line":
+      return row.cell_line_id;
   }
 }
 
@@ -162,8 +166,8 @@ const HUE_STEP = 0.381966;
 /**
  * A stable colour for an experiment.
  *
- * Experiments have no colour column — unlike proteins, microscopes and PTMs
- * there are too many of them to curate. Deriving it from the id rather than from
+ * Experiments have no colour column — unlike proteins, microscopes, PTMs and
+ * cell lines there are too many of them to curate. Deriving it from the id rather than from
  * the value's position in the list keeps a point the same colour when the filter
  * changes what else is on the plot.
  */
@@ -180,13 +184,14 @@ export interface ExperimentMeta {
   name: string;
   microscopeId: number | null;
   ptmId: number | null;
+  cellLineId: number | null;
 }
 
 /**
  * experiment id -> its acquisition metadata.
  *
- * Points carry only `experiment_id`; this is how colouring by microscope or PTM,
- * and the tooltip rows for them, get their value without the payload repeating
+ * Points carry only `experiment_id`; this is how colouring by microscope, PTM or
+ * cell line, and the tooltip rows for them, get their value without the payload repeating
  * it per point.
  */
 export function experimentMetaById(
@@ -199,6 +204,7 @@ export function experimentMetaById(
         name: row.experiment_name,
         microscopeId: row.microscope_id,
         ptmId: row.ptm_id,
+        cellLineId: row.cell_line_id,
       });
     }
   }
@@ -224,12 +230,15 @@ const FACET_PARAMS: Record<FacetKey, string> = {
   microscope: "microscope",
   protein: "protein",
   ptm: "ptm",
+  cell_line: "cell_line",
 };
 
 /** Read a selection out of a URL query string, ignoring anything malformed. */
 export function selectionFromQuery(search: string): FacetSelection {
   const params = new URLSearchParams(search);
-  const selection: FacetSelection = { experiment: [], microscope: [], protein: [], ptm: [] };
+  const selection: FacetSelection = {
+    experiment: [], microscope: [], protein: [], ptm: [], cell_line: [],
+  };
 
   for (const facet of Object.keys(FACET_PARAMS) as FacetKey[]) {
     const raw = params.get(FACET_PARAMS[facet]);
@@ -255,7 +264,7 @@ export function selectionFromQuery(search: string): FacetSelection {
  * Write the selection into an existing query string, leaving other params alone.
  *
  * Takes the page's current search string rather than building from scratch: the
- * plot owns four params, not the whole URL, and silently dropping a param some
+ * plot owns its own params, not the whole URL, and silently dropping a param some
  * other part of the page put there would be a nasty surprise for whoever adds
  * one. Empty facets are removed, not written blank.
  */
@@ -278,6 +287,7 @@ const FACET_BY_ERROR_LABEL: Array<[string, FacetKey]> = [
   ["Microscope not found:", "microscope"],
   ["Experiment not found:", "experiment"],
   ["PTM not found:", "ptm"],
+  ["Cell line not found:", "cell_line"],
 ];
 
 /**

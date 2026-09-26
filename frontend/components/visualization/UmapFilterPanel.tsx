@@ -7,6 +7,7 @@ import { Filter, Search, X } from "lucide-react";
 
 import { DEFAULT_POINT_COLOR } from "./chartConfig";
 import {
+  EMPTY_SELECTION,
   countActiveFilters,
   facetOptions,
   isSelectionEmpty,
@@ -32,6 +33,7 @@ const COLOR_BY_ORDER: readonly ColorBy[] = [
   "protein",
   "microscope",
   "ptm",
+  "cell_line",
   "experiment",
 ];
 
@@ -44,6 +46,7 @@ interface UmapFilterPanelProps {
   microscopes: Named[] | undefined;
   proteins: Named[] | undefined;
   ptms: Named[] | undefined;
+  cellLines: Named[] | undefined;
   /** Hidden when the plot is already scoped to one experiment. */
   showExperimentFacet: boolean;
   shownCount: number;
@@ -169,6 +172,7 @@ export function UmapFilterPanel({
   microscopes,
   proteins,
   ptms,
+  cellLines,
   showExperimentFacet,
   shownCount,
   totalCount,
@@ -183,8 +187,9 @@ export function UmapFilterPanel({
       microscope: facetOptions(rows, "microscope", microscopes, unassigned),
       protein: facetOptions(rows, "protein", proteins, unassigned),
       ptm: facetOptions(rows, "ptm", ptms, unassigned),
+      cell_line: facetOptions(rows, "cell_line", cellLines, unassigned),
     }),
-    [rows, microscopes, proteins, ptms, unassigned]
+    [rows, microscopes, proteins, ptms, cellLines, unassigned]
   );
 
   const activeCount = countActiveFilters(selection);
@@ -254,9 +259,7 @@ export function UmapFilterPanel({
         {!isSelectionEmpty(selection) && (
           <button
             type="button"
-            onClick={() =>
-              onSelectionChange({ experiment: [], microscope: [], protein: [], ptm: [] })
-            }
+            onClick={() => onSelectionChange(EMPTY_SELECTION)}
             className="text-xs text-text-muted hover:text-text-primary underline"
           >
             {t("clearAll")}

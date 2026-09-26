@@ -45,6 +45,7 @@ class SqlQueryError(ValueError):
 # injected" is expressed. Everything else is scoped below.
 ALLOWED_SQL_TABLES = {
     "experiments", "images", "cell_crops", "map_proteins", "microscopes", "ptms",
+    "cell_lines",
     "rag_documents", "rag_document_pages", "comparisons", "user_ratings",
 }
 
@@ -84,13 +85,14 @@ INDIRECT_SCOPED = {
 # to SELECT. ⚠️ SSOT: the MCP tool description in mcp-server/maptalk_mcp/tools.yaml
 # mirrors this text — update BOTH when columns change.
 SQL_SCHEMA_HINT = (
-    "experiments(id, name, description, status, map_protein_id, microscope_id, ptm_id, group_id, fasta_sequence, created_at, updated_at)\n"
+    "experiments(id, name, description, status, map_protein_id, microscope_id, ptm_id, cell_line_id, group_id, folder_id, fasta_sequence, created_at, updated_at)\n"
     "images(id, experiment_id, map_protein_id, original_filename, width, height, z_slices, file_size, status, created_at, processed_at)\n"
     "cell_crops(id, image_id, map_protein_id, bbox_x, bbox_y, bbox_w, bbox_h, bbox_angle, "
     "detection_confidence, bundleness_score, mean_intensity, skewness, kurtosis, excluded, created_at)  -- bbox_angle: degrees about the box centre, NULL = axis-aligned\n"
     "map_proteins(id, name, full_name, uniprot_id, gene_name, organism, sequence_length)  -- shared reference data, no user filter\n"
     "microscopes(id, name, manufacturer, model, objective, magnification)  -- shared reference data, no user filter\n"
     "ptms(id, name, abbreviation, modified_residue, enzyme, kind)  -- microtubule post-translational modification; kind is 'modification' (a tubulin mark), 'control' (paired inactive-enzyme control) or 'none' (unmodified lattice); shared reference data, no user filter\n"
+    "cell_lines(id, name, description)  -- cultured line the MAP was expressed in, e.g. U2OS; shared reference data, no user filter\n"
     "comparisons(id, user_id, crop_a_id, crop_b_id, winner_id, response_time_ms, undone, timestamp)\n"
     "user_ratings(id, user_id, cell_crop_id, mu, sigma, comparison_count, created_at, updated_at)\n"
     "rag_documents(id, name, file_type, status, page_count, thread_id, created_at)  -- thread_id NULL = library, set = attachment of that chat thread\n"

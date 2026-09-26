@@ -257,12 +257,35 @@ def test_self_join_scopes_every_alias():
     assert correlations == []
 
 
+def test_schema_hint_names_every_readable_table():
+    """A table in the whitelist but absent from the hint is unusable.
+
+    The model writes SQL from the hint alone, so a table it cannot see is one it
+    will never SELECT -- the whitelist entry then only looks like access.
+    """
+    from services.sql_query_service import SQL_SCHEMA_HINT
+
+    for table in ALLOWED_SQL_TABLES:
+        assert f"{table}(" in SQL_SCHEMA_HINT, f"{table} missing from SQL_SCHEMA_HINT"
+
+
+def test_schema_hint_lists_the_experiment_cell_line_fk():
+    """`experiments.cell_line_id` is how the model joins the new facet.
+
+    Without it in the hint the column is invisible and every "group by cell
+    line" question gets answered from the four older columns instead.
+    """
+    from services.sql_query_service import SQL_SCHEMA_HINT
+
+    assert "cell_line_id" in SQL_SCHEMA_HINT
+
+
 def test_map_proteins_only_is_unscoped_shared_data():
     refs = _validate("SELECT id, name FROM map_proteins")
     assert _scoping_plan(refs) == ([], [])
 
 
-@pytest.mark.parametrize("table", ["map_proteins", "microscopes", "ptms"])
+@pytest.mark.parametrize("table", ["map_proteins", "microscopes", "ptms", "cell_lines"])
 def test_reference_tables_are_readable_and_never_scoped(table):
     """Their absence from both scoping sets IS the "shared reference data" rule.
 

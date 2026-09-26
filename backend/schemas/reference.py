@@ -1,10 +1,11 @@
 """Shared guards for the write schemas of rows with a NOT NULL name.
 
-`map_proteins`, `microscopes` and `ptms` share a shape, and their routers already
-share `utils/reference_data.py`. Their schemas are the other half of that: written
-out three times, none of them picked up the `extra="forbid"` that
-`ExperimentUpdate` has — and `ExperimentUpdate` never picked up the null-name
-guard, so all four families were missing one of the two.
+`map_proteins`, `microscopes`, `ptms` and `cell_lines` share a shape, and their
+routers already share `utils/reference_data.py`. Their schemas are the other
+half of that: at the time they were written out three times, none of them
+picking up the `extra="forbid"` that `ExperimentUpdate` has — and
+`ExperimentUpdate` never picked up the null-name guard, so all four families
+were missing one of the two.
 
 ⚠️ Both guards are load-bearing and neither is visible at a call site, so they are
 pinned by `tests/unit/test_reference_schema_guards.py`. They were once silently

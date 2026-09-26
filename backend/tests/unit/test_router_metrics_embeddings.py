@@ -1144,9 +1144,10 @@ async def test_cropped_umap_precomputed_with_experiment_filter(mock_db, no_group
 # the experiment, and are joined from the facet summary the handler has already
 # loaded rather than from a second query.
 # =============================================================================
-def _facet_row(exp_id=1, microscope_id=None, ptm_id=None, protein_id=None, count=1):
+def _facet_row(exp_id=1, microscope_id=None, ptm_id=None, cell_line_id=None,
+               protein_id=None, count=1):
     """One row shaped as _load_facets selects it."""
-    return (exp_id, f"E{exp_id}", microscope_id, ptm_id, protein_id, count)
+    return (exp_id, f"E{exp_id}", microscope_id, ptm_id, cell_line_id, protein_id, count)
 
 
 def _protein(pid):
@@ -1199,6 +1200,18 @@ async def test_cropped_umap_scores_ptm_from_the_facet_summary(mock_db, no_group)
     facets = [_facet_row(9, ptm_id=15), _facet_row(8, ptm_id=2)]
     labels = await _scored_labels(mock_db, crops, facets, e.LabelAxis.PTM)
     assert labels == [15, 15, 2, 2]
+
+
+async def test_cropped_umap_scores_cell_line_from_the_facet_summary(mock_db, no_group):
+    # Same grain as microscope and PTM: the line is a property of the experiment,
+    # never of the crop, so it is joined from the summary already in hand.
+    crops = [
+        crop_obj(cid=i, umap_x=0.1, umap_y=0.2, experiment_id=9 if i < 2 else 8)
+        for i in range(4)
+    ]
+    facets = [_facet_row(9, cell_line_id=1), _facet_row(8, cell_line_id=2)]
+    labels = await _scored_labels(mock_db, crops, facets, e.LabelAxis.CELL_LINE)
+    assert labels == [1, 1, 2, 2]
 
 
 async def test_cropped_umap_scores_experiment_labels(mock_db, no_group):
