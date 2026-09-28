@@ -356,7 +356,7 @@
     "title": "Feature Space (UMAP)",
     "filters": "Filters",
     "dismiss": "Dismiss",
-    "referencesFailed": "The PTM list could not be loaded or is out of date, so controls and modified samples are drawn as plain points and the sample-type key is hidden. Protein and microscope names may also show as Unassigned. Refresh to try again.",
+    "referencesFailed": "A reference list could not be loaded or is out of date, so some names — protein, microscope, PTM or cell line — may show as \u201cUnassigned\u201d even though a value is set, and controls and modified samples are drawn as plain points. Refresh to try again.",
     "filterValuesDropped": "Some filter values no longer exist and were removed ({detail}). The plot now shows a wider selection than the link you opened.",
     "clearAll": "Clear all",
     "clear": "Clear",

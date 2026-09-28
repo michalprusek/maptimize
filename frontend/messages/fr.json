@@ -356,7 +356,7 @@
     "title": "Espace des caracteristiques (UMAP)",
     "filters": "Filtres",
     "dismiss": "Fermer",
-    "referencesFailed": "La liste des PTM n'a pas pu être chargée ou n'est plus à jour : les contrôles et les échantillons modifiés sont dessinés comme des points simples et la légende des types d'échantillon est masquée. Les noms de protéines et de microscopes peuvent aussi apparaître comme Non assigné. Actualisez pour réessayer.",
+    "referencesFailed": "Une liste de r\u00e9f\u00e9rence n'a pas pu \u00eatre charg\u00e9e ou n'est plus \u00e0 jour\u00a0: certains noms \u2014 prot\u00e9ine, microscope, PTM ou lign\u00e9e cellulaire \u2014 peuvent s'afficher comme \u00ab\u00a0Non attribu\u00e9\u00a0\u00bb alors qu'une valeur est d\u00e9finie, et les contr\u00f4les et \u00e9chantillons modifi\u00e9s sont dessin\u00e9s en points simples. Actualisez pour r\u00e9essayer.",
     "filterValuesDropped": "Certaines valeurs de filtre n'existent plus et ont ete retirees ({detail}). Le graphique affiche desormais une selection plus large que le lien ouvert.",
     "clearAll": "Tout effacer",
     "clear": "Effacer",

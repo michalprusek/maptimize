@@ -741,6 +741,19 @@ někdo napíše do pickeru při zakládání experimentu (`ColorTagSelect` s `on
 **Přejmenovat ani smazat ji z UI nejde** — jen přes API nebo MCP (`update_cell_line`,
 `delete_cell_line`). Když laboratoř nahlásí překlep ve facetě, opravuje se tudy.
 
+⚠️ **Unikátnost jména linie drží funkcionální index `ix_cell_lines_name_lower`**
+(`ensure_schema_updates()`), ne jen router. `ensure_name_unique` je check-then-act —
+dva souběžné creaty „U2OS" a „u2os" projdou oba, protože `unique=True` z modelu
+porovnává syrové stringy. Aplikační kontrola pak kupuje jen čitelnou 400 místo
+integritní chyby.
+
+⚠️ **Enter v pickeru VYBÍRÁ, nezakládá naslepo.** `creatableName` porovnává
+rovností, filtr podřetězcem — a Enter visel na tom slabším, takže „u2" ukázalo
+v menu U2OS a zároveň založilo sdílený řádek pojmenovaný „u2". Rozhoduje
+`enterAction()`: jedna viditelná položka = vyber ji, žádná = založ co je napsané,
+cokoliv jiného = nedělej nic. Prefix existujícího jména jde založit klikem na
+řádek „vytvořit", ne klávesou.
+
 ⚠️ **Proto a jen proto je `ensure_name_unique` volaný s `case_insensitive=True`.**
 U ostatních tří se jméno vybírá ze seznamu na vlastní stránce, tady se píše při každém
 zakládání experimentu — „u2os" je jeden překlep, ne konstrukce. Musí to porovnávat
@@ -756,6 +769,10 @@ i sloupec). Idempotenci nedělá `WHERE cell_line_id IS NULL`, ale
 `AND NOT EXISTS (SELECT 1 FROM experiments WHERE cell_line_id IS NOT NULL)` — samotné
 `IS NULL` by při druhém běhu přerazítkovalo řádky, které někdo schválně vyprázdnil.
 Čisté DB dostanou U2OS ze `DEFAULT_CELL_LINES` přes `seed_default_data()`.
+**Odmítnout běh je v pořádku, odmítnout ho potichu ne:** přiřaď jednu linii mezi
+restartem backendu (který chip i MCP tool zapne) a ručním spuštěním, a UPDATE od
+té chvíle navždy matchuje nula řádků — proto skript končí `RAISE`em, když po něm
+zůstane cokoliv nepřiřazené.
 
 MCP: `list/get/create/update/delete_cell_line` + `assign_experiment_cell_line`;
 `SERVER_VERSION` je od 2026-09-26 **4.5.0**.
@@ -786,6 +803,17 @@ rozbalení AsyncMock nezachytí, spadne až na reálných datech). Frontend: `EM
 Compile-time to odchytí jen tam, kde je to psané jako `Record<FacetKey, …>`:
 `FACET_QUERY_PARAMS` a `UmapFacetSelection` v `lib/api.ts`, `FACET_LABEL_KEY` a
 `COLOR_BY_RANK` v `umapFacets.ts`.
+
+⚠️ **Nerozřešené referenční id se hlásí DERIVACÍ, ne `setState` za renderu.**
+`sampleClassOf` volá `onUnresolved` z renderu *dětské* komponenty (recharts shape),
+kde to React toleruje. Zkopírovat ten vzor do `styleOf`, který běží v renderu
+**rodiče**, znamená React **#301 „too many re-renders"** — produkční dashboard
+ukázal „Something went wrong" v okamžiku, kdy kolega založil buněčnou linii.
+Vzor tedy nebyl „hlásit nerozřešené id", ale „hlásit ho odtamtud, kde se to smí";
+ten rozdíl není vidět v diffu, v `tsc` ani v unit testech. Odpověď je
+`hasUnresolvedReferences()` v `umapFacets.ts` — čistá funkce facet a tří
+seznamů, tedy žádný stav. **U buněčné linie je to běžný případ, ne okrajový:**
+založit ji uprostřed sezení je jediný způsob, jak vznikne.
 
 ⚠️ **`UmapFilterPanel` NESMÍ mít vlastní seznam facet k vykreslení.** Měl ho — ruční pole
 `[{key:"experiment"},…]` vedle `options` — a buněčná linie se kvůli němu nasadila do

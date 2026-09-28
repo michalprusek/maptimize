@@ -352,3 +352,36 @@ export function selectionWithoutDeadIds(
   }
   return null;
 }
+
+/** A reference list as the plot holds it: id -> row, or undefined while loading. */
+export type ReferenceIndex = Map<number, unknown>;
+
+/**
+ * Does any experiment name a reference row the cached lists do not hold?
+ *
+ * ⚠️ DERIVED, never state set during render. The first version reported this by
+ * calling a setter from inside the colour-resolving callback, which runs during
+ * the parent's own render — React answered with error #301, "too many
+ * re-renders", and the production dashboard showed "Something went wrong" the
+ * moment a colleague minted a cell line. (The PTM marker path gets away with the
+ * same trick only because it is called from a child component's render.)
+ *
+ * The question is a pure function of the facet summary and the three lists, so
+ * it needs no state at all.
+ *
+ * What it protects: an id we cannot resolve and an id that is absent both come
+ * out of `Map.get` as `undefined`, and both fall through to the "Unassigned"
+ * label — so without this the legend pools "nothing is assigned" with "something
+ * is, and I cannot name it" and asserts an absence the data does not support.
+ */
+export function hasUnresolvedReferences(
+  meta: Map<number, ExperimentMeta>,
+  indexes: { microscope: ReferenceIndex; ptm: ReferenceIndex; cellLine: ReferenceIndex }
+): boolean {
+  for (const entry of Array.from(meta.values())) {
+    if (entry.microscopeId && !indexes.microscope.has(entry.microscopeId)) return true;
+    if (entry.ptmId && !indexes.ptm.has(entry.ptmId)) return true;
+    if (entry.cellLineId && !indexes.cellLine.has(entry.cellLineId)) return true;
+  }
+  return false;
+}

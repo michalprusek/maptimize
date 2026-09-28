@@ -44,6 +44,7 @@ import {
   FACET_LABEL_KEY,
   experimentColor,
   experimentMetaById,
+  hasUnresolvedReferences,
   isSelectionEmpty,
   selectionFromQuery,
   selectionToQuery,
@@ -260,24 +261,26 @@ export function UmapVisualization({
   );
 
   /**
-   * Reference ids an experiment names but the cached list has never seen.
+   * Does any experiment name a reference row these cached lists do not hold?
    *
-   * Not a missing assignment — a row a colleague created after this tab loaded.
-   * These queries have a 5-minute staleTime AND the app disables
-   * `refetchOnWindowFocus`, so on a dashboard that mounts once they effectively
-   * never refetch, while the projection query polls and its facets DO update.
-   * Labelling those points "Unassigned" pools them with points that genuinely
-   * carry nothing — an absence claimed where the truth is "a value I cannot
-   * name" — so they get the same banner as a reference list that failed outright.
+   * ⚠️ Derived, NOT state set during render. The first version called a setter
+   * from inside `styleOf`, which runs during this component's own render —
+   * React answered with #301 "too many re-renders" and the production dashboard
+   * showed "Something went wrong" the moment a colleague minted a cell line.
+   * (`sampleClassOf` gets away with its `onUnresolved` callback only because it
+   * is invoked from a recharts shape, i.e. a child's render.)
    *
-   * ⚠️ Cell lines make this the common case, not the corner case: minting one
-   * mid-session from the experiment form is the ONLY way a line comes into
-   * existence, since they have no admin page.
+   * Cell lines make this the common case rather than the corner case: minting
+   * one mid-session from the experiment form is the ONLY way a line appears.
    */
-  const [hasUnresolvedReference, setHasUnresolvedReference] = useState(false);
-  const noteUnresolvedReference = useCallback(
-    () => setHasUnresolvedReference(true),
-    []
+  const hasUnresolvedReference = useMemo(
+    () =>
+      hasUnresolvedReferences(experimentMeta, {
+        microscope: microscopeById,
+        ptm: ptmById,
+        cellLine: cellLineById,
+      }),
+    [experimentMeta, microscopeById, ptmById, cellLineById]
   );
 
   /** The label and colour a point takes under the current colour-by dimension. */
@@ -285,25 +288,14 @@ export function UmapVisualization({
     (point: ProjectionPoint): { name: string; color: string } => {
       const meta = experimentMeta.get(point.experiment_id);
 
-      /**
-       * Look a reference row up, and say so when the id names one we do not hold.
-       *
-       * ⚠️ `undefined` from a MISSING id and `undefined` from an id the cached
-       * list predates are the same value and two different facts: "nothing is
-       * assigned" versus "something is, and I cannot name it". Both fall through
-       * to `t("unassigned")` below, which is why the miss has to be reported —
-       * otherwise the legend counts them together and asserts an absence the
-       * data does not support.
-       */
+      // Plain lookups, no side effects. An id we cannot resolve still reads as
+      // "Unassigned" here; what stops that from being a silent lie is the
+      // banner driven by `hasUnresolvedReference`, which is DERIVED rather than
+      // reported from inside this callback. See its comment above.
       const resolve = <T,>(
         id: number | null | undefined,
         byId: Map<number, T>
-      ): T | undefined => {
-        if (!id) return undefined;
-        const found = byId.get(id);
-        if (!found) noteUnresolvedReference();
-        return found;
-      };
+      ): T | undefined => (id ? byId.get(id) : undefined);
 
       switch (colorBy) {
         case "microscope": {
@@ -346,7 +338,6 @@ export function UmapVisualization({
       microscopeById,
       ptmById,
       cellLineById,
-      noteUnresolvedReference,
       t,
     ]
   );
@@ -364,8 +355,8 @@ export function UmapVisualization({
    */
   const classOfPoint = useCallback(
     (point: ProjectionPoint): SampleClass =>
-      sampleClassOf(point.experiment_id, experimentMeta, ptmById, noteUnresolvedReference),
-    [experimentMeta, ptmById, noteUnresolvedReference]
+      sampleClassOf(point.experiment_id, experimentMeta, ptmById),
+    [experimentMeta, ptmById]
   );
 
   // recharts' `ActiveShape` is a union of call signatures, one of them taking

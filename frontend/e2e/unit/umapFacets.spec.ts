@@ -9,6 +9,7 @@ import {
   countActiveFilters,
   experimentColor,
   experimentMetaById,
+  hasUnresolvedReferences,
   facetOptions,
   isSelectionEmpty,
   selectionFromQuery,
@@ -395,5 +396,66 @@ test.describe("the panel's ordered facet lists", () => {
     // most classes, so it reads worst as a default.
     expect(COLOR_BY_ORDER[0]).toBe("protein");
     expect(COLOR_BY_ORDER[COLOR_BY_ORDER.length - 1]).toBe("experiment");
+  });
+});
+
+
+/**
+ * The banner that says a reference list is out of date.
+ *
+ * ⚠️ This is derived, not state set during render. Reporting it with a setter
+ * called from the colour-resolving callback crashed the production dashboard
+ * with React #301 the moment a colleague minted a cell line — and no test here
+ * could see it, because these run without React.
+ */
+test.describe("hasUnresolvedReferences", () => {
+  const idx = (...ids: number[]) => new Map(ids.map((id) => [id, {}]));
+  const metaOf = (over: Partial<import("../../components/visualization/umapFacets").ExperimentMeta>) =>
+    new Map([[1, { name: "E1", microscopeId: null, ptmId: null, cellLineId: null, ...over }]]);
+
+  test("everything resolvable is quiet", () => {
+    expect(
+      hasUnresolvedReferences(metaOf({ microscopeId: 1, ptmId: 2, cellLineId: 3 }), {
+        microscope: idx(1), ptm: idx(2), cellLine: idx(3),
+      })
+    ).toBe(false);
+  });
+
+  test("an id the cached list has never seen is reported", () => {
+    // The live case: a colleague mints a cell line after this tab loaded.
+    expect(
+      hasUnresolvedReferences(metaOf({ cellLineId: 5 }), {
+        microscope: idx(), ptm: idx(), cellLine: idx(1),
+      })
+    ).toBe(true);
+  });
+
+  test("a genuinely unassigned facet is NOT reported", () => {
+    // Null means "nothing assigned" -- an answer, not a gap. Reporting it would
+    // put the banner on every dashboard before the lab has backfilled.
+    expect(
+      hasUnresolvedReferences(metaOf({ cellLineId: null, ptmId: null }), {
+        microscope: idx(), ptm: idx(), cellLine: idx(),
+      })
+    ).toBe(false);
+  });
+
+  test("microscope and PTM are covered too, not just the cell line", () => {
+    expect(
+      hasUnresolvedReferences(metaOf({ microscopeId: 9 }), {
+        microscope: idx(1), ptm: idx(), cellLine: idx(),
+      })
+    ).toBe(true);
+    expect(
+      hasUnresolvedReferences(metaOf({ ptmId: 9 }), {
+        microscope: idx(), ptm: idx(1), cellLine: idx(),
+      })
+    ).toBe(true);
+  });
+
+  test("an empty scope is quiet", () => {
+    expect(
+      hasUnresolvedReferences(new Map(), { microscope: idx(), ptm: idx(), cellLine: idx() })
+    ).toBe(false);
   });
 });
