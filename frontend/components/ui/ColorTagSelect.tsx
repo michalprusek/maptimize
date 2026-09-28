@@ -1,7 +1,9 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
-import { Check, ChevronDown } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Check, ChevronDown, Plus } from "lucide-react";
+
+import { creatableName, enterAction, filterColorTagOptions } from "./colorTagFilter";
 
 export interface ColorTagOption {
   id: number;
@@ -76,6 +78,34 @@ interface ColorTagSelectProps {
    * siblings while the menu is open or later cards paint over it.
    */
   onOpenChange?: (open: boolean) => void;
+  /**
+   * Turns the menu into a search box that can also mint a new record.
+   *
+   * Passed only by the cell-line picker, which is the one reference list with
+   * no admin page of its own: a line exists because someone typed it here. Omit
+   * it and the menu stays exactly what it was -- a plain list, no input -- so
+   * the protein, microscope, PTM and folder pickers are unaffected.
+   *
+   * One object rather than three optional props so the type says what the
+   * feature needs: a create affordance with no placeholder and no label is not
+   * a thing, and as loose optionals nothing but a comment said so.
+   *
+   * `label` is a function, not a template string, because the caller owns
+   * translation -- it passes `(name) => t("createCellLine", { name })` and
+   * next-intl does the interpolation. A string with a `{name}` placeholder
+   * substituted here would be a second, parallel ICU implementation that
+   * silently half-renders the moment a message gains a second placeholder.
+   */
+  create?: {
+    /**
+     * Receives the trimmed name and resolves to the created record's id, or
+     * null if it failed; the picker selects it. Matching is case-folded, so a
+     * variant of an existing name offers that record rather than a create.
+     */
+    onCreate: (name: string) => Promise<number | null>;
+    searchPlaceholder: string;
+    label: (name: string) => string;
+  };
   className?: string;
 }
 
@@ -113,9 +143,18 @@ export function ColorTagSelect({
   align = "left",
   disabled = false,
   onOpenChange,
+  create: createOption,
   className = "",
 }: ColorTagSelectProps): JSX.Element {
   const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const [creating, setCreating] = useState(false);
+  // ⚠️ A ref as well as the state. `creating` is read by the next render (it
+  // disables the button); `creatingRef` is what stops a second create dispatched
+  // in the SAME tick -- holding Enter fires two keydown handlers whose closures
+  // both captured `creating === false`, and two POSTs of one name race the
+  // check-then-act uniqueness lookup.
+  const creatingRef = useRef(false);
   const containerRef = useRef<HTMLDivElement>(null);
 
   // `onOpenChange` is only ever called, never depended on: latching it in a ref
@@ -131,6 +170,14 @@ export function ColorTagSelect({
     setOpen(next);
     onOpenChangeRef.current?.(next);
   }, []);
+
+  // Closing always empties the search box -- including the outside-click and
+  // Escape paths, which the trigger's own handler never runs. Otherwise the
+  // menu reopens still filtered by what was typed last time, showing a subset
+  // of the list with nothing on screen to say why.
+  useEffect(() => {
+    if (!open) setQuery("");
+  }, [open]);
 
   useEffect(() => {
     if (!open) return;
@@ -157,6 +204,38 @@ export function ColorTagSelect({
   const pick = (id: number | null) => {
     onChange(id);
     setOpenState(false);
+  };
+
+  // No branch on whether the picker can create: `filterColorTagOptions` already
+  // returns everything for a blank query, and `query` can only be non-empty
+  // when the search input exists — which is only when `create` was passed.
+  const visibleOptions = useMemo(
+    () => filterColorTagOptions(options, query),
+    [options, query]
+  );
+  // Null unless there is a name to mint: no create affordance, a blank input, or
+  // a name the list already holds under some other casing.
+  const pendingName = createOption ? creatableName(options, query) : null;
+  // Bound here, not at the call site: `pendingName` implies `createOption`, but
+  // TypeScript loses that narrowing across the JSX boundary, and an optional
+  // call there would tell the next reader `label` may be absent.
+  const createRowLabel =
+    createOption && pendingName ? createOption.label(pendingName) : null;
+
+  const create = async (name: string) => {
+    if (creatingRef.current) return;
+    creatingRef.current = true;
+    setCreating(true);
+    try {
+      const id = await createOption?.onCreate(name);
+      // A failed create leaves the menu open with the text intact, so the error
+      // the caller surfaces is next to the box it came from and the typing is
+      // not lost.
+      if (id != null) pick(id);
+    } finally {
+      creatingRef.current = false;
+      setCreating(false);
+    }
   };
 
   const selected = options?.find((o) => o.id === value) ?? null;
@@ -257,6 +336,50 @@ export function ColorTagSelect({
               {hint}
             </div>
           )}
+          {createOption && (
+            <div className="sticky top-0 z-10 bg-bg-elevated px-2 pt-1 pb-2 border-b border-white/10">
+              <input
+                type="text"
+                autoFocus
+                value={query}
+                onChange={(event) => setQuery(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key !== "Enter") return;
+                  // ⚠️ preventDefault UNCONDITIONALLY, not only when there is
+                  // something to do. This input sits inside the
+                  // create-experiment <form>, so a bare Enter submits it -- the
+                  // experiment would be created the moment someone pressed
+                  // Enter over a line that already exists, or over a
+                  // half-typed filter.
+                  event.preventDefault();
+                  // Enter PREFERS picking; see `enterAction` for why blindly
+                  // creating minted rows named after half-typed queries.
+                  const action = enterAction(options, query);
+                  if (action?.kind === "select") pick(action.id);
+                  else if (action?.kind === "create") void create(action.name);
+                }}
+                placeholder={createOption.searchPlaceholder}
+                className="w-full px-2 py-1 text-sm bg-bg-secondary border border-white/10 rounded
+                           text-text-primary placeholder:text-text-muted focus:outline-none
+                           focus:border-white/20"
+              />
+            </div>
+          )}
+          {pendingName && (
+            <button
+              type="button"
+              disabled={creating}
+              onClick={() => void create(pendingName)}
+              title={pendingName}
+              className="w-full px-3 py-2 text-left text-sm hover:bg-white/5 transition-colors
+                         flex items-center gap-2 disabled:opacity-50"
+            >
+              <Plus className="w-3 h-3 flex-shrink-0 text-text-muted" />
+              <span className="text-text-primary truncate flex-1">
+                {createRowLabel}
+              </span>
+            </button>
+          )}
           <button
             type="button"
             onClick={() => pick(null)}
@@ -273,7 +396,7 @@ export function ColorTagSelect({
             </span>
             {value === null && <Check className="w-4 h-4 flex-shrink-0 text-text-muted" />}
           </button>
-          {options?.map((option) => (
+          {visibleOptions.map((option) => (
             <button
               key={option.id}
               type="button"

@@ -44,6 +44,7 @@ import {
   FACET_LABEL_KEY,
   experimentColor,
   experimentMetaById,
+  hasUnresolvedReferences,
   isSelectionEmpty,
   selectionFromQuery,
   selectionToQuery,
@@ -113,7 +114,13 @@ export function UmapVisualization({
     queryFn: () => api.getPtms(),
     staleTime: 1000 * 60 * 5,
   });
-  const referencesFailed = microscopesFailed || proteinsFailed || ptmsFailed;
+  const { data: cellLines, isError: cellLinesFailed } = useQuery({
+    queryKey: ["cellLines"],
+    queryFn: () => api.getCellLines(),
+    staleTime: 1000 * 60 * 5,
+  });
+  const referencesFailed =
+    microscopesFailed || proteinsFailed || ptmsFailed || cellLinesFailed;
 
   // An experimentId prop scopes the plot; the user filters within it.
   const effectiveSelection = useMemo(
@@ -222,7 +229,7 @@ export function UmapVisualization({
       : rows.filter((row) => row.experiment_id === experimentId);
   }, [view?.facets, experimentId]);
 
-  // Microscope and PTM live on the experiment, so points carry only
+  // Microscope, PTM and cell line live on the experiment, so points carry only
   // experiment_id and the rest is looked up here.
   const experimentMeta = useMemo(() => experimentMetaById(view?.facets ?? []), [view?.facets]);
   const microscopeById = useMemo(
@@ -230,21 +237,50 @@ export function UmapVisualization({
     [microscopes]
   );
   const ptmById = useMemo(() => new Map((ptms ?? []).map((p) => [p.id, p])), [ptms]);
+  const cellLineById = useMemo(
+    () => new Map((cellLines ?? []).map((c) => [c.id, c])),
+    [cellLines]
+  );
 
   const contextOf = useCallback(
     (point: ProjectionPoint): PointContext => {
       const meta = experimentMeta.get(point.experiment_id);
       const microscope = meta?.microscopeId ? microscopeById.get(meta.microscopeId) : undefined;
       const ptm = meta?.ptmId ? ptmById.get(meta.ptmId) : undefined;
+      const cellLine = meta?.cellLineId ? cellLineById.get(meta.cellLineId) : undefined;
       return {
         experimentName: meta?.name ?? `#${point.experiment_id}`,
         microscopeName: microscope?.name ?? null,
         // Full name, matching the legend: an abbreviation here and a name
         // there reads as two different PTMs on the same plot.
         ptmName: ptm?.name ?? null,
+        cellLineName: cellLine?.name ?? null,
       };
     },
-    [experimentMeta, microscopeById, ptmById]
+    [experimentMeta, microscopeById, ptmById, cellLineById]
+  );
+
+  /**
+   * Does any experiment name a reference row these cached lists do not hold?
+   *
+   * ⚠️ Derived, NOT state set during render. The first version called a setter
+   * from inside `styleOf`, which runs during this component's own render —
+   * React answered with #301 "too many re-renders" and the production dashboard
+   * showed "Something went wrong" the moment a colleague minted a cell line.
+   * (`sampleClassOf` gets away with its `onUnresolved` callback only because it
+   * is invoked from a recharts shape, i.e. a child's render.)
+   *
+   * Cell lines make this the common case rather than the corner case: minting
+   * one mid-session from the experiment form is the ONLY way a line appears.
+   */
+  const hasUnresolvedReference = useMemo(
+    () =>
+      hasUnresolvedReferences(experimentMeta, {
+        microscope: microscopeById,
+        ptm: ptmById,
+        cellLine: cellLineById,
+      }),
+    [experimentMeta, microscopeById, ptmById, cellLineById]
   );
 
   /** The label and colour a point takes under the current colour-by dimension. */
@@ -252,21 +288,35 @@ export function UmapVisualization({
     (point: ProjectionPoint): { name: string; color: string } => {
       const meta = experimentMeta.get(point.experiment_id);
 
+      // Plain lookups, no side effects. An id we cannot resolve still reads as
+      // "Unassigned" here; what stops that from being a silent lie is the
+      // banner driven by `hasUnresolvedReference`, which is DERIVED rather than
+      // reported from inside this callback. See its comment above.
+      const resolve = <T,>(
+        id: number | null | undefined,
+        byId: Map<number, T>
+      ): T | undefined => (id ? byId.get(id) : undefined);
+
       switch (colorBy) {
         case "microscope": {
-          const microscope = meta?.microscopeId
-            ? microscopeById.get(meta.microscopeId)
-            : undefined;
+          const microscope = resolve(meta?.microscopeId, microscopeById);
           return {
             name: microscope?.name ?? t("unassigned"),
             color: microscope?.color || DEFAULT_POINT_COLOR,
           };
         }
         case "ptm": {
-          const ptm = meta?.ptmId ? ptmById.get(meta.ptmId) : undefined;
+          const ptm = resolve(meta?.ptmId, ptmById);
           return {
             name: ptm?.name ?? t("unassigned"),
             color: ptm?.color || DEFAULT_POINT_COLOR,
+          };
+        }
+        case "cell_line": {
+          const cellLine = resolve(meta?.cellLineId, cellLineById);
+          return {
+            name: cellLine?.name ?? t("unassigned"),
+            color: cellLine?.color || DEFAULT_POINT_COLOR,
           };
         }
         case "experiment":
@@ -282,21 +332,16 @@ export function UmapVisualization({
           };
       }
     },
-    [colorBy, experimentMeta, microscopeById, ptmById, t]
+    [
+      colorBy,
+      experimentMeta,
+      microscopeById,
+      ptmById,
+      cellLineById,
+      t,
+    ]
   );
 
-  /**
-   * PTM ids an experiment names but the cached reference list has never seen.
-   *
-   * Not a missing assignment — a row a colleague created after this tab loaded.
-   * The `ptms` query has a 5-minute staleTime AND the app disables
-   * `refetchOnWindowFocus`, so on a dashboard that mounts once it effectively
-   * never refetches, while the projection query polls and its facets DO update.
-   * Drawing those points plain claims "not a PTM", which is a claim we cannot
-   * make, so it gets the same banner as a reference list that failed outright.
-   */
-  const [hasUnresolvedPtm, setHasUnresolvedPtm] = useState(false);
-  const noteUnresolvedPtm = useCallback(() => setHasUnresolvedPtm(true), []);
 
   /**
    * Which sample class a point is: a PTM, its paired control, the unmodified
@@ -310,8 +355,8 @@ export function UmapVisualization({
    */
   const classOfPoint = useCallback(
     (point: ProjectionPoint): SampleClass =>
-      sampleClassOf(point.experiment_id, experimentMeta, ptmById, noteUnresolvedPtm),
-    [experimentMeta, ptmById, noteUnresolvedPtm]
+      sampleClassOf(point.experiment_id, experimentMeta, ptmById),
+    [experimentMeta, ptmById]
   );
 
   // recharts' `ActiveShape` is a union of call signatures, one of them taking
@@ -696,7 +741,7 @@ export function UmapVisualization({
 
       {/* A reference list failed to load, so names and colours are wrong rather
           than missing — the plot looks like a lost backfill if we stay quiet. */}
-      {(referencesFailed || hasUnresolvedPtm) && (
+      {(referencesFailed || hasUnresolvedReference) && (
         <div className="flex items-center gap-2 mb-3 px-3 py-2 rounded-md bg-accent-amber/10 border border-accent-amber/30">
           <AlertCircle className="w-4 h-4 text-accent-amber flex-shrink-0" />
           <span className="text-xs text-text-secondary">{t("referencesFailed")}</span>
@@ -731,6 +776,7 @@ export function UmapVisualization({
           microscopes={microscopes}
           proteins={proteins}
           ptms={ptms}
+          cellLines={cellLines}
           showExperimentFacet={experimentId === undefined}
           shownCount={view.points.length}
           totalCount={totalPoints(facetRows)}

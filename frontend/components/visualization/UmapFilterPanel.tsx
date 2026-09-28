@@ -7,6 +7,9 @@ import { Filter, Search, X } from "lucide-react";
 
 import { DEFAULT_POINT_COLOR } from "./chartConfig";
 import {
+  COLOR_BY_ORDER,
+  EMPTY_SELECTION,
+  FACET_ORDER,
   countActiveFilters,
   facetOptions,
   isSelectionEmpty,
@@ -24,17 +27,6 @@ const SEARCHABLE_THRESHOLD = 12;
 
 export type ColorBy = FacetKey;
 
-/**
- * Colour-by options, most useful first — protein is what the plot has always
- * been about, and experiment last because it produces the most classes.
- */
-const COLOR_BY_ORDER: readonly ColorBy[] = [
-  "protein",
-  "microscope",
-  "ptm",
-  "experiment",
-];
-
 interface UmapFilterPanelProps {
   rows: UmapFacetRow[];
   selection: FacetSelection;
@@ -44,6 +36,7 @@ interface UmapFilterPanelProps {
   microscopes: Named[] | undefined;
   proteins: Named[] | undefined;
   ptms: Named[] | undefined;
+  cellLines: Named[] | undefined;
   /** Hidden when the plot is already scoped to one experiment. */
   showExperimentFacet: boolean;
   shownCount: number;
@@ -169,6 +162,7 @@ export function UmapFilterPanel({
   microscopes,
   proteins,
   ptms,
+  cellLines,
   showExperimentFacet,
   shownCount,
   totalCount,
@@ -183,20 +177,21 @@ export function UmapFilterPanel({
       microscope: facetOptions(rows, "microscope", microscopes, unassigned),
       protein: facetOptions(rows, "protein", proteins, unassigned),
       ptm: facetOptions(rows, "ptm", ptms, unassigned),
+      cell_line: facetOptions(rows, "cell_line", cellLines, unassigned),
     }),
-    [rows, microscopes, proteins, ptms, unassigned]
+    [rows, microscopes, proteins, ptms, cellLines, unassigned]
   );
 
   const activeCount = countActiveFilters(selection);
-  const facets: Array<{ key: FacetKey; label: string; hidden?: boolean }> = [
-    { key: "experiment", hidden: !showExperimentFacet },
-    { key: "microscope" },
-    { key: "protein" },
-    { key: "ptm" },
-  ].map((facet) => ({
-    ...facet,
-    label: t(FACET_LABEL_KEY[facet.key as FacetKey]),
-  })) as Array<{ key: FacetKey; label: string; hidden?: boolean }>;
+  // ⚠️ Derived, never a second list. The previous hand-written array is how the
+  // cell-line facet shipped with working options that rendered no sections.
+  const facets = FACET_ORDER.map((key) => ({
+    key,
+    label: t(FACET_LABEL_KEY[key]),
+    // The plot is already scoped to one experiment; offering the facet would
+    // only let the reader contradict that scope.
+    hidden: key === "experiment" && !showExperimentFacet,
+  }));
 
   // Chips summarising what is active, so the filter is readable while collapsed.
   const activeChips = facets
@@ -254,9 +249,7 @@ export function UmapFilterPanel({
         {!isSelectionEmpty(selection) && (
           <button
             type="button"
-            onClick={() =>
-              onSelectionChange({ experiment: [], microscope: [], protein: [], ptm: [] })
-            }
+            onClick={() => onSelectionChange(EMPTY_SELECTION)}
             className="text-xs text-text-muted hover:text-text-primary underline"
           >
             {t("clearAll")}

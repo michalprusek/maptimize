@@ -7,6 +7,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from models.experiment import ExperimentStatus
 from schemas.image import MapProteinResponse
 from schemas.microscope import MicroscopeResponse
+from schemas.cell_line import CellLineResponse
 from schemas.ptm import PTMResponse
 from schemas.reference import RejectsNullName
 
@@ -18,17 +19,18 @@ class ExperimentCreate(BaseModel):
     map_protein_id: Optional[int] = None
     microscope_id: Optional[int] = None
     ptm_id: Optional[int] = None
+    cell_line_id: Optional[int] = None
     fasta_sequence: Optional[str] = None
 
 
 class ExperimentUpdate(RejectsNullName):
     """Schema for updating an experiment.
 
-    No `microscope_id` and no `ptm_id` on purpose: both are assigned through
-    their own endpoints (`PATCH /experiments/{id}/microscope` and
-    `.../ptm`), which any group member may call. Accepting them here too would
-    give one field two endpoints with two different ACLs -- and the wider one
-    would be reachable by mistake.
+    No `microscope_id`, `ptm_id` or `cell_line_id` on purpose: all three are
+    assigned through their own endpoints (`PATCH /experiments/{id}/microscope`,
+    `.../ptm` and `.../cell-line`), which any group member may call. Accepting
+    them here too would give one field two endpoints with two different ACLs --
+    and the wider one would be reachable by mistake.
 
     `RejectsNullName` because `experiments.name` is NOT NULL: an explicit
     `{"name": null}` otherwise reaches the UPDATE and returns 500, not 422.
@@ -66,6 +68,7 @@ class ExperimentResponse(BaseModel):
     map_protein: Optional[MapProteinResponse] = None
     microscope: Optional[MicroscopeResponse] = None
     ptm: Optional[PTMResponse] = None
+    cell_line: Optional[CellLineResponse] = None
     fasta_sequence: Optional[str] = None
     created_at: datetime
     updated_at: datetime
@@ -77,8 +80,8 @@ class ExperimentResponse(BaseModel):
     # Reads are group-shared but most WRITES are owner-only, and the UI cannot
     # derive that from `creator_name` (names are not identities). Without it the
     # protein selector on a colleague's card looks live and 403s on click — on
-    # this corpus that is 40 of 46 experiments. Microscope and PTM are the
-    # deliberate group-writable exceptions and stay enabled for everyone.
+    # this corpus that is 40 of 46 experiments. Microscope, PTM and cell line
+    # are the deliberate group-writable exceptions and stay enabled for everyone.
     user_id: int
 
     class Config:

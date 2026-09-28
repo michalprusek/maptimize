@@ -13,7 +13,7 @@ import type { UmapFacetRow, UmapFacetSelection } from "@/lib/api";
 export const UNASSIGNED_ID = 0;
 
 /**
- * The four dimensions the plot can be filtered and coloured by.
+ * The dimensions the plot can be filtered and coloured by.
  *
  * Aliased to the request type rather than re-declared: this used to be a third,
  * independent copy, and structural typing meant adding a facet here alone still
@@ -30,6 +30,7 @@ export const EMPTY_SELECTION: FacetSelection = Object.freeze({
   microscope: Object.freeze([]) as unknown as number[],
   protein: Object.freeze([]) as unknown as number[],
   ptm: Object.freeze([]) as unknown as number[],
+  cell_line: Object.freeze([]) as unknown as number[],
 });
 
 /**
@@ -45,7 +46,41 @@ export const FACET_LABEL_KEY: Record<FacetKey, string> = {
   microscope: "facetMicroscope",
   protein: "facetProtein",
   ptm: "facetPtm",
+  cell_line: "facetCellLine",
 };
+
+/**
+ * Every facet, in the order the filter panel stacks their sections.
+ *
+ * ⚠️ Derived from `FACET_LABEL_KEY`, never written out again. That map is a
+ * `Record<FacetKey, string>`, so the type system guarantees it covers every
+ * facet — and a second hand-written list is exactly how the cell-line facet
+ * reached production with its options computed, its wire param sent, and no
+ * pills drawn. Nothing failed: the array was cast, so tsc was satisfied, and the
+ * pure-function tests never look at what the component renders.
+ */
+export const FACET_ORDER = Object.keys(FACET_LABEL_KEY) as FacetKey[];
+
+/**
+ * Rank of each facet in the colour-by selector. A different order from
+ * `FACET_ORDER` on purpose: protein is what the plot has always been about, and
+ * experiment goes last because it produces by far the most classes.
+ *
+ * A `Record`, not a list, for the same reason as above — a missing facet is a
+ * compile error rather than a silently short dropdown.
+ */
+const COLOR_BY_RANK: Record<FacetKey, number> = {
+  protein: 0,
+  microscope: 1,
+  ptm: 2,
+  cell_line: 3,
+  experiment: 4,
+};
+
+/** The colour-by options, most useful first. */
+export const COLOR_BY_ORDER: readonly FacetKey[] = (
+  Object.keys(COLOR_BY_RANK) as FacetKey[]
+).sort((a, b) => COLOR_BY_RANK[a] - COLOR_BY_RANK[b]);
 
 export interface FacetOption {
   id: number;
@@ -99,6 +134,8 @@ function facetIdOf(row: UmapFacetRow, facet: FacetKey): number | null {
       return row.protein_id;
     case "ptm":
       return row.ptm_id;
+    case "cell_line":
+      return row.cell_line_id;
   }
 }
 
@@ -162,8 +199,8 @@ const HUE_STEP = 0.381966;
 /**
  * A stable colour for an experiment.
  *
- * Experiments have no colour column — unlike proteins, microscopes and PTMs
- * there are too many of them to curate. Deriving it from the id rather than from
+ * Experiments have no colour column — unlike proteins, microscopes, PTMs and
+ * cell lines there are too many of them to curate. Deriving it from the id rather than from
  * the value's position in the list keeps a point the same colour when the filter
  * changes what else is on the plot.
  */
@@ -180,13 +217,14 @@ export interface ExperimentMeta {
   name: string;
   microscopeId: number | null;
   ptmId: number | null;
+  cellLineId: number | null;
 }
 
 /**
  * experiment id -> its acquisition metadata.
  *
- * Points carry only `experiment_id`; this is how colouring by microscope or PTM,
- * and the tooltip rows for them, get their value without the payload repeating
+ * Points carry only `experiment_id`; this is how colouring by microscope, PTM or
+ * cell line, and the tooltip rows for them, get their value without the payload repeating
  * it per point.
  */
 export function experimentMetaById(
@@ -199,6 +237,7 @@ export function experimentMetaById(
         name: row.experiment_name,
         microscopeId: row.microscope_id,
         ptmId: row.ptm_id,
+        cellLineId: row.cell_line_id,
       });
     }
   }
@@ -224,12 +263,15 @@ const FACET_PARAMS: Record<FacetKey, string> = {
   microscope: "microscope",
   protein: "protein",
   ptm: "ptm",
+  cell_line: "cell_line",
 };
 
 /** Read a selection out of a URL query string, ignoring anything malformed. */
 export function selectionFromQuery(search: string): FacetSelection {
   const params = new URLSearchParams(search);
-  const selection: FacetSelection = { experiment: [], microscope: [], protein: [], ptm: [] };
+  const selection: FacetSelection = {
+    experiment: [], microscope: [], protein: [], ptm: [], cell_line: [],
+  };
 
   for (const facet of Object.keys(FACET_PARAMS) as FacetKey[]) {
     const raw = params.get(FACET_PARAMS[facet]);
@@ -255,7 +297,7 @@ export function selectionFromQuery(search: string): FacetSelection {
  * Write the selection into an existing query string, leaving other params alone.
  *
  * Takes the page's current search string rather than building from scratch: the
- * plot owns four params, not the whole URL, and silently dropping a param some
+ * plot owns its own params, not the whole URL, and silently dropping a param some
  * other part of the page put there would be a nasty surprise for whoever adds
  * one. Empty facets are removed, not written blank.
  */
@@ -278,6 +320,7 @@ const FACET_BY_ERROR_LABEL: Array<[string, FacetKey]> = [
   ["Microscope not found:", "microscope"],
   ["Experiment not found:", "experiment"],
   ["PTM not found:", "ptm"],
+  ["Cell line not found:", "cell_line"],
 ];
 
 /**
@@ -308,4 +351,37 @@ export function selectionWithoutDeadIds(
     return { ...selection, [facet]: kept };
   }
   return null;
+}
+
+/** A reference list as the plot holds it: id -> row, or undefined while loading. */
+export type ReferenceIndex = Map<number, unknown>;
+
+/**
+ * Does any experiment name a reference row the cached lists do not hold?
+ *
+ * ⚠️ DERIVED, never state set during render. The first version reported this by
+ * calling a setter from inside the colour-resolving callback, which runs during
+ * the parent's own render — React answered with error #301, "too many
+ * re-renders", and the production dashboard showed "Something went wrong" the
+ * moment a colleague minted a cell line. (The PTM marker path gets away with the
+ * same trick only because it is called from a child component's render.)
+ *
+ * The question is a pure function of the facet summary and the three lists, so
+ * it needs no state at all.
+ *
+ * What it protects: an id we cannot resolve and an id that is absent both come
+ * out of `Map.get` as `undefined`, and both fall through to the "Unassigned"
+ * label — so without this the legend pools "nothing is assigned" with "something
+ * is, and I cannot name it" and asserts an absence the data does not support.
+ */
+export function hasUnresolvedReferences(
+  meta: Map<number, ExperimentMeta>,
+  indexes: { microscope: ReferenceIndex; ptm: ReferenceIndex; cellLine: ReferenceIndex }
+): boolean {
+  for (const entry of Array.from(meta.values())) {
+    if (entry.microscopeId && !indexes.microscope.has(entry.microscopeId)) return true;
+    if (entry.ptmId && !indexes.ptm.has(entry.ptmId)) return true;
+    if (entry.cellLineId && !indexes.cellLine.has(entry.cellLineId)) return true;
+  }
+  return false;
 }

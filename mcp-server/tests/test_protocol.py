@@ -33,7 +33,13 @@ async def test_stdio_server_lists_tools():
     # consolidation removed these
     assert not ({"semantic_search", "semantic_image_search", "list_documents"} & names)
     # server metadata + prompts (none of these touch the backend)
-    assert init.serverInfo.version == "4.4.0"
+    assert init.serverInfo.version == "4.5.0"
     assert init.instructions and "Vision-RAG" in init.instructions
+    # ⚠️ The instructions are prose, and they are how the agent learns a surface
+    # EXISTS -- a tool it never thinks to list is a tool it never calls. Cell
+    # lines are the case that proves it: there is no admin page, so if this text
+    # does not say the connector can edit them, nothing else will.
+    assert "cell line" in init.instructions.lower()
+    assert "assign_experiment_cell_line" in init.instructions
     assert {"summarize_document", "compare_documents", "literature_search"} <= prompt_names
     assert got.messages and got.messages[0].content.text

@@ -166,6 +166,8 @@ async def ensure_schema_updates():
             ("experiments", "microscope_id", "INTEGER REFERENCES microscopes(id)"),
             # Microtubule post-translational modification at experiment level
             ("experiments", "ptm_id", "INTEGER REFERENCES ptms(id)"),
+            # Cultured cell line the MAP was expressed in
+            ("experiments", "cell_line_id", "INTEGER REFERENCES cell_lines(id)"),
             # MAP protein extended fields for protein page
             ("map_proteins", "uniprot_id", "VARCHAR(20)"),
             ("map_proteins", "fasta_sequence", "TEXT"),
@@ -381,6 +383,33 @@ async def ensure_schema_updates():
             logger.error(f"Failed to create ix_rag_documents_group_id: {e}")
             failed_updates.append("rag_documents.ix_group_id")
 
+        # ⚠️ Case-insensitive uniqueness for cell lines has to be the DATABASE's
+        # rule, not the router's. `ensure_name_unique(case_insensitive=True)` is
+        # a SELECT followed by an INSERT in a separate statement, so two members
+        # typing the line into the experiment form at the same moment -- one
+        # "U2OS", one "u2os" -- both pass the lookup and both INSERT, because
+        # the model's `unique=True` index compares raw strings. That is exactly
+        # the split population the whole feature exists to prevent.
+        #
+        # Cell lines are the only family that needs this: the other three are
+        # picked from a list on their own admin page, while a cell line is typed
+        # freely on every experiment creation.
+        #
+        # A pre-existing case-duplicate would make this fail; the failure is
+        # logged and collected like every other, and the pair has to be merged
+        # by hand -- silently keeping the weaker rule would be worse.
+        try:
+            await conn.execute(text("SAVEPOINT idx_cell_lines_lower_name"))
+            await conn.execute(text(
+                "CREATE UNIQUE INDEX IF NOT EXISTS ix_cell_lines_name_lower "
+                "ON cell_lines (lower(name))"
+            ))
+            await conn.execute(text("RELEASE SAVEPOINT idx_cell_lines_lower_name"))
+        except Exception as e:
+            await conn.execute(text("ROLLBACK TO SAVEPOINT idx_cell_lines_lower_name"))
+            logger.error(f"Failed to create ix_cell_lines_name_lower: {e}")
+            failed_updates.append("ix_cell_lines_name_lower")
+
         # Index for doi lookups (create_all skips columns added via ALTER TABLE above)
         try:
             await conn.execute(text("SAVEPOINT idx_doc_doi"))
@@ -459,6 +488,7 @@ async def seed_default_data():
     from models.image import DEFAULT_PROTEINS, MapProtein
     from models.experiment import Experiment
     from models.ptm import DEFAULT_PTMS, PTM
+    from models.cell_line import DEFAULT_CELL_LINES, CellLine
     from utils.security import hash_password
 
     async with async_session_maker() as db:
@@ -507,5 +537,13 @@ async def seed_default_data():
             for control_name, partner_name in pairings.items():
                 by_name[control_name].controls_ptm_id = by_name[partner_name].id
             print("Created default PTMs")
+
+        # Same "empty table only" guard, same reason: a line the lab deleted must
+        # not come back on the next restart.
+        result = await db.execute(select(CellLine).limit(1))
+        if not result.scalar_one_or_none():
+            for cl_data in DEFAULT_CELL_LINES:
+                db.add(CellLine(**cl_data))
+            print("Created default cell lines")
 
         await db.commit()

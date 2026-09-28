@@ -6,8 +6,8 @@ contributes no group term at all, which fails closed to owner-only rather than
 widening to everything.
 
 Write access is unchanged by this module: experiments and images stay owner-only,
-with the four deliberate group-write exceptions (crops, microscope, PTM, protein)
-enforced at their own endpoints.
+with the six deliberate group-write exceptions (crops, microscope, PTM, protein,
+folder and cell line) enforced at their own endpoints.
 """
 from typing import Optional, Sequence
 

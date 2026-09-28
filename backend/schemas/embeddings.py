@@ -25,7 +25,7 @@ class UmapType(str, Enum):
 class LabelAxis(str, Enum):
     """Which dimension the separability score groups points by.
 
-    The same four dimensions the filter panel offers, so the axis a reader can
+    The same dimensions the filter panel offers, so the axis a reader can
     colour by is exactly the axis they can score by. Keeping them one vocabulary
     is what stops the index from reporting on classes the legend does not show.
     """
@@ -33,6 +33,7 @@ class LabelAxis(str, Enum):
     PROTEIN = "protein"
     MICROSCOPE = "microscope"
     PTM = "ptm"
+    CELL_LINE = "cell_line"
     EXPERIMENT = "experiment"
 
 
@@ -55,23 +56,24 @@ class UmapFacetRow(BaseModel):
     """One (experiment, protein) bucket of the plot, with its point count.
 
     The filter panel needs, for every value it offers, how many points carry it.
-    Rather than repeat an experiment's microscope and PTM on each of its hundreds
-    of points, the scope is summarised here once per bucket and the client joins
+    Rather than repeat an experiment's microscope, PTM and cell line on each of
+    its hundreds of points, the scope is summarised here once per bucket and the client joins
     on ``experiment_id``. Rows are computed over the scope *before* facet filters
     are applied, so unticking a facet value never makes it disappear from the
     panel.
 
     A null id means nothing is assigned, and the client offers those buckets as
-    the "Unassigned" option — but note the two grains: a null microscope or PTM
-    is a property of the experiment, while a null protein is a property of these
-    points only, so one experiment can have both a null-protein bucket and
-    assigned ones.
+    the "Unassigned" option — but note the two grains: a null microscope, PTM or
+    cell line is a property of the experiment, while a null protein is a property
+    of these points only, so one experiment can have both a null-protein bucket
+    and assigned ones.
     """
 
     experiment_id: int = Field(..., description="Experiment these points belong to")
     experiment_name: str = Field(..., description="Experiment name, for the filter list")
     microscope_id: Optional[int] = Field(None, description="Microscope, or null if unassigned")
     ptm_id: Optional[int] = Field(None, description="PTM, or null if unassigned")
+    cell_line_id: Optional[int] = Field(None, description="Cell line, or null if unassigned")
     protein_id: Optional[int] = Field(None, description="MAP protein, or null if unassigned")
     count: int = Field(..., description="Points with embeddings in this bucket")
 

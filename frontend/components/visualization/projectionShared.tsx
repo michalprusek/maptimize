@@ -53,6 +53,7 @@ export interface PointContext {
   experimentName: string;
   microscopeName: string | null;
   ptmName: string | null;
+  cellLineName: string | null;
 }
 
 /** Resolves a point to the experiment metadata the facet summary carries. */
@@ -77,6 +78,11 @@ export function ContextRows({
       {context.ptmName && (
         <div className="text-xs text-text-muted truncate">
           {t("facetPtm")}: {context.ptmName}
+        </div>
+      )}
+      {context.cellLineName && (
+        <div className="text-xs text-text-muted truncate">
+          {t("facetCellLine")}: {context.cellLineName}
         </div>
       )}
     </>

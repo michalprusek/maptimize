@@ -12,6 +12,7 @@ from database import get_db
 from models.user import User
 from models.experiment import Experiment
 from models.image import Image, MapProtein
+from models.cell_line import CellLine
 from models.microscope import Microscope
 from models.ptm import PTM
 from models.cell_crop import CellCrop
@@ -59,6 +60,7 @@ async def load_experiment_response(
             selectinload(Experiment.map_protein),
             selectinload(Experiment.microscope),
             selectinload(Experiment.ptm),
+            selectinload(Experiment.cell_line),
         )
         .where(Experiment.id == experiment_id)
     )
@@ -86,16 +88,6 @@ async def get_experiment_for_user(
             detail="Experiment not found"
         )
     return experiment
-
-
-async def _verify_microscope_exists(microscope_id: int, db: AsyncSession) -> None:
-    """Raise 404 if no microscope has this id."""
-    await get_or_404(db, Microscope, microscope_id, "Microscope")
-
-
-async def _verify_ptm_exists(ptm_id: int, db: AsyncSession) -> None:
-    """Raise 404 if no PTM has this id."""
-    await get_or_404(db, PTM, ptm_id, "PTM")
 
 
 async def _folder_filter(
@@ -186,6 +178,7 @@ async def list_experiments(
             selectinload(Experiment.map_protein),
             selectinload(Experiment.microscope),
             selectinload(Experiment.ptm),
+            selectinload(Experiment.cell_line),
         )
         .outerjoin(Image, Experiment.id == Image.experiment_id)
         .outerjoin(CellCrop, Image.id == CellCrop.image_id)
@@ -238,10 +231,13 @@ async def create_experiment(
             )
 
     if data.microscope_id is not None:
-        await _verify_microscope_exists(data.microscope_id, db)
+        await get_or_404(db, Microscope, data.microscope_id, "Microscope")
 
     if data.ptm_id is not None:
-        await _verify_ptm_exists(data.ptm_id, db)
+        await get_or_404(db, PTM, data.ptm_id, "PTM")
+
+    if data.cell_line_id is not None:
+        await get_or_404(db, CellLine, data.cell_line_id, "Cell line")
 
     group_ids = await get_user_group_ids(current_user.id, db)
 
@@ -255,13 +251,14 @@ async def create_experiment(
         map_protein_id=data.map_protein_id,
         microscope_id=data.microscope_id,
         ptm_id=data.ptm_id,
+        cell_line_id=data.cell_line_id,
         fasta_sequence=data.fasta_sequence,
     )
     db.add(experiment)
     await db.commit()
 
-    # Same re-read as the update paths, so all three writes share one response
-    # shape and none of them can regress into the expired-attribute trap.
+    # Same re-read as the update paths, so every write shares one response shape
+    # and none of them can regress into the expired-attribute trap.
     exp_response = await load_experiment_response(db, experiment.id)
     exp_response.creator_name = current_user.name
     return exp_response
@@ -283,6 +280,7 @@ async def get_experiment(
             selectinload(Experiment.map_protein),
             selectinload(Experiment.microscope),
             selectinload(Experiment.ptm),
+            selectinload(Experiment.cell_line),
             selectinload(Experiment.user)
         )
         .where(
@@ -376,7 +374,7 @@ async def update_experiment_microscope(
     experiment = await get_experiment_for_user(db, experiment_id, current_user.id)
 
     if microscope_id is not None:
-        await _verify_microscope_exists(microscope_id, db)
+        await get_or_404(db, Microscope, microscope_id, "Microscope")
 
     experiment.microscope_id = microscope_id
     await db.commit()
@@ -411,13 +409,52 @@ async def update_experiment_ptm(
     experiment = await get_experiment_for_user(db, experiment_id, current_user.id)
 
     if ptm_id is not None:
-        await _verify_ptm_exists(ptm_id, db)
+        await get_or_404(db, PTM, ptm_id, "PTM")
 
     experiment.ptm_id = ptm_id
     await db.commit()
 
     logger.info(
         f"User {current_user.id} set PTM for experiment {experiment_id} to {ptm_id}"
+    )
+
+    return await load_experiment_response(db, experiment_id)
+
+
+@router.patch("/{experiment_id}/cell-line", response_model=ExperimentResponse)
+async def update_experiment_cell_line(
+    experiment_id: int,
+    cell_line_id: Optional[int] = Query(
+        default=None, description="Cell line ID to assign; omit to clear the assignment"
+    ),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Assign the cultured cell line the MAP was expressed in (owner OR group member).
+
+    Group-writable for the same reason as the microscope and PTM endpoints: the
+    cell line is shared sample-preparation metadata (`cell_lines` has no
+    `user_id`), and most of the lab's experiments belong to its annotator -- an
+    owner-only assignment would leave the dashboard's cell-line facet covering
+    almost nothing. Keeping it a separate endpoint from the owner-only
+    `PATCH /{experiment_id}` is deliberate: one field must not have two paths
+    with two different ACLs.
+
+    Unlike the protein assignment this touches one row only -- nothing cascades
+    down to images or crops -- so it carries no extra confirmation.
+    """
+    experiment = await get_experiment_for_user(db, experiment_id, current_user.id)
+
+    if cell_line_id is not None:
+        await get_or_404(db, CellLine, cell_line_id, "Cell line")
+
+    experiment.cell_line_id = cell_line_id
+    await db.commit()
+
+    logger.info(
+        f"User {current_user.id} set cell line for experiment {experiment_id} "
+        f"to {cell_line_id}"
     )
 
     return await load_experiment_response(db, experiment_id)
