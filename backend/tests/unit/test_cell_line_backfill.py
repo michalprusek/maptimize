@@ -4,36 +4,17 @@
 production's 181 existing experiments, and it is hand-written SQL that no
 application test path executes. What can be checked statically is checked here.
 """
-from pathlib import Path
-
 import pytest
 
 from models.cell_line import DEFAULT_CELL_LINES
+from tests.unit.conftest import backfill_sql
 
 
-def _backfill_sql() -> Path:
-    """Locate the one-off script from either layout it is read in.
-
-    In the repo it sits beside `backend/`; under the coverage harness only
-    `./backend` is mounted (at `/app`) so `scripts/` is bind-mounted separately.
-    Both candidates are checked and a miss is a hard failure, never a skip -- a
-    guard that quietly stops running is worse than no guard.
-    """
-    for candidate in (
-        Path(__file__).resolve().parents[3] / "scripts" / "cell_line_backfill.sql",
-        Path("/scripts/cell_line_backfill.sql"),
-    ):
-        if candidate.exists():
-            return candidate
-    raise FileNotFoundError(
-        "cell_line_backfill.sql not found; mount ./scripts into the test "
-        "container (see docker-compose.test.yml) so these guards keep running."
-    )
 
 
 @pytest.fixture(scope="module")
 def sql() -> str:
-    return _backfill_sql().read_text()
+    return backfill_sql("cell_line_backfill.sql").read_text()
 
 
 @pytest.fixture(scope="module")
@@ -95,6 +76,30 @@ def test_the_script_refuses_to_run_without_the_line_it_assigns(sql, statements):
     """
     assert "RAISE EXCEPTION" in sql
     assert "insert into cell_lines" not in " ".join(statements.lower().split())
+
+
+def test_the_script_refuses_to_finish_with_a_half_assigned_column(statements):
+    """The re-run guard must not become a silent, permanent no-op.
+
+    Deploy order is: restart the backend -- which also makes the group-writable
+    chip and the `assign_experiment_cell_line` MCP tool live -- then run this by
+    hand. In that window one assignment by anyone (or the agent) makes
+    `NOT EXISTS (... IS NOT NULL)` false forever. The UPDATE then matches zero
+    rows, nothing errors, psql exits 0, and 180 experiments stay unassigned
+    while the summary reads like a success.
+
+    The guard is still right -- backlog and a deliberate clear are
+    indistinguishable, so guessing is worse. What is wrong is doing nothing
+    QUIETLY. The script has to end by refusing.
+    """
+    body = " ".join(statements.lower().split())
+    # A post-condition on the resulting column, not just the pre-condition on
+    # the row it assigns from.
+    assert body.count("raise exception") == 2, (
+        "expected two RAISEs: the missing seed row, and a column left half "
+        "assigned after the UPDATE declined to run"
+    )
+    assert "cell_line_id is null" in body
 
 
 def test_the_script_touches_no_other_table_or_column(statements):

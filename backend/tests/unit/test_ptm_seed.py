@@ -6,28 +6,9 @@ projections is driven entirely by `kind`, so a seed that shipped every row as
 `modification` would draw every point identically with nothing failing anywhere
 — which is precisely the failure this file exists to make loud.
 """
-from pathlib import Path
-
 from models.ptm import DEFAULT_PTMS, PTM, PTM_KIND_CHECK, PTMKind, _kind_check_sql
+from tests.unit.conftest import backfill_sql
 
-def _backfill_sql() -> Path:
-    """Locate the one-off script from either layout it is read in.
-
-    In the repo it sits beside `backend/`; under the coverage harness only
-    `./backend` is mounted (at `/app`) so `scripts/` is bind-mounted separately.
-    Both candidates are checked and a miss is a hard failure, never a skip — a
-    guard that quietly stops running is worse than no guard.
-    """
-    for candidate in (
-        Path(__file__).resolve().parents[3] / "scripts" / "ptm_control_backfill.sql",
-        Path("/scripts/ptm_control_backfill.sql"),
-    ):
-        if candidate.exists():
-            return candidate
-    raise FileNotFoundError(
-        "ptm_control_backfill.sql not found; mount ./scripts into the test "
-        "container (see docker-compose.test.yml) so these guards keep running."
-    )
 
 
 def _named(kind: PTMKind) -> list[str]:
@@ -124,7 +105,7 @@ def test_the_backfill_script_cannot_report_success_after_failing():
     every statement errors, COMMIT silently becomes ROLLBACK, and the deploy log
     reads as success. Same class of lie this repo already fixed for backups.
     """
-    sql = _backfill_sql().read_text()
+    sql = backfill_sql("ptm_control_backfill.sql").read_text()
     assert "\\set ON_ERROR_STOP on" in sql
     # And the post-condition must be an assertion, not a table for a human to
     # read: both UPDATEs match by name, so a renamed vocabulary touches zero
@@ -137,7 +118,7 @@ def test_the_backfill_script_classifies_a_pre_existing_control_row():
     # filed as a modification -- there was no other option, and `Unmodified`'s
     # own seeded description called itself "the control condition". Left there,
     # every control draws with the PTM centre dot.
-    sql = _backfill_sql().read_text()
+    sql = backfill_sql("ptm_control_backfill.sql").read_text()
     assert "SET kind = 'control' WHERE name = 'Control'" in sql
 
 
@@ -145,7 +126,7 @@ def test_the_backfill_script_pairs_every_control_it_leaves_behind():
     # An unpaired control IS the pooled row this migration removes, so the
     # script must fail rather than leave one — reaching that state in silence is
     # the whole failure mode.
-    sql = _backfill_sql().read_text()
+    sql = backfill_sql("ptm_control_backfill.sql").read_text()
     assert "controls_ptm_id" in sql
     assert "c.kind = 'control'" in sql and "m.kind <> 'modification'" in sql
 
@@ -158,7 +139,7 @@ def test_the_script_and_the_seed_agree_on_the_control_row():
     production than in dev.
     """
     seeded = next(p for p in DEFAULT_PTMS if p["kind"] == PTMKind.CONTROL.value)
-    sql = _backfill_sql().read_text()
+    sql = backfill_sql("ptm_control_backfill.sql").read_text()
     assert f"'{seeded['name']}'" in sql
     assert f"'{seeded['color']}'" in sql
     assert f"'{seeded['abbreviation']}'" in sql

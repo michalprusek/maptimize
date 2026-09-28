@@ -2,6 +2,7 @@ import { expect, test } from "@playwright/test";
 
 import {
   creatableName,
+  enterAction,
   filterColorTagOptions,
 } from "../../components/ui/colorTagFilter";
 import type { ColorTagOption } from "../../components/ui/ColorTagSelect";
@@ -108,4 +109,54 @@ test.describe("the create row's message", () => {
       expect(messages.experiments.searchOrTypeCellLine).toBeTruthy();
     });
   }
+});
+
+
+/**
+ * What Enter does in the search box.
+ *
+ * ⚠️ This exists because the first version only ever CREATED. `creatableName`
+ * is an equality check while the filter is a substring check, so typing "u2"
+ * showed U2OS in the menu and Enter minted a shared cell line literally named
+ * "u2" — permanent, lab-wide, and with no UI to delete it. Meanwhile Enter over
+ * an exact existing name did nothing at all, which is the one thing every
+ * combobox user expects it to do.
+ */
+test.describe("enterAction", () => {
+  test("a prefix of an existing line SELECTS it, never creates", () => {
+    // The bug: "u2" is not equal to "U2OS", so it looked creatable.
+    expect(enterAction(OPTIONS, "u2")).toEqual({ kind: "select", id: 1 });
+  });
+
+  test("an exact name selects it", () => {
+    expect(enterAction(OPTIONS, "U2OS")).toEqual({ kind: "select", id: 1 });
+    expect(enterAction(OPTIONS, "  hela  ")).toEqual({ kind: "select", id: 2 });
+  });
+
+  test("a name matching nothing creates it", () => {
+    expect(enterAction(OPTIONS, "COS-7")).toEqual({ kind: "create", name: "COS-7" });
+  });
+
+  test("the created name is trimmed", () => {
+    expect(enterAction(OPTIONS, "  COS-7 ")).toEqual({ kind: "create", name: "COS-7" });
+  });
+
+  test("an ambiguous query does nothing", () => {
+    // "HE" matches HeLa and HEK293T. Picking one would be a guess, and creating
+    // a third line called "HE" is worse -- so Enter waits for the user to be
+    // specific or to click a row.
+    expect(enterAction(OPTIONS, "HE")).toBeNull();
+  });
+
+  test("a blank query does nothing", () => {
+    expect(enterAction(OPTIONS, "")).toBeNull();
+    expect(enterAction(OPTIONS, "   ")).toBeNull();
+  });
+
+  test("creating is still reachable for a prefix -- by clicking, not by Enter", () => {
+    // "HEK" is a legitimate new line name even though it filters to HEK293T.
+    // The create ROW still offers it; only the blind Enter path is removed.
+    expect(creatableName(OPTIONS, "HEK")).toBe("HEK");
+    expect(enterAction(OPTIONS, "HEK")).toEqual({ kind: "select", id: 3 });
+  });
 });

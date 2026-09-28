@@ -383,6 +383,33 @@ async def ensure_schema_updates():
             logger.error(f"Failed to create ix_rag_documents_group_id: {e}")
             failed_updates.append("rag_documents.ix_group_id")
 
+        # ⚠️ Case-insensitive uniqueness for cell lines has to be the DATABASE's
+        # rule, not the router's. `ensure_name_unique(case_insensitive=True)` is
+        # a SELECT followed by an INSERT in a separate statement, so two members
+        # typing the line into the experiment form at the same moment -- one
+        # "U2OS", one "u2os" -- both pass the lookup and both INSERT, because
+        # the model's `unique=True` index compares raw strings. That is exactly
+        # the split population the whole feature exists to prevent.
+        #
+        # Cell lines are the only family that needs this: the other three are
+        # picked from a list on their own admin page, while a cell line is typed
+        # freely on every experiment creation.
+        #
+        # A pre-existing case-duplicate would make this fail; the failure is
+        # logged and collected like every other, and the pair has to be merged
+        # by hand -- silently keeping the weaker rule would be worse.
+        try:
+            await conn.execute(text("SAVEPOINT idx_cell_lines_lower_name"))
+            await conn.execute(text(
+                "CREATE UNIQUE INDEX IF NOT EXISTS ix_cell_lines_name_lower "
+                "ON cell_lines (lower(name))"
+            ))
+            await conn.execute(text("RELEASE SAVEPOINT idx_cell_lines_lower_name"))
+        except Exception as e:
+            await conn.execute(text("ROLLBACK TO SAVEPOINT idx_cell_lines_lower_name"))
+            logger.error(f"Failed to create ix_cell_lines_name_lower: {e}")
+            failed_updates.append("ix_cell_lines_name_lower")
+
         # Index for doi lookups (create_all skips columns added via ALTER TABLE above)
         try:
             await conn.execute(text("SAVEPOINT idx_doc_doi"))

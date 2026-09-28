@@ -208,6 +208,31 @@ async def test_list_cell_lines_with_counts(mock_db):
     assert out[1].id == 2 and out[1].experiment_count == 0
 
 
+def test_case_insensitive_uniqueness_is_enforced_by_the_database_too():
+    """The application check alone is check-then-act, and loses a race.
+
+    `ensure_name_unique(case_insensitive=True)` is a SELECT followed by an INSERT
+    in a separate statement. Two members typing the line into the experiment form
+    at the same moment -- one "U2OS", one "u2os" -- both pass the lookup, because
+    neither row is committed yet, and both INSERT successfully: the model's
+    `unique=True` builds a plain, case-SENSITIVE index that compares raw strings.
+    The result is exactly the split population this feature exists to prevent.
+
+    So the invariant has to be the database's. `ensure_schema_updates()` adds a
+    functional unique index on `lower(name)`; the application check then only
+    buys a readable 400 instead of an integrity error.
+    """
+    import inspect
+
+    import database
+
+    source = inspect.getsource(database.ensure_schema_updates)
+    assert "cell_lines" in source and "lower(name)" in source, (
+        "no functional unique index on lower(cell_lines.name) -- the "
+        "case-insensitive rule is then only advisory"
+    )
+
+
 def test_cell_lines_router_has_no_second_copy_of_the_reference_helpers():
     """The four families share one CRUD implementation.
 

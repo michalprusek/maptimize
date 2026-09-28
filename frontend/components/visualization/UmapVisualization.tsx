@@ -259,32 +259,69 @@ export function UmapVisualization({
     [experimentMeta, microscopeById, ptmById, cellLineById]
   );
 
+  /**
+   * Reference ids an experiment names but the cached list has never seen.
+   *
+   * Not a missing assignment — a row a colleague created after this tab loaded.
+   * These queries have a 5-minute staleTime AND the app disables
+   * `refetchOnWindowFocus`, so on a dashboard that mounts once they effectively
+   * never refetch, while the projection query polls and its facets DO update.
+   * Labelling those points "Unassigned" pools them with points that genuinely
+   * carry nothing — an absence claimed where the truth is "a value I cannot
+   * name" — so they get the same banner as a reference list that failed outright.
+   *
+   * ⚠️ Cell lines make this the common case, not the corner case: minting one
+   * mid-session from the experiment form is the ONLY way a line comes into
+   * existence, since they have no admin page.
+   */
+  const [hasUnresolvedReference, setHasUnresolvedReference] = useState(false);
+  const noteUnresolvedReference = useCallback(
+    () => setHasUnresolvedReference(true),
+    []
+  );
+
   /** The label and colour a point takes under the current colour-by dimension. */
   const styleOf = useCallback(
     (point: ProjectionPoint): { name: string; color: string } => {
       const meta = experimentMeta.get(point.experiment_id);
 
+      /**
+       * Look a reference row up, and say so when the id names one we do not hold.
+       *
+       * ⚠️ `undefined` from a MISSING id and `undefined` from an id the cached
+       * list predates are the same value and two different facts: "nothing is
+       * assigned" versus "something is, and I cannot name it". Both fall through
+       * to `t("unassigned")` below, which is why the miss has to be reported —
+       * otherwise the legend counts them together and asserts an absence the
+       * data does not support.
+       */
+      const resolve = <T,>(
+        id: number | null | undefined,
+        byId: Map<number, T>
+      ): T | undefined => {
+        if (!id) return undefined;
+        const found = byId.get(id);
+        if (!found) noteUnresolvedReference();
+        return found;
+      };
+
       switch (colorBy) {
         case "microscope": {
-          const microscope = meta?.microscopeId
-            ? microscopeById.get(meta.microscopeId)
-            : undefined;
+          const microscope = resolve(meta?.microscopeId, microscopeById);
           return {
             name: microscope?.name ?? t("unassigned"),
             color: microscope?.color || DEFAULT_POINT_COLOR,
           };
         }
         case "ptm": {
-          const ptm = meta?.ptmId ? ptmById.get(meta.ptmId) : undefined;
+          const ptm = resolve(meta?.ptmId, ptmById);
           return {
             name: ptm?.name ?? t("unassigned"),
             color: ptm?.color || DEFAULT_POINT_COLOR,
           };
         }
         case "cell_line": {
-          const cellLine = meta?.cellLineId
-            ? cellLineById.get(meta.cellLineId)
-            : undefined;
+          const cellLine = resolve(meta?.cellLineId, cellLineById);
           return {
             name: cellLine?.name ?? t("unassigned"),
             color: cellLine?.color || DEFAULT_POINT_COLOR,
@@ -303,21 +340,17 @@ export function UmapVisualization({
           };
       }
     },
-    [colorBy, experimentMeta, microscopeById, ptmById, cellLineById, t]
+    [
+      colorBy,
+      experimentMeta,
+      microscopeById,
+      ptmById,
+      cellLineById,
+      noteUnresolvedReference,
+      t,
+    ]
   );
 
-  /**
-   * PTM ids an experiment names but the cached reference list has never seen.
-   *
-   * Not a missing assignment — a row a colleague created after this tab loaded.
-   * The `ptms` query has a 5-minute staleTime AND the app disables
-   * `refetchOnWindowFocus`, so on a dashboard that mounts once it effectively
-   * never refetches, while the projection query polls and its facets DO update.
-   * Drawing those points plain claims "not a PTM", which is a claim we cannot
-   * make, so it gets the same banner as a reference list that failed outright.
-   */
-  const [hasUnresolvedPtm, setHasUnresolvedPtm] = useState(false);
-  const noteUnresolvedPtm = useCallback(() => setHasUnresolvedPtm(true), []);
 
   /**
    * Which sample class a point is: a PTM, its paired control, the unmodified
@@ -331,8 +364,8 @@ export function UmapVisualization({
    */
   const classOfPoint = useCallback(
     (point: ProjectionPoint): SampleClass =>
-      sampleClassOf(point.experiment_id, experimentMeta, ptmById, noteUnresolvedPtm),
-    [experimentMeta, ptmById, noteUnresolvedPtm]
+      sampleClassOf(point.experiment_id, experimentMeta, ptmById, noteUnresolvedReference),
+    [experimentMeta, ptmById, noteUnresolvedReference]
   );
 
   // recharts' `ActiveShape` is a union of call signatures, one of them taking
@@ -717,7 +750,7 @@ export function UmapVisualization({
 
       {/* A reference list failed to load, so names and colours are wrong rather
           than missing — the plot looks like a lost backfill if we stay quiet. */}
-      {(referencesFailed || hasUnresolvedPtm) && (
+      {(referencesFailed || hasUnresolvedReference) && (
         <div className="flex items-center gap-2 mb-3 px-3 py-2 rounded-md bg-accent-amber/10 border border-accent-amber/30">
           <AlertCircle className="w-4 h-4 text-accent-amber flex-shrink-0" />
           <span className="text-xs text-text-secondary">{t("referencesFailed")}</span>

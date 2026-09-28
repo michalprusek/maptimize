@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Check, ChevronDown, Plus } from "lucide-react";
 
-import { creatableName, filterColorTagOptions } from "./colorTagFilter";
+import { creatableName, enterAction, filterColorTagOptions } from "./colorTagFilter";
 
 export interface ColorTagOption {
   id: number;
@@ -149,6 +149,12 @@ export function ColorTagSelect({
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [creating, setCreating] = useState(false);
+  // ⚠️ A ref as well as the state. `creating` is read by the next render (it
+  // disables the button); `creatingRef` is what stops a second create dispatched
+  // in the SAME tick -- holding Enter fires two keydown handlers whose closures
+  // both captured `creating === false`, and two POSTs of one name race the
+  // check-then-act uniqueness lookup.
+  const creatingRef = useRef(false);
   const containerRef = useRef<HTMLDivElement>(null);
 
   // `onOpenChange` is only ever called, never depended on: latching it in a ref
@@ -210,9 +216,15 @@ export function ColorTagSelect({
   // Null unless there is a name to mint: no create affordance, a blank input, or
   // a name the list already holds under some other casing.
   const pendingName = createOption ? creatableName(options, query) : null;
+  // Bound here, not at the call site: `pendingName` implies `createOption`, but
+  // TypeScript loses that narrowing across the JSX boundary, and an optional
+  // call there would tell the next reader `label` may be absent.
+  const createRowLabel =
+    createOption && pendingName ? createOption.label(pendingName) : null;
 
   const create = async (name: string) => {
-    if (creating) return;
+    if (creatingRef.current) return;
+    creatingRef.current = true;
     setCreating(true);
     try {
       const id = await createOption?.onCreate(name);
@@ -221,6 +233,7 @@ export function ColorTagSelect({
       // not lost.
       if (id != null) pick(id);
     } finally {
+      creatingRef.current = false;
       setCreating(false);
     }
   };
@@ -324,7 +337,7 @@ export function ColorTagSelect({
             </div>
           )}
           {createOption && (
-            <div className="px-2 pt-1 pb-2 border-b border-white/10">
+            <div className="sticky top-0 z-10 bg-bg-elevated px-2 pt-1 pb-2 border-b border-white/10">
               <input
                 type="text"
                 autoFocus
@@ -333,15 +346,17 @@ export function ColorTagSelect({
                 onKeyDown={(event) => {
                   if (event.key !== "Enter") return;
                   // ⚠️ preventDefault UNCONDITIONALLY, not only when there is
-                  // something to create. This input sits inside the
+                  // something to do. This input sits inside the
                   // create-experiment <form>, so a bare Enter submits it -- the
                   // experiment would be created the moment someone pressed
                   // Enter over a line that already exists, or over a
                   // half-typed filter.
                   event.preventDefault();
-                  // Enter on a name nothing matches is the fast path for the
-                  // lab: type the line, press Enter, carry on filling the form.
-                  if (pendingName) void create(pendingName);
+                  // Enter PREFERS picking; see `enterAction` for why blindly
+                  // creating minted rows named after half-typed queries.
+                  const action = enterAction(options, query);
+                  if (action?.kind === "select") pick(action.id);
+                  else if (action?.kind === "create") void create(action.name);
                 }}
                 placeholder={createOption.searchPlaceholder}
                 className="w-full px-2 py-1 text-sm bg-bg-secondary border border-white/10 rounded
@@ -361,7 +376,7 @@ export function ColorTagSelect({
             >
               <Plus className="w-3 h-3 flex-shrink-0 text-text-muted" />
               <span className="text-text-primary truncate flex-1">
-                {createOption?.label(pendingName) ?? pendingName}
+                {createRowLabel}
               </span>
             </button>
           )}

@@ -57,3 +57,39 @@ export function creatableName(
   );
   return exists ? null : typed;
 }
+
+/** What pressing Enter in the search box should do, or null for "nothing". */
+export type EnterAction =
+  | { kind: "select"; id: number }
+  | { kind: "create"; name: string };
+
+/**
+ * Resolve Enter in the search box.
+ *
+ * ⚠️ Enter must prefer SELECTING. The first version only ever created, and the
+ * two predicates around it do not agree on what "matches": `creatableName` is
+ * an equality check while `filterColorTagOptions` is a substring check. So
+ * typing "u2" listed U2OS in the menu and Enter minted a shared cell line
+ * literally named "u2" — visible to the whole lab, a permanent extra facet
+ * pill, and with no admin page to delete it from. Enter over an exact existing
+ * name meanwhile did nothing at all.
+ *
+ * The rule: one visible option means Enter picks it; no visible options and
+ * something typed means Enter creates it; anything else is a guess, so Enter
+ * does nothing and waits for a click. Creating a name that is a prefix of an
+ * existing line ("HEK" beside "HEK293T") stays possible — through the create
+ * row, which is a deliberate click rather than a keystroke.
+ */
+export function enterAction(
+  options: ColorTagOption[] | undefined,
+  query: string
+): EnterAction | null {
+  if (!query.trim()) return null;
+
+  const visible = filterColorTagOptions(options, query);
+  if (visible.length === 1) return { kind: "select", id: visible[0].id };
+  if (visible.length > 1) return null;
+
+  const name = creatableName(options, query);
+  return name ? { kind: "create", name } : null;
+}

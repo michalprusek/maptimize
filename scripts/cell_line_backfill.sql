@@ -64,10 +64,36 @@ UPDATE experiments
  WHERE cell_line_id IS NULL
    AND NOT EXISTS (SELECT 1 FROM experiments WHERE cell_line_id IS NOT NULL);
 
+-- ⚠️ Declining to run is fine. Declining to run QUIETLY is not.
+--
+-- The guard above is deliberately all-or-nothing, because a backlog row and a
+-- row someone cleared on purpose look identical. But that makes a half-assigned
+-- column a trap: assign one cell line between the backend restart and this
+-- script -- which the group-writable chip and `assign_experiment_cell_line`
+-- both allow, and the restart is what turns them on -- and the UPDATE matches
+-- zero rows from then on, forever. Without this, psql exits 0 and the summary
+-- below prints "U2OS 1 / (unassigned) 180" as though that were the outcome.
+--
+-- So: finishing with anything unassigned is an error, and the operator decides.
+DO $$
+DECLARE n_unassigned int;
+BEGIN
+    SELECT count(*) INTO n_unassigned FROM experiments WHERE cell_line_id IS NULL;
+    IF n_unassigned > 0 THEN
+        RAISE EXCEPTION
+            '% experiment(s) still have no cell line. The backfill only fills a '
+            'completely empty column, so it declined to run -- something was '
+            'already assigned. Assign the rest deliberately (the chip, or '
+            'PATCH /api/experiments/{id}/cell-line); this script cannot tell a '
+            'backlog row from one that was cleared on purpose.', n_unassigned;
+    END IF;
+END $$;
+
 COMMIT;
 
 -- Expected after the first run: every experiment on U2OS, none unassigned.
--- After any later run: unchanged, because the guard above no longer holds.
+-- After any later run: unchanged, because the guard above no longer holds --
+-- and the assertion above confirms "unchanged" still means "all assigned".
 SELECT COALESCE(c.name, '(unassigned)') AS cell_line, count(*) AS experiments
 FROM experiments e
 LEFT JOIN cell_lines c ON c.id = e.cell_line_id

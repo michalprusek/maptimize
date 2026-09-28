@@ -39,10 +39,14 @@ class SqlQueryError(ValueError):
     """
 
 
-# Tables the agent may read (security whitelist). map_proteins, microscopes and
-# ptms are shared reference data (no per-user column) and appear in neither
-# scoping set below — that absence IS how "readable by everyone, no ACL predicate
-# injected" is expressed. Everything else is scoped below.
+# Tables the agent may read (security whitelist). map_proteins, microscopes,
+# ptms and cell_lines are shared reference data (no per-user column) and appear
+# in neither scoping set below — that absence IS how "readable by everyone, no
+# ACL predicate injected" is expressed. Everything else is scoped below.
+#
+# ⚠️ Keep this sentence in step with the sets. A reference table listed here but
+# missing from it reads like an oversight in a security-critical list, and
+# invites someone to "fix" it by scoping a table that has no user_id.
 ALLOWED_SQL_TABLES = {
     "experiments", "images", "cell_crops", "map_proteins", "microscopes", "ptms",
     "cell_lines",

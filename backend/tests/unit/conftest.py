@@ -18,6 +18,8 @@ getters (e.g. ``get_qwen_vl_encoder``) at the call boundary.
 import sys
 from unittest.mock import AsyncMock, MagicMock
 
+from pathlib import Path
+
 import pytest
 
 # --- Replace heavy native libs with mocks BEFORE any service import. ----------
@@ -90,3 +92,27 @@ def _reset_umap_refresh_state():
         return
     umap_service._inflight_refreshes.clear()
     umap_service._failed_refreshes.clear()
+
+
+def backfill_sql(name: str) -> Path:
+    """Locate a one-off `scripts/*.sql` from either layout it is read in.
+
+    In the repo they sit beside `backend/`; under the coverage harness only
+    `./backend` is mounted (at `/app`), so `scripts/` is bind-mounted separately.
+    Both candidates are checked and a miss is a hard failure, never a skip -- a
+    guard that quietly stops running is worse than no guard.
+
+    Here rather than in each test file because the duplicated knowledge is the
+    HARNESS LAYOUT: moving that mount otherwise means finding every copy, and
+    the symptom is a FileNotFoundError in an unrelated-looking test.
+    """
+    for candidate in (
+        Path(__file__).resolve().parents[2] / "scripts" / name,
+        Path("/scripts") / name,
+    ):
+        if candidate.exists():
+            return candidate
+    raise FileNotFoundError(
+        f"{name} not found; mount ./scripts into the test container "
+        f"(see docker-compose.test.yml) so these guards keep running."
+    )
