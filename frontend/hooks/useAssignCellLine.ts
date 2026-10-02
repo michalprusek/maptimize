@@ -21,11 +21,13 @@ interface UseAssignCellLineOptions {
  * Duplicating that knowledge per screen is how one of them silently starts
  * showing a stale plot.
  *
- * `["cellLines"]` is deliberately NOT invalidated. The list carries a per-line
- * `experiment_count`, which an assignment does change — but nothing renders it
- * (there is no cell-line admin page, and the picker's second line is the
- * description), so refetching it would be a request per assignment bought with
- * a justification that is not true.
+ * `["cellLines"]` is invalidated because an assignment moves the per-line
+ * `experiment_count`, which the picker's trash reads to decide whether deleting
+ * is allowed. It is not what GUARANTEES that count is fresh, though — nine
+ * places in this app invalidate `["experiments"]`, and enumerating which of
+ * them also touch the count is how it drifts (this very line was removed in one
+ * review and restored in the next). `CellLinePicker` refetches the list when its
+ * menu opens; that is the guarantee. This is the cheap extra.
  */
 export function useAssignCellLine({
   fallbackMessage,
@@ -44,6 +46,7 @@ export function useAssignCellLine({
     }) => api.updateExperimentCellLine(experimentId, cellLineId),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["experiments"] });
+      queryClient.invalidateQueries({ queryKey: ["cellLines"] });
       queryClient.invalidateQueries({ queryKey: ["umap"] });
       onSuccess?.();
     },

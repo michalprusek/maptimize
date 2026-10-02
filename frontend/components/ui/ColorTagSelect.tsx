@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Check, ChevronDown, Plus } from "lucide-react";
+import { Check, ChevronDown, Plus, Trash2 } from "lucide-react";
 
 import { creatableName, enterAction, filterColorTagOptions } from "./colorTagFilter";
 
@@ -106,6 +106,28 @@ interface ColorTagSelectProps {
     searchPlaceholder: string;
     label: (name: string) => string;
   };
+  /**
+   * Adds a trash button to each option row.
+   *
+   * One object rather than loose props, for the same reason as `create`: a
+   * delete affordance with no reason-to-block and no label is not a thing.
+   * Passed only by the cell-line picker; omit it and the rows render exactly as
+   * they did, so the protein, microscope, PTM and folder pickers are untouched.
+   *
+   * ⚠️ This component does NOT confirm and does NOT delete. `onRemove` only
+   * reports that the trash was clicked; the caller owns the ConfirmModal and the
+   * request. That keeps the confirmation copy domain-specific (every one of the
+   * thirteen `ConfirmModal` callers in this repo is a page, not shared UI) and
+   * keeps this module free of domain types, which is the same reason
+   * `toColorTagOptions` is structural.
+   */
+  remove?: {
+    /** Why this row cannot be removed, or null when it can. Disables and explains. */
+    blockedReason: (option: ColorTagOption) => string | null;
+    /** Fires on click, for a row `blockedReason` allowed. The caller confirms. */
+    onRemove: (option: ColorTagOption) => void;
+    label: (name: string) => string;
+  };
   className?: string;
 }
 
@@ -144,6 +166,7 @@ export function ColorTagSelect({
   disabled = false,
   onOpenChange,
   create: createOption,
+  remove: removeOption,
   className = "",
 }: ColorTagSelectProps): JSX.Element {
   const [open, setOpen] = useState(false);
@@ -396,15 +419,25 @@ export function ColorTagSelect({
             </span>
             {value === null && <Check className="w-4 h-4 flex-shrink-0 text-text-muted" />}
           </button>
-          {visibleOptions.map((option) => (
-            <button
+          {visibleOptions.map((option) => {
+            // Null when the row cannot be removed; the string is the reason.
+            const blocked = removeOption?.blockedReason(option) ?? null;
+            return (
+            // ⚠️ A row, not a button. The trash cannot live inside the select
+            // button -- nested buttons are invalid HTML and the click would
+            // select as well as delete -- so the two sit side by side and the
+            // hover highlight moves up here to cover both halves.
+            <div
               key={option.id}
+              className={`flex items-center hover:bg-white/5 transition-colors ${
+                option.id === value ? "bg-white/5" : ""
+              }`}
+            >
+            <button
               type="button"
               onClick={() => pick(option.id)}
               title={fullLabel(option)}
-              className={`w-full px-3 py-2 text-left text-sm hover:bg-white/5 transition-colors flex items-center gap-2 ${
-                option.id === value ? "bg-white/5" : ""
-              }`}
+              className="flex-1 min-w-0 px-3 py-2 text-left text-sm flex items-center gap-2"
             >
               <span
                 className="w-3 h-3 rounded-full flex-shrink-0"
@@ -425,7 +458,23 @@ export function ColorTagSelect({
               </span>
               {option.id === value && <Check className="w-4 h-4 flex-shrink-0" />}
             </button>
-          ))}
+            {removeOption && (
+              <button
+                type="button"
+                disabled={blocked !== null}
+                onClick={() => removeOption.onRemove(option)}
+                title={blocked ?? removeOption.label(option.name)}
+                aria-label={blocked ?? removeOption.label(option.name)}
+                className="px-2 py-2 flex-shrink-0 text-text-muted hover:text-accent-red
+                           disabled:opacity-30 disabled:hover:text-text-muted
+                           disabled:cursor-not-allowed transition-colors"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+              </button>
+            )}
+            </div>
+            );
+          })}
         </div>
       )}
     </div>

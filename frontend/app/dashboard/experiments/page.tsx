@@ -27,12 +27,8 @@ import {
   type FolderSelection,
 } from "@/components/experiment";
 import { ancestorPath, parentLabel } from "@/lib/folderTree";
-import {
-  useAssignCellLine,
-  useAssignMicroscope,
-  useAssignPtm,
-  useCreateCellLine,
-} from "@/hooks";
+import { useAssignCellLine, useAssignMicroscope, useAssignPtm } from "@/hooks";
+import { CellLinePicker } from "@/components/experiment/CellLinePicker";
 import { useAuthStore } from "@/stores/authStore";
 
 export default function ExperimentsPage(): JSX.Element {
@@ -181,23 +177,11 @@ export default function ExperimentsPage(): JSX.Element {
     queryFn: () => api.getPtms(),
   });
 
-  const { data: cellLines } = useQuery({
-    queryKey: ["cellLines"],
-    queryFn: () => api.getCellLines(),
-  });
 
   const proteinOptions = toColorTagOptions(proteins, (p) => p.full_name);
   const microscopeOptions = toColorTagOptions(microscopes, (m) => m.manufacturer);
   const ptmOptions = toColorTagOptions(ptms, (p) => p.abbreviation);
-  const cellLineOptions = toColorTagOptions(cellLines, (c) => c.description);
 
-  // The only way a cell line comes into existence -- there is no admin page for
-  // them. Shared with the experiment detail page, which offers the same picker.
-  const createCellLine = useCreateCellLine({
-    fallbackMessage: t("createCellLineError"),
-    onError: setError,
-    onSuccess: () => setError(null),
-  });
 
   const createMutation = useMutation({
     mutationFn: (data: { name: string; description?: string; map_protein_id?: number; microscope_id?: number; ptm_id?: number; cell_line_id?: number }) =>
@@ -500,8 +484,7 @@ export default function ExperimentsPage(): JSX.Element {
                     />
                     {/* Group-writable like the microscope and PTM chips, so it
                         stays enabled on a colleague's card. */}
-                    <ColorTagSelect
-                      options={cellLineOptions}
+                    <CellLinePicker
                       value={exp.cell_line?.id ?? null}
                       onChange={(cellLineId) =>
                         assignCellLineMutation.mutate({ experimentId: exp.id, cellLineId })
@@ -509,12 +492,8 @@ export default function ExperimentsPage(): JSX.Element {
                       onOpenChange={(open) =>
                         setOpenMenuCardId(open ? exp.id : null)
                       }
-                      create={{
-                        onCreate: createCellLine,
-                        searchPlaceholder: t("searchOrTypeCellLine"),
-                        label: (name) => t("createCellLine", { name }),
-                      }}
-                      placeholder={t("unassignedCellLine")}
+                      onError={setError}
+                      onErrorCleared={() => setError(null)}
                       variant="chip"
                       size="sm"
                       align="right"
@@ -674,17 +653,12 @@ export default function ExperimentsPage(): JSX.Element {
                   <label className="block text-sm font-medium text-text-secondary mb-2">
                     {t("assignCellLine")}
                   </label>
-                  <ColorTagSelect
-                    options={cellLineOptions}
+                  <CellLinePicker
                     value={selectedCellLineId}
                     onChange={setSelectedCellLineId}
-                    create={{
-                      onCreate: createCellLine,
-                      searchPlaceholder: t("searchOrTypeCellLine"),
-                      label: (name) => t("createCellLine", { name }),
-                    }}
-                    hint={t("cellLineHint")}
-                    placeholder={t("unassignedCellLine")}
+                    onError={setError}
+                    onErrorCleared={() => setError(null)}
+                    showHint
                   />
                 </div>
 

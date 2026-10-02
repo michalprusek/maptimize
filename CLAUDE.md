@@ -735,11 +735,29 @@ mašinerie (`facet_clause` staví `IN (:ids)`, `UNASSIGNED_FACET_ID` je `0`, URL
 parsuje `Number()`). Jméno se navíc zapíše **jednou**, takže „U2OS" / „U2os" / „U-2 OS"
 nejsou tři tiše nesloučené populace.
 
-⚠️ **Tohle je JEDINÁ referenční tabulka bez admin stránky.** Linie vzniká tím, že ji
-někdo napíše do pickeru při zakládání experimentu (`ColorTagSelect` s `onCreate`;
-čistá logika je v `components/ui/colorTagFilter.ts`, testy `e2e/unit/colorTagFilter.spec.ts`).
-**Přejmenovat ani smazat ji z UI nejde** — jen přes API nebo MCP (`update_cell_line`,
-`delete_cell_line`). Když laboratoř nahlásí překlep ve facetě, opravuje se tudy.
+⚠️ **Tohle je JEDINÁ referenční tabulka bez admin stránky.** Zakládá i maže se přímo
+v pickeru u experimentu — SSOT je `components/experiment/CellLinePicker.tsx`, které
+obaluje `ColorTagSelect` (`create` + `remove`), vlastní `ConfirmModal` a i18n klíče;
+tři volací místa (karta, formulář, detail) předávají jen `value`/`onChange`/`onError`.
+**Přejmenovat z UI pořád nejde** — na to je API/MCP `update_cell_line`.
+
+⚠️ **Koš u používané linie je zakázaný PŘED kliknutím, ne 409 po něm.**
+`experiment_count` ze seznamu rozhoduje přes `cellLineDeleteVerdict()`
+(`components/experiment/cellLineDelete.ts`), které **fail-closed**: neznámé id i
+nenačtený seznam vracejí `unknown`, tedy zakázáno. Zřejmý zápis
+`(line?.experiment_count ?? 0) > 0` selhává **otevřeně** — chybějící lookup dá
+`undefined`, `undefined > 0` je `false`, takže se destruktivní tlačítko zapne pro
+řádek, o kterém nic nevíme. Backendová 409 zůstává poslední pojistkou pro API a MCP.
+
+⚠️ **Proto `useAssignCellLine` zase invaliduje `["cellLines"]`.** V review to bylo
+odebráno s tím, že `experiment_count` nic nevykresluje — tehdy pravda. Teď na něm visí
+živost koše, takže zastaralý počet znamená buď 409 po potvrzení, nebo zakázaný koš
+u volné linie.
+
+⚠️ **Řádek menu v `ColorTagSelect` je `<div>`, ne `<button>`.** Koš do výběrového
+tlačítka vnořit nejde (vnořená tlačítka jsou nevalidní HTML a klik by zároveň vybral),
+takže obě poloviny sedí vedle sebe a hover highlight je na wrapperu — kdyby zůstal na
+tlačítku, podsvítí se jen půlka řádku.
 
 ⚠️ **Unikátnost jména linie drží funkcionální index `ix_cell_lines_name_lower`**
 (`ensure_schema_updates()`), ne jen router. `ensure_name_unique` je check-then-act —

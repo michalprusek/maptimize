@@ -14,12 +14,8 @@ import {
 } from "@/lib/animations";
 import { ColorTagSelect, ConfirmModal, MicroscopyImage, Pagination, ImagePreviewModal, toColorTagOptions, type PreviewImage } from "@/components/ui";
 import { FOVGallery } from "@/components/experiment";
-import {
-  useAssignCellLine,
-  useAssignMicroscope,
-  useAssignPtm,
-  useCreateCellLine,
-} from "@/hooks";
+import { useAssignCellLine, useAssignMicroscope, useAssignPtm } from "@/hooks";
+import { CellLinePicker } from "@/components/experiment/CellLinePicker";
 import {
   ImageGalleryFilters,
   SortOrder,
@@ -140,10 +136,6 @@ export default function ExperimentDetailPage(): JSX.Element {
     queryFn: () => api.getPtms(),
   });
 
-  const { data: cellLines } = useQuery({
-    queryKey: ["cellLines"],
-    queryFn: () => api.getCellLines(),
-  });
 
   // Auto-select view mode based on available data
   useEffect(() => {
@@ -212,11 +204,6 @@ export default function ExperimentDetailPage(): JSX.Element {
     },
   });
 
-  const createCellLine = useCreateCellLine({
-    fallbackMessage: t("createCellLineError"),
-    onError: setMutationError,
-    onSuccess: () => setMutationError(null),
-  });
 
   const assignCellLineMutation = useAssignCellLine({
     fallbackMessage: t("assignCellLineError"),
@@ -755,20 +742,14 @@ export default function ExperimentDetailPage(): JSX.Element {
           align="right"
         />
 
-        <ColorTagSelect
-          options={toColorTagOptions(cellLines, (c) => c.description)}
+        <CellLinePicker
           value={experiment.cell_line?.id ?? null}
           onChange={(cellLineId) =>
             assignCellLineMutation.mutate({ experimentId, cellLineId })
           }
-          create={{
-            onCreate: createCellLine,
-            searchPlaceholder: t("searchOrTypeCellLine"),
-            label: (name) => t("createCellLine", { name }),
-          }}
-          placeholder={t("assignCellLine")}
-          clearLabel={t("unassignedCellLine")}
-          hint={t("cellLineHint")}
+          onError={setMutationError}
+          onErrorCleared={() => setMutationError(null)}
+          showHint
           variant="chip"
           align="right"
         />
