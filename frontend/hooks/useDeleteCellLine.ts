@@ -8,8 +8,11 @@ interface UseDeleteCellLineOptions {
   fallbackMessage: string;
   /** Reported to the user; the caller owns how errors are surfaced. */
   onError: (message: string) => void;
-  /** Called after a success, so a screen can clear its banner and close its modal. */
-  onSuccess?: () => void;
+  /**
+   * Called with the id that was removed, so a screen can clear its banner, close
+   * its modal and drop the value if it was holding that line.
+   */
+  onSuccess?: (deletedId: number) => void;
 }
 
 /**
@@ -36,10 +39,10 @@ export function useDeleteCellLine({
 
   return useMutation({
     mutationFn: (cellLineId: number) => api.deleteCellLine(cellLineId),
-    onSuccess: () => {
+    onSuccess: (_data, deletedId) => {
       queryClient.invalidateQueries({ queryKey: ["cellLines"] });
       queryClient.invalidateQueries({ queryKey: ["experiments"] });
-      onSuccess?.();
+      onSuccess?.(deletedId);
     },
     onError: (err: Error) => {
       console.error("Failed to delete cell line:", err);

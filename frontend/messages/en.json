@@ -124,6 +124,7 @@
     "createCellLine": "Create \u201c{name}\u201d",
     "cellLineHint": "Type a line the lab has not used yet to add it",
     "deleteCellLine": "Delete cell line",
+    "deleteCellLineNamed": "Delete cell line \u201c{name}\u201d",
     "deleteCellLineConfirm": "This removes the line for the whole lab and cannot be undone from the app.",
     "deleteCellLineInUse": "{count} experiments are on this line, so it cannot be deleted",
     "deleteCellLineError": "Failed to delete the cell line. Please try again.",

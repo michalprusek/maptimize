@@ -64,6 +64,7 @@ test.describe("the delete strings", () => {
       const e = messages.experiments as Record<string, string>;
       for (const key of [
         "deleteCellLine",
+        "deleteCellLineNamed",
         "deleteCellLineConfirm",
         "deleteCellLineInUse",
         "deleteCellLineError",
@@ -77,6 +78,13 @@ test.describe("the delete strings", () => {
       // so a renamed one shows the lab a literal "{count}" on the tooltip that
       // is supposed to say why the button is dead.
       expect(messages.experiments.deleteCellLineInUse).toContain("{count}");
+    });
+
+    test(`the trash's accessible name carries {name} in ${locale}.json`, () => {
+      // Every row has a trash; without the name in its label a screen reader
+      // announces the same "Delete cell line" for all of them, and the control
+      // that says WHICH line is a separate button next to it.
+      expect(messages.experiments.deleteCellLineNamed).toContain("{name}");
     });
   }
 });

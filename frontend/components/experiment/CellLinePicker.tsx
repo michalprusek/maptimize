@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslations } from "next-intl";
 
 import { ColorTagSelect, toColorTagOptions } from "@/components/ui/ColorTagSelect";
@@ -58,6 +58,7 @@ export function CellLinePicker({
   const t = useTranslations("experiments");
   const tCommon = useTranslations("common");
   const [toDelete, setToDelete] = useState<ColorTagOption | null>(null);
+  const queryClient = useQueryClient();
 
   const { data: cellLines } = useQuery({
     queryKey: ["cellLines"],
@@ -76,11 +77,34 @@ export function CellLinePicker({
       onError(message);
       setToDelete(null);
     },
-    onSuccess: () => {
+    onSuccess: (deletedId) => {
       onErrorCleared?.();
       setToDelete(null);
+      // ⚠️ The create form holds its selection in local state that no refetch
+      // touches, so without this the picker falls back to the placeholder --
+      // nothing matches the id any more -- while submit still sends the dead id
+      // and the backend answers 404. Only this one: the other call sites read
+      // their value from a saved experiment, which the backend's 409 guarantees
+      // was never on a deletable line.
+      if (value === deletedId) onChange(null);
     },
   });
+
+  /**
+   * Refresh the list when the menu opens.
+   *
+   * ⚠️ This is what keeps `experiment_count` honest, NOT a list of mutations
+   * that remember to invalidate. The count moves on every experiment create,
+   * delete and assignment -- `["experiments"]` is invalidated in nine places in
+   * this app -- and the trash's enabled state reads it. Enumerating the writers
+   * is how it drifts: the assignment hook lost its invalidation in one review
+   * and had to get it back in the next. Asking at the moment the count is about
+   * to be used costs one GET of a handful of rows and cannot forget a writer.
+   */
+  const handleOpenChange = (open: boolean) => {
+    if (open) void queryClient.invalidateQueries({ queryKey: ["cellLines"] });
+    onOpenChange?.(open);
+  };
 
   return (
     <>
@@ -88,7 +112,7 @@ export function CellLinePicker({
         options={toColorTagOptions(cellLines, (line) => line.description)}
         value={value}
         onChange={onChange}
-        onOpenChange={onOpenChange}
+        onOpenChange={handleOpenChange}
         disabled={disabled}
         create={{
           onCreate: createCellLine,
@@ -107,7 +131,7 @@ export function CellLinePicker({
               : tCommon("loading");
           },
           onRemove: setToDelete,
-          label: () => t("deleteCellLine"),
+          label: (name) => t("deleteCellLineNamed", { name }),
         }}
         placeholder={t("unassignedCellLine")}
         clearLabel={t("unassignedCellLine")}

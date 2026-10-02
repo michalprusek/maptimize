@@ -21,12 +21,13 @@ interface UseAssignCellLineOptions {
  * Duplicating that knowledge per screen is how one of them silently starts
  * showing a stale plot.
  *
- * ⚠️ `["cellLines"]` IS invalidated, and the reason is newer than this hook.
- * It was dropped in review on the grounds that nothing rendered the per-line
- * `experiment_count` — true at the time. The picker's trash now reads exactly
- * that count to decide whether deleting is allowed, so a stale one either arms
- * the button for a line in use (a 409 after the user confirms) or disables it
- * for one that is free. The justification reversed; so did the code.
+ * `["cellLines"]` is invalidated because an assignment moves the per-line
+ * `experiment_count`, which the picker's trash reads to decide whether deleting
+ * is allowed. It is not what GUARANTEES that count is fresh, though — nine
+ * places in this app invalidate `["experiments"]`, and enumerating which of
+ * them also touch the count is how it drifts (this very line was removed in one
+ * review and restored in the next). `CellLinePicker` refetches the list when its
+ * menu opens; that is the guarantee. This is the cheap extra.
  */
 export function useAssignCellLine({
   fallbackMessage,
