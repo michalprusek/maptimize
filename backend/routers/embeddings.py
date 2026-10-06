@@ -128,8 +128,8 @@ def label_groups(
         description=(
             "With label_by=group: one class per repetition, each a comma-separated "
             "list of '<facet>:<id>' (facet = experiment, microscope, protein, ptm "
-            "or cell_line; id 0 = unassigned). A point belongs to a group when it "
-            "carries any of its values."
+            "or cell_line; id 0 = unassigned). Read like the filters: values of "
+            "one facet are alternatives, different facets must all hold."
         ),
     ),
 ) -> LabelGroups:

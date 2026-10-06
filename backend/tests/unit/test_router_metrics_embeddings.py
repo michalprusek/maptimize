@@ -1496,6 +1496,35 @@ async def test_groups_mix_facets_and_shared_points_drop_out_of_the_score(mock_db
     assert sep.call_args.args[1] == [None, 1, 0, None]
 
 
+async def test_one_protein_under_two_conditions_is_two_groups(mock_db, no_group):
+    # The comparison a colleague asked for: protein 7 unmodified (ptm 1) against
+    # protein 7 detyrosinated (ptm 2). The protein comes from the point, the PTM
+    # from the facet summary — both have to reach the same conjunction.
+    crops = [
+        crop_obj(cid=1, umap_x=0.1, umap_y=0.2, experiment_id=1, protein=_protein(7)),
+        crop_obj(cid=2, umap_x=0.1, umap_y=0.2, experiment_id=2, protein=_protein(7)),
+        crop_obj(cid=3, umap_x=0.1, umap_y=0.2, experiment_id=3, protein=_protein(7)),
+        crop_obj(cid=4, umap_x=0.1, umap_y=0.2, experiment_id=1, protein=_protein(8)),
+    ]
+    mock_db.execute.side_effect = [
+        make_result(scalars_all=crops),
+        make_result(fetchall=[
+            _facet_row(1, ptm_id=1), _facet_row(2, ptm_id=2), _facet_row(3, ptm_id=9),
+        ]),
+    ]
+    with patch.object(e, "MIN_POINTS_FOR_UMAP", 3), \
+         patch.object(e, "compute_separability", return_value=None) as sep:
+        out = await e.get_umap_visualization(
+            umap_type=e.UmapType.CROPPED, selection=e.FacetSelection(),
+            label_by=e.LabelAxis.GROUP,
+            groups=_groups("protein:7,ptm:1", "protein:7,ptm:2"),
+            background_tasks=MagicMock(), current_user=user(), db=mock_db,
+        )
+    expected = [0, 1, None, None]
+    assert [point.group for point in out.points] == expected
+    assert sep.call_args.args[1] == expected
+
+
 async def test_a_group_can_be_the_unassigned_value(mock_db, no_group):
     crops = [
         crop_obj(cid=1, umap_x=0.1, umap_y=0.2, experiment_id=1),

@@ -3,9 +3,10 @@
  *
  * Every colour-by dimension is a column: a point's class is its protein, its
  * microscope, and so on. That cannot express "these two experiments against
- * that one", so the reader may instead build the classes by hand — each group
- * is a set of facet values, and a point belongs to it when it carries ANY of
- * them.
+ * that one", nor "MTCL1 unmodified against MTCL1 detyrosinated", so the reader
+ * may instead build the classes by hand. Each group is a set of CONDITIONS that
+ * reads exactly like the filter: values of one facet are alternatives, different
+ * facets must all hold. A value may sit in any number of groups.
  *
  * Pure functions only. Which group a point is in is decided by the BACKEND and
  * arrives on the point (`point.group`); nothing here re-derives it, so the
@@ -58,19 +59,19 @@ function sameMember(a: GroupMember, b: GroupMember): boolean {
   return a.facet === b.facet && a.id === b.id;
 }
 
-/** Which group holds this value, or -1. A value is in at most one group. */
-export function groupOfMember(groups: LabelGroup[], member: GroupMember): number {
-  return groups.findIndex((group) =>
-    group.members.some((existing) => sameMember(existing, member))
+/** Every group that names this value, in slot order. */
+export function groupsOfMember(groups: LabelGroup[], member: GroupMember): number[] {
+  return groups.flatMap((group, index) =>
+    group.members.some((existing) => sameMember(existing, member)) ? [index] : []
   );
 }
 
 /**
- * Put a value into a group, taking it out of whichever group had it.
+ * Put a value into a group. Other groups keep theirs.
  *
- * A move, not a copy: the same value in two groups would make every one of its
- * points ambiguous, which is never what dragging a pill a second time means.
- * Returns the input unchanged when the target does not exist or is full.
+ * A copy, not a move: one protein under two conditions needs that protein in
+ * both groups. Returns the input unchanged when the target does not exist, is
+ * full, or already holds the value.
  */
 export function addMember(
   groups: LabelGroup[],
@@ -82,15 +83,29 @@ export function addMember(
   if (target.members.some((existing) => sameMember(existing, member))) return groups;
   if (target.members.length >= MAX_MEMBERS_PER_GROUP) return groups;
 
-  return groups.map((group, at) => {
-    const without = group.members.filter((existing) => !sameMember(existing, member));
-    return at === index
-      ? { ...group, members: [...without, member] }
-      : { ...group, members: without };
-  });
+  return groups.map((group, at) =>
+    at === index ? { ...group, members: [...group.members, member] } : group
+  );
 }
 
-/** Append a group, optionally seeded with one value (moved, as above). */
+export interface GroupCondition {
+  facet: FacetKey;
+  /** Alternatives: a point needs any one of them. */
+  members: GroupMember[];
+}
+
+/**
+ * A group as the conditions it imposes, one per facet it names, in the filter
+ * panel's facet order. A point is in the group when it meets ALL of them.
+ */
+export function groupConditions(group: LabelGroup): GroupCondition[] {
+  return FACET_ORDER.map((facet) => ({
+    facet,
+    members: group.members.filter((member) => member.facet === facet),
+  })).filter((condition) => condition.members.length > 0);
+}
+
+/** Append a group, optionally seeded with one value. */
 export function addGroup(
   groups: LabelGroup[],
   name: string,
@@ -141,6 +156,9 @@ function memberToken(member: GroupMember): string {
 /**
  * One `facet:id,…` string per group, as the API takes them.
  *
+ * Which members are alternatives and which must all hold is read off their
+ * facets by the backend, so the string carries no operators.
+ *
  * Members are sorted so the same group dragged together in a different order is
  * the same request (and the same cache entry). The GROUPS are not: their order
  * is what `point.group` indexes into. Empty groups stay, as empty strings.
@@ -180,8 +198,8 @@ export function groupsFromQuery(search: string): LabelGroup[] {
     groups = addGroup(groups, raw.slice(0, cut));
     for (const token of raw.slice(cut + 1).split(",")) {
       const member = parseMember(token.trim());
-      // Through addMember, so a hand-edited link cannot smuggle one value into
-      // two groups or overfill one.
+      // Through addMember, so a hand-edited link cannot repeat a value inside
+      // a group or overfill one.
       if (member) groups = addMember(groups, groups.length - 1, member);
     }
   }

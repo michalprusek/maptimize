@@ -12,7 +12,8 @@ import {
   groupColor,
   groupCounts,
   shiftsGroupSlots,
-  groupOfMember,
+  groupConditions,
+  groupsOfMember,
   groupsFromQuery,
   groupsToQuery,
   groupsToWire,
@@ -32,7 +33,7 @@ import fr from "../../messages/fr.json";
 
 /**
  * The reader's own comparison classes. Every failure here is silent: a value
- * left in two groups, a group dropped from the request, a link that parses a
+ * repeated inside a group, a group dropped from the request, a link that parses a
  * blank as "unassigned" — each still draws a plot and prints a score, for a
  * comparison that is not the one on screen.
  */
@@ -43,12 +44,29 @@ const two: LabelGroup[] = [
 ];
 
 test.describe("editing groups", () => {
-  test("adding a value another group holds MOVES it", () => {
-    // In both groups, every one of its points would be ambiguous and vanish
-    // from the score — never what dragging a pill a second time means.
+  test("adding a value another group holds COPIES it", () => {
+    // One protein under two conditions needs the protein in both groups; a
+    // move made that comparison impossible to build.
     const next = addMember(two, 1, exp(180));
-    expect(next[0].members).toEqual([exp(308)]);
+    expect(next[0].members).toEqual([exp(180), exp(308)]);
     expect(next[1].members).toEqual([exp(315), exp(180)]);
+    expect(groupsOfMember(next, exp(180))).toEqual([0, 1]);
+  });
+
+  test("a group reads as one condition per facet, in panel order", () => {
+    const group: LabelGroup = {
+      name: "A",
+      members: [
+        { facet: "ptm", id: 2 },
+        { facet: "protein", id: 5 },
+        { facet: "ptm", id: 0 },
+      ],
+    };
+    expect(groupConditions(group)).toEqual([
+      { facet: "protein", members: [{ facet: "protein", id: 5 }] },
+      { facet: "ptm", members: [{ facet: "ptm", id: 2 }, { facet: "ptm", id: 0 }] },
+    ]);
+    expect(groupConditions({ name: "B", members: [] })).toEqual([]);
   });
 
   test("adding a value the group already holds changes nothing", () => {
@@ -58,9 +76,9 @@ test.describe("editing groups", () => {
   test("the same id under another facet is a different value", () => {
     const next = addMember(two, 1, { facet: "protein", id: 180 });
     expect(next[0].members).toEqual([exp(180), exp(308)]);
-    expect(groupOfMember(next, { facet: "protein", id: 180 })).toBe(1);
-    expect(groupOfMember(next, exp(180))).toBe(0);
-    expect(groupOfMember(next, exp(999))).toBe(-1);
+    expect(groupsOfMember(next, { facet: "protein", id: 180 })).toEqual([1]);
+    expect(groupsOfMember(next, exp(180))).toEqual([0]);
+    expect(groupsOfMember(next, exp(999))).toEqual([]);
   });
 
   test("a full group and a missing group both refuse", () => {
@@ -71,10 +89,10 @@ test.describe("editing groups", () => {
     expect(addMember(two, 5, exp(1))).toBe(two);
   });
 
-  test("a new group seeded with a held value takes it from its old group", () => {
+  test("a new group seeded with a held value leaves the old group alone", () => {
     const next = addGroup(two, "  C  ", exp(315));
     expect(next.map((group) => group.name)).toEqual(["A", "B", "C"]);
-    expect(next[1].members).toEqual([]);
+    expect(next[1].members).toEqual([exp(315)]);
     expect(next[2].members).toEqual([exp(315)]);
   });
 
@@ -168,10 +186,10 @@ test.describe("the URL", () => {
     ]);
   });
 
-  test("a hand-edited link cannot put one value in two groups or exceed the cap", () => {
-    const doubled = groupsFromQuery("g=A|experiment:1&g=B|experiment:1");
-    expect(doubled[0].members).toEqual([]);
-    expect(doubled[1].members).toEqual([exp(1)]);
+  test("a link may share a value between groups, but not repeat it or exceed the cap", () => {
+    const shared = groupsFromQuery("g=A|protein:5,ptm:1&g=B|protein:5,ptm:2,ptm:2");
+    expect(shared[0].members).toEqual([{ facet: "protein", id: 5 }, { facet: "ptm", id: 1 }]);
+    expect(shared[1].members).toEqual([{ facet: "protein", id: 5 }, { facet: "ptm", id: 2 }]);
 
     const many = Array.from({ length: MAX_GROUPS + 4 }, (_, i) => `g=G${i}|ptm:${i}`).join("&");
     expect(groupsFromQuery(many)).toHaveLength(MAX_GROUPS);

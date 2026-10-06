@@ -2,18 +2,24 @@
 
 Every other label axis is a column: a point's class is whatever its protein,
 microscope, PTM, cell line or experiment is. That cannot express "these two
-experiments against that one", nor "MAP2d against everything on 3D SIM" — so a
-caller may instead hand over the classes themselves, each a set of facet values,
-and a point belongs to a group when it carries **any** of that group's values.
+experiments against that one", nor "MTCL1 on unmodified microtubules against
+MTCL1 on detyrosinated ones" — so a caller may instead hand over the classes
+themselves, each a set of **conditions**.
 
-Groups may mix facets, which is what makes overlap possible: a MAP2d crop
-acquired on 3D SIM sits in both of the groups above. Such a point is reported as
+A group reads exactly like the facet filter (``utils/facets.py``): values of one
+facet are alternatives, different facets must all hold. ``protein:5,ptm:2`` is
+"protein 5 AND ptm 2"; ``experiment:180,experiment:308`` is "either experiment".
+The same value may sit in any number of groups — two conditions of one protein
+is the comparison this exists for.
+
+Groups can still overlap ("MTCL1" and "MTCL1 AND detyrosinated" share every
+point of the second). A point matching more than one group is reported as
 ``AMBIGUOUS_GROUP`` and left out of the score rather than assigned to whichever
 group happened to be listed first — a silhouette over classes that share points
 measures the order of a query string.
 """
 from dataclasses import dataclass
-from typing import Dict, FrozenSet, List, Mapping, Optional, Sequence, Tuple
+from typing import Dict, FrozenSet, List, Mapping, Optional, Sequence, Set, Tuple
 
 from utils.facets import UNASSIGNED_FACET_ID
 
@@ -97,6 +103,14 @@ def parse_label_groups(raw: Optional[Sequence[str]]) -> LabelGroups:
     return LabelGroups(tuple(groups))
 
 
+def _conditions(members: FrozenSet[Member]) -> Dict[str, Set[int]]:
+    """A group's members as one id set per facet: OR inside, AND across."""
+    by_facet: Dict[str, Set[int]] = {}
+    for facet, member_id in members:
+        by_facet.setdefault(facet, set()).add(member_id)
+    return by_facet
+
+
 def assign_groups(
     groups: LabelGroups,
     points: Sequence[Mapping[str, int]],
@@ -105,24 +119,26 @@ def assign_groups(
 
     ``points[i]`` maps every facet in ``GROUP_FACETS`` to the id that point
     carries on it, with ``UNASSIGNED_FACET_ID`` where nothing is assigned — the
-    same sentinel the filter uses, so "no PTM recorded" can be a group member.
+    same sentinel the filter uses, so "no PTM recorded" can be a condition.
+
+    A point is in a group when it satisfies every facet the group names, by
+    carrying any one of the values listed for that facet.
     """
-    by_member: Dict[Member, List[int]] = {}
-    for index, members in enumerate(groups.groups):
-        for member in members:
-            by_member.setdefault(member, []).append(index)
+    # An empty group has no conditions; it matches NOTHING, not everything —
+    # it is a slot the reader has not filled yet.
+    conditions = [_conditions(members) for members in groups.groups]
 
     assigned: List[Optional[int]] = []
     for point in points:
-        hits = {
+        hits = [
             index
-            for facet in GROUP_FACETS
-            for index in by_member.get((facet, point[facet]), ())
-        }
+            for index, wanted in enumerate(conditions)
+            if wanted and all(point[facet] in ids for facet, ids in wanted.items())
+        ]
         if not hits:
             assigned.append(None)
         elif len(hits) == 1:
-            assigned.append(next(iter(hits)))
+            assigned.append(hits[0])
         else:
             assigned.append(AMBIGUOUS_GROUP)
     return assigned

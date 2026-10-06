@@ -26,7 +26,7 @@ import {
   addMember,
   encodeMember,
   groupColor,
-  groupOfMember,
+  groupsOfMember,
   type GroupCounts,
   type GroupMember,
   type LabelGroup,
@@ -65,15 +65,15 @@ function FacetPill({
   option,
   member,
   selected,
-  groupIndex,
+  heldBy,
   onToggle,
 }: {
   option: FacetOption;
   /** This value as a group member — what a drag carries. */
   member: GroupMember;
   selected: boolean;
-  /** The group this value has been put in, or -1. */
-  groupIndex: number;
+  /** Every group this value is a condition of. */
+  heldBy: Array<{ index: number; name: string }>;
   onToggle: () => void;
 }): JSX.Element {
   const color = option.color || DEFAULT_POINT_COLOR;
@@ -89,7 +89,7 @@ function FacetPill({
       draggable
       onDragStart={(event) => {
         event.dataTransfer.setData(MEMBER_MIME, encodeMember(member));
-        event.dataTransfer.effectAllowed = "move";
+        event.dataTransfer.effectAllowed = "copy";
       }}
       className={`flex items-center gap-1.5 px-2 py-1 rounded-md text-xs border transition-colors ${
         selected
@@ -108,13 +108,18 @@ function FacetPill({
       />
       <span className="truncate max-w-[160px]">{option.name}</span>
       <span className="text-text-muted">{option.count}</span>
-      {groupIndex >= 0 && (
-        // Which group already holds this value, in that group's own colour.
+      {heldBy.map((group) => (
+        // One square per group that names this value, in that group's colour —
+        // and its name, since colour alone says nothing to some readers.
         <span
+          key={group.index}
+          role="img"
+          aria-label={group.name}
+          title={group.name}
           className="w-2 h-2 rounded-sm flex-shrink-0"
-          style={{ backgroundColor: groupColor(groupIndex) }}
+          style={{ backgroundColor: groupColor(group.index) }}
         />
-      )}
+      ))}
     </button>
   );
 }
@@ -187,7 +192,10 @@ function FacetSection({
               key={option.id}
               option={option}
               member={member}
-              groupIndex={groupOfMember(groups, member)}
+              heldBy={groupsOfMember(groups, member).map((index) => ({
+                index,
+                name: groups[index].name,
+              }))}
               selected={selected.includes(option.id)}
               onToggle={() => onToggle(option.id)}
             />

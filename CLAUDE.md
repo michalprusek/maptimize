@@ -905,8 +905,18 @@ navíc ztlumený, dokud graf drží body předchozího filtru (`placeholderData`
 Každá jiná osa je sloupec. „Tyhle dva experimenty proti tomuhle" žádný sloupec
 nevyjádří, takže čtenář smí třídy **postavit sám**: v panelu filtru přetáhne pilulky
 do skupin (nebo skupinu „odjistí" tlačítkem *Add values* a kliká — HTML drag eventy
-se na dotyku ani z klávesnice nevyvolají). Skupina = množina hodnot **libovolných**
-facet; bod do ní patří, když nese **kteroukoli** z nich.
+se na dotyku ani z klávesnice nevyvolají). Skupina = **sada podmínek** a čte se
+přesně jako filtr: hodnoty téže facety jsou alternativy (OR), různé facety musí
+platit všechny (AND). `protein:5,ptm:2` je „protein 5 **a** PTM 2".
+
+⚠️ **Do 2026-10-06 odpoledne to byl OR přes všechno a hodnota směla být jen v jedné
+skupině** (`addMember` ji přesouval). Kolegyně to první den nahlásila: nešlo postavit
+„MTCL1 nemodifikovaný proti MTCL1 detyrosinovanému" — tedy přesně to srovnání, kvůli
+kterému skupiny existují. Formát na drátě ani v URL se nezměnil, jen jeho výklad;
+**`addMember` teď kopíruje a nesmí se vrátit k přesouvání.**
+
+⚠️ **Prázdná skupina nematchuje NIC.** `all()` nad prázdnou sadou podmínek je `True`,
+takže zřejmý zápis by do nevyplněného slotu nasypal všechny body.
 
 Drát: opakovaný `group=experiment:180,experiment:308` (jeden na třídu) + `label_by=group`.
 SSOT parsování i přiřazení je `utils/label_groups.py`; frontendová strana (čisté funkce,
@@ -920,8 +930,8 @@ přesně na bodech, které jsou ve dvou skupinách.
 ⚠️ **Bod ve dvou skupinách je `-1`, kreslí se šedě a do skóre nejde** — nikdy „vyhrává
 první". Smíšené facety to dělají běžně (skupina „MAP2d" a skupina „3D SIM" sdílejí
 každý MAP2d crop ze 3D SIM) a silueta nad třídami, které sdílejí body, by měřila
-pořadí query stringu. Panel počet takových bodů vypisuje. Tatáž *hodnota* ve dvou
-skupinách být nemůže: `addMember` ji **přesouvá**, nekopíruje.
+pořadí query stringu. Panel počet takových bodů vypisuje. Typický překryv je teď širší
+skupina vedle užší („MTCL1" a „MTCL1 a detyrosinace").
 
 ⚠️ **Prázdná skupina drží svůj slot** (posílá se jako `group=`). `point.group` je index
 do seznamu skupin klienta; zahozená prázdná skupina by posunula všechny další pod
@@ -944,7 +954,7 @@ Skupiny žijí v URL jako opakovaný `g=<jméno>|<členové>` (jméno je vše p�
 Strop je 8 skupin — tolik barev má paleta (Okabe–Ito bez černé + jedna Tolova) — a
 `MAX_GROUPS` je na backendu i frontendu schválně stejné číslo.
 
-MCP: `measure_separability` má `label_by=group` + pole `group`; `SERVER_VERSION` **4.6.0**.
+MCP: `measure_separability` má `label_by=group` + pole `group`; `SERVER_VERSION` **4.7.0**.
 
 `GET /api/embeddings/separability` vrací **jen** skóre (MCP tool `measure_separability`) —
 projekce jsou tisíce souřadnic a agent se ptá na jedno číslo. Vrací **404, ne null**, když

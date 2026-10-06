@@ -29,8 +29,9 @@ class LabelAxis(str, Enum):
     colour by is exactly the axis they can score by. Keeping them one vocabulary
     is what stops the index from reporting on classes the legend does not show.
 
-    ``GROUP`` is the one that is not a column: the classes are sets of facet
-    values the caller supplies with the request (see ``utils/label_groups.py``).
+    ``GROUP`` is the one that is not a column: the classes are sets of
+    conditions the caller supplies with the request, read like the filter — OR
+    within a facet, AND across (see ``utils/label_groups.py``).
     """
 
     PROTEIN = "protein"
