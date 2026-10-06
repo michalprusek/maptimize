@@ -2338,11 +2338,31 @@ export interface Separability {
   n_points: number;
 }
 
+/** Why a set of points has no separability score. Mirrors the backend enum. */
+export type UnscoredReason =
+  | "no_labels"
+  | "single_class"
+  | "too_few_points"
+  | "failed";
+
+/**
+ * The score is missing, and this is why. Set exactly when points came back but
+ * `separability` is null — which in practice means the filter left one class on
+ * the axis being scored.
+ */
+export interface SeparabilityUnscored {
+  label_by: LabelAxis;
+  reason: UnscoredReason;
+  n_classes: number;
+  n_points: number;
+}
+
 export interface UmapDataResponse {
   points: UmapPoint[];
   total_crops: number;
   facets: UmapFacetRow[];
   separability: Separability | null;
+  separability_unscored: SeparabilityUnscored | null;
   /** Coordinates are being refreshed in the background; poll until false. */
   is_stale: boolean;
   /** The refresh failed — coordinates won't arrive on their own. Stop polling. */
@@ -2365,6 +2385,7 @@ export interface UmapFovDataResponse {
   total_images: number;
   facets: UmapFacetRow[];
   separability: Separability | null;
+  separability_unscored: SeparabilityUnscored | null;
   computed_at: string | null;
   /** Coordinates are being refreshed in the background; poll until false. */
   is_stale: boolean;

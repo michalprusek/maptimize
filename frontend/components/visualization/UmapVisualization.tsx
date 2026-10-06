@@ -42,6 +42,7 @@ import { useProjectionData } from "./useProjectionData";
 import {
   EMPTY_SELECTION,
   FACET_LABEL_KEY,
+  UNSCORED_REASON_KEY,
   experimentColor,
   experimentMetaById,
   hasUnresolvedReferences,
@@ -412,6 +413,12 @@ export function UmapVisualization({
   const isFov = view?.isFov ?? viewMode === "fov";
   const totalCount = view?.totalCount ?? 0;
   const separability = view?.separability ?? null;
+  const separabilityUnscored = view?.separabilityUnscored ?? null;
+  // The chart keeps the previous filter's points while the next ones load, and
+  // so does this number — dimmed, because it does not yet describe the filter
+  // the panel shows as ticked.
+  const badgeFreshness = view?.isPrevious ? "opacity-50" : "";
+  const badgeClass = `px-2 py-0.5 rounded text-xs font-mono ${badgeFreshness}`;
 
   // Error message parsing
   const errorMessage = error instanceof Error ? error.message : error ? t("unknownError") : null;
@@ -670,7 +677,7 @@ export function UmapVisualization({
               </span>
               {separability !== null && (
                 <span
-                  className={`px-2 py-0.5 rounded text-xs font-mono ${getSeparabilityScoreStyle(separability.score)}`}
+                  className={`${badgeClass} ${getSeparabilityScoreStyle(separability.score)}`}
                   title={t("separabilityTooltip")}
                 >
                   {t("separability", {
@@ -681,6 +688,25 @@ export function UmapVisualization({
                   {t("separabilityCounts", {
                     classes: separability.n_classes,
                     points: separability.n_points,
+                  })}
+                </span>
+              )}
+              {/* Never just vanish. A missing score is a statement about the
+                  filter — nearly always "one class left on this axis" — and an
+                  empty slot reads as "still loading" or "broken" instead. */}
+              {separability === null && separabilityUnscored !== null && (
+                <span
+                  className={`${badgeClass} bg-bg-secondary text-text-muted`}
+                  title={t("separabilityUnscoredTooltip")}
+                  data-testid="separability-unscored"
+                >
+                  {t("separability", {
+                    axis: t(FACET_LABEL_KEY[separabilityUnscored.label_by]),
+                  })}
+                  {": "}
+                  {t(UNSCORED_REASON_KEY[separabilityUnscored.reason], {
+                    classes: separabilityUnscored.n_classes,
+                    points: separabilityUnscored.n_points,
                   })}
                 </span>
               )}

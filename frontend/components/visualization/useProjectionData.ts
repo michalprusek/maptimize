@@ -16,6 +16,7 @@ import {
   api,
   type LabelAxis,
   type Separability,
+  type SeparabilityUnscored,
   type UmapFacetRow,
   type UmapType,
 } from "@/lib/api";
@@ -36,6 +37,13 @@ export interface ProjectionView {
   computeError: string | null;
   /** Null when too few of these points carry a value on the requested axis. */
   separability: Separability | null;
+  /** Why there is no score. Set whenever points came back without one. */
+  separabilityUnscored: SeparabilityUnscored | null;
+  /**
+   * These are the previous filter's results, kept on screen while the new ones
+   * load. Anything that states a number about "the current filter" must say so.
+   */
+  isPrevious: boolean;
 }
 
 export interface ProjectionDataResult {
@@ -88,6 +96,10 @@ export function useProjectionData({
       isComputing: data.is_stale,
       computeError: data.refresh_error,
       separability: data.separability,
+      // `?? null`: a backend older than this field omits it, and `undefined`
+      // would slip past a `!== null` check into a render that reads `.reason`.
+      separabilityUnscored: data.separability_unscored ?? null,
+      isPrevious: umap.isPlaceholderData,
     },
     isLoading: umap.isLoading,
     isFetching: umap.isFetching,

@@ -1323,6 +1323,125 @@ async def test_separability_endpoint_404s_when_nothing_can_be_scored(mock_db, no
     assert ei.value.status_code == 404
 
 
+# -- a missing score says why -------------------------------------------------
+# These run the real compute_separability / separability_gap: the reason is
+# derived from the labels the handler built, so patching the scorer out would
+# test nothing but the plumbing.
+async def test_cropped_umap_says_the_filter_left_one_class(mock_db, no_group):
+    # The production shape of the bug: every point that came back sits on one
+    # microscope while the plot is coloured by microscope — nothing to separate.
+    # (No facet filter is passed: the mocked DB returns these rows either way,
+    # and what is under test is what the handler says about them.)
+    crops = [crop_obj(cid=i, umap_x=0.1, umap_y=0.2) for i in range(12)]
+    mock_db.execute.side_effect = [
+        make_result(scalars_all=crops),
+        make_result(fetchall=[_facet_row(1, microscope_id=3)]),
+    ]
+    out = await e.get_umap_visualization(
+        umap_type=e.UmapType.CROPPED, selection=e.FacetSelection(),
+        label_by=e.LabelAxis.MICROSCOPE,
+        background_tasks=MagicMock(), current_user=user(), db=mock_db,
+    )
+    assert out.separability is None
+    assert out.separability_unscored.reason is e.UnscoredReason.SINGLE_CLASS
+    assert out.separability_unscored.label_by is e.LabelAxis.MICROSCOPE
+    assert out.separability_unscored.n_classes == 1
+    assert out.separability_unscored.n_points == 12
+
+
+async def test_cropped_umap_says_nothing_is_assigned_on_the_axis(mock_db, no_group):
+    crops = [crop_obj(cid=i, umap_x=0.1, umap_y=0.2) for i in range(12)]
+    mock_db.execute.side_effect = [
+        make_result(scalars_all=crops),
+        make_result(fetchall=[_facet_row(1, ptm_id=None)]),
+    ]
+    out = await e.get_umap_visualization(
+        umap_type=e.UmapType.CROPPED, selection=e.FacetSelection(),
+        label_by=e.LabelAxis.PTM,
+        background_tasks=MagicMock(), current_user=user(), db=mock_db,
+    )
+    assert out.separability is None
+    assert out.separability_unscored.reason is e.UnscoredReason.NO_LABELS
+    assert out.separability_unscored.n_points == 0
+
+
+async def test_fov_umap_says_the_filter_left_one_class(mock_db, no_group):
+    images = [image_obj(iid=i, umap_x=0.1, umap_y=0.2) for i in range(12)]
+    mock_db.execute.side_effect = [
+        make_result(scalars_all=images),
+        make_result(fetchall=[_facet_row(1, cell_line_id=4)]),
+    ]
+    out = await e.get_umap_visualization(
+        umap_type=e.UmapType.FOV, selection=e.FacetSelection(),
+        label_by=e.LabelAxis.CELL_LINE,
+        background_tasks=MagicMock(), current_user=user(), db=mock_db,
+    )
+    assert out.separability is None
+    assert out.separability_unscored.reason is e.UnscoredReason.SINGLE_CLASS
+    assert out.separability_unscored.n_points == 12
+
+
+async def test_a_scored_projection_carries_no_gap(mock_db, no_group):
+    # Exactly one of the two is set; both at once would draw two badges.
+    crops = [crop_obj(cid=i, umap_x=0.1, umap_y=0.2) for i in range(4)]
+    mock_db.execute.side_effect = [
+        make_result(scalars_all=crops),
+        make_result(fetchall=[_facet_row()]),
+    ]
+    with patch.object(e, "MIN_POINTS_FOR_UMAP", 3), \
+         patch.object(
+             e, "compute_separability",
+             return_value=e.Separability(score=0.42, n_classes=2, n_points=4),
+         ):
+        out = await e.get_umap_visualization(
+            umap_type=e.UmapType.CROPPED, selection=e.FacetSelection(),
+            label_by=e.LabelAxis.PROTEIN,
+            background_tasks=MagicMock(), current_user=user(), db=mock_db,
+        )
+    assert out.separability is not None
+    assert out.separability_unscored is None
+
+
+async def test_a_scorer_failure_is_reported_as_one_not_as_a_threshold(mock_db, no_group):
+    # 12 points over 2 experiments clears every threshold, so a None from the
+    # scorer here is sklearn refusing — which must not be blamed on the filter.
+    crops = [
+        crop_obj(cid=i, umap_x=0.1, umap_y=0.2, experiment_id=1 + i % 2)
+        for i in range(12)
+    ]
+    mock_db.execute.side_effect = [
+        make_result(scalars_all=crops),
+        make_result(fetchall=[_facet_row(1), _facet_row(2)]),
+    ]
+    with patch.object(e, "compute_separability", return_value=None):
+        out = await e.get_umap_visualization(
+            umap_type=e.UmapType.CROPPED, selection=e.FacetSelection(),
+            label_by=e.LabelAxis.EXPERIMENT,
+            background_tasks=MagicMock(), current_user=user(), db=mock_db,
+        )
+    assert out.separability_unscored.reason is e.UnscoredReason.FAILED
+    assert out.separability_unscored.n_classes == 2
+    assert out.separability_unscored.n_points == 12
+
+
+async def test_separability_endpoint_404_names_what_it_found(mock_db, no_group):
+    # The agent gets words instead of a badge; they have to carry the same fact.
+    crops = [crop_obj(cid=i, umap_x=0.1, umap_y=0.2) for i in range(12)]
+    mock_db.execute.side_effect = [
+        make_result(scalars_all=crops),
+        make_result(fetchall=[_facet_row(1, microscope_id=3)]),
+    ]
+    with pytest.raises(HTTPException) as ei:
+        await e.get_separability(
+            umap_type=e.UmapType.CROPPED, selection=e.FacetSelection(),
+            label_by=e.LabelAxis.MICROSCOPE,
+            background_tasks=MagicMock(), current_user=user(), db=mock_db,
+        )
+    assert ei.value.status_code == 404
+    assert "12 labelled points over 1 distinct values" in ei.value.detail
+    assert "single_class" in ei.value.detail
+
+
 # =============================================================================
 # embeddings.py — _get_fov_umap
 # =============================================================================

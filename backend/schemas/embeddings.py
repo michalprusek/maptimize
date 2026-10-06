@@ -52,6 +52,33 @@ class SeparabilityResponse(BaseModel):
     n_points: int = Field(..., description="Points carrying a value on this axis")
 
 
+class UnscoredReason(str, Enum):
+    """Why a set of points has no separability score.
+
+    Listed from "nothing to work with" to "something went wrong"; the first that
+    applies is the one reported, because it is the one a reader can act on.
+    """
+
+    NO_LABELS = "no_labels"
+    SINGLE_CLASS = "single_class"
+    TOO_FEW_POINTS = "too_few_points"
+    FAILED = "failed"
+
+
+class SeparabilityUnscoredResponse(BaseModel):
+    """The score is missing, and this is why.
+
+    A separate object rather than a nullable ``score`` on
+    ``SeparabilityResponse``: a null score sitting beside real counts is one
+    careless read away from being reported as zero.
+    """
+
+    label_by: LabelAxis = Field(..., description="Dimension the points were grouped by")
+    reason: UnscoredReason = Field(..., description="Why no score could be computed")
+    n_classes: int = Field(..., description="Distinct values found on this axis")
+    n_points: int = Field(..., description="Points carrying a value on this axis")
+
+
 class UmapFacetRow(BaseModel):
     """One (experiment, protein) bucket of the plot, with its point count.
 
@@ -108,6 +135,13 @@ class UmapDataResponse(BaseModel):
             "or null when too few of them carry a value to say anything."
         ),
     )
+    separability_unscored: Optional[SeparabilityUnscoredResponse] = Field(
+        None,
+        description=(
+            "Set exactly when points came back but `separability` is null: "
+            "which threshold withheld the score, with the counts behind it."
+        ),
+    )
     is_stale: bool = Field(
         False,
         description=(
@@ -152,6 +186,13 @@ class UmapFovDataResponse(BaseModel):
         description=(
             "How cleanly these points separate along the requested label axis, "
             "or null when too few of them carry a value to say anything."
+        ),
+    )
+    separability_unscored: Optional[SeparabilityUnscoredResponse] = Field(
+        None,
+        description=(
+            "Set exactly when points came back but `separability` is null: "
+            "which threshold withheld the score, with the counts behind it."
         ),
     )
     computed_at: Optional[datetime] = Field(

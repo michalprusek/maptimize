@@ -889,6 +889,17 @@ hodnoty nejsou srovnatelné, pokud ty počty nesedí — `separability` nese `sc
 přímo volaného handleru jako objekt `Query`; dispatch, který by propadl na protein, by
 skóre tiše přiřadil špatné ose.
 
+⚠️ **Chybějící skóre se VYSVĚTLUJE, nikdy jen neschová** (od 2026-10-06). Odpověď
+nese vedle `separability` i `separability_unscored` (`reason` + počty) — nastaveno
+právě tehdy, když body přišly a skóre ne — a badge pak ukáže „n/a · only 1 class in
+this filter" místo prázdného místa. Naměřeno na produkci (2501 cropů / 1242 FOV, každý
+jednohodnotový filtr × každá osa): **všechny** výpadky byly „na obarvené ose zbyla
+jediná třída" (filtr na jeden experiment to udělá pro všech pět os), **ani jednou**
+práh 10 bodů ani výjimka sklearnu. Prázdné místo se četlo jako „rozbité / nenačtené".
+Prahy žijí **jednou** v `separability_gap()` a `compute_separability` se jím hlídá —
+důvod na badge tak nemůže nesouhlasit s rozhodnutím, které skóre zadrželo. Badge je
+navíc ztlumený, dokud graf drží body předchozího filtru (`placeholderData`).
+
 `GET /api/embeddings/separability` vrací **jen** skóre (MCP tool `measure_separability`) —
 projekce jsou tisíce souřadnic a agent se ptá na jedno číslo. Vrací **404, ne null**, když
 není co skórovat: null si volající přečte jako nulu a takhle to i ohlásí.
