@@ -49,6 +49,8 @@ interface UmapFilterPanelProps {
   onGroupsChange: (groups: LabelGroup[]) => void;
   /** Points per group on the current plot; null unless coloured by groups. */
   groupCounts: GroupCounts | null;
+  /** The separability badge, when the score on screen is about the groups. */
+  groupsScore: React.ReactNode;
   microscopes: Named[] | undefined;
   proteins: Named[] | undefined;
   ptms: Named[] | undefined;
@@ -191,6 +193,7 @@ export function UmapFilterPanel({
   groups,
   onGroupsChange,
   groupCounts,
+  groupsScore,
   microscopes,
   proteins,
   ptms,
@@ -375,6 +378,7 @@ export function UmapFilterPanel({
             armed={armed}
             onArm={setArmedGroup}
             counts={groupCounts}
+            score={groupsScore}
             t={t}
           />
         </div>
