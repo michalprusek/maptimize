@@ -289,6 +289,50 @@ def test_separability_none_when_single_class():
     assert umap_service.compute_separability(np.random.rand(10, 4), labels) is None
 
 
+# -- separability_gap: why there is no score ---------------------------------
+# On production data every missing score was "one class left on the scored
+# axis". The dashboard used to show nothing at all for it, so the reason has to
+# be exactly right: it is the only thing telling a reader the filter did this.
+@pytest.mark.parametrize(
+    "labels, reason, n_classes, n_points",
+    [
+        ([None] * 40, "no_labels", 0, 0),
+        ([], "no_labels", 0, 0),
+        ([7] * 40, "single_class", 1, 40),
+        ([7] * 40 + [None] * 5, "single_class", 1, 40),
+        ([1, 2, 3] * 3, "too_few_points", 3, 9),
+        # One class AND under the floor: widening the filter is the advice that
+        # helps, "needs 10 points" would send the reader after the wrong thing.
+        ([7] * 3, "single_class", 1, 3),
+    ],
+)
+def test_separability_gap_names_the_threshold_that_withheld_the_score(
+    labels, reason, n_classes, n_points
+):
+    gap = umap_service.separability_gap(labels)
+    assert gap.reason.value == reason
+    assert (gap.n_classes, gap.n_points) == (n_classes, n_points)
+
+
+def test_separability_gap_is_none_at_exactly_the_scorable_boundary():
+    # 10 labelled over 2 classes is the smallest set that gets a score.
+    assert umap_service.separability_gap([1] * 5 + [2] * 5) is None
+    assert umap_service.separability_gap([1] * 5 + [2] * 4).reason.value == "too_few_points"
+
+
+def test_the_score_and_the_gap_can_never_both_be_absent_or_both_present():
+    # One decision, read twice. If compute_separability kept its own copy of the
+    # thresholds the badge could explain a score that was in fact computed.
+    cases = [[None] * 12, [1] * 12, [1, 2] * 4, [1, 2] * 5, [1, 2, None] * 6]
+    with _patch_silhouette(0.3):
+        for labels in cases:
+            scored = umap_service.compute_separability(
+                np.random.rand(len(labels), 4), labels
+            )
+            gap = umap_service.separability_gap(labels)
+            assert (scored is None) != (gap is None), labels
+
+
 def test_separability_reports_score_with_class_and_point_counts():
     # The counts are the whole reason this returns an object rather than a float:
     # a silhouette is not comparable across subsets of different size and class

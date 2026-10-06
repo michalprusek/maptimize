@@ -20,7 +20,7 @@ from sqlalchemy.orm import selectinload
 from models.cell_crop import CellCrop
 from models.experiment import Experiment
 from models.image import Image, MapProtein
-from schemas.embeddings import UmapType
+from schemas.embeddings import UmapType, UnscoredReason
 
 logger = logging.getLogger(__name__)
 
@@ -158,6 +158,64 @@ def protein_labels(items: list) -> list[Optional[int]]:
     ]
 
 
+@dataclass(frozen=True)
+class SeparabilityGap:
+    """A score that could not be computed, with the counts that explain why.
+
+    The absence is a result in its own right. Measured on production data
+    (2026-10-06, 2501 crops / 1242 FOVs), every missing score was a filter that
+    left one class on the scored axis — narrowing to a single experiment does it
+    for all five axes — and never the size floor or a sklearn failure. Reporting
+    nothing made that indistinguishable from a response that had not arrived.
+    """
+
+    reason: UnscoredReason
+    n_classes: int
+    n_points: int
+
+
+def _labeled_counts(labels: list[Optional[int]]) -> tuple[int, int]:
+    """``(distinct values, points)`` among the entries that carry a label."""
+    labeled = [label for label in labels if label is not None]
+    return len(set(labeled)), len(labeled)
+
+
+def separability_gap(labels: list[Optional[int]]) -> Optional[SeparabilityGap]:
+    """Why ``labels`` cannot be scored, or None when they can.
+
+    The single home of the thresholds: ``compute_separability`` guards with this
+    rather than repeating the comparison, so the reason shown to a reader cannot
+    disagree with the decision that withheld the score.
+    """
+    n_classes, n_points = _labeled_counts(labels)
+
+    if n_points == 0:
+        reason = UnscoredReason.NO_LABELS
+    elif n_classes < 2:
+        reason = UnscoredReason.SINGLE_CLASS
+    elif n_points < MIN_LABELED_FOR_SEPARABILITY:
+        reason = UnscoredReason.TOO_FEW_POINTS
+    else:
+        return None
+
+    return SeparabilityGap(reason=reason, n_classes=n_classes, n_points=n_points)
+
+
+def unscored_gap(labels: list[Optional[int]]) -> SeparabilityGap:
+    """Explain a score ``compute_separability`` did not return for ``labels``.
+
+    Either a threshold withheld it, or the thresholds passed and the scorer
+    still returned nothing — which is ``FAILED``, with the same counts.
+    """
+    gap = separability_gap(labels)
+    if gap is not None:
+        return gap
+    n_classes, n_points = _labeled_counts(labels)
+    return SeparabilityGap(
+        reason=UnscoredReason.FAILED, n_classes=n_classes, n_points=n_points
+    )
+
+
 def compute_separability(
     embeddings: np.ndarray,
     labels: list[Optional[int]],
@@ -183,12 +241,12 @@ def compute_separability(
     Returns:
         Separability, or None when there is too little to say
     """
+    if separability_gap(labels) is not None:
+        return None
+
     labeled_indices = [i for i, label in enumerate(labels) if label is not None]
     labeled = [labels[i] for i in labeled_indices]
     distinct = set(labeled)
-
-    if len(labeled_indices) < MIN_LABELED_FOR_SEPARABILITY or len(distinct) < 2:
-        return None
 
     try:
         from sklearn.metrics import silhouette_score

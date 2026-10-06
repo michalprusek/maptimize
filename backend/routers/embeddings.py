@@ -2,7 +2,7 @@
 
 import logging
 from dataclasses import dataclass, field
-from typing import List, Optional, Sequence, Type, TypeVar, Union
+from typing import List, Optional, Sequence, Tuple, Type, TypeVar, Union
 
 import numpy as np
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, status
@@ -23,12 +23,14 @@ from schemas.embeddings import (
     FeatureExtractionTriggerResponse,
     LabelAxis,
     SeparabilityResponse,
+    SeparabilityUnscoredResponse,
     UmapDataResponse,
     UmapFacetRow,
     UmapFovDataResponse,
     UmapFovPointResponse,
     UmapPointResponse,
     UmapType,
+    UnscoredReason,  # noqa: F401 — re-exported; the router tests read it from here
 )
 from utils.facets import facet_clause, real_ids
 from services.umap_service import (
@@ -39,6 +41,7 @@ from services.umap_service import (
     get_refresh_error,
     protein_labels,
     refresh_umap_scope,
+    unscored_gap,
 )
 from utils.security import get_current_user
 from utils.groups import experiment_owner_filter, get_user_group_ids
@@ -214,12 +217,20 @@ async def get_separability(
         db=db,
     )
     if projection.separability is None:
+        unscored = projection.separability_unscored
+        found = (
+            f" Found {unscored.n_points} labelled points over "
+            f"{unscored.n_classes} distinct values ({unscored.reason.value})."
+            if unscored
+            else " The filter matched no plotted points."
+        )
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=(
                 f"Not enough labelled points to score separability by "
                 f"{label_by.value}: it needs at least 10 points carrying a "
                 f"value on that axis, spread over at least 2 distinct values."
+                + found
             ),
         )
     return projection.separability
@@ -520,16 +531,32 @@ def _separability(
     embeddings: np.ndarray,
     labels: List[Optional[int]],
     axis: LabelAxis,
-) -> Optional[SeparabilityResponse]:
-    """Score ``labels`` and tag the result with the axis they came from."""
+) -> Tuple[Optional[SeparabilityResponse], Optional[SeparabilityUnscoredResponse]]:
+    """Score ``labels``, or say why they cannot be scored.
+
+    Exactly one of the pair is set. The second half exists because a missing
+    score used to be reported as nothing at all, and on the dashboard that reads
+    as "still loading" or "broken" — while in practice it always meant the
+    filter had left a single class on the axis being scored.
+    """
     scored = compute_separability(embeddings, labels)
-    if scored is None:
-        return None
-    return SeparabilityResponse(
-        score=scored.score,
+    if scored is not None:
+        return (
+            SeparabilityResponse(
+                score=scored.score,
+                label_by=axis,
+                n_classes=scored.n_classes,
+                n_points=scored.n_points,
+            ),
+            None,
+        )
+
+    gap = unscored_gap(labels)
+    return None, SeparabilityUnscoredResponse(
         label_by=axis,
-        n_classes=scored.n_classes,
-        n_points=scored.n_points,
+        reason=gap.reason,
+        n_classes=gap.n_classes,
+        n_points=gap.n_points,
     )
 
 
@@ -593,7 +620,7 @@ async def _get_cropped_umap(
         [crop.image.experiment_id for crop in crops_with_umap],
         facets,
     )
-    separability = _separability(embeddings, labels, axis)
+    separability, unscored = _separability(embeddings, labels, axis)
 
     # Build response. Points carry only what varies per point; the experiment's
     # microscope and PTM are repeated far too often to send per point, so the
@@ -618,6 +645,7 @@ async def _get_cropped_umap(
         total_crops=total_crops,
         facets=facets,
         separability=separability,
+        separability_unscored=unscored,
         is_stale=is_stale,
         refresh_error=refresh_error,
     )
@@ -680,7 +708,7 @@ async def _get_fov_umap(
         [image.experiment_id for image in images_with_umap],
         facets,
     )
-    separability = _separability(embeddings, labels, axis)
+    separability, unscored = _separability(embeddings, labels, axis)
     computed_times = [img.umap_computed_at for img in images_with_umap if img.umap_computed_at]
     computed_at = min(computed_times) if computed_times else None
 
@@ -703,6 +731,7 @@ async def _get_fov_umap(
         total_images=total_images,
         facets=facets,
         separability=separability,
+        separability_unscored=unscored,
         computed_at=computed_at,
         is_stale=is_stale,
         refresh_error=refresh_error,

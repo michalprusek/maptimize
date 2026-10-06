@@ -7,7 +7,11 @@
  * need is derived from that summary here, so the two cannot disagree about how
  * many points a value has.
  */
-import type { UmapFacetRow, UmapFacetSelection } from "@/lib/api";
+import type {
+  UmapFacetRow,
+  UmapFacetSelection,
+  UnscoredReason,
+} from "@/lib/api";
 
 /** Reserved id for "this facet is not assigned". Mirrors UNASSIGNED_FACET_ID. */
 export const UNASSIGNED_ID = 0;
@@ -47,6 +51,19 @@ export const FACET_LABEL_KEY: Record<FacetKey, string> = {
   protein: "facetProtein",
   ptm: "facetPtm",
   cell_line: "facetCellLine",
+};
+
+/**
+ * The i18n key explaining each reason a separability score is missing.
+ *
+ * A `Record` so a reason the backend adds is a compile error here rather than
+ * a badge that renders the literal key.
+ */
+export const UNSCORED_REASON_KEY: Record<UnscoredReason, string> = {
+  no_labels: "separabilityNoLabels",
+  single_class: "separabilitySingleClass",
+  too_few_points: "separabilityTooFewPoints",
+  failed: "separabilityFailed",
 };
 
 /**

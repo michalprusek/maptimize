@@ -4,6 +4,7 @@ import {
   COLOR_BY_ORDER,
   EMPTY_SELECTION,
   FACET_LABEL_KEY,
+  UNSCORED_REASON_KEY,
   FACET_ORDER,
   UNASSIGNED_ID,
   countActiveFilters,
@@ -458,4 +459,41 @@ test.describe("hasUnresolvedReferences", () => {
       hasUnresolvedReferences(new Map(), { microscope: idx(), ptm: idx(), cellLine: idx() })
     ).toBe(false);
   });
+});
+
+
+/**
+ * A missing separability score is explained, never just dropped. On production
+ * data it always meant "this filter left one class on the colour-by axis", and
+ * an empty slot in the header read as a broken or still-loading plot instead.
+ */
+test.describe("UNSCORED_REASON_KEY", () => {
+  // The backend's UnscoredReason enum, spelled out: a reason added there and
+  // not here renders as a badge showing a raw i18n key.
+  const REASONS = ["no_labels", "single_class", "too_few_points", "failed"] as const;
+
+  test("covers every reason the backend can send", () => {
+    expect(Object.keys(UNSCORED_REASON_KEY).sort()).toEqual([...REASONS].sort());
+  });
+
+  for (const [locale, messages] of Object.entries({ en, fr })) {
+    test(`every reason and the tooltip resolve in ${locale}.json`, () => {
+      const umap = messages.umap as Record<string, string>;
+      for (const reason of REASONS) {
+        expect(umap[UNSCORED_REASON_KEY[reason]], `${reason} in ${locale}`).toBeTruthy();
+      }
+      expect(umap.separabilityUnscoredTooltip).toBeTruthy();
+    });
+
+    test(`${locale}: the count placeholders are ones the badge supplies`, () => {
+      // next-intl throws on a placeholder it was not given a value for.
+      const umap = messages.umap as Record<string, string>;
+      for (const reason of REASONS) {
+        const used = umap[UNSCORED_REASON_KEY[reason]].match(/\{(\w+)\}/g) ?? [];
+        for (const placeholder of used) {
+          expect(["{classes}", "{points}"]).toContain(placeholder);
+        }
+      }
+    });
+  }
 });
