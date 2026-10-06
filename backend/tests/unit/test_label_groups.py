@@ -79,7 +79,7 @@ def test_caps_are_enforced_at_the_boundary():
 
 
 # -- assignment ---------------------------------------------------------------
-def test_a_point_joins_the_group_holding_any_of_its_values():
+def test_values_of_one_facet_are_alternatives():
     groups = parse_label_groups(["experiment:180,experiment:308", "experiment:315"])
     points = [_point(180), _point(308), _point(315), _point(999)]
     assert assign_groups(groups, points) == [0, 0, 1, None]
@@ -99,9 +99,41 @@ def test_a_point_in_two_groups_is_ambiguous_not_first_wins():
     assert assign_groups(reversed_groups, points) == [1, 0, AMBIGUOUS_GROUP]
 
 
-def test_two_values_of_one_group_matching_is_not_ambiguous():
-    groups = parse_label_groups(["protein:3,microscope:1", "protein:5"])
-    assert assign_groups(groups, [_point(protein=3, microscope=1)]) == [0]
+def test_facets_inside_a_group_must_all_hold():
+    # The comparison this exists for: one protein under two PTM conditions.
+    groups = parse_label_groups(["protein:3,ptm:1", "protein:3,ptm:2"])
+    points = [
+        _point(protein=3, ptm=1),
+        _point(protein=3, ptm=2),
+        _point(protein=3, ptm=7),  # right protein, neither condition
+        _point(protein=5, ptm=1),  # right condition, wrong protein
+    ]
+    assert assign_groups(groups, points) == [0, 1, None, None]
+
+
+def test_values_of_one_facet_are_alternatives_within_the_conjunction():
+    groups = parse_label_groups(["protein:3,protein:5,ptm:1"])
+    points = [
+        _point(protein=3, ptm=1),
+        _point(protein=5, ptm=1),
+        _point(protein=5, ptm=2),
+        _point(protein=8, ptm=1),
+    ]
+    assert assign_groups(groups, points) == [0, 0, None, None]
+
+
+def test_a_broader_group_overlapping_a_narrower_one_is_ambiguous():
+    # "MTCL1" and "MTCL1 AND detyrosinated" share every point of the second.
+    groups = parse_label_groups(["protein:3", "protein:3,ptm:2"])
+    points = [_point(protein=3, ptm=1), _point(protein=3, ptm=2)]
+    assert assign_groups(groups, points) == [0, AMBIGUOUS_GROUP]
+
+
+def test_an_empty_group_matches_nothing_not_everything():
+    # No conditions is an unfilled slot. `all()` of nothing is True, so the
+    # naive reading would sweep every point into it.
+    groups = parse_label_groups(["", "protein:3"])
+    assert assign_groups(groups, [_point(protein=3), _point(protein=5)]) == [1, None]
 
 
 def test_unassigned_is_a_value_a_group_can_name():

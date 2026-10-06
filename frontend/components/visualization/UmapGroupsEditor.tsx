@@ -4,6 +4,10 @@
  * Builds the reader's own comparison classes by dragging filter values into
  * groups. See `labelGroups.ts` for what a group is.
  *
+ * A group is drawn as it is evaluated: one row of alternatives per facet
+ * ("or"), rows joined by "and" — so "MTCL1 and Detyrosination" cannot be
+ * mistaken for "MTCL1 or Detyrosination".
+ *
  * Dragging is one of two ways in. Each group also has an "add values" toggle
  * that makes the next clicks on filter pills add to it — the same result from a
  * keyboard or a touch screen, where HTML drag events do not fire.
@@ -19,6 +23,7 @@ import {
   addMember,
   decodeMember,
   groupColor,
+  groupConditions,
   removeGroup,
   removeMember,
   renameGroup,
@@ -27,6 +32,7 @@ import {
   type LabelGroup,
 } from "./labelGroups";
 import type { Translate } from "./projectionShared";
+import { FACET_LABEL_KEY } from "./umapFacets";
 
 interface UmapGroupsEditorProps {
   groups: LabelGroup[];
@@ -68,7 +74,7 @@ export function UmapGroupsEditor({
     onDragOver: (event: React.DragEvent) => {
       if (!carriesMember(event)) return;
       event.preventDefault();
-      event.dataTransfer.dropEffect = "move";
+      event.dataTransfer.dropEffect = "copy";
       setOver(zone);
     },
     onDragLeave: () => setOver((current) => (current === zone ? null : current)),
@@ -158,25 +164,47 @@ export function UmapGroupsEditor({
                     {isArmed ? t("groupArmedHint") : t("groupEmpty")}
                   </span>
                 )}
-                {group.members.map((member) => {
-                  const shown = describe(member);
-                  return (
-                    <button
-                      key={`${member.facet}-${member.id}`}
-                      type="button"
-                      onClick={() => onChange(removeMember(groups, index, member))}
-                      aria-label={t("groupRemoveValue", { name: shown.label })}
-                      className="inline-flex items-center gap-1.5 px-2 py-1 rounded-md text-xs border border-white/10 text-text-primary hover:bg-white/5"
-                    >
-                      <span
-                        className="w-2 h-2 rounded-full flex-shrink-0"
-                        style={{ backgroundColor: shown.color }}
-                      />
-                      <span className="truncate max-w-[160px]">{shown.label}</span>
-                      <X className="w-3 h-3 text-text-muted" />
-                    </button>
-                  );
-                })}
+                {groupConditions(group).map((condition, at) => (
+                  <div
+                    key={condition.facet}
+                    className="flex flex-wrap items-center gap-1.5 w-full"
+                  >
+                    <span className="text-[10px] font-medium uppercase tracking-wide text-text-muted">
+                      {at > 0 && (
+                        <span className="text-text-secondary mr-1">{t("groupAnd")}</span>
+                      )}
+                      {t(FACET_LABEL_KEY[condition.facet])}
+                    </span>
+                    {condition.members.map((member, memberAt) => {
+                      const shown = describe(member);
+                      return (
+                        <span
+                          key={member.id}
+                          className="inline-flex items-center gap-1.5"
+                        >
+                          {memberAt > 0 && (
+                            <span className="text-[10px] text-text-muted">
+                              {t("groupOr")}
+                            </span>
+                          )}
+                          <button
+                            type="button"
+                            onClick={() => onChange(removeMember(groups, index, member))}
+                            aria-label={t("groupRemoveValue", { name: shown.label })}
+                            className="inline-flex items-center gap-1.5 px-2 py-1 rounded-md text-xs border border-white/10 text-text-primary hover:bg-white/5"
+                          >
+                            <span
+                              className="w-2 h-2 rounded-full flex-shrink-0"
+                              style={{ backgroundColor: shown.color }}
+                            />
+                            <span className="truncate max-w-[160px]">{shown.label}</span>
+                            <X className="w-3 h-3 text-text-muted" />
+                          </button>
+                        </span>
+                      );
+                    })}
+                  </div>
+                ))}
               </div>
             </div>
           );
