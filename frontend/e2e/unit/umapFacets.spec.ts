@@ -389,14 +389,16 @@ test.describe("the panel's ordered facet lists", () => {
   });
 
   test("every facet can be coloured by", () => {
-    expect([...COLOR_BY_ORDER].sort()).toEqual(ALL);
+    // Plus the reader's own groups, the one colour-by that is not a facet.
+    expect([...COLOR_BY_ORDER].sort()).toEqual([...ALL, "group"].sort());
   });
 
-  test("protein leads the colour-by list and experiment trails it", () => {
+  test("protein leads the colour-by list and experiment trails the facets", () => {
     // Protein is what the plot has always been about; experiment produces the
     // most classes, so it reads worst as a default.
     expect(COLOR_BY_ORDER[0]).toBe("protein");
-    expect(COLOR_BY_ORDER[COLOR_BY_ORDER.length - 1]).toBe("experiment");
+    // Custom groups come after every facet: they are empty until built.
+    expect(COLOR_BY_ORDER[COLOR_BY_ORDER.length - 2]).toBe("experiment");
   });
 });
 

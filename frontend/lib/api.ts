@@ -60,12 +60,14 @@ export function describeApiError(detail: ApiError["detail"]): string {
 /**
  * Which dimension the separability score groups points by.
  *
- * Aliased to the facet keys rather than declared as its own union: the backend
- * accepts exactly the facet names, and the UI scores whatever it is colouring
- * by. A separate list here could accept a value that the API would reject with
- * a 422.
+ * The facet keys rather than a union of its own: the backend accepts exactly
+ * the facet names, and the UI scores whatever it is colouring by. A separate
+ * list here could accept a value that the API would reject with a 422.
+ *
+ * `"group"` is the one axis that is not a column — the classes are sets of
+ * facet values sent with the request (see `labelGroups.ts`).
  */
-export type LabelAxis = keyof UmapFacetSelection;
+export type LabelAxis = keyof UmapFacetSelection | "group";
 
 const FACET_QUERY_PARAMS: Record<keyof UmapFacetSelection, string> = {
   experiment: "experiment_id",
@@ -85,6 +87,25 @@ const FACET_QUERY_PARAMS: Record<keyof UmapFacetSelection, string> = {
  * untouched — without it the PTM facet would be unusable, since experiments
  * start unassigned.
  */
+/**
+ * Append the reader's own classes, one `group=` per class.
+ *
+ * Empty ones included: the backend reports a point's group as an index into
+ * this list, so a dropped slot would shift every later group onto the wrong
+ * legend entry. Under any other axis nothing is sent — the backend would ignore
+ * it, and the request would claim a comparison that is not the one being drawn.
+ */
+export function appendGroupParams(
+  params: URLSearchParams,
+  labelBy: LabelAxis,
+  groups: string[]
+): URLSearchParams {
+  if (labelBy === "group") {
+    for (const group of groups) params.append("group", group);
+  }
+  return params;
+}
+
 export function appendFacetParams(
   params: URLSearchParams,
   selection?: UmapFacetSelection
@@ -905,15 +926,19 @@ class ApiClient {
     umapType = "cropped",
     selection,
     labelBy = "protein",
+    groups = [],
   }: {
     umapType?: UmapType;
     selection?: UmapFacetSelection;
     labelBy?: LabelAxis;
+    /** With `labelBy: "group"`: one `facet:id,…` string per class, in order. */
+    groups?: string[];
   } = {}): Promise<UmapDataResponse | UmapFovDataResponse> {
     const params = appendFacetParams(
       new URLSearchParams({ umap_type: umapType, label_by: labelBy }),
       selection
     );
+    appendGroupParams(params, labelBy, groups);
     if (umapType === "fov") {
       return this.request<UmapFovDataResponse>(`/api/embeddings/umap?${params}`);
     }
@@ -2294,6 +2319,11 @@ export interface UmapPoint {
   protein_color: string;
   thumbnail_url: string;
   bundleness_score: number | null;
+  /**
+   * Only with `label_by=group`: index of the group this point falls in, -1 when
+   * it falls in more than one (and is left out of the score), null for none.
+   */
+  group: number | null;
 }
 
 /** Which values the dashboard UMAP filter has ticked, per facet. */
@@ -2378,6 +2408,8 @@ export interface UmapFovPoint {
   protein_color: string;
   thumbnail_url: string;
   original_filename: string;
+  /** See `UmapPoint.group`. */
+  group: number | null;
 }
 
 export interface UmapFovDataResponse {

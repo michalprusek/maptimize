@@ -1266,9 +1266,26 @@ tools:
       - name: label_by
         in: query
         type: string
-        enum: [protein, microscope, ptm, cell_line, experiment]
+        enum: [protein, microscope, ptm, cell_line, experiment, group]
         default: protein
-        description: The dimension whose values are treated as the classes.
+        description: >
+          The dimension whose values are treated as the classes. Use "group"
+          to define the classes yourself with the `group` parameter — the only
+          way to compare sets that no single dimension expresses, e.g. two
+          experiments pooled against a third.
+      - name: group
+        in: query
+        type: array
+        items: string
+        description: >
+          Only with label_by=group. One entry per class (2 to 8), each a
+          comma-separated list of "<facet>:<id>" with facet one of experiment,
+          microscope, protein, ptm, cell_line (id 0 = unassigned, not valid for
+          experiment). A point belongs to a class when it carries ANY of its
+          values. Example: ["experiment:180,experiment:308", "experiment:315"].
+          A point matching more than one class is left out of the score, so
+          n_points can be smaller than the classes' combined size — say so when
+          you report it.
       - name: experiment_id
         in: query
         type: array

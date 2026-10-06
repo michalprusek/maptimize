@@ -44,6 +44,8 @@ export interface ProjectionView {
    * load. Anything that states a number about "the current filter" must say so.
    */
   isPrevious: boolean;
+  /** The slot arrangement the points' `group` indices were assigned against. */
+  groupEpoch: number;
 }
 
 export interface ProjectionDataResult {
@@ -59,20 +61,39 @@ export function useProjectionData({
   selection,
   experimentId,
   labelBy,
+  groups,
+  groupEpoch,
 }: {
   viewMode: UmapType;
   selection: FacetSelection;
   experimentId: number | undefined;
   /** Axis the separability score groups by — the caller passes its colour-by. */
   labelBy: LabelAxis;
+  /** The reader's groups in wire form; sent only when `labelBy` is "group". */
+  groups: string[];
+  /** Bumped whenever an edit moves a group to another slot (see labelGroups). */
+  groupEpoch: number;
 }): ProjectionDataResult {
   const key = selectionKey(selection);
+  // Under any other axis the groups do not reach the request, so they must not
+  // reach the key either — editing them would refetch an identical response.
+  //
+  // The epoch is part of it: a cached response is tagged with the epoch it was
+  // fetched in, so reusing one across epochs would serve indices that can never
+  // be read and are never refetched while they count as fresh.
+  const groupsKey = labelBy === "group" ? `${groupEpoch}:${groups.join("|")}` : "";
 
   const umap = useQuery({
     // labelBy is part of the key because it changes the response, not just the
     // rendering: leaving it out serves a cached score for the previous axis.
-    queryKey: ["umap", experimentId, viewMode, key, labelBy],
-    queryFn: () => api.getUmapData({ umapType: viewMode, selection, labelBy }),
+    queryKey: ["umap", experimentId, viewMode, key, labelBy, groupsKey],
+    queryFn: async () => ({
+      ...(await api.getUmapData({ umapType: viewMode, selection, labelBy, groups })),
+      // Which arrangement of group slots this response's `point.group` indexes
+      // into. The previous response stays on screen while the next one loads,
+      // and after a group is deleted its indices point one slot off.
+      groupEpoch,
+    }),
     staleTime: 1000 * 60 * 5, // Cache for 5 minutes
     retry: false,
     // Keep the previous result on screen while a new filter loads. Without it
@@ -100,6 +121,7 @@ export function useProjectionData({
       // would slip past a `!== null` check into a render that reads `.reason`.
       separabilityUnscored: data.separability_unscored ?? null,
       isPrevious: umap.isPlaceholderData,
+      groupEpoch: data.groupEpoch,
     },
     isLoading: umap.isLoading,
     isFetching: umap.isFetching,

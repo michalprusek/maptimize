@@ -28,6 +28,9 @@ class LabelAxis(str, Enum):
     The same dimensions the filter panel offers, so the axis a reader can
     colour by is exactly the axis they can score by. Keeping them one vocabulary
     is what stops the index from reporting on classes the legend does not show.
+
+    ``GROUP`` is the one that is not a column: the classes are sets of facet
+    values the caller supplies with the request (see ``utils/label_groups.py``).
     """
 
     PROTEIN = "protein"
@@ -35,6 +38,7 @@ class LabelAxis(str, Enum):
     PTM = "ptm"
     CELL_LINE = "cell_line"
     EXPERIMENT = "experiment"
+    GROUP = "group"
 
 
 class SeparabilityResponse(BaseModel):
@@ -105,6 +109,14 @@ class UmapFacetRow(BaseModel):
     count: int = Field(..., description="Points with embeddings in this bucket")
 
 
+# One wording for both point types: the two must not drift on what -1 means.
+_GROUP_FIELD = (
+    "Only with label_by=group: index of the caller's group this point falls in, "
+    "-1 when it falls in more than one (and is left out of the score), null "
+    "when it is in none."
+)
+
+
 class UmapPointResponse(BaseModel):
     """Single point in UMAP visualization."""
 
@@ -117,6 +129,7 @@ class UmapPointResponse(BaseModel):
     protein_color: str = Field("#888888", description="Hex color for visualization")
     thumbnail_url: str = Field(..., description="URL to crop thumbnail")
     bundleness_score: Optional[float] = Field(None, description="Bundleness metric")
+    group: Optional[int] = Field(None, description=_GROUP_FIELD)
 
 
 class UmapDataResponse(BaseModel):
@@ -170,6 +183,7 @@ class UmapFovPointResponse(BaseModel):
     protein_color: str = Field("#888888", description="Hex color for visualization")
     thumbnail_url: str = Field(..., description="URL to FOV thumbnail")
     original_filename: str = Field(..., description="Original filename")
+    group: Optional[int] = Field(None, description=_GROUP_FIELD)
 
 
 class UmapFovDataResponse(BaseModel):

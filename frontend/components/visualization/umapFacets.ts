@@ -8,6 +8,7 @@
  * many points a value has.
  */
 import type {
+  LabelAxis,
   UmapFacetRow,
   UmapFacetSelection,
   UnscoredReason,
@@ -54,6 +55,19 @@ export const FACET_LABEL_KEY: Record<FacetKey, string> = {
 };
 
 /**
+ * The i18n key naming each thing the plot can be coloured and scored by: the
+ * facets, plus the reader's own groups.
+ *
+ * Spread from `FACET_LABEL_KEY` so a facet is named once; the `Record` makes a
+ * label axis the backend gains a compile error here instead of a badge that
+ * prints `undefined`.
+ */
+export const LABEL_AXIS_KEY: Record<LabelAxis, string> = {
+  ...FACET_LABEL_KEY,
+  group: "colorByGroups",
+};
+
+/**
  * The i18n key explaining each reason a separability score is missing.
  *
  * A `Record` so a reason the backend adds is a compile error here rather than
@@ -94,10 +108,36 @@ const COLOR_BY_RANK: Record<FacetKey, number> = {
   experiment: 4,
 };
 
-/** The colour-by options, most useful first. */
-export const COLOR_BY_ORDER: readonly FacetKey[] = (
-  Object.keys(COLOR_BY_RANK) as FacetKey[]
-).sort((a, b) => COLOR_BY_RANK[a] - COLOR_BY_RANK[b]);
+/**
+ * The colour-by options, most useful first. The reader's own groups go last:
+ * they are empty until someone builds them.
+ */
+export const COLOR_BY_ORDER: readonly LabelAxis[] = [
+  ...(Object.keys(COLOR_BY_RANK) as FacetKey[]).sort(
+    (a, b) => COLOR_BY_RANK[a] - COLOR_BY_RANK[b]
+  ),
+  "group",
+];
+
+/**
+ * Which message explains a missing score.
+ *
+ * Under custom groups, "no labels" and "one class" are not facts about the data
+ * — they mean the reader has not finished building the comparison, and the
+ * useful thing to say is what to do next.
+ */
+export function unscoredMessageKey(unscored: {
+  label_by: LabelAxis;
+  reason: UnscoredReason;
+}): string {
+  if (
+    unscored.label_by === "group" &&
+    (unscored.reason === "no_labels" || unscored.reason === "single_class")
+  ) {
+    return "separabilityNeedsGroups";
+  }
+  return UNSCORED_REASON_KEY[unscored.reason];
+}
 
 export interface FacetOption {
   id: number;

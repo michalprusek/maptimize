@@ -309,8 +309,34 @@ async def test_measure_separability_offers_the_filters_as_integer_arrays(make_re
     # the backend does not know raises, and one it knows but the tool omits is an
     # axis the agent can never score by.
     assert schema["properties"]["label_by"]["enum"] == [
-        "protein", "microscope", "ptm", "cell_line", "experiment",
+        "protein", "microscope", "ptm", "cell_line", "experiment", "group",
     ]
+    # Classes the agent defines itself: one string per class.
+    assert schema["properties"]["group"]["type"] == "array"
+    assert schema["properties"]["group"]["items"]["type"] == "string"
+
+
+async def test_measure_separability_repeats_each_group_as_its_own_param(make_registry):
+    # One `group=` per class. Joined into a single value the backend would read
+    # two classes as one, and answer "single class" to a two-class question.
+    def routes(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/embeddings/separability":
+            params = request.url.params
+            assert params["label_by"] == "group"
+            assert params.get_list("group") == [
+                "experiment:180,experiment:308", "experiment:315",
+            ]
+            return httpx.Response(200, json={
+                "score": 0.1, "label_by": "group", "n_classes": 2, "n_points": 137,
+            })
+        return httpx.Response(404)
+
+    reg = make_registry(_with_login(routes))
+    blocks = _blocks(await reg.dispatch(
+        "measure_separability",
+        {"label_by": "group",
+         "group": ["experiment:180,experiment:308", "experiment:315"]}))
+    assert "n_points" in blocks[0].text
 
 
 async def test_measure_separability_repeats_array_filters_as_query_params(make_registry):

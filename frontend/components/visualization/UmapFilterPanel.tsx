@@ -15,17 +15,30 @@ import {
   isSelectionEmpty,
   toggleFacetValue,
   FACET_LABEL_KEY,
+  LABEL_AXIS_KEY,
   type FacetKey,
   type FacetOption,
   type FacetSelection,
   type Named,
 } from "./umapFacets";
-import type { UmapFacetRow } from "@/lib/api";
+import {
+  MEMBER_MIME,
+  addMember,
+  encodeMember,
+  groupColor,
+  groupOfMember,
+  type GroupCounts,
+  type GroupMember,
+  type LabelGroup,
+} from "./labelGroups";
+import { UmapGroupsEditor } from "./UmapGroupsEditor";
+import type { LabelAxis, UmapFacetRow } from "@/lib/api";
 
 /** Facets with more values than this get a search box. */
 const SEARCHABLE_THRESHOLD = 12;
 
-export type ColorBy = FacetKey;
+/** A facet, or the reader's own groups. */
+export type ColorBy = LabelAxis;
 
 interface UmapFilterPanelProps {
   rows: UmapFacetRow[];
@@ -33,6 +46,11 @@ interface UmapFilterPanelProps {
   onSelectionChange: (selection: FacetSelection) => void;
   colorBy: ColorBy;
   onColorByChange: (colorBy: ColorBy) => void;
+  /** The reader's comparison classes; values are dragged into them from here. */
+  groups: LabelGroup[];
+  onGroupsChange: (groups: LabelGroup[]) => void;
+  /** Points per group on the current plot; null unless coloured by groups. */
+  groupCounts: GroupCounts | null;
   microscopes: Named[] | undefined;
   proteins: Named[] | undefined;
   ptms: Named[] | undefined;
@@ -45,11 +63,17 @@ interface UmapFilterPanelProps {
 
 function FacetPill({
   option,
+  member,
   selected,
+  groupIndex,
   onToggle,
 }: {
   option: FacetOption;
+  /** This value as a group member — what a drag carries. */
+  member: GroupMember;
   selected: boolean;
+  /** The group this value has been put in, or -1. */
+  groupIndex: number;
   onToggle: () => void;
 }): JSX.Element {
   const color = option.color || DEFAULT_POINT_COLOR;
@@ -62,6 +86,11 @@ function FacetPill({
       type="button"
       onClick={onToggle}
       aria-pressed={selected}
+      draggable
+      onDragStart={(event) => {
+        event.dataTransfer.setData(MEMBER_MIME, encodeMember(member));
+        event.dataTransfer.effectAllowed = "move";
+      }}
       className={`flex items-center gap-1.5 px-2 py-1 rounded-md text-xs border transition-colors ${
         selected
           ? "text-text-primary"
@@ -79,12 +108,21 @@ function FacetPill({
       />
       <span className="truncate max-w-[160px]">{option.name}</span>
       <span className="text-text-muted">{option.count}</span>
+      {groupIndex >= 0 && (
+        // Which group already holds this value, in that group's own colour.
+        <span
+          className="w-2 h-2 rounded-sm flex-shrink-0"
+          style={{ backgroundColor: groupColor(groupIndex) }}
+        />
+      )}
     </button>
   );
 }
 
 function FacetSection({
   label,
+  facet,
+  groups,
   options,
   selected,
   onToggle,
@@ -93,6 +131,8 @@ function FacetSection({
   searchPlaceholder,
 }: {
   label: string;
+  facet: FacetKey;
+  groups: LabelGroup[];
   options: FacetOption[];
   selected: number[];
   onToggle: (id: number) => void;
@@ -140,14 +180,19 @@ function FacetSection({
       )}
 
       <div className="flex flex-wrap gap-1.5">
-        {visible.map((option) => (
-          <FacetPill
-            key={option.id}
-            option={option}
-            selected={selected.includes(option.id)}
-            onToggle={() => onToggle(option.id)}
-          />
-        ))}
+        {visible.map((option) => {
+          const member = { facet, id: option.id };
+          return (
+            <FacetPill
+              key={option.id}
+              option={option}
+              member={member}
+              groupIndex={groupOfMember(groups, member)}
+              selected={selected.includes(option.id)}
+              onToggle={() => onToggle(option.id)}
+            />
+          );
+        })}
       </div>
     </div>
   );
@@ -159,6 +204,9 @@ export function UmapFilterPanel({
   onSelectionChange,
   colorBy,
   onColorByChange,
+  groups,
+  onGroupsChange,
+  groupCounts,
   microscopes,
   proteins,
   ptms,
@@ -169,6 +217,10 @@ export function UmapFilterPanel({
 }: UmapFilterPanelProps): JSX.Element {
   const t = useTranslations("umap");
   const [expanded, setExpanded] = useState(false);
+  // The group that pill clicks add to. While one is armed a click on a pill
+  // fills that group INSTEAD of toggling the filter — the non-drag way in.
+  const [armedGroup, setArmedGroup] = useState<number | null>(null);
+  const armed = armedGroup !== null && armedGroup < groups.length ? armedGroup : null;
 
   const unassigned = t("unassigned");
   const options = useMemo(
@@ -269,7 +321,7 @@ export function UmapFilterPanel({
             >
               {COLOR_BY_ORDER.map((key) => (
                 <option key={key} value={key}>
-                  {t(FACET_LABEL_KEY[key])}
+                  {t(LABEL_AXIS_KEY[key])}
                 </option>
               ))}
             </select>
@@ -286,6 +338,25 @@ export function UmapFilterPanel({
             transition={{ duration: 0.18 }}
             className="overflow-hidden"
           >
+            <div className="pt-3">
+              <UmapGroupsEditor
+                groups={groups}
+                onChange={onGroupsChange}
+                describe={(member) => {
+                  const option = options[member.facet].find(
+                    (candidate) => candidate.id === member.id
+                  );
+                  return {
+                    label: option?.name ?? `#${member.id}`,
+                    color: option?.color || DEFAULT_POINT_COLOR,
+                  };
+                }}
+                armed={armed}
+                onArm={setArmedGroup}
+                counts={groupCounts}
+                t={t}
+              />
+            </div>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-3">
               {facets
                 .filter((facet) => !facet.hidden)
@@ -293,10 +364,16 @@ export function UmapFilterPanel({
                   <FacetSection
                     key={facet.key}
                     label={facet.label}
+                    facet={facet.key}
+                    groups={groups}
                     options={options[facet.key]}
                     selected={selection[facet.key]}
                     onToggle={(id) =>
-                      onSelectionChange(toggleFacetValue(selection, facet.key, id))
+                      armed === null
+                        ? onSelectionChange(toggleFacetValue(selection, facet.key, id))
+                        : onGroupsChange(
+                            addMember(groups, armed, { facet: facet.key, id })
+                          )
                     }
                     onClear={() => onSelectionChange({ ...selection, [facet.key]: [] })}
                     clearLabel={t("clear")}
