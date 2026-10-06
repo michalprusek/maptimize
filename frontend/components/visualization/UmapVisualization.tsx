@@ -493,11 +493,14 @@ export function UmapVisualization({
   // the panel shows as ticked.
   const scoreIsStale = Boolean(view?.isPrevious);
   // The same score again, beside the groups it compares — but only when it IS
-  // about them: the response says which axis it scored, and a response from
-  // before a slot shift describes groups that are no longer in those slots.
+  // about them. Three things have to agree: the reader is colouring by groups
+  // (the plot keeps the previous response while the next axis loads, so the
+  // response alone lags the select), the response says it scored groups, and
+  // it was fetched in this epoch — before a slot shift it describes groups
+  // that are no longer in those slots.
   const scoredAxis = separability?.label_by ?? separabilityUnscored?.label_by;
   const groupsScore =
-    scoredAxis === "group" && groupsInSync ? (
+    colorBy === "group" && scoredAxis === "group" && groupsInSync ? (
       <SeparabilityBadge
         separability={separability}
         unscored={separabilityUnscored}
