@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { useTranslations } from "next-intl";
 import { Filter, Search, X } from "lucide-react";
@@ -13,6 +13,7 @@ import {
   countActiveFilters,
   facetOptions,
   isSelectionEmpty,
+  searchFacetOptions,
   toggleFacetValue,
   FACET_LABEL_KEY,
   LABEL_AXIS_KEY,
@@ -33,9 +34,6 @@ import {
 } from "./labelGroups";
 import { UmapGroupsEditor } from "./UmapGroupsEditor";
 import type { LabelAxis, UmapFacetRow } from "@/lib/api";
-
-/** Facets with more values than this get a search box. */
-const SEARCHABLE_THRESHOLD = 12;
 
 /** A facet, or the reader's own groups. */
 export type ColorBy = LabelAxis;
@@ -133,7 +131,6 @@ function FacetSection({
   onToggle,
   onClear,
   clearLabel,
-  searchPlaceholder,
 }: {
   label: string;
   facet: FacetKey;
@@ -143,16 +140,7 @@ function FacetSection({
   onToggle: (id: number) => void;
   onClear: () => void;
   clearLabel: string;
-  searchPlaceholder: string;
 }): JSX.Element | null {
-  const [search, setSearch] = useState("");
-
-  const visible = useMemo(() => {
-    const needle = search.trim().toLowerCase();
-    if (!needle) return options;
-    return options.filter((option) => option.name.toLowerCase().includes(needle));
-  }, [options, search]);
-
   if (options.length === 0) return null;
 
   return (
@@ -172,20 +160,8 @@ function FacetSection({
         )}
       </div>
 
-      {options.length > SEARCHABLE_THRESHOLD && (
-        <div className="relative">
-          <Search className="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-text-muted" />
-          <input
-            value={search}
-            onChange={(event) => setSearch(event.target.value)}
-            placeholder={searchPlaceholder}
-            className="input-field py-1.5 pl-8 text-xs"
-          />
-        </div>
-      )}
-
       <div className="flex flex-wrap gap-1.5">
-        {visible.map((option) => {
+        {options.map((option) => {
           const member = { facet, id: option.id };
           return (
             <FacetPill
@@ -229,6 +205,23 @@ export function UmapFilterPanel({
   // fills that group INSTEAD of toggling the filter — the non-drag way in.
   const [armedGroup, setArmedGroup] = useState<number | null>(null);
   const armed = armedGroup !== null && armedGroup < groups.length ? armedGroup : null;
+  // One search for every facet; see `searchFacetOptions`.
+  const [search, setSearch] = useState("");
+  const dockRef = useRef<HTMLDivElement>(null);
+  const facetsRef = useRef<HTMLDivElement>(null);
+
+  // A search shortens the list under a dock that is stuck to the top of the
+  // screen, which leaves the matches scrolled underneath it — typed, found,
+  // and invisible. Bring the top of the list back out below the dock.
+  useEffect(() => {
+    const dock = dockRef.current;
+    const list = facetsRef.current;
+    if (!dock || !list) return;
+    const dockBottom = dock.getBoundingClientRect().bottom;
+    if (list.getBoundingClientRect().top >= dockBottom) return;
+    list.style.scrollMarginTop = `${dockBottom}px`;
+    list.scrollIntoView({ block: "start" });
+  }, [search]);
 
   const unassigned = t("unassigned");
   const options = useMemo(
@@ -242,31 +235,37 @@ export function UmapFilterPanel({
     [rows, microscopes, proteins, ptms, cellLines, unassigned]
   );
 
+  // Only what the sections draw is narrowed. Chips and group members keep
+  // resolving names from the full `options`, or a search would rename them "#12".
+  const shown = useMemo(() => searchFacetOptions(options, search), [options, search]);
+
   const activeCount = countActiveFilters(selection);
   // ⚠️ Derived, never a second list. The previous hand-written array is how the
   // cell-line facet shipped with working options that rendered no sections.
-  const facets = FACET_ORDER.map((key) => ({
-    key,
-    label: t(FACET_LABEL_KEY[key]),
-    // The plot is already scoped to one experiment; offering the facet would
-    // only let the reader contradict that scope.
-    hidden: key === "experiment" && !showExperimentFacet,
-  }));
+  // The plot may already be scoped to one experiment; offering that facet
+  // would only let the reader contradict the scope.
+  const facets = FACET_ORDER.filter(
+    (key) => key !== "experiment" || showExperimentFacet
+  ).map((key) => ({ key, label: t(FACET_LABEL_KEY[key]) }));
+
+  // Guarded on the needle: with no data at all every facet is empty too, and
+  // that is not a failed search.
+  const needle = search.trim();
+  const noMatches =
+    needle !== "" && facets.every((facet) => shown[facet.key].length === 0);
 
   // Chips summarising what is active, so the filter is readable while collapsed.
-  const activeChips = facets
-    .filter((facet) => !facet.hidden)
-    .flatMap((facet) =>
-      selection[facet.key].map((id) => {
-        const option = options[facet.key].find((candidate) => candidate.id === id);
-        return {
-          facet: facet.key,
-          id,
-          label: option?.name ?? `#${id}`,
-          color: option?.color || DEFAULT_POINT_COLOR,
-        };
-      })
-    );
+  const activeChips = facets.flatMap((facet) =>
+    selection[facet.key].map((id) => {
+      const option = options[facet.key].find((candidate) => candidate.id === id);
+      return {
+        facet: facet.key,
+        id,
+        label: option?.name ?? `#${id}`,
+        color: option?.color || DEFAULT_POINT_COLOR,
+      };
+    })
+  );
 
   return (
     <div className="mb-4 border-b border-white/5 pb-3">
@@ -337,6 +336,50 @@ export function UmapFilterPanel({
         </div>
       </div>
 
+      {expanded && (
+        // Floats with the page while the reader scrolls the facets below: the
+        // experiment list alone is taller than a screen, so a group that
+        // scrolled away could not be dropped on. Outside the animated block
+        // on purpose — its `overflow-hidden` would become the box this sticks
+        // to, and that box never scrolls.
+        <div
+          ref={dockRef}
+          data-testid="umap-groups-dock"
+          className="sticky top-2 z-20 mt-3 max-h-[45vh] overflow-y-auto rounded-lg border border-white/10 bg-bg-elevated p-2 shadow-xl"
+        >
+          {/* First, so a dock full of groups cannot scroll it out of reach. */}
+          <div className="relative mb-2">
+            <Search className="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-text-muted" />
+            <input
+              type="search"
+              value={search}
+              onChange={(event) => setSearch(event.target.value)}
+              placeholder={t("searchAllFacets")}
+              aria-label={t("searchAllFacets")}
+              data-testid="umap-facet-search"
+              className="input-field py-1.5 pl-8 text-xs"
+            />
+          </div>
+          <UmapGroupsEditor
+            groups={groups}
+            onChange={onGroupsChange}
+            describe={(member) => {
+              const option = options[member.facet].find(
+                (candidate) => candidate.id === member.id
+              );
+              return {
+                label: option?.name ?? `#${member.id}`,
+                color: option?.color || DEFAULT_POINT_COLOR,
+              };
+            }}
+            armed={armed}
+            onArm={setArmedGroup}
+            counts={groupCounts}
+            t={t}
+          />
+        </div>
+      )}
+
       <AnimatePresence initial={false}>
         {expanded && (
           <motion.div
@@ -344,50 +387,38 @@ export function UmapFilterPanel({
             animate={{ height: "auto", opacity: 1 }}
             exit={{ height: 0, opacity: 0 }}
             transition={{ duration: 0.18 }}
+            ref={facetsRef}
             className="overflow-hidden"
           >
-            <div className="pt-3">
-              <UmapGroupsEditor
-                groups={groups}
-                onChange={onGroupsChange}
-                describe={(member) => {
-                  const option = options[member.facet].find(
-                    (candidate) => candidate.id === member.id
-                  );
-                  return {
-                    label: option?.name ?? `#${member.id}`,
-                    color: option?.color || DEFAULT_POINT_COLOR,
-                  };
-                }}
-                armed={armed}
-                onArm={setArmedGroup}
-                counts={groupCounts}
-                t={t}
-              />
-            </div>
+            {noMatches && (
+              <p
+                role="status"
+                className="pt-3 text-xs text-text-muted"
+                data-testid="umap-facet-no-match"
+              >
+                {t("noFacetMatches", { search: needle })}
+              </p>
+            )}
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-3">
-              {facets
-                .filter((facet) => !facet.hidden)
-                .map((facet) => (
-                  <FacetSection
-                    key={facet.key}
-                    label={facet.label}
-                    facet={facet.key}
-                    groups={groups}
-                    options={options[facet.key]}
-                    selected={selection[facet.key]}
-                    onToggle={(id) =>
-                      armed === null
-                        ? onSelectionChange(toggleFacetValue(selection, facet.key, id))
-                        : onGroupsChange(
-                            addMember(groups, armed, { facet: facet.key, id })
-                          )
-                    }
-                    onClear={() => onSelectionChange({ ...selection, [facet.key]: [] })}
-                    clearLabel={t("clear")}
-                    searchPlaceholder={t("searchFacet")}
-                  />
-                ))}
+              {facets.map((facet) => (
+                <FacetSection
+                  key={facet.key}
+                  label={facet.label}
+                  facet={facet.key}
+                  groups={groups}
+                  options={shown[facet.key]}
+                  selected={selection[facet.key]}
+                  onToggle={(id) =>
+                    armed === null
+                      ? onSelectionChange(toggleFacetValue(selection, facet.key, id))
+                      : onGroupsChange(
+                          addMember(groups, armed, { facet: facet.key, id })
+                        )
+                  }
+                  onClear={() => onSelectionChange({ ...selection, [facet.key]: [] })}
+                  clearLabel={t("clear")}
+                />
+              ))}
             </div>
           </motion.div>
         )}

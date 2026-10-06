@@ -944,6 +944,16 @@ kreslí neutrálně. ⚠️ **Porovnávat POČET slotů nestačí** — smaž sk
 než dorazí refetch, a počet sedí, zatímco každý další slot drží jinou skupinu (první
 verze to tak měla; našel CodeRabbit v PR #63).
 
+⚠️ **Editor skupin je `sticky` dok a MUSÍ ležet mimo animovaný blok panelu.**
+Seznam experimentů je vyšší než obrazovka, takže skupina, která odscrollovala, není
+cíl, na který jde upustit pilulku proteinu. Animovaný blok má `overflow-hidden` —
+ten by se stal kontejnerem, ke kterému se `sticky` lepí, a ten se nikdy nescrolluje.
+V doku je i **jediné hledání pro všechny facety** (`searchFacetOptions`); zužuje jen
+to, co kreslí sekce — chipy a členové skupin si jména berou z plných `options`,
+jinak by je hledání přejmenovalo na „#12". ⚠️ Po hledání se seznam zkrátí a shody
+zůstanou **pod** přilepeným dokem (na úzkém okně); proto efekt, který začátek
+seznamu vrátí pod dok. Bez něj uživatel napíše, najde a nevidí.
+
 ⚠️ **Id členů skupin se NEOVĚŘUJÍ proti DB**, na rozdíl od id filtru. Filtr, který
 nic nematchuje, tiše vyprázdní graf; člen skupiny, který nic nematchuje, nechá skupinu
 s nulou bodů, a to legenda ukáže sama. ACL to neobchází — štítky se lepí jen na body,

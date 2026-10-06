@@ -197,6 +197,29 @@ function facetIdOf(row: UmapFacetRow, facet: FacetKey): number | null {
 }
 
 /**
+ * Narrow every facet's options by ONE search string.
+ *
+ * One box for the whole panel, not one per section: the reader types "mtcl1"
+ * to find it wherever it lives (protein, experiment name…) instead of working
+ * out which of five lists to search. A blank needle returns the input itself,
+ * so "no search" costs nothing and cannot drop anything.
+ */
+export function searchFacetOptions<Options extends Record<FacetKey, FacetOption[]>>(
+  options: Options,
+  search: string
+): Options {
+  const needle = search.trim().toLowerCase();
+  if (!needle) return options;
+  const narrowed = { ...options };
+  for (const facet of FACET_ORDER) {
+    narrowed[facet] = options[facet].filter((option) =>
+      option.name.toLowerCase().includes(needle)
+    );
+  }
+  return narrowed;
+}
+
+/**
  * Options for one facet, ordered by point count.
  *
  * `references` supplies names and colours for the assigned values; experiments
