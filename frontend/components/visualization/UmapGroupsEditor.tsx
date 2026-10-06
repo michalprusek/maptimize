@@ -44,6 +44,8 @@ interface UmapGroupsEditorProps {
   onArm: (index: number | null) => void;
   /** Points per group on the current plot; null while not coloured by groups. */
   counts: GroupCounts | null;
+  /** The separability between these groups, drawn beside the title. */
+  score: React.ReactNode;
   t: Translate;
 }
 
@@ -63,6 +65,7 @@ export function UmapGroupsEditor({
   armed,
   onArm,
   counts,
+  score,
   t,
 }: UmapGroupsEditorProps): JSX.Element {
   // Which drop zone the pointer is over: a group index, or "new".
@@ -92,6 +95,7 @@ export function UmapGroupsEditor({
         <span className="text-xs font-medium uppercase tracking-wide text-text-muted">
           {t("groupsTitle")}
         </span>
+        {score && <span data-testid="umap-groups-score">{score}</span>}
         <span className="text-xs text-text-muted">{t("groupsHint")}</span>
       </div>
 

@@ -24,8 +24,8 @@ import {
   UMAP_TOOLTIP_CURSOR,
   UMAP_SCATTER_ANIMATION,
   formatAxisTick,
-  getSeparabilityScoreStyle,
 } from "./chartConfig";
+import { SeparabilityBadge } from "./SeparabilityBadge";
 import { UmapFilterPanel, type ColorBy } from "./UmapFilterPanel";
 import {
   CroppedTooltip,
@@ -51,8 +51,6 @@ import {
 } from "./labelGroups";
 import {
   EMPTY_SELECTION,
-  LABEL_AXIS_KEY,
-  unscoredMessageKey,
   experimentColor,
   experimentMetaById,
   hasUnresolvedReferences,
@@ -493,8 +491,21 @@ export function UmapVisualization({
   // The chart keeps the previous filter's points while the next ones load, and
   // so does this number — dimmed, because it does not yet describe the filter
   // the panel shows as ticked.
-  const badgeFreshness = view?.isPrevious ? "opacity-50" : "";
-  const badgeClass = `px-2 py-0.5 rounded text-xs font-mono ${badgeFreshness}`;
+  const scoreIsStale = Boolean(view?.isPrevious);
+  // The same score again, beside the groups it compares — but only when it IS
+  // about them: the response says which axis it scored, and a response from
+  // before a slot shift describes groups that are no longer in those slots.
+  const scoredAxis = separability?.label_by ?? separabilityUnscored?.label_by;
+  const groupsScore =
+    scoredAxis === "group" && groupsInSync ? (
+      <SeparabilityBadge
+        separability={separability}
+        unscored={separabilityUnscored}
+        stale={scoreIsStale}
+        unscoredTestId="umap-groups-score-unscored"
+        t={t}
+      />
+    ) : null;
 
   // Error message parsing
   const errorMessage = error instanceof Error ? error.message : error ? t("unknownError") : null;
@@ -751,41 +762,13 @@ export function UmapVisualization({
               <span>
                 {totalCount.toLocaleString()} {isFov ? t("fovImages") : t("cellCrops")}
               </span>
-              {separability !== null && (
-                <span
-                  className={`${badgeClass} ${getSeparabilityScoreStyle(separability.score)}`}
-                  title={t("separabilityTooltip")}
-                >
-                  {t("separability", {
-                    axis: t(LABEL_AXIS_KEY[separability.label_by]),
-                  })}
-                  : {separability.score.toFixed(3)}
-                  {" · "}
-                  {t("separabilityCounts", {
-                    classes: separability.n_classes,
-                    points: separability.n_points,
-                  })}
-                </span>
-              )}
-              {/* Never just vanish. A missing score is a statement about the
-                  filter — nearly always "one class left on this axis" — and an
-                  empty slot reads as "still loading" or "broken" instead. */}
-              {separability === null && separabilityUnscored !== null && (
-                <span
-                  className={`${badgeClass} bg-bg-secondary text-text-muted`}
-                  title={t("separabilityUnscoredTooltip")}
-                  data-testid="separability-unscored"
-                >
-                  {t("separability", {
-                    axis: t(LABEL_AXIS_KEY[separabilityUnscored.label_by]),
-                  })}
-                  {": "}
-                  {t(unscoredMessageKey(separabilityUnscored), {
-                    classes: separabilityUnscored.n_classes,
-                    points: separabilityUnscored.n_points,
-                  })}
-                </span>
-              )}
+              <SeparabilityBadge
+                separability={separability}
+                unscored={separabilityUnscored}
+                stale={scoreIsStale}
+                unscoredTestId="separability-unscored"
+                t={t}
+              />
             </div>
           )}
         </div>
@@ -878,6 +861,7 @@ export function UmapVisualization({
           groups={groups}
           onGroupsChange={handleGroupsChange}
           groupCounts={groupCounts}
+          groupsScore={groupsScore}
           microscopes={microscopes}
           proteins={proteins}
           ptms={ptms}
