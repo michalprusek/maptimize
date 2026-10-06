@@ -43,7 +43,7 @@ import {
   AMBIGUOUS_GROUP,
   groupColor,
   groupCounts as countGroups,
-  groupIndicesAreCurrent,
+  shiftsGroupSlots,
   groupsFromQuery,
   groupsToQuery,
   groupsToWire,
@@ -102,8 +102,10 @@ export function UmapVisualization({
     groups.length > 0 ? "group" : "protein"
   );
   const groupsWire = useMemo(() => groupsToWire(groups), [groups]);
+  const [groupEpoch, setGroupEpoch] = useState(0);
   const handleGroupsChange = useCallback(
     (next: LabelGroup[]) => {
+      if (shiftsGroupSlots(groups, next)) setGroupEpoch((epoch) => epoch + 1);
       setGroups(next);
       // Building a group while coloured by something else changes nothing the
       // reader can see, which looks exactly like the drop having failed. Only
@@ -112,7 +114,7 @@ export function UmapVisualization({
       const membershipChanged = groupsToWire(next).join("|") !== groupsWire.join("|");
       if (next.length > 0 && membershipChanged) setColorBy("group");
     },
-    [groupsWire]
+    [groups, groupsWire]
   );
 
   const queryClient = useQueryClient();
@@ -178,6 +180,7 @@ export function UmapVisualization({
     // cannot see is where these numbers get misread.
     labelBy: colorBy,
     groups: groupsWire,
+    groupEpoch,
   });
 
   // A reference value the user has ticked can be deleted by anyone (reference
@@ -322,7 +325,9 @@ export function UmapVisualization({
     [experimentMeta, microscopeById, ptmById, cellLineById]
   );
 
-  const groupsInSync = groupIndicesAreCurrent(view?.groupSlots ?? 0, groups.length);
+  // False from the moment a group is deleted until a response fetched for the
+  // new arrangement is on screen; until then the indices name the wrong slots.
+  const groupsInSync = view?.groupEpoch === groupEpoch;
 
   /** The label and colour a point takes under the current colour-by dimension. */
   const styleOf = useCallback(

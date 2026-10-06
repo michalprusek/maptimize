@@ -927,6 +927,13 @@ skupinách být nemůže: `addMember` ji **přesouvá**, nekopíruje.
 do seznamu skupin klienta; zahozená prázdná skupina by posunula všechny další pod
 cizí jméno a barvu.
 
+⚠️ **Smazání skupiny posune sloty, a graf mezitím drží starou odpověď.** Staré indexy
+by pak pojmenovaly souseda jeho barvou. `shiftsGroupSlots` → `groupEpoch` (součást
+query key): indexy se čtou jen z odpovědi stažené v aktuální epoše, jinak se body
+kreslí neutrálně. ⚠️ **Porovnávat POČET slotů nestačí** — smaž skupinu a přidej jinou,
+než dorazí refetch, a počet sedí, zatímco každý další slot drží jinou skupinu (první
+verze to tak měla; našel CodeRabbit v PR #63).
+
 ⚠️ **Id členů skupin se NEOVĚŘUJÍ proti DB**, na rozdíl od id filtru. Filtr, který
 nic nematchuje, tiše vyprázdní graf; člen skupiny, který nic nematchuje, nechá skupinu
 s nulou bodů, a to legenda ukáže sama. ACL to neobchází — štítky se lepí jen na body,

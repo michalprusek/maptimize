@@ -226,19 +226,21 @@ export function groupCounts(
 }
 
 /**
- * Can `point.group` on the data on screen be read against the current groups?
+ * Does this edit move a group into a different slot?
  *
- * The chart keeps the previous response while the next one loads. Adding a
- * group or a value leaves every existing index meaning the same slot, but
- * DELETING a group shifts the later ones — for that moment each old index
- * names its neighbour, in its neighbour's colour. Slot count is what changes
- * in exactly that case.
+ * `point.group` is a slot index, and the chart keeps the previous response on
+ * screen while the next one loads. Renaming, adding a value and appending a
+ * group all leave every existing index meaning the same slot; DELETING a group
+ * shifts the later ones, so each old index would name its neighbour, in its
+ * neighbour's colour.
+ *
+ * The caller bumps an epoch on a shift and reads indices only from a response
+ * fetched in the current epoch. Comparing slot COUNTS instead is not enough:
+ * delete one group and add another before the refetch lands and the count is
+ * back where it started, with every later slot holding a different group.
  */
-export function groupIndicesAreCurrent(
-  slotsOfData: number,
-  groupCount: number
-): boolean {
-  return slotsOfData <= groupCount;
+export function shiftsGroupSlots(previous: LabelGroup[], next: LabelGroup[]): boolean {
+  return next.length < previous.length;
 }
 
 /** MIME type for a facet value being dragged out of the filter panel. */

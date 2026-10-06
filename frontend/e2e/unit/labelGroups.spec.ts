@@ -11,7 +11,7 @@ import {
   encodeMember,
   groupColor,
   groupCounts,
-  groupIndicesAreCurrent,
+  shiftsGroupSlots,
   groupOfMember,
   groupsFromQuery,
   groupsToQuery,
@@ -191,13 +191,25 @@ test.describe("counting the backend's assignment", () => {
 });
 
 test.describe("reading a previous response against edited groups", () => {
-  test("deleting a group makes the on-screen indices unreadable; adding does not", () => {
+  test("only deleting a group moves the others to different slots", () => {
     // After a delete, old index 1 would be drawn as the group now in slot 1 —
     // a different group, in its colour, until the refetch lands.
-    expect(groupIndicesAreCurrent(3, 2)).toBe(false);
-    expect(groupIndicesAreCurrent(2, 2)).toBe(true);
-    // Appending keeps every existing slot where it was.
-    expect(groupIndicesAreCurrent(2, 3)).toBe(true);
+    expect(shiftsGroupSlots(two, removeGroup(two, 0))).toBe(true);
+    // Everything else leaves each existing group where it was.
+    expect(shiftsGroupSlots(two, addGroup(two, "C"))).toBe(false);
+    expect(shiftsGroupSlots(two, addMember(two, 1, exp(999)))).toBe(false);
+    expect(shiftsGroupSlots(two, removeMember(two, 0, exp(180)))).toBe(false);
+    expect(shiftsGroupSlots(two, renameGroup(two, 0, "Z"))).toBe(false);
+  });
+
+  test("a delete followed by an add is still two different arrangements", () => {
+    // The slot COUNT is back to 2, which is why counts cannot be the check:
+    // slot 0 now holds what was group B, and slot 1 a group that did not exist.
+    const afterDelete = removeGroup(two, 0);
+    const afterAdd = addGroup(afterDelete, "C");
+    expect(afterAdd).toHaveLength(two.length);
+    expect(shiftsGroupSlots(two, afterDelete)).toBe(true);
+    expect(afterAdd[0]).toEqual(two[1]);
   });
 });
 
