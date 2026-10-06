@@ -12,6 +12,7 @@ import {
   experimentMetaById,
   hasUnresolvedReferences,
   facetOptions,
+  searchFacetOptions,
   isSelectionEmpty,
   selectionFromQuery,
   selectionKey,
@@ -498,4 +499,32 @@ test.describe("UNSCORED_REASON_KEY", () => {
       }
     });
   }
+});
+
+test.describe("one search across every facet", () => {
+  const option = (id: number, name: string) => ({ id, name, color: null, count: 1 });
+  const options = {
+    experiment: [option(1, "MTCL1 detyr 2026"), option(2, "Tau control")],
+    microscope: [option(1, "Airyscan")],
+    protein: [option(14, "MTCL1"), option(3, "MAP2d")],
+    ptm: [option(2, "Detyrosination")],
+    cell_line: [option(1, "U2OS")],
+  };
+
+  test("a name is found in whichever facets hold it, case-insensitively", () => {
+    const found = searchFacetOptions(options, "  mtcl1 ");
+    expect(found.experiment.map((o) => o.id)).toEqual([1]);
+    expect(found.protein.map((o) => o.id)).toEqual([14]);
+    expect(found.microscope).toEqual([]);
+    expect(found.ptm).toEqual([]);
+    expect(found.cell_line).toEqual([]);
+  });
+
+  test("a blank search changes nothing and no match empties every facet", () => {
+    expect(searchFacetOptions(options, "   ")).toBe(options);
+    const none = searchFacetOptions(options, "zzz");
+    expect(FACET_ORDER.every((facet) => none[facet].length === 0)).toBe(true);
+    // The caller's lists are untouched: chips and group members still resolve.
+    expect(options.protein).toHaveLength(2);
+  });
 });
