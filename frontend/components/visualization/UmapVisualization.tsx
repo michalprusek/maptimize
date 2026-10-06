@@ -40,9 +40,19 @@ import {
 import { classCounts, sampleClassOf, type SampleClass } from "./pointMarker";
 import { useProjectionData } from "./useProjectionData";
 import {
+  AMBIGUOUS_GROUP,
+  groupColor,
+  groupCounts as countGroups,
+  groupIndicesAreCurrent,
+  groupsFromQuery,
+  groupsToQuery,
+  groupsToWire,
+  type LabelGroup,
+} from "./labelGroups";
+import {
   EMPTY_SELECTION,
-  FACET_LABEL_KEY,
-  UNSCORED_REASON_KEY,
+  LABEL_AXIS_KEY,
+  unscoredMessageKey,
   experimentColor,
   experimentMetaById,
   hasUnresolvedReferences,
@@ -69,7 +79,6 @@ export function UmapVisualization({
   const t = useTranslations("umap");
   const router = useRouter();
   const [viewMode, setViewMode] = useState<UmapType>(preferFovMode ? "fov" : "cropped");
-  const [colorBy, setColorBy] = useState<ColorBy>("protein");
 
   // Only the dashboard's global plot round-trips its filter through the URL, so
   // a filtered view can be shared. On an experiment page the scope is the route
@@ -81,11 +90,39 @@ export function UmapVisualization({
       : EMPTY_SELECTION
   );
 
+  // The reader's own comparison classes. They travel in the URL with the
+  // filter, so a link reproduces the comparison and not just the subset.
+  const [groups, setGroups] = useState<LabelGroup[]>(() =>
+    syncsUrl && typeof window !== "undefined"
+      ? groupsFromQuery(window.location.search)
+      : []
+  );
+  // A link that carries groups was shared to show that comparison.
+  const [colorBy, setColorBy] = useState<ColorBy>(() =>
+    groups.length > 0 ? "group" : "protein"
+  );
+  const groupsWire = useMemo(() => groupsToWire(groups), [groups]);
+  const handleGroupsChange = useCallback(
+    (next: LabelGroup[]) => {
+      setGroups(next);
+      // Building a group while coloured by something else changes nothing the
+      // reader can see, which looks exactly like the drop having failed. Only
+      // when what is IN the groups changed, though: fixing a name must not pull
+      // a reader who went back to colouring by protein off it again.
+      const membershipChanged = groupsToWire(next).join("|") !== groupsWire.join("|");
+      if (next.length > 0 && membershipChanged) setColorBy("group");
+    },
+    [groupsWire]
+  );
+
   const queryClient = useQueryClient();
 
   useEffect(() => {
     if (!syncsUrl) return;
-    const query = selectionToQuery(selection, window.location.search);
+    const query = groupsToQuery(
+      groups,
+      selectionToQuery(selection, window.location.search)
+    );
     // replaceState, not the router: this must not push history entries or
     // re-run the route's data fetching on every pill click.
     window.history.replaceState(
@@ -93,7 +130,7 @@ export function UmapVisualization({
       "",
       query ? `${window.location.pathname}?${query}` : window.location.pathname
     );
-  }, [selection, syncsUrl]);
+  }, [selection, groups, syncsUrl]);
 
   // These name the filter pills and the tooltip rows, and — for microscope and
   // PTM — colour the points whenever colour-by is set to them. A failure leaves
@@ -140,6 +177,7 @@ export function UmapVisualization({
     // shows exactly the classes it compared. Measuring a dimension the reader
     // cannot see is where these numbers get misread.
     labelBy: colorBy,
+    groups: groupsWire,
   });
 
   // A reference value the user has ticked can be deleted by anyone (reference
@@ -284,6 +322,8 @@ export function UmapVisualization({
     [experimentMeta, microscopeById, ptmById, cellLineById]
   );
 
+  const groupsInSync = groupIndicesAreCurrent(view?.groupSlots ?? 0, groups.length);
+
   /** The label and colour a point takes under the current colour-by dimension. */
   const styleOf = useCallback(
     (point: ProjectionPoint): { name: string; color: string } => {
@@ -299,6 +339,25 @@ export function UmapVisualization({
       ): T | undefined => (id ? byId.get(id) : undefined);
 
       switch (colorBy) {
+        case "group": {
+          // The backend decided which group this point is in; the colour only
+          // reads it. Re-deriving it here would be a second assignment that
+          // could disagree with the one the score was computed from.
+          // Indices from a response fetched before a group was deleted name
+          // the wrong slot until the refetch lands; draw those neutral.
+          const index = groupsInSync ? point.group : null;
+          if (index === AMBIGUOUS_GROUP) {
+            return { name: t("groupAmbiguous"), color: DEFAULT_POINT_COLOR };
+          }
+          const group = index == null ? undefined : groups[index];
+          if (!group) return { name: t("groupNone"), color: DEFAULT_POINT_COLOR };
+          return {
+            // A blanked name falls back to the slot, so the legend never shows
+            // an empty label.
+            name: group.name.trim() || t("groupDefaultName", { n: index! + 1 }),
+            color: groupColor(index!),
+          };
+        }
         case "microscope": {
           const microscope = resolve(meta?.microscopeId, microscopeById);
           return {
@@ -335,6 +394,8 @@ export function UmapVisualization({
     },
     [
       colorBy,
+      groups,
+      groupsInSync,
       experimentMeta,
       microscopeById,
       ptmById,
@@ -412,6 +473,16 @@ export function UmapVisualization({
 
   const isFov = view?.isFov ?? viewMode === "fov";
   const totalCount = view?.totalCount ?? 0;
+  // Null unless the plot is coloured by groups: under any other axis the
+  // backend sends no assignment, and "0 points" beside every group would lie.
+  const groupCounts = useMemo(
+    () =>
+      colorBy === "group" && view && groupsInSync
+        ? countGroups(view.points.map((point) => point.group), groups.length)
+        : null,
+    [colorBy, view, groups.length, groupsInSync]
+  );
+
   const separability = view?.separability ?? null;
   const separabilityUnscored = view?.separabilityUnscored ?? null;
   // The chart keeps the previous filter's points while the next ones load, and
@@ -681,7 +752,7 @@ export function UmapVisualization({
                   title={t("separabilityTooltip")}
                 >
                   {t("separability", {
-                    axis: t(FACET_LABEL_KEY[separability.label_by]),
+                    axis: t(LABEL_AXIS_KEY[separability.label_by]),
                   })}
                   : {separability.score.toFixed(3)}
                   {" · "}
@@ -701,10 +772,10 @@ export function UmapVisualization({
                   data-testid="separability-unscored"
                 >
                   {t("separability", {
-                    axis: t(FACET_LABEL_KEY[separabilityUnscored.label_by]),
+                    axis: t(LABEL_AXIS_KEY[separabilityUnscored.label_by]),
                   })}
                   {": "}
-                  {t(UNSCORED_REASON_KEY[separabilityUnscored.reason], {
+                  {t(unscoredMessageKey(separabilityUnscored), {
                     classes: separabilityUnscored.n_classes,
                     points: separabilityUnscored.n_points,
                   })}
@@ -799,6 +870,9 @@ export function UmapVisualization({
           onSelectionChange={setSelection}
           colorBy={colorBy}
           onColorByChange={setColorBy}
+          groups={groups}
+          onGroupsChange={handleGroupsChange}
+          groupCounts={groupCounts}
           microscopes={microscopes}
           proteins={proteins}
           ptms={ptms}

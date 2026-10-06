@@ -32,7 +32,14 @@ from schemas.embeddings import (
     UmapType,
     UnscoredReason,  # noqa: F401 — re-exported; the router tests read it from here
 )
-from utils.facets import facet_clause, real_ids
+from utils.facets import UNASSIGNED_FACET_ID, facet_clause, real_ids
+from utils.label_groups import (
+    NO_GROUPS,  # noqa: F401 — re-exported; the router tests read it from here
+    LabelGroups,
+    assign_groups,
+    parse_label_groups,
+    score_labels,
+)
 from services.umap_service import (
     MIN_POINTS_FOR_UMAP,
     Separability,
@@ -115,6 +122,31 @@ def facet_selection(
     )
 
 
+def label_groups(
+    group: Optional[List[str]] = Query(
+        None,
+        description=(
+            "With label_by=group: one class per repetition, each a comma-separated "
+            "list of '<facet>:<id>' (facet = experiment, microscope, protein, ptm "
+            "or cell_line; id 0 = unassigned). A point belongs to a group when it "
+            "carries any of its values."
+        ),
+    ),
+) -> LabelGroups:
+    """Parse the caller's groups, or 422 on anything malformed.
+
+    A dependency for the same reason ``facet_selection`` is one: a bare
+    ``Query(...)`` parameter reaches a directly-called handler as the Query
+    object itself.
+    """
+    try:
+        return parse_label_groups(group)
+    except ValueError as error:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(error)
+        ) from None
+
+
 @router.get("/umap")
 async def get_umap_visualization(
     umap_type: UmapType = Query(UmapType.CROPPED, description="Type: fov or cropped"),
@@ -123,6 +155,7 @@ async def get_umap_visualization(
         LabelAxis.PROTEIN,
         description="Dimension the separability score groups points by",
     ),
+    groups: LabelGroups = Depends(label_groups),
     background_tasks: BackgroundTasks = BackgroundTasks(),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
@@ -169,12 +202,22 @@ async def get_umap_visualization(
             selection.experiment_ids, current_user.id, group_ids, db
         )
 
+    # Group members are deliberately NOT existence-checked the way filter ids
+    # are. A filter id that matches nothing silently empties the plot; a group
+    # member that matches nothing leaves a group the legend shows with zero
+    # points, which already says so. And the labels are applied only to points
+    # the ACL has returned, so an id the caller cannot see labels nothing.
+    #
+    # ``groups`` is forwarded unread: ``_labels_and_groups`` is the one place
+    # that decides whether the axis uses it.
     if umap_type is UmapType.FOV:
         return await _get_fov_umap(
-            selection, label_by, current_user, group_ids, background_tasks, db
+            selection, label_by, groups, current_user, group_ids,
+            background_tasks, db,
         )
     return await _get_cropped_umap(
-        selection, label_by, current_user, group_ids, background_tasks, db
+        selection, label_by, groups, current_user, group_ids,
+        background_tasks, db,
     )
 
 
@@ -186,6 +229,7 @@ async def get_separability(
         LabelAxis.PROTEIN,
         description="Dimension to group points by",
     ),
+    groups: LabelGroups = Depends(label_groups),
     background_tasks: BackgroundTasks = BackgroundTasks(),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
@@ -212,6 +256,7 @@ async def get_separability(
         umap_type=umap_type,
         selection=selection,
         label_by=label_by,
+        groups=groups,
         background_tasks=background_tasks,
         current_user=current_user,
         db=db,
@@ -527,6 +572,62 @@ def _axis_labels(
     return [by_experiment.get(experiment_id) for experiment_id in experiment_ids]
 
 
+def _group_assignment(
+    groups: LabelGroups,
+    items: Sequence,
+    experiment_ids: Sequence[int],
+    facets: Sequence[UmapFacetRow],
+) -> List[Optional[int]]:
+    """Which of the caller's groups each point falls in (see ``assign_groups``).
+
+    Builds the per-point facet values from the same two sources ``_axis_labels``
+    uses — protein from the point, the rest from the facet summary — so a group
+    made of one facet's values scores exactly what that axis would.
+    """
+    by_experiment = {row.experiment_id: row for row in facets}
+    proteins = protein_labels(items)
+
+    def value(row: Optional[UmapFacetRow], column: str) -> int:
+        return (getattr(row, column, None) if row else None) or UNASSIGNED_FACET_ID
+
+    points = []
+    for experiment_id, protein_id in zip(experiment_ids, proteins):
+        row = by_experiment.get(experiment_id)
+        points.append(
+            {
+                "experiment": experiment_id,
+                "protein": protein_id or UNASSIGNED_FACET_ID,
+                "microscope": value(row, "microscope_id"),
+                "ptm": value(row, "ptm_id"),
+                "cell_line": value(row, "cell_line_id"),
+            }
+        )
+    return assign_groups(groups, points)
+
+
+def _labels_and_groups(
+    axis: LabelAxis,
+    groups: LabelGroups,
+    items: Sequence,
+    experiment_ids: Sequence[int],
+    facets: Sequence[UmapFacetRow],
+) -> Tuple[List[Optional[int]], Optional[List[Optional[int]]]]:
+    """``(labels to score, per-point group or None)`` for either kind of axis.
+
+    The second half is what the plot colours by. It is returned rather than
+    recomputed by the client: the score and the colours then come from one
+    assignment, and cannot disagree about which points were ambiguous.
+
+    ``groups`` is read only on the group axis. Under any other it may be stale
+    client state — or, when a handler is called directly without it, the
+    ``Depends`` placeholder — and must not be touched.
+    """
+    if axis is LabelAxis.GROUP:
+        assigned = _group_assignment(groups, items, experiment_ids, facets)
+        return score_labels(assigned), assigned
+    return _axis_labels(axis, items, experiment_ids, facets), None
+
+
 def _separability(
     embeddings: np.ndarray,
     labels: List[Optional[int]],
@@ -563,6 +664,7 @@ def _separability(
 async def _get_cropped_umap(
     selection: FacetSelection,
     axis: LabelAxis,
+    groups: LabelGroups,
     current_user: User,
     group_ids: Sequence[int],
     background_tasks: BackgroundTasks,
@@ -614,8 +716,9 @@ async def _get_cropped_umap(
 
     logger.info(f"Using pre-computed UMAP for {len(crops_with_umap)}/{total_crops} crops")
     embeddings = np.array([c.embedding for c in crops_with_umap])
-    labels = _axis_labels(
+    labels, point_groups = _labels_and_groups(
         axis,
+        groups,
         crops_with_umap,
         [crop.image.experiment_id for crop in crops_with_umap],
         facets,
@@ -636,8 +739,9 @@ async def _get_cropped_umap(
             protein_color=crop.map_protein.color if crop.map_protein else "#888888",
             thumbnail_url=f"/api/images/crops/{crop.id}/image?type=mip",
             bundleness_score=crop.bundleness_score,
+            group=point_groups[index] if point_groups is not None else None,
         )
-        for crop in crops_with_umap
+        for index, crop in enumerate(crops_with_umap)
     ]
 
     return UmapDataResponse(
@@ -654,6 +758,7 @@ async def _get_cropped_umap(
 async def _get_fov_umap(
     selection: FacetSelection,
     axis: LabelAxis,
+    groups: LabelGroups,
     current_user: User,
     group_ids: Sequence[int],
     background_tasks: BackgroundTasks,
@@ -702,8 +807,9 @@ async def _get_fov_umap(
 
     logger.info(f"Using pre-computed UMAP for {len(images_with_umap)}/{total_images} FOV images")
     embeddings = np.array([img.embedding for img in images_with_umap])
-    labels = _axis_labels(
+    labels, point_groups = _labels_and_groups(
         axis,
+        groups,
         images_with_umap,
         [image.experiment_id for image in images_with_umap],
         facets,
@@ -722,8 +828,9 @@ async def _get_fov_umap(
             protein_color=image.map_protein.color if image.map_protein else "#888888",
             thumbnail_url=f"/api/images/{image.id}/file?type=thumbnail",
             original_filename=image.original_filename,
+            group=point_groups[index] if point_groups is not None else None,
         )
-        for image in images_with_umap
+        for index, image in enumerate(images_with_umap)
     ]
 
     return UmapFovDataResponse(

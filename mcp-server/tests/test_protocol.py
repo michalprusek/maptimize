@@ -33,7 +33,7 @@ async def test_stdio_server_lists_tools():
     # consolidation removed these
     assert not ({"semantic_search", "semantic_image_search", "list_documents"} & names)
     # server metadata + prompts (none of these touch the backend)
-    assert init.serverInfo.version == "4.5.0"
+    assert init.serverInfo.version == "4.6.0"
     assert init.instructions and "Vision-RAG" in init.instructions
     # ⚠️ The instructions are prose, and they are how the agent learns a surface
     # EXISTS -- a tool it never thinks to list is a tool it never calls. Cell

@@ -900,6 +900,45 @@ Prahy žijí **jednou** v `separability_gap()` a `compute_separability` se jím 
 důvod na badge tak nemůže nesouhlasit s rozhodnutím, které skóre zadrželo. Badge je
 navíc ztlumený, dokud graf drží body předchozího filtru (`placeholderData`).
 
+##### Vlastní skupiny: `label_by=group` (od 2026-10-06)
+
+Každá jiná osa je sloupec. „Tyhle dva experimenty proti tomuhle" žádný sloupec
+nevyjádří, takže čtenář smí třídy **postavit sám**: v panelu filtru přetáhne pilulky
+do skupin (nebo skupinu „odjistí" tlačítkem *Add values* a kliká — HTML drag eventy
+se na dotyku ani z klávesnice nevyvolají). Skupina = množina hodnot **libovolných**
+facet; bod do ní patří, když nese **kteroukoli** z nich.
+
+Drát: opakovaný `group=experiment:180,experiment:308` (jeden na třídu) + `label_by=group`.
+SSOT parsování i přiřazení je `utils/label_groups.py`; frontendová strana (čisté funkce,
+URL, drag payload) je `components/visualization/labelGroups.ts`.
+
+⚠️ **O tom, ve které skupině bod je, rozhoduje BACKEND a posílá to na bodu
+(`point.group`).** Klient to nepřepočítává — barvy v grafu i skóre v badge pak
+pocházejí z jednoho přiřazení. Druhá implementace v prohlížeči by se s první rozešla
+přesně na bodech, které jsou ve dvou skupinách.
+
+⚠️ **Bod ve dvou skupinách je `-1`, kreslí se šedě a do skóre nejde** — nikdy „vyhrává
+první". Smíšené facety to dělají běžně (skupina „MAP2d" a skupina „3D SIM" sdílejí
+každý MAP2d crop ze 3D SIM) a silueta nad třídami, které sdílejí body, by měřila
+pořadí query stringu. Panel počet takových bodů vypisuje. Tatáž *hodnota* ve dvou
+skupinách být nemůže: `addMember` ji **přesouvá**, nekopíruje.
+
+⚠️ **Prázdná skupina drží svůj slot** (posílá se jako `group=`). `point.group` je index
+do seznamu skupin klienta; zahozená prázdná skupina by posunula všechny další pod
+cizí jméno a barvu.
+
+⚠️ **Id členů skupin se NEOVĚŘUJÍ proti DB**, na rozdíl od id filtru. Filtr, který
+nic nematchuje, tiše vyprázdní graf; člen skupiny, který nic nematchuje, nechá skupinu
+s nulou bodů, a to legenda ukáže sama. ACL to neobchází — štítky se lepí jen na body,
+které už ACL vrátila.
+
+Skupiny žijí v URL jako opakovaný `g=<jméno>|<členové>` (jméno je vše před
+**posledním** `|`); odkaz se skupinami otevře graf rovnou obarvený podle nich.
+Strop je 8 skupin — tolik barev má paleta (Okabe–Ito bez černé + jedna Tolova) — a
+`MAX_GROUPS` je na backendu i frontendu schválně stejné číslo.
+
+MCP: `measure_separability` má `label_by=group` + pole `group`; `SERVER_VERSION` **4.6.0**.
+
 `GET /api/embeddings/separability` vrací **jen** skóre (MCP tool `measure_separability`) —
 projekce jsou tisíce souřadnic a agent se ptá na jedno číslo. Vrací **404, ne null**, když
 není co skórovat: null si volající přečte jako nulu a takhle to i ohlásí.

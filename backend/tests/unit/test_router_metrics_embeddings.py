@@ -1442,6 +1442,166 @@ async def test_separability_endpoint_404_names_what_it_found(mock_db, no_group):
     assert "single_class" in ei.value.detail
 
 
+# -- label_by=group: classes the caller defines -------------------------------
+def _groups(*raw):
+    return e.parse_label_groups(list(raw))
+
+
+async def test_groups_label_the_points_and_colour_them_from_one_assignment(mock_db, no_group):
+    # exp 1+2 against exp 3, with exp 4 in neither. The response's per-point
+    # group and the labels handed to the scorer must be the same assignment.
+    crops = [
+        crop_obj(cid=i, umap_x=0.1, umap_y=0.2, experiment_id=1 + i % 4)
+        for i in range(8)
+    ]
+    mock_db.execute.side_effect = [
+        make_result(scalars_all=crops),
+        make_result(fetchall=[_facet_row(n) for n in (1, 2, 3, 4)]),
+    ]
+    with patch.object(e, "MIN_POINTS_FOR_UMAP", 3), \
+         patch.object(e, "compute_separability", return_value=None) as sep:
+        out = await e.get_umap_visualization(
+            umap_type=e.UmapType.CROPPED, selection=e.FacetSelection(),
+            label_by=e.LabelAxis.GROUP,
+            groups=_groups("experiment:1,experiment:2", "experiment:3"),
+            background_tasks=MagicMock(), current_user=user(), db=mock_db,
+        )
+    expected = [0, 0, 1, None, 0, 0, 1, None]
+    assert sep.call_args.args[1] == expected
+    assert [point.group for point in out.points] == expected
+
+
+async def test_groups_mix_facets_and_shared_points_drop_out_of_the_score(mock_db, no_group):
+    # Group 0 = protein 7, group 1 = microscope 3. Experiment 1 is on microscope
+    # 3, so its protein-7 crop is in both: -1 on the point, no label in the score.
+    crops = [
+        crop_obj(cid=1, umap_x=0.1, umap_y=0.2, experiment_id=1, protein=_protein(7)),
+        crop_obj(cid=2, umap_x=0.1, umap_y=0.2, experiment_id=1, protein=_protein(8)),
+        crop_obj(cid=3, umap_x=0.1, umap_y=0.2, experiment_id=2, protein=_protein(7)),
+        crop_obj(cid=4, umap_x=0.1, umap_y=0.2, experiment_id=2, protein=None),
+    ]
+    mock_db.execute.side_effect = [
+        make_result(scalars_all=crops),
+        make_result(fetchall=[_facet_row(1, microscope_id=3), _facet_row(2, microscope_id=4)]),
+    ]
+    with patch.object(e, "MIN_POINTS_FOR_UMAP", 3), \
+         patch.object(e, "compute_separability", return_value=None) as sep:
+        out = await e.get_umap_visualization(
+            umap_type=e.UmapType.CROPPED, selection=e.FacetSelection(),
+            label_by=e.LabelAxis.GROUP,
+            groups=_groups("protein:7", "microscope:3"),
+            background_tasks=MagicMock(), current_user=user(), db=mock_db,
+        )
+    assert [point.group for point in out.points] == [-1, 1, 0, None]
+    assert sep.call_args.args[1] == [None, 1, 0, None]
+
+
+async def test_a_group_can_be_the_unassigned_value(mock_db, no_group):
+    crops = [
+        crop_obj(cid=1, umap_x=0.1, umap_y=0.2, experiment_id=1),
+        crop_obj(cid=2, umap_x=0.1, umap_y=0.2, experiment_id=2),
+    ]
+    mock_db.execute.side_effect = [
+        make_result(scalars_all=crops),
+        make_result(fetchall=[_facet_row(1, ptm_id=None), _facet_row(2, ptm_id=5)]),
+    ]
+    with patch.object(e, "MIN_POINTS_FOR_UMAP", 1), \
+         patch.object(e, "compute_separability", return_value=None):
+        out = await e.get_umap_visualization(
+            umap_type=e.UmapType.CROPPED, selection=e.FacetSelection(),
+            label_by=e.LabelAxis.GROUP, groups=_groups("ptm:0", "ptm:5"),
+            background_tasks=MagicMock(), current_user=user(), db=mock_db,
+        )
+    assert [point.group for point in out.points] == [0, 1]
+
+
+async def test_fov_points_carry_their_group_too(mock_db, no_group):
+    images = [
+        image_obj(iid=i, umap_x=0.1, umap_y=0.2, experiment_id=1 + i % 2)
+        for i in range(4)
+    ]
+    mock_db.execute.side_effect = [
+        make_result(scalars_all=images),
+        make_result(fetchall=[_facet_row(1), _facet_row(2)]),
+    ]
+    with patch.object(e, "MIN_POINTS_FOR_UMAP", 3), \
+         patch.object(e, "compute_separability", return_value=None) as sep:
+        out = await e.get_umap_visualization(
+            umap_type=e.UmapType.FOV, selection=e.FacetSelection(),
+            label_by=e.LabelAxis.GROUP,
+            groups=_groups("experiment:2", "experiment:1"),
+            background_tasks=MagicMock(), current_user=user(), db=mock_db,
+        )
+    assert [point.group for point in out.points] == [1, 0, 1, 0]
+    assert sep.call_args.args[1] == [1, 0, 1, 0]
+
+
+async def test_groups_are_ignored_unless_the_axis_is_group(mock_db, no_group):
+    # A client that leaves stale groups on a protein-coloured request must get
+    # the protein score, and points with no group painted on them.
+    crops = [crop_obj(cid=i, umap_x=0.1, umap_y=0.2, protein=_protein(7)) for i in range(4)]
+    mock_db.execute.side_effect = [
+        make_result(scalars_all=crops),
+        make_result(fetchall=[_facet_row()]),
+    ]
+    with patch.object(e, "MIN_POINTS_FOR_UMAP", 3), \
+         patch.object(e, "compute_separability", return_value=None) as sep:
+        out = await e.get_umap_visualization(
+            umap_type=e.UmapType.CROPPED, selection=e.FacetSelection(),
+            label_by=e.LabelAxis.PROTEIN, groups=_groups("experiment:1"),
+            background_tasks=MagicMock(), current_user=user(), db=mock_db,
+        )
+    assert sep.call_args.args[1] == [7, 7, 7, 7]
+    assert [point.group for point in out.points] == [None] * 4
+
+
+async def test_one_group_alone_is_reported_as_a_single_class(mock_db, no_group):
+    crops = [crop_obj(cid=i, umap_x=0.1, umap_y=0.2) for i in range(12)]
+    mock_db.execute.side_effect = [
+        make_result(scalars_all=crops),
+        make_result(fetchall=[_facet_row()]),
+    ]
+    out = await e.get_umap_visualization(
+        umap_type=e.UmapType.CROPPED, selection=e.FacetSelection(),
+        label_by=e.LabelAxis.GROUP, groups=_groups("experiment:1"),
+        background_tasks=MagicMock(), current_user=user(), db=mock_db,
+    )
+    assert out.separability_unscored.reason is e.UnscoredReason.SINGLE_CLASS
+    assert out.separability_unscored.label_by is e.LabelAxis.GROUP
+
+
+async def test_separability_endpoint_scores_groups(mock_db, no_group):
+    crops = [
+        crop_obj(cid=i, umap_x=0.1, umap_y=0.2, experiment_id=1 + i % 2)
+        for i in range(4)
+    ]
+    mock_db.execute.side_effect = [
+        make_result(scalars_all=crops),
+        make_result(fetchall=[_facet_row(1), _facet_row(2)]),
+    ]
+    with patch.object(e, "MIN_POINTS_FOR_UMAP", 3), \
+         patch.object(
+             e, "compute_separability",
+             return_value=e.Separability(score=0.3, n_classes=2, n_points=4),
+         ) as sep:
+        out = await e.get_separability(
+            umap_type=e.UmapType.CROPPED, selection=e.FacetSelection(),
+            label_by=e.LabelAxis.GROUP,
+            groups=_groups("experiment:1", "experiment:2"),
+            background_tasks=MagicMock(), current_user=user(), db=mock_db,
+        )
+    assert sep.call_args.args[1] == [0, 1, 0, 1]
+    assert out.label_by is e.LabelAxis.GROUP
+
+
+def test_the_group_dependency_turns_a_bad_member_into_a_422():
+    with pytest.raises(HTTPException) as ei:
+        e.label_groups(group=["protein:1", "nonsense"])
+    assert ei.value.status_code == 422
+    assert "nonsense" in ei.value.detail
+    assert e.label_groups(group=None) is e.NO_GROUPS
+
+
 # =============================================================================
 # embeddings.py — _get_fov_umap
 # =============================================================================
