@@ -43,6 +43,18 @@ async def lifespan(app: FastAPI):
     except Exception:
         logger.exception("Failed to reap orphaned document indexing jobs")
 
+    # Score every crop the active bundleness model has not scored yet. This is
+    # how a newly shipped model version reaches existing rows; a normal start
+    # finds nothing to do. Non-fatal: the dashboard reports unscored points
+    # honestly, and a failed backfill must not keep the API down.
+    try:
+        from database import get_db_context
+        from services.bundleness_service import backfill as backfill_bundleness
+        async with get_db_context() as _db:
+            await backfill_bundleness(_db)
+    except Exception:
+        logger.exception("Bundleness backfill failed")
+
     # Cleanup old temp files and exports on startup (24 hours max age)
     try:
         temp_cleaned = cleanup_old_temp_files(max_age_hours=24)

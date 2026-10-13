@@ -14,9 +14,9 @@ import {
   Cell,
   Tooltip,
 } from "recharts";
-import { api, UmapType } from "@/lib/api";
+import { api } from "@/lib/api";
 import { Spinner } from "@/components/ui";
-import { RefreshCw, Info, AlertCircle, Grid, Layers, FilterX } from "lucide-react";
+import { RefreshCw, Info, AlertCircle, FilterX } from "lucide-react";
 import {
   DEFAULT_POINT_COLOR,
   UMAP_AXIS_STYLE,
@@ -25,11 +25,16 @@ import {
   UMAP_SCATTER_ANIMATION,
   formatAxisTick,
 } from "./chartConfig";
+import { BundlenessBadge } from "./BundlenessBadge";
+import {
+  classMeansById,
+  legendEntries,
+  type PointStyle,
+} from "./bundleness";
 import { SeparabilityBadge } from "./SeparabilityBadge";
 import { UmapFilterPanel, type ColorBy } from "./UmapFilterPanel";
 import {
   CroppedTooltip,
-  FovTooltip,
   MarkerLegend,
   ProjectionLegend,
   ProjectionMarker,
@@ -65,18 +70,14 @@ import {
 interface UmapVisualizationProps {
   experimentId?: number;
   height?: number;
-  /** If true, start with FOV mode (useful when no crops exist) */
-  preferFovMode?: boolean;
 }
 
 export function UmapVisualization({
   experimentId,
   height = 500,
-  preferFovMode = false,
 }: UmapVisualizationProps): JSX.Element {
   const t = useTranslations("umap");
   const router = useRouter();
-  const [viewMode, setViewMode] = useState<UmapType>(preferFovMode ? "fov" : "cropped");
 
   // Only the dashboard's global plot round-trips its filter through the URL, so
   // a filtered view can be shared. On an experiment page the scope is the route
@@ -170,7 +171,6 @@ export function UmapVisualization({
   );
 
   const { view, isLoading, isFetching, error, refetch } = useProjectionData({
-    viewMode,
     selection: effectiveSelection,
     experimentId,
     // The index scores whatever the plot is coloured by, so the legend always
@@ -204,11 +204,6 @@ export function UmapVisualization({
 
   const isRecomputing = view?.isComputing ?? false;
   const computeError = view?.computeError ?? null;
-  // The one panel message that depends on which corpus is on screen. This used
-  // to be a whole key map, which earned its keep when UMAP and the discriminant
-  // needed different copy at five render sites; with one projection the other
-  // seven entries mapped a name to itself.
-  const emptyHint = viewMode === "fov" ? "noEmbeddingsFov" : "noEmbeddingsCrops";
 
   // The fit failed, so coordinates will never arrive on their own: the backend
   // records the failure and stops rescheduling, precisely so a poll cannot
@@ -226,7 +221,7 @@ export function UmapVisualization({
     setIsRetrying(true);
     setRetryError(null);
     try {
-      await api.triggerUmapRecomputation(viewMode);
+      await api.triggerUmapRecomputation();
       await queryClient.invalidateQueries({ queryKey: ["umap"] });
     } catch (e) {
       console.error("[UmapVisualization] Failed to trigger recomputation:", e);
@@ -234,7 +229,7 @@ export function UmapVisualization({
     } finally {
       setIsRetrying(false);
     }
-  }, [viewMode, queryClient, t]);
+  }, [queryClient, t]);
 
   // Handle click on a point - navigate to editor
   const handleChartClick = useCallback((state: { activePayload?: Array<{ payload: ProjectionPoint }> } | null) => {
@@ -242,7 +237,7 @@ export function UmapVisualization({
     if (!state?.activePayload?.[0]?.payload) return;
 
     const pointData = state.activePayload[0].payload;
-    const expId = "experiment_id" in pointData ? pointData.experiment_id : experimentId;
+    const expId = pointData.experiment_id ?? experimentId;
 
     // Validate required IDs for navigation
     if (!expId) {
@@ -327,9 +322,13 @@ export function UmapVisualization({
   // new arrangement is on screen; until then the indices name the wrong slots.
   const groupsInSync = view?.groupEpoch === groupEpoch;
 
-  /** The label and colour a point takes under the current colour-by dimension. */
+  /**
+   * The label and colour a point takes under the current colour-by dimension,
+   * and the id of the class behind them — which is what a per-class number is
+   * attached by. Never the name: "Unassigned" is a name too.
+   */
   const styleOf = useCallback(
-    (point: ProjectionPoint): { name: string; color: string } => {
+    (point: ProjectionPoint): PointStyle => {
       const meta = experimentMeta.get(point.experiment_id);
 
       // Plain lookups, no side effects. An id we cannot resolve still reads as
@@ -350,15 +349,18 @@ export function UmapVisualization({
           // the wrong slot until the refetch lands; draw those neutral.
           const index = groupsInSync ? point.group : null;
           if (index === AMBIGUOUS_GROUP) {
-            return { name: t("groupAmbiguous"), color: DEFAULT_POINT_COLOR };
+            return { name: t("groupAmbiguous"), color: DEFAULT_POINT_COLOR, classId: null };
           }
           const group = index == null ? undefined : groups[index];
-          if (!group) return { name: t("groupNone"), color: DEFAULT_POINT_COLOR };
+          if (!group) {
+            return { name: t("groupNone"), color: DEFAULT_POINT_COLOR, classId: null };
+          }
           return {
             // A blanked name falls back to the slot, so the legend never shows
             // an empty label.
             name: group.name.trim() || t("groupDefaultName", { n: index! + 1 }),
             color: groupColor(index!),
+            classId: index!,
           };
         }
         case "microscope": {
@@ -366,6 +368,7 @@ export function UmapVisualization({
           return {
             name: microscope?.name ?? t("unassigned"),
             color: microscope?.color || DEFAULT_POINT_COLOR,
+            classId: meta?.microscopeId || null,
           };
         }
         case "ptm": {
@@ -373,6 +376,7 @@ export function UmapVisualization({
           return {
             name: ptm?.name ?? t("unassigned"),
             color: ptm?.color || DEFAULT_POINT_COLOR,
+            classId: meta?.ptmId || null,
           };
         }
         case "cell_line": {
@@ -380,18 +384,21 @@ export function UmapVisualization({
           return {
             name: cellLine?.name ?? t("unassigned"),
             color: cellLine?.color || DEFAULT_POINT_COLOR,
+            classId: meta?.cellLineId || null,
           };
         }
         case "experiment":
           return {
             name: meta?.name ?? `#${point.experiment_id}`,
             color: experimentColor(point.experiment_id),
+            classId: point.experiment_id,
           };
         case "protein":
         default:
           return {
             name: point.protein_name || t("unassigned"),
             color: point.protein_color || DEFAULT_POINT_COLOR,
+            classId: point.protein_id ?? null,
           };
       }
     },
@@ -461,20 +468,11 @@ export function UmapVisualization({
 
   // Legend groups, derived from the same styleOf as the points themselves so a
   // swatch can never disagree with what is drawn.
-  const legendGroups = useMemo(() => {
-    if (!view?.points) return [];
+  const legendGroups = useMemo(
+    () => legendEntries((view?.points ?? []).map(styleOf)),
+    [view?.points, styleOf]
+  );
 
-    const groups = new Map<string, { name: string; color: string; count: number }>();
-    view.points.forEach((point) => {
-      const { name, color } = styleOf(point);
-      if (!groups.has(name)) groups.set(name, { name, color, count: 0 });
-      groups.get(name)!.count++;
-    });
-
-    return Array.from(groups.values()).sort((a, b) => b.count - a.count);
-  }, [view?.points, styleOf]);
-
-  const isFov = view?.isFov ?? viewMode === "fov";
   const totalCount = view?.totalCount ?? 0;
   // Null unless the plot is coloured by groups: under any other axis the
   // backend sends no assignment, and "0 points" beside every group would lie.
@@ -499,16 +497,55 @@ export function UmapVisualization({
   // it was fetched in this epoch — before a slot shift it describes groups
   // that are no longer in those slots.
   const scoredAxis = separability?.label_by ?? separabilityUnscored?.label_by;
-  const groupsScore =
-    colorBy === "group" && scoredAxis === "group" && groupsInSync ? (
+
+  const bundleness = view?.bundleness ?? null;
+  const pointCount = view?.points.length ?? 0;
+  // Each class' mean, keyed by class id — and empty unless the response on
+  // screen breaks the mean down by the axis the legend is showing right now.
+  // The plot holds the previous response while the next axis loads, and under
+  // groups also across a slot shift; in both windows the ids on screen and the
+  // ids in the response name different things.
+  const classMeans = useMemo(
+    () => classMeansById(bundleness, colorBy, colorBy !== "group" || groupsInSync),
+    [bundleness, colorBy, groupsInSync]
+  );
+
+  // The same means beside the groups in the editor, which is on screen under
+  // every colour-by — so it asks for the group axis outright. Handing it
+  // `classMeans` would print protein 0's mean beside group 0.
+  const groupMeans = useMemo(
+    () => classMeansById(bundleness, "group", colorBy === "group" && groupsInSync),
+    [bundleness, colorBy, groupsInSync]
+  );
+
+  // Both badges, always together: wherever the separability of the plotted
+  // points is stated, so is their mean bundleness.
+  const scoreBadges = (place: "header" | "groups") => (
+    <>
       <SeparabilityBadge
         separability={separability}
         unscored={separabilityUnscored}
         stale={scoreIsStale}
-        unscoredTestId="umap-groups-score-unscored"
+        unscoredTestId={
+          place === "header" ? "separability-unscored" : "umap-groups-score-unscored"
+        }
         t={t}
       />
-    ) : null;
+      <BundlenessBadge
+        bundleness={bundleness}
+        pointCount={pointCount}
+        stale={scoreIsStale}
+        unscoredTestId={
+          place === "header" ? "bundleness-unscored" : "umap-groups-bundleness-unscored"
+        }
+        t={t}
+      />
+    </>
+  );
+  const groupsScore =
+    colorBy === "group" && scoredAxis === "group" && groupsInSync
+      ? scoreBadges("groups")
+      : null;
 
   // Error message parsing
   const errorMessage = error instanceof Error ? error.message : error ? t("unknownError") : null;
@@ -660,7 +697,7 @@ export function UmapVisualization({
           <h3 className="text-lg font-semibold text-text-primary mb-2">
             {t("noEmbeddings")}
           </h3>
-          <p className="text-text-secondary max-w-md">{t(emptyHint)}</p>
+          <p className="text-text-secondary max-w-md">{t("noEmbeddingsCrops")}</p>
         </div>
       );
     }
@@ -721,13 +758,7 @@ export function UmapVisualization({
               />
               <ZAxis range={[60, 60]} />
               <Tooltip
-                content={
-                  isFov ? (
-                    <FovTooltip t={t} contextOf={contextOf} />
-                  ) : (
-                    <CroppedTooltip t={t} contextOf={contextOf} />
-                  )
-                }
+                content={<CroppedTooltip t={t} contextOf={contextOf} />}
                 cursor={UMAP_TOOLTIP_CURSOR}
               />
               <Scatter
@@ -746,7 +777,12 @@ export function UmapVisualization({
           </ResponsiveContainer>
         </div>
 
-        <ProjectionLegend groups={legendGroups} />
+        <ProjectionLegend
+          groups={legendGroups}
+          means={classMeans}
+          meansStale={scoreIsStale}
+          t={t}
+        />
         <MarkerLegend counts={markerCounts} t={t} />
       </>
     );
@@ -754,57 +790,23 @@ export function UmapVisualization({
 
   return (
     <div className="glass-card p-4">
-      {/* Header with Toggle - ALWAYS VISIBLE */}
+      {/* Header - ALWAYS VISIBLE */}
       <div className="flex items-center justify-between mb-4">
         <div>
           <h3 className="font-display font-semibold text-text-primary">
             {t("title")}
           </h3>
           {view && (
-            <div className="flex items-center gap-3 text-sm text-text-secondary">
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-text-secondary">
               <span>
-                {totalCount.toLocaleString()} {isFov ? t("fovImages") : t("cellCrops")}
+                {totalCount.toLocaleString()} {t("cellCrops")}
               </span>
-              <SeparabilityBadge
-                separability={separability}
-                unscored={separabilityUnscored}
-                stale={scoreIsStale}
-                unscoredTestId="separability-unscored"
-                t={t}
-              />
+              {scoreBadges("header")}
             </div>
           )}
         </div>
 
         <div className="flex items-center gap-3">
-          {/* FOV/Cropped */}
-          <div className="flex items-center bg-bg-secondary rounded-lg p-1">
-            <button
-              onClick={() => setViewMode("fov")}
-              className={`px-3 py-1.5 rounded-md text-sm font-medium transition-colors flex items-center gap-1.5 ${
-                viewMode === "fov"
-                  ? "bg-primary-500 text-white"
-                  : "text-text-secondary hover:text-text-primary"
-              }`}
-              title={t("fovTooltip")}
-            >
-              <Grid className="w-4 h-4" />
-              {t("fov")}
-            </button>
-            <button
-              onClick={() => setViewMode("cropped")}
-              className={`px-3 py-1.5 rounded-md text-sm font-medium transition-colors flex items-center gap-1.5 ${
-                viewMode === "cropped"
-                  ? "bg-primary-500 text-white"
-                  : "text-text-secondary hover:text-text-primary"
-              }`}
-              title={t("croppedTooltip")}
-            >
-              <Layers className="w-4 h-4" />
-              {t("cropped")}
-            </button>
-          </div>
-
           {/* Refresh button */}
           <button
             onClick={() => {
@@ -864,6 +866,8 @@ export function UmapVisualization({
           groups={groups}
           onGroupsChange={handleGroupsChange}
           groupCounts={groupCounts}
+          groupMeans={groupMeans}
+          groupMeansStale={scoreIsStale}
           groupsScore={groupsScore}
           microscopes={microscopes}
           proteins={proteins}

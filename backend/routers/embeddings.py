@@ -2,7 +2,7 @@
 
 import logging
 from dataclasses import dataclass, field
-from typing import List, Optional, Sequence, Tuple, Type, TypeVar, Union
+from typing import List, Optional, Sequence, Tuple, Type
 
 import numpy as np
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, status
@@ -19,6 +19,8 @@ from models.microscope import Microscope
 from models.ptm import PTM
 from models.user import User
 from schemas.embeddings import (
+    BundlenessClassResponse,
+    BundlenessResponse,
     FeatureExtractionStatus,
     FeatureExtractionTriggerResponse,
     LabelAxis,
@@ -26,10 +28,7 @@ from schemas.embeddings import (
     SeparabilityUnscoredResponse,
     UmapDataResponse,
     UmapFacetRow,
-    UmapFovDataResponse,
-    UmapFovPointResponse,
     UmapPointResponse,
-    UmapType,
     UnscoredReason,  # noqa: F401 — re-exported; the router tests read it from here
 )
 from utils.facets import UNASSIGNED_FACET_ID, facet_clause, real_ids
@@ -47,17 +46,15 @@ from services.umap_service import (
     compute_separability,
     get_refresh_error,
     protein_labels,
-    refresh_umap_scope,
+    refresh_umap,
     unscored_gap,
 )
+from services import bundleness_service
 from utils.security import get_current_user
 from utils.groups import experiment_owner_filter, get_user_group_ids
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
-
-# A CellCrop or an Image — both carry umap_x/umap_y and an embedding.
-T = TypeVar("T")
 
 
 @dataclass(frozen=True)
@@ -147,9 +144,34 @@ def label_groups(
         ) from None
 
 
+def reject_removed_fov(
+    umap_type: Optional[str] = Query(None, include_in_schema=False),
+) -> None:
+    """410 for a client that still asks for the removed FOV projection.
+
+    The dashboard used to offer a second projection over whole fields of view;
+    it was removed on 2026-10-13 and everything is per crop now. A tab loaded
+    before the deploy still has the FOV button, and without this its request
+    would be answered with crop data drawn under an "FOV" heading. 410 carries a
+    sentence the unmodified cached bundle will display — the same reasoning as
+    the discriminant tombstone below. ``umap_type=cropped`` from such a tab is
+    simply the default and passes.
+
+    Logged, so this can be deleted once the log falls silent.
+    """
+    if umap_type == "fov":
+        logger.info("stale client asked for the removed FOV projection")
+        raise HTTPException(
+            status_code=status.HTTP_410_GONE,
+            detail=(
+                "The FOV projection was removed; the dashboard now works on "
+                "cell crops only. Reload the page to get the current dashboard."
+            ),
+        )
+
+
 @router.get("/umap")
 async def get_umap_visualization(
-    umap_type: UmapType = Query(UmapType.CROPPED, description="Type: fov or cropped"),
     selection: FacetSelection = Depends(facet_selection),
     label_by: LabelAxis = Query(
         LabelAxis.PROTEIN,
@@ -159,20 +181,18 @@ async def get_umap_visualization(
     background_tasks: BackgroundTasks = BackgroundTasks(),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
-) -> Union[UmapDataResponse, UmapFovDataResponse]:
+    _fov_removed: None = Depends(reject_removed_fov),
+) -> UmapDataResponse:
     """
-    Get UMAP 2D projection of embeddings.
-
-    - type=cropped: Returns cell crop embeddings (default)
-    - type=fov: Returns FOV/image embeddings
+    Get the UMAP 2D projection of cell-crop embeddings.
 
     Serves pre-computed coordinates only. Points whose embeddings arrived after
     the last projection are reported via ``is_stale`` and a refresh is scheduled
     in the background; fitting never blocks the response. If that refresh keeps
     failing, ``refresh_error`` says why instead of leaving the client to poll.
 
-    Fit parameters are not tunable per request: every point in a scope must come
-    from one shared fit, so refreshes always fit with the umap_service defaults.
+    Fit parameters are not tunable per request: every point must come from the
+    one shared fit, so refreshes always fit with the umap_service defaults.
     Filtering therefore never changes where a point sits — it only chooses which
     points of the one shared projection are returned.
 
@@ -186,6 +206,10 @@ async def get_umap_visualization(
     score groups by; the counts beside it say how many classes and how many
     labelled points went into it, because a silhouette is not comparable across
     subsets of different size.
+
+    ``bundleness`` is the mean predicted bundleness of the same points, overall
+    and per class of ``label_by`` — so the classes whose separation is scored are
+    the classes whose bundleness is compared.
     """
     # Validate references up front so a stale or deleted id fails with a clear
     # 404 instead of silently matching nothing and looking like an empty result.
@@ -210,11 +234,6 @@ async def get_umap_visualization(
     #
     # ``groups`` is forwarded unread: ``_labels_and_groups`` is the one place
     # that decides whether the axis uses it.
-    if umap_type is UmapType.FOV:
-        return await _get_fov_umap(
-            selection, label_by, groups, current_user, group_ids,
-            background_tasks, db,
-        )
     return await _get_cropped_umap(
         selection, label_by, groups, current_user, group_ids,
         background_tasks, db,
@@ -223,7 +242,6 @@ async def get_umap_visualization(
 
 @router.get("/separability", response_model=SeparabilityResponse)
 async def get_separability(
-    umap_type: UmapType = Query(UmapType.CROPPED, description="Type: fov or cropped"),
     selection: FacetSelection = Depends(facet_selection),
     label_by: LabelAxis = Query(
         LabelAxis.PROTEIN,
@@ -233,6 +251,7 @@ async def get_separability(
     background_tasks: BackgroundTasks = BackgroundTasks(),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
+    _fov_removed: None = Depends(reject_removed_fov),
 ) -> SeparabilityResponse:
     """
     How cleanly one subset of the corpus separates along one labelled axis.
@@ -253,7 +272,6 @@ async def get_separability(
     score of zero, and returning null invites a caller to report it as one.
     """
     projection = await get_umap_visualization(
-        umap_type=umap_type,
         selection=selection,
         label_by=label_by,
         groups=groups,
@@ -279,6 +297,55 @@ async def get_separability(
             ),
         )
     return projection.separability
+
+
+@router.get("/bundleness", response_model=BundlenessResponse)
+async def get_bundleness(
+    selection: FacetSelection = Depends(facet_selection),
+    label_by: LabelAxis = Query(
+        LabelAxis.PROTEIN,
+        description="Dimension to break the mean down by",
+    ),
+    groups: LabelGroups = Depends(label_groups),
+    background_tasks: BackgroundTasks = BackgroundTasks(),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> BundlenessResponse:
+    """
+    Mean predicted bundleness of one subset of the corpus.
+
+    The number beside the separability badge, without the points. It delegates
+    to the UMAP handler for the same reason ``/separability`` does: the figure
+    given here and the one on the chart cannot drift apart.
+
+    Each crop carries a precomputed score from a model trained on the lab's
+    pairwise "which cell is more bundled?" judgements. The unit is a z-score
+    against the crops that model was trained on: 0 is the average annotated
+    crop. Filters choose the subset; ``label_by`` (or ``label_by=group`` with
+    ``group``) breaks the mean down into the classes being compared.
+
+    ``n_scored`` of ``n_points`` says how much of the selection the mean rests
+    on. 404 when no point in the selection has a score — a mean of nothing is
+    not zero, and zero here means "exactly average".
+    """
+    projection = await get_umap_visualization(
+        selection=selection,
+        label_by=label_by,
+        groups=groups,
+        background_tasks=background_tasks,
+        current_user=current_user,
+        db=db,
+    )
+    if projection.bundleness is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=(
+                "No bundleness to report: none of the "
+                f"{len(projection.points)} plotted points in this selection has "
+                "a score from the active model."
+            ),
+        )
+    return projection.bundleness
 
 
 # -- Tombstone: the discriminant (LDA) projection, removed 2026-08-04 ---------
@@ -310,26 +377,25 @@ async def discriminant_removed(current_user: User = Depends(get_current_user)):
 
 
 def _take_precomputed(
-    items: list[T],
-    umap_type: UmapType,
+    items: list[CellCrop],
     background_tasks: BackgroundTasks,
-) -> tuple[list[T], bool, Optional[str]]:
+) -> tuple[list[CellCrop], bool, Optional[str]]:
     """
-    Select the items that already have coordinates, refreshing the rest in the background.
+    Select the crops that already have coordinates, refreshing the rest in the background.
 
-    Items whose embeddings arrived after the last projection (new upload or crop
+    Crops whose embeddings arrived after the last projection (new upload or crop
     edit) have no coordinates yet. Serve what exists now and schedule the re-fit:
     the fit runs after the response is sent, and the client polls until is_stale
     clears. Never fit on the read path — that stalls page load for seconds.
 
-    Takes no caller identity: the projection is global (one fit per type over
-    every row), so who is reading decides what comes back, never what is fitted.
+    Takes no caller identity: the projection is global (one fit over every
+    crop), so who is reading decides what comes back, never what is fitted.
 
     A projection whose last refresh failed is NOT rescheduled; its error is
     returned so the client can stop polling and show it. Otherwise each poll would
     kick off another doomed multi-second fit, forever, in silence.
 
-    Returns (items with coordinates, is_stale, refresh_error).
+    Returns (crops with coordinates, is_stale, refresh_error).
     """
     with_umap = [i for i in items if i.umap_x is not None and i.umap_y is not None]
 
@@ -337,20 +403,20 @@ def _take_precomputed(
     if stale_count == 0:
         return with_umap, False, None
 
-    refresh_error = get_refresh_error(umap_type)
+    refresh_error = get_refresh_error()
     if refresh_error is not None:
         logger.warning(
-            f"{stale_count}/{len(items)} {umap_type.item_word} missing UMAP "
+            f"{stale_count}/{len(items)} crops missing UMAP "
             f"coordinates, but the last refresh failed ({refresh_error}) - "
             f"not rescheduling"
         )
         return with_umap, False, refresh_error
 
     logger.info(
-        f"{stale_count}/{len(items)} {umap_type.item_word} missing UMAP "
+        f"{stale_count}/{len(items)} crops missing UMAP "
         f"coordinates - scheduling background refresh"
     )
-    background_tasks.add_task(refresh_umap_scope, umap_type)
+    background_tasks.add_task(refresh_umap)
     return with_umap, True, None
 
 
@@ -419,7 +485,6 @@ async def _verify_experiments_visible(
 
 
 async def _load_facets(
-    umap_type: UmapType,
     user_id: int,
     group_ids: Sequence[int],
     db: AsyncSession,
@@ -434,36 +499,24 @@ async def _load_facets(
     roughly one row per experiment, so this stays far cheaper than the point
     query and loads no embeddings.
     """
-    if umap_type is UmapType.FOV:
-        protein_col = Image.map_protein_id
-        count_col = Image.id
-        embedded = Image.embedding.isnot(None)
-        joins = [(Experiment, Image.experiment_id == Experiment.id)]
-    else:
-        protein_col = CellCrop.map_protein_id
-        count_col = CellCrop.id
-        embedded = CellCrop.embedding.isnot(None)
-        joins = [
-            (Image, CellCrop.image_id == Image.id),
-            (Experiment, Image.experiment_id == Experiment.id),
-        ]
-
     buckets = (
         Experiment.id,
         Experiment.name,
         Experiment.microscope_id,
         Experiment.ptm_id,
         Experiment.cell_line_id,
-        protein_col,
+        CellCrop.map_protein_id,
     )
-    source = select(*buckets, func.count(count_col))
-    for target, onclause in joins:
-        source = source.join(target, onclause)
+    source = (
+        select(*buckets, func.count(CellCrop.id))
+        .join(Image, CellCrop.image_id == Image.id)
+        .join(Experiment, Image.experiment_id == Experiment.id)
+    )
 
     result = await db.execute(
         source.where(
             experiment_owner_filter(user_id, group_ids),
-            embedded,
+            CellCrop.embedding.isnot(None),
         ).group_by(*buckets)
     )
 
@@ -482,9 +535,7 @@ async def _load_facets(
     ]
 
 
-def _guard_enough_points(
-    found: int, selection: FacetSelection, umap_type: UmapType
-) -> None:
+def _guard_enough_points(found: int, selection: FacetSelection) -> None:
     """400 only when the *unfiltered* scope is too small to have been projected.
 
     The threshold guards fitting, not reading. Coordinates come from one shared
@@ -500,25 +551,24 @@ def _guard_enough_points(
     raise HTTPException(
         status_code=status.HTTP_400_BAD_REQUEST,
         detail=(
-            f"Need at least {MIN_POINTS_FOR_UMAP} {umap_type.item_word} "
+            f"Need at least {MIN_POINTS_FOR_UMAP} crops "
             f"with embeddings. Found: {found}"
         ),
     )
 
 
-def _apply_facets(query, selection: FacetSelection, protein_column):
+def _apply_facets(query, selection: FacetSelection):
     """AND every active facet onto the point query.
 
-    ``protein_column`` differs per corpus (the crop's protein for cropped, the
-    image's for FOV) so that filtering by protein always agrees with the colour
-    the point is actually drawn in.
+    Protein is filtered on the CROP's own protein, not the experiment's, so that
+    filtering by protein always agrees with the colour the point is drawn in.
     """
     clauses = [
         facet_clause(Image.experiment_id, selection.experiment_ids),
         facet_clause(Experiment.microscope_id, selection.microscope_ids),
         facet_clause(Experiment.ptm_id, selection.ptm_ids),
         facet_clause(Experiment.cell_line_id, selection.cell_line_ids),
-        facet_clause(protein_column, selection.protein_ids),
+        facet_clause(CellCrop.map_protein_id, selection.protein_ids),
     ]
     for clause in clauses:
         if clause is not None:
@@ -545,9 +595,8 @@ def _axis_labels(
 
     Protein lives on the point. Microscope, PTM and cell line are properties of
     the experiment and are joined from the facet summary rather than fetched
-    again:
-    ``_load_facets`` has already run in this handler, over the whole readable
-    scope, which is a superset of these points.
+    again: ``_load_facets`` has already run in this handler, over the whole
+    readable scope, which is a superset of these points.
 
     ``None`` means "nothing assigned on this axis" and ``compute_separability``
     drops it. That is deliberate — pooling every unassigned experiment into one
@@ -661,6 +710,48 @@ def _separability(
     )
 
 
+def _current_score(crop: CellCrop) -> Optional[float]:
+    """The crop's score if the ACTIVE model produced it, else None.
+
+    A point's tooltip must not show a number the mean beside it left out. The
+    two can only disagree in the window between shipping a new model version and
+    the startup backfill finishing, but in that window they would disagree
+    silently.
+    """
+    if crop.bundleness_model != bundleness_service.load_model().version:
+        return None
+    return crop.bundleness_score
+
+
+def _bundleness(
+    crops: Sequence[CellCrop],
+    labels: Sequence[Optional[int]],
+    axis: LabelAxis,
+) -> Optional[BundlenessResponse]:
+    """Mean bundleness of ``crops``, overall and per class of ``labels``."""
+    summary = bundleness_service.summarise(
+        [crop.bundleness_score for crop in crops],
+        [crop.bundleness_model for crop in crops],
+        labels,
+    )
+    if summary is None:
+        return None
+    return BundlenessResponse(
+        mean=summary.mean,
+        sd=summary.sd,
+        n_scored=summary.n_scored,
+        n_points=summary.n_points,
+        model_version=summary.model_version,
+        label_by=axis,
+        classes=[
+            BundlenessClassResponse(
+                label=item.label, mean=item.mean, sd=item.sd, n_scored=item.n_scored
+            )
+            for item in summary.classes
+        ],
+    )
+
+
 async def _get_cropped_umap(
     selection: FacetSelection,
     axis: LabelAxis,
@@ -685,19 +776,19 @@ async def _get_cropped_umap(
         )
     )
 
-    query = _apply_facets(query, selection, CellCrop.map_protein_id)
+    query = _apply_facets(query, selection)
 
     # Stable order so the payload does not reshuffle between polls
     query = query.order_by(CellCrop.id)
     result = await db.execute(query)
     crops = result.scalars().all()
 
-    _guard_enough_points(len(crops), selection, UmapType.CROPPED)
+    _guard_enough_points(len(crops), selection)
 
-    facets = await _load_facets(UmapType.CROPPED, current_user.id, group_ids, db)
+    facets = await _load_facets(current_user.id, group_ids, db)
 
     crops_with_umap, is_stale, refresh_error = _take_precomputed(
-        crops, UmapType.CROPPED, background_tasks
+        crops, background_tasks
     )
 
     # Counts every crop with an embedding, including the ones still awaiting
@@ -724,6 +815,9 @@ async def _get_cropped_umap(
         facets,
     )
     separability, unscored = _separability(embeddings, labels, axis)
+    # Over the SAME points and the SAME labels as the score above, so the
+    # classes whose separation is reported are the classes whose bundleness is.
+    bundleness = _bundleness(crops_with_umap, labels, axis)
 
     # Build response. Points carry only what varies per point; the experiment's
     # microscope and PTM are repeated far too often to send per point, so the
@@ -735,10 +829,11 @@ async def _get_cropped_umap(
             experiment_id=crop.image.experiment_id,
             x=float(crop.umap_x),
             y=float(crop.umap_y),
+            protein_id=crop.map_protein.id if crop.map_protein else None,
             protein_name=crop.map_protein.name if crop.map_protein else None,
             protein_color=crop.map_protein.color if crop.map_protein else "#888888",
             thumbnail_url=f"/api/images/crops/{crop.id}/image?type=mip",
-            bundleness_score=crop.bundleness_score,
+            bundleness_score=_current_score(crop),
             group=point_groups[index] if point_groups is not None else None,
         )
         for index, crop in enumerate(crops_with_umap)
@@ -750,96 +845,7 @@ async def _get_cropped_umap(
         facets=facets,
         separability=separability,
         separability_unscored=unscored,
-        is_stale=is_stale,
-        refresh_error=refresh_error,
-    )
-
-
-async def _get_fov_umap(
-    selection: FacetSelection,
-    axis: LabelAxis,
-    groups: LabelGroups,
-    current_user: User,
-    group_ids: Sequence[int],
-    background_tasks: BackgroundTasks,
-    db: AsyncSession,
-) -> UmapFovDataResponse:
-    """Get UMAP visualization for FOV images."""
-    query = (
-        select(Image)
-        .join(Experiment, Image.experiment_id == Experiment.id)
-        .options(selectinload(Image.map_protein))
-        .where(
-            experiment_owner_filter(current_user.id, group_ids),
-            Image.embedding.isnot(None),
-        )
-    )
-
-    query = _apply_facets(query, selection, Image.map_protein_id)
-
-    # Stable order so the payload does not reshuffle between polls
-    query = query.order_by(Image.id)
-    result = await db.execute(query)
-    images = result.scalars().all()
-
-    _guard_enough_points(len(images), selection, UmapType.FOV)
-
-    facets = await _load_facets(UmapType.FOV, current_user.id, group_ids, db)
-
-    images_with_umap, is_stale, refresh_error = _take_precomputed(
-        images, UmapType.FOV, background_tasks
-    )
-
-    # Counts every image with an embedding, including the ones still awaiting
-    # coordinates — it must not shrink to the plotted subset.
-    total_images = len(images)
-
-    if not images_with_umap:
-        return UmapFovDataResponse(
-            points=[],
-            total_images=total_images,
-            facets=facets,
-            separability=None,
-            computed_at=None,
-            is_stale=is_stale,
-            refresh_error=refresh_error,
-        )
-
-    logger.info(f"Using pre-computed UMAP for {len(images_with_umap)}/{total_images} FOV images")
-    embeddings = np.array([img.embedding for img in images_with_umap])
-    labels, point_groups = _labels_and_groups(
-        axis,
-        groups,
-        images_with_umap,
-        [image.experiment_id for image in images_with_umap],
-        facets,
-    )
-    separability, unscored = _separability(embeddings, labels, axis)
-    computed_times = [img.umap_computed_at for img in images_with_umap if img.umap_computed_at]
-    computed_at = min(computed_times) if computed_times else None
-
-    points = [
-        UmapFovPointResponse(
-            image_id=image.id,
-            experiment_id=image.experiment_id,
-            x=float(image.umap_x),
-            y=float(image.umap_y),
-            protein_name=image.map_protein.name if image.map_protein else None,
-            protein_color=image.map_protein.color if image.map_protein else "#888888",
-            thumbnail_url=f"/api/images/{image.id}/file?type=thumbnail",
-            original_filename=image.original_filename,
-            group=point_groups[index] if point_groups is not None else None,
-        )
-        for index, image in enumerate(images_with_umap)
-    ]
-
-    return UmapFovDataResponse(
-        points=points,
-        total_images=total_images,
-        facets=facets,
-        separability=separability,
-        separability_unscored=unscored,
-        computed_at=computed_at,
+        bundleness=bundleness,
         is_stale=is_stale,
         refresh_error=refresh_error,
     )
@@ -847,24 +853,24 @@ async def _get_fov_umap(
 
 @router.post("/umap/recompute")
 async def trigger_umap_recomputation(
-    umap_type: UmapType = Query(..., description="Type to recompute: fov or cropped"),
     background_tasks: BackgroundTasks = BackgroundTasks(),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
+    _fov_removed: None = Depends(reject_removed_fov),
 ):
     """
-    Force a UMAP recomputation of the whole corpus for one projection type.
+    Force a UMAP recomputation of the whole crop corpus.
 
-    There is one fit per type, so this affects every reader, not just the caller.
+    There is one shared fit, so this affects every reader, not just the caller.
     Reads schedule refreshes automatically, so this is the retry path for a
     projection whose refresh failed (reads stop rescheduling those) and an escape
     hatch for re-fitting coordinates that are already complete.
     """
     # Clear the recorded failure so reads resume auto-scheduling this projection.
-    clear_refresh_error(umap_type)
-    background_tasks.add_task(refresh_umap_scope, umap_type)
+    clear_refresh_error()
+    background_tasks.add_task(refresh_umap)
 
-    return {"message": f"UMAP recomputation started for {umap_type.value}"}
+    return {"message": "UMAP recomputation started"}
 
 
 @router.get("/status", response_model=FeatureExtractionStatus)
@@ -976,71 +982,3 @@ async def _extract_features_background(crop_ids: list, experiment_id: int) -> No
         logger.exception(
             f"Background feature extraction failed for experiment {experiment_id}: {e}"
         )
-
-
-@router.post("/extract-fov", response_model=FeatureExtractionTriggerResponse)
-async def trigger_fov_feature_extraction(
-    experiment_id: Optional[int] = Query(None, description="Experiment ID (optional)"),
-    background_tasks: BackgroundTasks = BackgroundTasks(),
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
-) -> FeatureExtractionTriggerResponse:
-    """Trigger FOV embedding extraction for images without embeddings. Runs in background."""
-    group_ids = await get_user_group_ids(current_user.id, db)
-    base_conditions = [
-        experiment_owner_filter(current_user.id, group_ids),
-        Image.embedding.is_(None),
-    ]
-
-    if experiment_id:
-        await _verify_experiment_ownership(experiment_id, current_user.id, db)
-        base_conditions.append(Image.experiment_id == experiment_id)
-
-    # Count images without embeddings
-    count_result = await db.execute(
-        select(func.count(Image.id))
-        .join(Experiment, Image.experiment_id == Experiment.id)
-        .where(*base_conditions)
-    )
-    pending_count = count_result.scalar() or 0
-
-    if pending_count == 0:
-        return FeatureExtractionTriggerResponse(
-            message="All FOV images already have embeddings",
-            pending=0,
-        )
-
-    # Get image IDs
-    images_result = await db.execute(
-        select(Image.id)
-        .join(Experiment, Image.experiment_id == Experiment.id)
-        .where(*base_conditions)
-    )
-    image_ids = [row[0] for row in images_result.all()]
-
-    background_tasks.add_task(_extract_fov_features_background, image_ids)
-
-    return FeatureExtractionTriggerResponse(
-        message=f"FOV feature extraction started for {pending_count} images",
-        pending=pending_count,
-    )
-
-
-async def _extract_fov_features_background(image_ids: list) -> None:
-    """Background task for FOV feature extraction."""
-    from database import get_db_context
-    from ml.features import extract_features_for_images
-
-    logger.info(f"Starting background FOV feature extraction for {len(image_ids)} images")
-
-    try:
-        async with get_db_context() as db:
-            result = await extract_features_for_images(image_ids, db)
-            logger.info(
-                f"Background FOV feature extraction complete: "
-                f"{result['success']} success, {result['failed']} failed"
-            )
-    except RuntimeError as e:
-        logger.error(f"Background FOV feature extraction failed (model error): {e}")
-    except Exception as e:
-        logger.exception(f"Background FOV feature extraction failed: {e}")

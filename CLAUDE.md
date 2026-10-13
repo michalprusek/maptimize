@@ -853,9 +853,10 @@ z jednoho sdíleného fitu, který už proběhl, takže zobrazit tři filtrovan�
 odpověď. Dřív filtr mikroskopu na úzký výběr vracel „Need at least N crops" — chyba tam,
 kam patří prázdný graf.
 
-⚠️ **UMAP se od 2026-07-31 fituje GLOBÁLNĚ** — `compute_crop_umap(db)` /
-`compute_fov_umap(db)` už neberou uživatele a nemají `experiment_owner_filter`;
-`refresh_scope_key(umap_type)` je jediný klíč na typ projekce. Souřadnice žijí ve
+⚠️ **UMAP se od 2026-07-31 fituje GLOBÁLNĚ** — `compute_crop_umap(db)` nebere
+uživatele a nemá `experiment_owner_filter`. Od 2026-10-13 existuje jediná projekce
+(cropy), takže stav refreshe jsou dvě modulové proměnné (`_refresh_inflight`,
+`_refresh_error`), ne mapa podle typu. Souřadnice žijí ve
 sloupcích `cell_crops.umap_x/umap_y`, tedy **jedna projekce uložená na řádku**, což
 je bezpečné jen dokud každý čtenář vidí stejný korpus. S členstvím ve více skupinách
 to přestalo platit: člen skupin A+B čte `vlastní ∪ A ∪ B`, kolega jen z A čte
@@ -964,7 +965,8 @@ Skupiny žijí v URL jako opakovaný `g=<jméno>|<členové>` (jméno je vše p�
 Strop je 8 skupin — tolik barev má paleta (Okabe–Ito bez černé + jedna Tolova) — a
 `MAX_GROUPS` je na backendu i frontendu schválně stejné číslo.
 
-MCP: `measure_separability` má `label_by=group` + pole `group`; `SERVER_VERSION` **4.7.0**.
+MCP: `measure_separability` má `label_by=group` + pole `group`; `SERVER_VERSION` **4.7.0**
+(od 2026-10-13 **5.0.0**, viz „Bundleness skóre").
 
 `GET /api/embeddings/separability` vrací **jen** skóre (MCP tool `measure_separability`) —
 projekce jsou tisíce souřadnic a agent se ptá na jedno číslo. Vrací **404, ne null**, když
@@ -974,6 +976,82 @@ Parametry chodí do handleru jako jedna FastAPI dependency (`facet_selection` �
 `FacetSelection`). ⚠️ To je záměr: testy volají handlery **přímo**, a každý parametr
 s defaultem `Query(...)`, který test nepředá, doteče do těla jako objekt `Query` — ne
 `None`. Se čtyřmi filtry by to byla čtyřnásobná mina.
+
+### Bundleness skóre a konec FOV projekce (od 2026-10-13)
+
+Každý crop nese **předpočítané** skóre bundleness: `cell_crops.bundleness_score` +
+`bundleness_model` (verze modelu, která ho spočítala). Dashboard ukazuje průměr přes
+body aktuálního filtru v `BundlenessBadge` hned vedle separability, a per-class průměr
+v legendě — nad **týmiž body a týmiž třídami** (`labels`), na kterých se počítá
+separabilita. Spec: `docs/superpowers/specs/2026-10-13-bundleness-score-design.md`.
+
+**Model** (`backend/ml/bundleness/`): learning-to-rank nad zmrazeným DINOv3 embeddingem —
+StandardScaler → PCA(25, whiten) → Bradley-Terry logistická hlava bez interceptu,
+trénovaná na párových porovnáních metriky 7. Celý řetěz je afinní, takže se **složí do
+jednoho vektoru**: `score = weights · embedding + bias`. Artefakt je diffovatelný JSON
+(`model_v1.json`), inference je numpy dot — žádný sklearn, pickle ani GPU v API procesu
+(`training.py` importuje jen `scripts/train_bundleness.py`).
+
+**Jednotka je z-skóre vůči trénovacím cropům** (0 = průměrný anotovaný crop, +1 = o jednu
+SD svazkovanější), zmrazené do vah při tréninku. Percentil vůči živému korpusu by se
+hýbal s každým uploadem.
+
+⚠️ **Co model umí a co ne (měřeno 2026-10-13, 5090 porovnání, 361 cropů, 4 anotátoři):**
+5-fold po cropech ρ = 0,86. Leave-one-experiment-out: pooled ρ = 0,83, ale **uvnitř
+proteinu, který model nikdy neviděl, jen 0,65** (min. 0,56). Pooled číslo lichotí —
+každý trénovací experiment je jiný protein a samotné „poznat protein" dá 0,63. Proto
+`validate()` hlásí jako hlavní číslo **within-group** korelaci a test
+`test_validation_headline_cannot_be_earned_by_recognising_the_group` to zamyká.
+⚠️ **Trénink pokrývá jen Airyscan, 6 MAPů, nemodifikované mikrotubuly.** 3D SIM,
+„Airyscan calibrate" (1726 z 2656 cropů!) a všechny PTM podmínky jsou **extrapolace bez
+jediného validačního páru**. Tooltip badge i popis MCP toolu to říkají; neodstraňuj to.
+Rozšíření = nechat anotátory porovnat cropy z těch podmínek a přetrénovat.
+
+⚠️ **Skóre je odvozená data a zapisují ho právě dvě místa** (`services/bundleness_service.py`):
+- `apply_score(crop)` — ve stejné transakci, kde se přiřazuje embedding
+  (`extract_features_for_crops`, import). Úprava bboxu embedding přepočítá, takže skóre
+  jde s ním; nic dalšího do sloupce psát nesmí.
+- `backfill(db)` — při startu (`main.py` lifespan), pro řádky, jejichž uložená **verze**
+  se liší od `ACTIVE_VERSION`. **Výběr podle verze, ne podle `NULL` skóre**, je to, co dělá
+  z nasazení nového modelu jednořádkovou změnu: zvedni `ACTIVE_VERSION`, commitni
+  artefakt, rebuild — korpus se přepočítá sám (2656 cropů za 0,7 s).
+
+⚠️ **Průměr nikdy nemíchá verze.** `summarise()` i tooltip bodu (`_current_score`) berou
+jen skóre aktivní verze; dvě verze jsou dvě škály. A **chybějící průměr je `null`/404,
+nikdy 0** — nula tu znamená „přesně průměrný crop".
+
+⚠️ **Model přijme jen embedding z enkodéru, na kterém byl trénovaný**
+(`model.accepts(crop.embedding_model)`). Vektor z DINOv2 má správnou délku a špatný
+význam a oskóroval by se bez chyby.
+
+⚠️ **`n_scored` cestuje s průměrem** (badge píše `n=312/340`, když se liší) ze stejného
+důvodu, z jakého separabilita cestuje s `n_classes`/`n_points`. A cropy z jednoho
+experimentu nejsou nezávislé repliky — proto UI ani MCP neukazují p-hodnoty.
+
+Přetrénování: `backend/scripts/train_bundleness.py --version v2` (read-only proti DB,
+návod na spuštění v docstringu; odmítne přepsat existující verzi).
+
+#### FOV projekce je pryč
+
+Dashboard i API pracují **jen s cropy**. Smazáno: `UmapType`, FOV větev
+`/api/embeddings/umap`, `/extract-fov`, `extract_features_for_images`, krok FOV
+embeddingu v `image_processor`, FOV část exportu/importu (starý archiv se naimportuje,
+`embeddings/fov_*` se ignoruje). `rag_embedding` (Qwen, hledání FOV v chatu) se
+**netýká** — to je jiný embedding.
+
+⚠️ **Sloupce `images.embedding/embedding_model/umap_x/umap_y/umap_computed_at` v produkční
+DB zůstaly i s daty, ale ORM je nemapuje** a `ensure_schema_updates()` je nezakládá.
+Nemapovaný sloupec nejde omylem přečíst a `SELECT images` přestal tahat 1024 floatů na
+řádek. Čistá DB je tedy nemá vůbec — **nepiš raw SQL, které je jmenuje**
+(`user_data_provisioning` je kvůli tomu upravené).
+
+⚠️ **Starý tab s FOV tlačítkem dostane 410, ne cropy pod nadpisem „FOV".**
+`reject_removed_fov` je stejný tombstone jako u LDA; loguje každý zásah, takže ho lze
+smazat, až log utichne.
+
+MCP: nový `measure_bundleness` (sdílí parametry s `measure_separability` přes YAML
+kotvu `&corpus_slice_params`, takže „stejný výřez" znamená stejné argumenty),
+`umap_type` zmizel → `SERVER_VERSION` **5.0.0**.
 
 ### Složky experimentů — pátá skupinová výjimka (od 2026-08-12)
 

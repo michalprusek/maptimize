@@ -46,7 +46,11 @@ class CellCrop(Base):
     std_path: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
 
     # Computed metrics
+    # Predicted bundleness: a z-score against the crops the model was trained on
+    # (0 = average annotated crop). Derived from `embedding` by the model version
+    # named beside it — written only by services/bundleness_service.py.
     bundleness_score: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    bundleness_model: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
     mean_intensity: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     skewness: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     kurtosis: Mapped[Optional[float]] = mapped_column(Float, nullable=True)

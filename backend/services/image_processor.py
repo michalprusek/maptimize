@@ -195,7 +195,6 @@ class ImageProcessor:
         - Loads existing MIP projection from Phase 1
         - If detect_cells=True: runs YOLO detection, creates cell crops, extracts DINOv3 embeddings
         - If detect_cells=False: marks image as READY without creating crops (FOV only mode)
-        - Always extracts FOV-level embedding regardless of detect_cells setting
         - Sets status to READY
 
         Args:
@@ -268,11 +267,6 @@ class ImageProcessor:
                     logger.info("Detection disabled - FOV will be shown without crops")
                     image.status = UploadStatus.READY
                     image.processed_at = datetime.now(timezone.utc)
-
-                # Extract FOV embedding (always, regardless of detect_cells)
-                t0 = time.monotonic()
-                await self._extract_fov_embedding(db, image)
-                logger.info("⏱ Phase2 [%d] fov_embedding: %.2fs", image.id, time.monotonic() - t0)
 
                 # Compute SAM embedding for segmentation
                 t0 = time.monotonic()
@@ -508,27 +502,6 @@ class ImageProcessor:
             logger.error(f"DINOv3 model error during feature extraction: {e}")
         except Exception as e:
             logger.exception(f"Unexpected feature extraction error: {e}")
-
-    async def _extract_fov_embedding(
-        self,
-        db: AsyncSession,
-        image: Image
-    ) -> None:
-        """Extract DINOv3 embedding for FOV MIP projection (non-fatal on failure)."""
-        try:
-            from ml.features import extract_features_for_images
-            result = await extract_features_for_images([image.id], db)
-
-            if result['success'] > 0:
-                logger.info(f"FOV embedding created for image {image.id}")
-            elif result['failed'] > 0:
-                logger.warning(f"FOV embedding extraction failed for image {image.id}")
-        except ImportError as e:
-            logger.error(f"Feature extraction module not available: {e}")
-        except RuntimeError as e:
-            logger.error(f"DINOv3 model error during FOV feature extraction: {e}")
-        except Exception as e:
-            logger.exception(f"Unexpected FOV feature extraction error: {e}")
 
     async def _compute_sam_embedding(
         self,

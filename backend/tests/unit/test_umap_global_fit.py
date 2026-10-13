@@ -12,34 +12,40 @@ are returned, never which are fitted.
 import inspect
 
 from services import umap_service
-from services.umap_service import UmapType, refresh_scope_key
+from tests.unit.conftest import make_result
 
 
 def test_the_fit_corpus_does_not_depend_on_the_caller():
-    for fn in (umap_service.compute_crop_umap, umap_service.compute_fov_umap):
-        src = inspect.getsource(fn)
-        assert "experiment_owner_filter" not in src, (
-            f"{fn.__name__} must not scope its fit to the caller -- two members with "
-            "different group sets would overwrite each other's coordinates"
-        )
-        assert "user_id" not in inspect.signature(fn).parameters, (
-            f"{fn.__name__} still takes a user, which is how a per-caller fit creeps back"
-        )
+    fn = umap_service.compute_crop_umap
+    src = inspect.getsource(fn)
+    assert "experiment_owner_filter" not in src, (
+        "compute_crop_umap must not scope its fit to the caller -- two members with "
+        "different group sets would overwrite each other's coordinates"
+    )
+    assert set(inspect.signature(fn).parameters) == {"db"}, (
+        "compute_crop_umap takes a caller again, which is how a per-caller fit creeps back"
+    )
 
 
-def test_scope_key_no_longer_carries_a_user_or_a_group():
-    assert refresh_scope_key(UmapType.CROPPED) == UmapType.CROPPED.value
-    assert refresh_scope_key(UmapType.FOV) == UmapType.FOV.value
+async def test_the_fit_query_selects_every_embedded_crop(mock_db):
+    """The emitted SQL, not the source text: no owner, no group, no experiment."""
+    mock_db.execute.return_value = make_result(scalars_all=[])
+    await umap_service.compute_crop_umap(mock_db)
+
+    stmt = mock_db.execute.await_args.args[0]
+    where = str(stmt.whereclause.compile(compile_kwargs={"literal_binds": True}))
+    assert where == "cell_crops.embedding IS NOT NULL"
 
 
-def test_refresh_helpers_take_only_the_projection_type():
+def test_refresh_helpers_take_no_caller_and_no_projection_key():
+    # One projection, fitted over everything: nothing to key the refresh by.
     for fn in (
-        umap_service.refresh_umap_scope,
+        umap_service.refresh_umap,
         umap_service.get_refresh_error,
         umap_service.clear_refresh_error,
     ):
         params = set(inspect.signature(fn).parameters)
-        assert params == {"umap_type"}, f"{fn.__name__} takes {params}"
+        assert params == set(), f"{fn.__name__} takes {params}"
 
 
 def test_read_endpoints_still_filter_by_acl():

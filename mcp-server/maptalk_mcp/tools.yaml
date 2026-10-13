@@ -1236,7 +1236,7 @@ tools:
   - name: measure_separability
     annotations: {readOnlyHint: true, openWorldHint: false}
     description: >
-      Measure how cleanly one slice of the image corpus separates along one
+      Measure how cleanly one slice of the cell-crop corpus separates along one
       dimension. Returns a single silhouette score computed on the raw DINOv3
       embeddings (-1..1, higher = better separated), with the number of classes
       and labelled points that went into it. Use it to answer questions of the
@@ -1254,25 +1254,21 @@ tools:
     handler: http_json
     method: GET
     path: /api/embeddings/separability
-    params:
-      - name: umap_type
-        in: query
-        type: string
-        enum: [cropped, fov]
-        default: cropped
-        description: >
-          Which corpus: individual cell crops (default, far more points) or
-          whole field-of-view images.
+    # Shared with measure_bundleness below (YAML anchor): the two tools slice the
+    # corpus identically, so "the same subset" means the same arguments.
+    params: &corpus_slice_params
       - name: label_by
         in: query
         type: string
         enum: [protein, microscope, ptm, cell_line, experiment, group]
         default: protein
         description: >
-          The dimension whose values are treated as the classes. Use "group"
-          to define the classes yourself with the `group` parameter — the only
-          way to compare sets that no single dimension expresses, e.g. two
-          experiments pooled against a third, or one protein under two PTMs.
+          The dimension whose values are treated as the classes (the classes
+          scored by measure_separability, the breakdown of measure_bundleness).
+          Use "group" to define the classes yourself with the `group` parameter
+          — the only way to compare sets that no single dimension expresses,
+          e.g. two experiments pooled against a third, or one protein under two
+          PTMs.
       - name: group
         in: query
         type: array
@@ -1319,6 +1315,33 @@ tools:
         description: >
           Restrict to these cell lines; 0 means "no cell line assigned". Use it
           to ask whether a difference holds within one biological background.
+
+  - name: measure_bundleness
+    annotations: {readOnlyHint: true, openWorldHint: false}
+    description: >
+      Mean predicted microtubule bundleness of one slice of the cell-crop corpus,
+      overall and per class. Every crop carries a precomputed score from a model
+      trained on the lab's own pairwise "which cell is more bundled?" judgements
+      (a Bradley-Terry ranking head on the DINOv3 embedding). UNIT: a z-score
+      against the crops the model was trained on — 0 is the average annotated
+      crop, +1 is one standard deviation more bundled; it is a relative ranking
+      scale, not a physical quantity. Use it to answer "is X more bundled than
+      Y?": slice with the filters (OR within a facet, AND across facets, id 0 =
+      not assigned) and read `classes`, which breaks the mean down by `label_by`
+      (label = the id on that axis, or the group index with label_by=group).
+      ALWAYS report n_scored (and n_points when they differ) with a mean, and sd
+      when comparing classes — crops from one experiment are not independent
+      replicates, so do not present a difference between two means as
+      statistically significant. SCOPE: the model was validated on Airyscan
+      images of six MAPs on unmodified microtubules (rank correlation with the
+      annotators about 0.65 within a protein it never saw, 0.83 across
+      proteins); for other microscopes or PTM conditions it is an extrapolation
+      — say so. Returns 404 when no crop in the slice has a score. Per-crop
+      values are in cell_crops.bundleness_score (query_database).
+    handler: http_json
+    method: GET
+    path: /api/embeddings/bundleness
+    params: *corpus_slice_params
 
   # -- Proteins (shared reference data) --------------------------------------
   - name: list_proteins
@@ -1841,9 +1864,11 @@ tools:
       images(id, experiment_id, map_protein_id, original_filename, width, height,
       z_slices, file_size, status, created_at, processed_at);
       cell_crops(id, image_id, map_protein_id, bbox_x, bbox_y, bbox_w, bbox_h,
-      bbox_angle, detection_confidence, bundleness_score, mean_intensity, skewness,
-      kurtosis, excluded, created_at);  -- bbox_angle: degrees about the box
-      centre, NULL = axis-aligned;
+      bbox_angle, detection_confidence, bundleness_score, bundleness_model,
+      mean_intensity, skewness, kurtosis, excluded, created_at);  -- bbox_angle:
+      degrees about the box centre, NULL = axis-aligned; bundleness_score:
+      predicted bundleness as a z-score against the model's training crops (0 =
+      average annotated crop), produced by the model version in bundleness_model;
       map_proteins(id, name, full_name, uniprot_id, gene_name, organism,
       sequence_length) [shared, no user filter];
       microscopes(id, name, manufacturer, model, objective, magnification)

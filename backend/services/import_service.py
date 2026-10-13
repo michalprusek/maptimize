@@ -36,6 +36,7 @@ from schemas.export_import import (
     ImportStatusResponse,
     ImportValidationResult,
 )
+from services.bundleness_service import apply_score
 from services.annotation_converters import detect_import_format, parse_annotations
 from services.job_manager import BaseJobManager
 
@@ -709,7 +710,6 @@ class ImportService(BaseJobManager[ImportJobData]):
         # Import embeddings (global, after all experiments)
         await self._import_maptimize_embeddings(
             zf=zf,
-            old_to_new_image_ids=old_to_new_image_ids,
             old_to_new_crop_ids=old_to_new_crop_ids,
             file_list=file_list,
             db=db
@@ -756,7 +756,6 @@ class ImportService(BaseJobManager[ImportJobData]):
                 height=img_meta.get("height"),
                 z_slices=img_meta.get("z_slices"),
                 status=UploadStatus.READY,
-                embedding_model=img_meta.get("embedding_model"),
             )
             db.add(image)
             await db.flush()
@@ -802,7 +801,6 @@ class ImportService(BaseJobManager[ImportJobData]):
                 bbox_angle=crop_meta.get("bbox_angle"),
                 detection_confidence=crop_meta.get("detection_confidence"),
                 map_protein_id=map_protein_id,
-                bundleness_score=crop_meta.get("bundleness_score"),
                 mean_intensity=crop_meta.get("mean_intensity"),
                 mip_path=mip_path,
                 sum_crop_path=sum_path,
@@ -897,33 +895,35 @@ class ImportService(BaseJobManager[ImportJobData]):
     async def _import_maptimize_embeddings(
         self,
         zf: zipfile.ZipFile,
-        old_to_new_image_ids: Dict[int, int],
         old_to_new_crop_ids: Dict[int, int],
         file_list: List[str],
         db: AsyncSession
     ) -> None:
-        """Import embeddings from MAPtimize format."""
-        # Define embedding sources to import
-        embedding_configs = [
-            ("fov", "embeddings/fov_embeddings.npy", "embeddings/fov_ids.json", old_to_new_image_ids, Image),
-            ("crop", "embeddings/crop_embeddings.npy", "embeddings/crop_ids.json", old_to_new_crop_ids, CellCrop),
-        ]
+        """Import crop embeddings from MAPtimize format.
 
-        for name, emb_path, ids_path, id_mapping, model_class in embedding_configs:
-            try:
-                embeddings, old_ids = load_embeddings_from_zip(zf, emb_path, ids_path, file_list)
-                if embeddings is None:
-                    continue
+        An archive exported before 2026-10-13 also carries
+        ``embeddings/fov_*``; those are ignored, since FOV embeddings are no
+        longer computed or read.
+        """
+        try:
+            embeddings, old_ids = load_embeddings_from_zip(
+                zf, "embeddings/crop_embeddings.npy", "embeddings/crop_ids.json", file_list
+            )
+            if embeddings is None:
+                return
 
-                for i, old_id in enumerate(old_ids):
-                    new_id = id_mapping.get(old_id)
-                    if new_id and i < len(embeddings):
-                        result = await db.execute(select(model_class).where(model_class.id == new_id))
-                        record = result.scalar_one_or_none()
-                        if record:
-                            record.embedding = embeddings[i].tolist()
-            except Exception as e:
-                logger.warning(f"Failed to import {name} embeddings: {e}")
+            for i, old_id in enumerate(old_ids):
+                new_id = old_to_new_crop_ids.get(old_id)
+                if new_id and i < len(embeddings):
+                    result = await db.execute(select(CellCrop).where(CellCrop.id == new_id))
+                    crop = result.scalar_one_or_none()
+                    if crop:
+                        crop.embedding = embeddings[i].tolist()
+                        # Rescored here rather than trusted from the archive:
+                        # the exporting instance may run another model version.
+                        apply_score(crop)
+        except Exception as e:
+            logger.warning(f"Failed to import crop embeddings: {e}")
 
     async def _import_image(
         self,

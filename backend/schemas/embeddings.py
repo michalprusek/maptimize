@@ -1,25 +1,8 @@
 """Schemas for embedding and UMAP visualization endpoints."""
 
-from datetime import datetime
 from enum import Enum
-from typing import List, Optional, Union
+from typing import List, Optional
 from pydantic import BaseModel, Field
-
-
-class UmapType(str, Enum):
-    """Type of UMAP visualization.
-
-    SSOT for which corpus a projection covers. Pass this around rather than bare
-    strings — a dispatch on unvalidated strings falls through to one branch
-    silently, and a wrong corpus refresh reports success while fixing nothing.
-    """
-    FOV = "fov"
-    CROPPED = "cropped"
-
-    @property
-    def item_word(self) -> str:
-        """Plural noun for this corpus, for log and error messages."""
-        return "images" if self is UmapType.FOV else "crops"
 
 
 class LabelAxis(str, Enum):
@@ -110,14 +93,6 @@ class UmapFacetRow(BaseModel):
     count: int = Field(..., description="Points with embeddings in this bucket")
 
 
-# One wording for both point types: the two must not drift on what -1 means.
-_GROUP_FIELD = (
-    "Only with label_by=group: index of the caller's group this point falls in, "
-    "-1 when it falls in more than one (and is left out of the score), null "
-    "when it is in none."
-)
-
-
 class UmapPointResponse(BaseModel):
     """Single point in UMAP visualization."""
 
@@ -126,11 +101,77 @@ class UmapPointResponse(BaseModel):
     experiment_id: int = Field(..., description="Experiment ID for navigation")
     x: float = Field(..., description="UMAP x coordinate")
     y: float = Field(..., description="UMAP y coordinate")
+    protein_id: Optional[int] = Field(
+        None,
+        description=(
+            "MAP protein id, or null if unassigned. On the point, unlike "
+            "microscope/PTM/cell line, because protein is per crop — and it is "
+            "the key the per-class bundleness means are matched to."
+        ),
+    )
     protein_name: Optional[str] = Field(None, description="MAP protein name")
     protein_color: str = Field("#888888", description="Hex color for visualization")
     thumbnail_url: str = Field(..., description="URL to crop thumbnail")
-    bundleness_score: Optional[float] = Field(None, description="Bundleness metric")
-    group: Optional[int] = Field(None, description=_GROUP_FIELD)
+    bundleness_score: Optional[float] = Field(
+        None,
+        description=(
+            "Predicted bundleness of this crop as a z-score against the crops "
+            "the model was trained on (0 = average annotated crop), or null if "
+            "the active model has not scored it."
+        ),
+    )
+    group: Optional[int] = Field(
+        None,
+        description=(
+            "Only with label_by=group: index of the caller's group this point "
+            "falls in, -1 when it falls in more than one (and is left out of "
+            "the score), null when it is in none."
+        ),
+    )
+
+
+class BundlenessClassResponse(BaseModel):
+    """Mean bundleness of the points carrying one value on the label axis."""
+
+    label: int = Field(
+        ...,
+        description=(
+            "The class: an id on the label_by axis (protein, microscope, PTM, "
+            "cell line or experiment id), or the group index with label_by=group"
+        ),
+    )
+    mean: float = Field(..., description="Mean score of the class")
+    sd: Optional[float] = Field(None, description="Sample SD; null for a single point")
+    n_scored: int = Field(..., description="Scored points in the class")
+
+
+class BundlenessResponse(BaseModel):
+    """Mean predicted bundleness of the points returned, with what qualifies it.
+
+    The unit is a z-score against the crops the model was trained on: 0 is the
+    average annotated crop, +1 is one standard deviation more bundled. ``mean``
+    never travels without ``n_scored`` and ``n_points`` — a mean over a handful
+    of the points on screen is a different statement from one over all of them.
+
+    The model ranks crops; it was validated on Airyscan images of six MAPs on
+    unmodified microtubules (``model_version`` names the artifact, whose JSON
+    carries the numbers). Outside that range the score is an extrapolation.
+    """
+
+    mean: float = Field(..., description="Mean score over the scored points")
+    sd: Optional[float] = Field(None, description="Sample SD; null for a single point")
+    n_scored: int = Field(..., description="Points scored by the active model")
+    n_points: int = Field(..., description="Points the selection returned")
+    model_version: str = Field(..., description="Bundleness model that produced the scores")
+    label_by: LabelAxis = Field(..., description="Dimension `classes` breaks the mean down by")
+    classes: List[BundlenessClassResponse] = Field(
+        default_factory=list,
+        description=(
+            "The same mean per class of the label_by axis — the classes "
+            "separability compares. Points with no value on the axis are in the "
+            "overall mean and in no class."
+        ),
+    )
 
 
 class UmapDataResponse(BaseModel):
@@ -156,68 +197,17 @@ class UmapDataResponse(BaseModel):
             "which threshold withheld the score, with the counts behind it."
         ),
     )
+    bundleness: Optional[BundlenessResponse] = Field(
+        None,
+        description=(
+            "Mean predicted bundleness of these points, overall and per class "
+            "of the label axis, or null when none of them has a score."
+        ),
+    )
     is_stale: bool = Field(
         False,
         description=(
             "Crops have embeddings but no coordinates yet (new upload or edit). "
-            "A refresh is running in the background; poll until this clears."
-        ),
-    )
-    refresh_error: Optional[str] = Field(
-        None,
-        description=(
-            "The background refresh for this scope failed. Coordinates are "
-            "missing and will not arrive on their own — stop polling, show this, "
-            "and retry via POST /umap/recompute."
-        ),
-    )
-
-
-class UmapFovPointResponse(BaseModel):
-    """Single FOV point in UMAP visualization."""
-
-    image_id: int = Field(..., description="Image ID")
-    experiment_id: int = Field(..., description="Experiment ID")
-    x: float = Field(..., description="UMAP x coordinate")
-    y: float = Field(..., description="UMAP y coordinate")
-    protein_name: Optional[str] = Field(None, description="MAP protein name")
-    protein_color: str = Field("#888888", description="Hex color for visualization")
-    thumbnail_url: str = Field(..., description="URL to FOV thumbnail")
-    original_filename: str = Field(..., description="Original filename")
-    group: Optional[int] = Field(None, description=_GROUP_FIELD)
-
-
-class UmapFovDataResponse(BaseModel):
-    """UMAP visualization data response for FOV images."""
-
-    points: List[UmapFovPointResponse] = Field(..., description="UMAP FOV points")
-    total_images: int = Field(..., description="Total number of FOV images")
-    facets: List[UmapFacetRow] = Field(
-        default_factory=list,
-        description="Filter options with counts, over the scope before facet filters",
-    )
-    separability: Optional[SeparabilityResponse] = Field(
-        None,
-        description=(
-            "How cleanly these points separate along the requested label axis, "
-            "or null when too few of them carry a value to say anything."
-        ),
-    )
-    separability_unscored: Optional[SeparabilityUnscoredResponse] = Field(
-        None,
-        description=(
-            "Set exactly when points came back but `separability` is null: "
-            "which threshold withheld the score, with the counts behind it."
-        ),
-    )
-    computed_at: Optional[datetime] = Field(
-        None,
-        description="When the projection these points come from was fitted",
-    )
-    is_stale: bool = Field(
-        False,
-        description=(
-            "Images have embeddings but no coordinates yet (new upload or edit). "
             "A refresh is running in the background; poll until this clears."
         ),
     )

@@ -160,6 +160,7 @@ async def extract_features_for_crops(crop_ids: List[int], db) -> dict:
     """
     from sqlalchemy import select
     from models.cell_crop import CellCrop
+    from services.bundleness_service import apply_score
 
     extractor = FeatureExtractor()
     encoder = get_encoder()  # Get encoder to access model_name
@@ -206,6 +207,10 @@ async def extract_features_for_crops(crop_ids: List[int], db) -> dict:
                 if embedding is not None:
                     crop.embedding = embedding.tolist()
                     crop.embedding_model = encoder.model_name
+                    # The score is a function of the embedding, so it is
+                    # rewritten in the same breath — an edited bbox must not
+                    # keep the number its old pixels earned.
+                    apply_score(crop)
                     results["success"] += 1
                 else:
                     results["failed"] += 1
@@ -229,91 +234,6 @@ async def extract_features_for_crops(crop_ids: List[int], db) -> dict:
     else:
         logger.info(
             f"Feature extraction complete: {results['success']} success"
-        )
-
-    return results
-
-
-async def extract_features_for_images(image_ids: List[int], db) -> dict:
-    """
-    Extract DINOv3 features for FOV images and update database.
-
-    Args:
-        image_ids: List of Image IDs to process.
-        db: AsyncSession database connection.
-
-    Returns:
-        Dict with success/failed counts.
-    """
-    from sqlalchemy import select
-    from models.image import Image
-
-    extractor = FeatureExtractor()
-    encoder = get_encoder()
-    results = {"success": 0, "failed": 0, "total": len(image_ids)}
-
-    if not image_ids:
-        return results
-
-    # Fetch images from database
-    result = await db.execute(
-        select(Image).where(Image.id.in_(image_ids))
-    )
-    images = result.scalars().all()
-
-    if not images:
-        logger.warning(f"No images found for IDs: {image_ids}")
-        return results
-
-    logger.info(f"Extracting DINOv3 features for {len(images)} FOV images...")
-
-    # Process in batches
-    for i in range(0, len(images), BATCH_SIZE):
-        batch_images = images[i:i + BATCH_SIZE]
-
-        # Use MIP path for FOV embedding (preferred) or fall back to thumbnail
-        images_with_paths = []
-        paths = []
-        for img in batch_images:
-            path = img.mip_path or img.thumbnail_path
-            if path:
-                images_with_paths.append(img)
-                paths.append(path)
-            else:
-                logger.warning(f"Image {img.id} has no mip_path or thumbnail_path, skipping")
-                results["failed"] += 1
-
-        if not paths:
-            continue
-
-        try:
-            embeddings = await extractor.extract_batch_async(paths)
-
-            for img, embedding in zip(images_with_paths, embeddings):
-                if embedding is not None:
-                    img.embedding = embedding.tolist()
-                    img.embedding_model = encoder.model_name
-                    results["success"] += 1
-                else:
-                    results["failed"] += 1
-
-        except RuntimeError as e:
-            logger.error(f"FOV batch extraction failed (runtime): {e}")
-            results["failed"] += len(images_with_paths)
-        except Exception as e:
-            logger.exception(f"FOV batch extraction failed unexpectedly: {e}")
-            results["failed"] += len(images_with_paths)
-
-    await db.commit()
-
-    if results["failed"] > 0:
-        logger.warning(
-            f"FOV feature extraction completed with {results['failed']} failures "
-            f"out of {results['total']} images"
-        )
-    else:
-        logger.info(
-            f"FOV feature extraction complete: {results['success']} success"
         )
 
     return results

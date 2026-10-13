@@ -10,6 +10,7 @@ import json
 import os
 import zipfile
 from datetime import datetime, timezone
+from unittest.mock import patch
 
 import numpy as np
 import pytest
@@ -264,12 +265,12 @@ def test_load_embeddings_from_zip_present():
     buf = io.BytesIO()
     np.save(buf, arr)
     data = make_zip({
-        "embeddings/fov_embeddings.npy": buf.getvalue(),
-        "embeddings/fov_ids.json": json.dumps([10, 11]).encode(),
+        "embeddings/crop_embeddings.npy": buf.getvalue(),
+        "embeddings/crop_ids.json": json.dumps([10, 11]).encode(),
     })
     with zipfile.ZipFile(io.BytesIO(data)) as zf:
         emb, ids = load_embeddings_from_zip(
-            zf, "embeddings/fov_embeddings.npy", "embeddings/fov_ids.json", zf.namelist()
+            zf, "embeddings/crop_embeddings.npy", "embeddings/crop_ids.json", zf.namelist()
         )
     assert ids == [10, 11]
     assert emb.shape == (2, 2)
@@ -373,7 +374,7 @@ async def test_validate_import_maptimize_manifest(tmp_path):
     p.write_bytes(make_zip({
         "manifest.json": manifest,
         "experiments/1/images/1/mip.tiff": make_tiff(),
-        "embeddings/fov_embeddings.npy": b"\x00",
+        "embeddings/crop_embeddings.npy": b"\x00",
         "experiments/1/masks/fov_1.png": make_mask_png(),
     }))
     res = await svc.validate_import(str(p), user_id=1)
@@ -626,6 +627,12 @@ async def test_import_from_zip_image_import_failure(tmp_path, mock_db, monkeypat
 
 
 def build_maptimize_zip() -> bytes:
+    """An archive as exported BEFORE the FOV projection was removed.
+
+    Deliberately keeps what newer exports no longer write — ``embeddings/fov_*``,
+    the image's ``embedding_model`` and the crop's ``bundleness_score`` — because
+    old archives are exactly the ones that must keep importing.
+    """
     arr = np.array([[0.1, 0.2]], dtype=np.float32)
     fov_buf = io.BytesIO(); np.save(fov_buf, arr)
     crop_buf = io.BytesIO(); np.save(crop_buf, arr)
@@ -903,33 +910,71 @@ def test_png_mask_to_polygon_bad_bytes():
 # ===========================================================================
 
 
-async def test_import_embeddings_assigns(mock_db):
+def _embedding_zip(crop_ids, with_legacy_fov=False):
+    arr = np.array([[1.0, 2.0]] * len(crop_ids), dtype=np.float32)
+    buf = io.BytesIO(); np.save(buf, arr)
+    files = {
+        "embeddings/crop_embeddings.npy": buf.getvalue(),
+        "embeddings/crop_ids.json": json.dumps(crop_ids).encode(),
+    }
+    if with_legacy_fov:
+        fov_buf = io.BytesIO(); np.save(fov_buf, np.array([[9.0, 9.0]], dtype=np.float32))
+        files["embeddings/fov_embeddings.npy"] = fov_buf.getvalue()
+        files["embeddings/fov_ids.json"] = json.dumps([100]).encode()
+    return make_zip(files)
+
+
+async def test_import_embeddings_assigns_and_rescores_the_crop(mock_db):
     svc = fresh_service()
-    arr = np.array([[1.0, 2.0]], dtype=np.float32)
-    fov_buf = io.BytesIO(); np.save(fov_buf, arr)
-    crop_buf = io.BytesIO(); np.save(crop_buf, arr)
+    crop = CellCrop(image_id=1); crop.id = 2
+    mock_db.execute.side_effect = [make_result(scalar=crop)]
+
+    def score(scored):
+        # The embedding must already be on the row when it is scored: the score
+        # is a function of it, so scoring first would score the old vector.
+        assert scored.embedding == [1.0, 2.0]
+
+    with zipfile.ZipFile(io.BytesIO(_embedding_zip([200]))) as zf, \
+         patch.object(mod, "apply_score", side_effect=score) as apply_score:
+        await svc._import_maptimize_embeddings(
+            zf=zf, old_to_new_crop_ids={200: 2},
+            file_list=zf.namelist(), db=mock_db,
+        )
+    assert crop.embedding == [1.0, 2.0]
+    # Rescored locally, not trusted from the archive.
+    apply_score.assert_called_once_with(crop)
+
+
+async def test_import_embeddings_ignores_fov_files_in_an_old_archive(mock_db):
+    # Archives exported before 2026-10-13 carry embeddings/fov_*. Nothing reads
+    # FOV embeddings any more, so they must cost no query and write nothing.
+    svc = fresh_service()
+    crop = CellCrop(image_id=1); crop.id = 2
+    mock_db.execute.side_effect = [make_result(scalar=crop)]
+    with zipfile.ZipFile(io.BytesIO(_embedding_zip([200], with_legacy_fov=True))) as zf, \
+         patch.object(mod, "apply_score"):
+        await svc._import_maptimize_embeddings(
+            zf=zf, old_to_new_crop_ids={200: 2},
+            file_list=zf.namelist(), db=mock_db,
+        )
+    assert mock_db.execute.await_count == 1
+    assert "cell_crops" in str(mock_db.execute.await_args.args[0])
+    assert crop.embedding == [1.0, 2.0]
+
+
+async def test_import_embeddings_fov_only_archive_is_a_noop(mock_db):
+    svc = fresh_service()
+    fov_buf = io.BytesIO(); np.save(fov_buf, np.array([[9.0, 9.0]], dtype=np.float32))
     data = make_zip({
         "embeddings/fov_embeddings.npy": fov_buf.getvalue(),
         "embeddings/fov_ids.json": json.dumps([100]).encode(),
-        "embeddings/crop_embeddings.npy": crop_buf.getvalue(),
-        "embeddings/crop_ids.json": json.dumps([200]).encode(),
     })
-    image = Image(experiment_id=1, original_filename="a"); image.id = 1
-    crop = CellCrop(image_id=1); crop.id = 2
-    # First execute -> image record, second -> crop record
-    mock_db.execute.side_effect = [
-        make_result(scalar=image),
-        make_result(scalar=crop),
-    ]
     with zipfile.ZipFile(io.BytesIO(data)) as zf:
         await svc._import_maptimize_embeddings(
-            zf=zf,
-            old_to_new_image_ids={100: 1},
-            old_to_new_crop_ids={200: 2},
+            zf=zf, old_to_new_crop_ids={100: 1},
             file_list=zf.namelist(), db=mock_db,
         )
-    assert image.embedding == [1.0, 2.0]
-    assert crop.embedding == [1.0, 2.0]
+    mock_db.execute.assert_not_called()
 
 
 async def test_import_embeddings_missing_files_noop(mock_db):
@@ -937,7 +982,7 @@ async def test_import_embeddings_missing_files_noop(mock_db):
     data = make_zip({"other.txt": b"x"})
     with zipfile.ZipFile(io.BytesIO(data)) as zf:
         await svc._import_maptimize_embeddings(
-            zf=zf, old_to_new_image_ids={}, old_to_new_crop_ids={},
+            zf=zf, old_to_new_crop_ids={},
             file_list=zf.namelist(), db=mock_db,
         )
     mock_db.execute.assert_not_called()
@@ -945,38 +990,29 @@ async def test_import_embeddings_missing_files_noop(mock_db):
 
 async def test_import_embeddings_record_not_found(mock_db):
     svc = fresh_service()
-    arr = np.array([[1.0, 2.0]], dtype=np.float32)
-    fov_buf = io.BytesIO(); np.save(fov_buf, arr)
-    data = make_zip({
-        "embeddings/fov_embeddings.npy": fov_buf.getvalue(),
-        "embeddings/fov_ids.json": json.dumps([100, 555]).encode(),
-    })
-    # mapping has 100->1 only (555 missing); record lookup returns None
+    # mapping has 200->2 only (555 missing); record lookup returns None
     mock_db.execute.return_value = make_result(scalar=None)
-    with zipfile.ZipFile(io.BytesIO(data)) as zf:
+    with zipfile.ZipFile(io.BytesIO(_embedding_zip([200, 555]))) as zf, \
+         patch.object(mod, "apply_score") as apply_score:
         await svc._import_maptimize_embeddings(
-            zf=zf, old_to_new_image_ids={100: 1}, old_to_new_crop_ids={},
+            zf=zf, old_to_new_crop_ids={200: 2},
             file_list=zf.namelist(), db=mock_db,
         )
-    # one execute for the mapped id; no embedding assigned since record is None
+    # one execute for the mapped id; nothing assigned or scored since the record is None
     assert mock_db.execute.await_count == 1
+    apply_score.assert_not_called()
 
 
 async def test_import_embeddings_exception_caught(mock_db, monkeypatch):
     svc = fresh_service()
-    arr = np.array([[1.0, 2.0]], dtype=np.float32)
-    fov_buf = io.BytesIO(); np.save(fov_buf, arr)
-    data = make_zip({
-        "embeddings/fov_embeddings.npy": fov_buf.getvalue(),
-        "embeddings/fov_ids.json": json.dumps([100]).encode(),
-    })
     mock_db.execute.side_effect = RuntimeError("db down")
     # Should not raise (exception is logged and swallowed)
-    with zipfile.ZipFile(io.BytesIO(data)) as zf:
+    with zipfile.ZipFile(io.BytesIO(_embedding_zip([200]))) as zf:
         await svc._import_maptimize_embeddings(
-            zf=zf, old_to_new_image_ids={100: 1}, old_to_new_crop_ids={},
+            zf=zf, old_to_new_crop_ids={200: 2},
             file_list=zf.namelist(), db=mock_db,
         )
+    mock_db.execute.assert_awaited_once()
 
 
 # ===========================================================================

@@ -5,7 +5,9 @@ Integration tests that verify:
 - GET /api/embeddings/umap - UMAP visualization coordinates
 - POST /api/embeddings/umap/recompute - trigger UMAP recomputation
 - POST /api/embeddings/extract - trigger crop feature extraction
-- POST /api/embeddings/extract-fov - trigger FOV feature extraction
+
+The FOV-level projection and POST /api/embeddings/extract-fov were removed on
+2026-10-13; a client still asking for ``umap_type=fov`` gets 410.
 
 These tests run against a live backend server.
 Make sure the backend is running: docker-compose up -d
@@ -81,19 +83,28 @@ class TestUMAP:
 
     def test_umap_recompute_requires_auth(self, client):
         """UMAP recompute without auth returns 401."""
-        response = client.post("/api/embeddings/umap/recompute?umap_type=cropped")
+        response = client.post("/api/embeddings/umap/recompute")
         assert response.status_code == 401
 
     def test_umap_recompute_valid(self, client, auth_headers):
-        """UMAP recompute with valid type returns success message."""
+        """UMAP recompute takes no projection type and returns a success message."""
         response = client.post(
-            "/api/embeddings/umap/recompute?umap_type=cropped",
+            "/api/embeddings/umap/recompute",
             headers=auth_headers,
         )
         assert response.status_code == 200
-        data = response.json()
-        assert "message" in data
-        assert "cropped" in data["message"].lower()
+        assert response.json() == {"message": "UMAP recomputation started"}
+
+    @pytest.mark.parametrize("path", ["/api/embeddings/umap", "/api/embeddings/separability"])
+    def test_removed_fov_projection_is_gone_not_crop_data(self, client, auth_headers, path):
+        """A tab loaded before the FOV projection was removed still asks for it.
+
+        Answering with crop points would draw them under an "FOV" heading; 410
+        carries a sentence the cached bundle displays instead.
+        """
+        response = client.get(f"{path}?umap_type=fov", headers=auth_headers)
+        assert response.status_code == 410
+        assert "FOV projection was removed" in response.json()["detail"]
 
 
 class TestFeatureExtraction:
@@ -118,4 +129,9 @@ class TestFeatureExtraction:
             "/api/embeddings/extract?experiment_id=999999",
             headers=auth_headers,
         )
+        assert response.status_code == 404
+
+    def test_extract_fov_endpoint_is_removed(self, client, auth_headers):
+        """FOV embeddings are no longer computed, so the trigger no longer exists."""
+        response = client.post("/api/embeddings/extract-fov", headers=auth_headers)
         assert response.status_code == 404

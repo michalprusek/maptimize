@@ -81,11 +81,10 @@ const FACET_QUERY_PARAMS: Record<keyof UmapFacetSelection, string> = {
  * Append the dashboard filter to a query string, one repeated parameter per
  * ticked value: OR within a facet, AND across facets.
  *
- * Shared by every projection endpoint, so the cropped and FOV views cannot
- * drift into disagreeing about how a filter is spelled on the wire. Id 0 means
- * "not assigned" for microscope, protein and PTM and is passed through
- * untouched — without it the PTM facet would be unusable, since experiments
- * start unassigned.
+ * The one place a filter is spelled on the wire, so no two requests can
+ * disagree about it. Id 0 means "not assigned" for microscope, protein and PTM
+ * and is passed through untouched — without it the PTM facet would be
+ * unusable, since experiments start unassigned.
  */
 /**
  * Append the reader's own classes, one `group=` per class.
@@ -923,25 +922,20 @@ class ApiClient {
    * back, so filtering to controls and then to one PTM compares those contexts.
    */
   async getUmapData({
-    umapType = "cropped",
     selection,
     labelBy = "protein",
     groups = [],
   }: {
-    umapType?: UmapType;
     selection?: UmapFacetSelection;
     labelBy?: LabelAxis;
     /** With `labelBy: "group"`: one `facet:id,…` string per class, in order. */
     groups?: string[];
-  } = {}): Promise<UmapDataResponse | UmapFovDataResponse> {
+  } = {}): Promise<UmapDataResponse> {
     const params = appendFacetParams(
-      new URLSearchParams({ umap_type: umapType, label_by: labelBy }),
+      new URLSearchParams({ label_by: labelBy }),
       selection
     );
     appendGroupParams(params, labelBy, groups);
-    if (umapType === "fov") {
-      return this.request<UmapFovDataResponse>(`/api/embeddings/umap?${params}`);
-    }
     return this.request<UmapDataResponse>(`/api/embeddings/umap?${params}`);
   }
 
@@ -949,12 +943,10 @@ class ApiClient {
    * Force a UMAP re-fit. Reads schedule this automatically when coordinates are
    * missing, so this is only needed to re-fit already-complete coordinates.
    */
-  async triggerUmapRecomputation(umapType: UmapType) {
-    const params = new URLSearchParams({ umap_type: umapType });
-    return this.request<{ message: string }>(
-      `/api/embeddings/umap/recompute?${params}`,
-      { method: "POST" }
-    );
+  async triggerUmapRecomputation() {
+    return this.request<{ message: string }>("/api/embeddings/umap/recompute", {
+      method: "POST",
+    });
   }
 
   async getEmbeddingStatus(experimentId?: number) {
@@ -965,14 +957,6 @@ class ApiClient {
   async triggerFeatureExtraction(experimentId: number) {
     return this.request<{ message: string; pending: number }>(
       `/api/embeddings/extract?experiment_id=${experimentId}`,
-      { method: "POST" }
-    );
-  }
-
-  async triggerFovFeatureExtraction(experimentId?: number) {
-    const params = experimentId ? `?experiment_id=${experimentId}` : "";
-    return this.request<{ message: string; pending: number }>(
-      `/api/embeddings/extract-fov${params}`,
       { method: "POST" }
     );
   }
@@ -2307,17 +2291,21 @@ export interface ExperimentForImport {
 }
 
 // UMAP / Embeddings types
-export type UmapType = "fov" | "cropped";
-
 export interface UmapPoint {
   crop_id: number;
   image_id: number;
   experiment_id: number;
   x: number;
   y: number;
+  /** MAP protein id, or null if unassigned — the key per-class means match on. */
+  protein_id: number | null;
   protein_name: string | null;
   protein_color: string;
   thumbnail_url: string;
+  /**
+   * Predicted bundleness as a z-score against the crops the model was trained
+   * on, or null when the active model has not scored this crop.
+   */
   bundleness_score: number | null;
   /**
    * Only with `label_by=group`: index of the group this point falls in, -1 when
@@ -2387,38 +2375,50 @@ export interface SeparabilityUnscored {
   n_points: number;
 }
 
+/** Mean bundleness of the points carrying one value on the label axis. */
+export interface BundlenessClass {
+  /**
+   * An id on the `label_by` axis (protein / microscope / PTM / cell line /
+   * experiment id), or the group INDEX when `label_by` is "group".
+   */
+  label: number;
+  mean: number;
+  /** Sample SD; null for a single scored point. */
+  sd: number | null;
+  n_scored: number;
+}
+
+/**
+ * Mean predicted bundleness of the returned points.
+ *
+ * The unit is a z-score against the crops the model was trained on: 0 is the
+ * average annotated crop, +1 is one SD more bundled. Like the separability
+ * score, the mean never travels alone — `n_scored` against `n_points` is what
+ * tells a mean over the whole selection from one resting on a handful of it.
+ */
+export interface Bundleness {
+  mean: number;
+  /** Sample SD; null for a single scored point. */
+  sd: number | null;
+  /** Points scored by the active model. */
+  n_scored: number;
+  /** Points the selection returned. */
+  n_points: number;
+  model_version: string;
+  /** The axis `classes` breaks the mean down by. */
+  label_by: LabelAxis;
+  /** Points with no value on the axis are in the overall mean and in no class. */
+  classes: BundlenessClass[];
+}
+
 export interface UmapDataResponse {
   points: UmapPoint[];
   total_crops: number;
   facets: UmapFacetRow[];
   separability: Separability | null;
   separability_unscored: SeparabilityUnscored | null;
-  /** Coordinates are being refreshed in the background; poll until false. */
-  is_stale: boolean;
-  /** The refresh failed — coordinates won't arrive on their own. Stop polling. */
-  refresh_error: string | null;
-}
-
-export interface UmapFovPoint {
-  image_id: number;
-  experiment_id: number;
-  x: number;
-  y: number;
-  protein_name: string | null;
-  protein_color: string;
-  thumbnail_url: string;
-  original_filename: string;
-  /** See `UmapPoint.group`. */
-  group: number | null;
-}
-
-export interface UmapFovDataResponse {
-  points: UmapFovPoint[];
-  total_images: number;
-  facets: UmapFacetRow[];
-  separability: Separability | null;
-  separability_unscored: SeparabilityUnscored | null;
-  computed_at: string | null;
+  /** Null when no returned point has a score from the active model. */
+  bundleness: Bundleness | null;
   /** Coordinates are being refreshed in the background; poll until false. */
   is_stale: boolean;
   /** The refresh failed — coordinates won't arrive on their own. Stop polling. */

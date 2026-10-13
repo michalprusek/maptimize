@@ -93,7 +93,8 @@ def make_image(
         height=height,
         z_slices=5,
         status=SimpleNamespace(value="completed"),
-        embedding_model="dino",
+        # Legacy column: rows uploaded before FOV embeddings were dropped still
+        # carry one, and the export must leave it behind.
         embedding=embedding,
         created_at=datetime(2024, 1, 1, 12, 0, 0),
         cell_crops=cell_crops if cell_crops is not None else [],
@@ -429,7 +430,7 @@ def test_estimate_size_all_options(service):
     expected = (
         2 * 2 * 1024 * 1024      # fov images
         + 5 * 100 * 1024         # crop images
-        + 5 * 4 * 1024 + 2 * 4 * 1024  # embeddings
+        + 5 * 4 * 1024           # embeddings (crops only)
         + 3 * 50 * 1024          # masks
         + 5 * 200                # annotations
         + 2 * 500                # metadata
@@ -693,15 +694,19 @@ def test_encode_rle_counts_zero_and_multibyte(service):
 
 
 async def test_write_embeddings(service):
-    images = [make_image(id=10, embedding=[0.1, 0.2])]
     crops = [make_crop(id=100, embedding=[0.3, 0.4])]
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as zf:
-        await service._write_embeddings(zf, images, crops)
+        await service._write_embeddings(zf, crops)
     with zipfile.ZipFile(io.BytesIO(buf.getvalue())) as zf:
         names = zf.namelist()
-        assert "embeddings/fov_embeddings.npy" in names
-        assert "embeddings/crop_embeddings.npy" in names
+        # Crops only: the writer no longer even accepts images, so a legacy
+        # FOV embedding still in the database cannot reach the archive.
+        assert sorted(names) == [
+            "embeddings/crop_embeddings.npy",
+            "embeddings/crop_ids.json",
+        ]
+        assert json.loads(zf.read("embeddings/crop_ids.json")) == [100]
 
 
 async def test_get_class_names_inserts_default(service, mock_db):
@@ -776,7 +781,8 @@ async def test_generate_export_stream_coco_full(service, mock_db, fake_redis):
         assert "annotations/coco.json" in names
         assert "experiments/1/experiment.json" in names
         assert any("metadata.json" in n for n in names)
-        assert "embeddings/fov_embeddings.npy" in names
+        assert "embeddings/crop_embeddings.npy" in names
+        assert not any(n.startswith("embeddings/fov_") for n in names)
 
 
 async def test_generate_export_stream_yolo(service, mock_db, fake_redis):

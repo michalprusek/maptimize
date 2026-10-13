@@ -105,17 +105,17 @@ async def provision_new_user_data(new_user_id: int, db: AsyncSession) -> None:
                     experiment_id, map_protein_id, original_filename, file_path,
                     mip_path, sum_path, thumbnail_path, detect_cells, source_discarded,
                     width, height, z_slices, file_size, image_metadata,
-                    status, error_message, embedding, embedding_model,
+                    status, error_message,
                     sam_embedding_status, rag_embedding, rag_indexed_at,
-                    umap_x, umap_y, umap_computed_at, created_at, processed_at
+                    created_at, processed_at
                 )
                 SELECT
                     :new_exp_id, map_protein_id, original_filename, file_path,
                     mip_path, sum_path, thumbnail_path, detect_cells, source_discarded,
                     width, height, z_slices, file_size, image_metadata,
-                    status, error_message, embedding, embedding_model,
+                    status, error_message,
                     sam_embedding_status, rag_embedding, rag_indexed_at,
-                    umap_x, umap_y, umap_computed_at, NOW(), processed_at
+                    NOW(), processed_at
                 FROM images
                 WHERE experiment_id = :old_exp_id
                 ORDER BY id
@@ -137,7 +137,7 @@ async def provision_new_user_data(new_user_id: int, db: AsyncSession) -> None:
                         image_id, map_protein_id,
                         bbox_x, bbox_y, bbox_w, bbox_h, bbox_angle, detection_confidence,
                         mip_path, sum_crop_path, std_path,
-                        bundleness_score, mean_intensity, skewness, kurtosis,
+                        bundleness_score, bundleness_model, mean_intensity, skewness, kurtosis,
                         embedding, embedding_model, embedding_status, embedding_error,
                         umap_x, umap_y, umap_computed_at,
                         excluded, created_at
@@ -146,7 +146,7 @@ async def provision_new_user_data(new_user_id: int, db: AsyncSession) -> None:
                         :new_img_id, map_protein_id,
                         bbox_x, bbox_y, bbox_w, bbox_h, bbox_angle, detection_confidence,
                         mip_path, sum_crop_path, std_path,
-                        bundleness_score, mean_intensity, skewness, kurtosis,
+                        bundleness_score, bundleness_model, mean_intensity, skewness, kurtosis,
                         embedding, embedding_model, embedding_status, embedding_error,
                         umap_x, umap_y, umap_computed_at,
                         excluded, NOW()

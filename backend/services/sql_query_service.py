@@ -92,7 +92,7 @@ SQL_SCHEMA_HINT = (
     "experiments(id, name, description, status, map_protein_id, microscope_id, ptm_id, cell_line_id, group_id, folder_id, fasta_sequence, created_at, updated_at)\n"
     "images(id, experiment_id, map_protein_id, original_filename, width, height, z_slices, file_size, status, created_at, processed_at)\n"
     "cell_crops(id, image_id, map_protein_id, bbox_x, bbox_y, bbox_w, bbox_h, bbox_angle, "
-    "detection_confidence, bundleness_score, mean_intensity, skewness, kurtosis, excluded, created_at)  -- bbox_angle: degrees about the box centre, NULL = axis-aligned\n"
+    "detection_confidence, bundleness_score, bundleness_model, mean_intensity, skewness, kurtosis, excluded, created_at)  -- bbox_angle: degrees about the box centre, NULL = axis-aligned; bundleness_score: predicted bundleness as a z-score against the model's training crops (0 = average annotated crop), produced by the model version in bundleness_model\n"
     "map_proteins(id, name, full_name, uniprot_id, gene_name, organism, sequence_length)  -- shared reference data, no user filter\n"
     "microscopes(id, name, manufacturer, model, objective, magnification)  -- shared reference data, no user filter\n"
     "ptms(id, name, abbreviation, modified_residue, enzyme, kind)  -- microtubule post-translational modification; kind is 'modification' (a tubulin mark), 'control' (paired inactive-enzyme control) or 'none' (unmodified lattice); shared reference data, no user filter\n"

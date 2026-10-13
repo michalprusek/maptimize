@@ -31,6 +31,8 @@ import {
   type GroupMember,
   type LabelGroup,
 } from "./labelGroups";
+import type { BundlenessClass } from "@/lib/api";
+import { ClassBundleness } from "./BundlenessBadge";
 import type { Translate } from "./projectionShared";
 import { FACET_LABEL_KEY } from "./umapFacets";
 
@@ -44,7 +46,14 @@ interface UmapGroupsEditorProps {
   onArm: (index: number | null) => void;
   /** Points per group on the current plot; null while not coloured by groups. */
   counts: GroupCounts | null;
-  /** The separability between these groups, drawn beside the title. */
+  /**
+   * Mean bundleness per group, keyed by group index. Empty whenever the
+   * response on screen is not about these groups in these slots.
+   */
+  means: Map<number, BundlenessClass>;
+  /** The means describe the previous request; draw them dimmed. */
+  meansStale: boolean;
+  /** The scores about these groups (separability, bundleness), beside the title. */
   score: React.ReactNode;
   t: Translate;
 }
@@ -65,6 +74,8 @@ export function UmapGroupsEditor({
   armed,
   onArm,
   counts,
+  means,
+  meansStale,
   score,
   t,
 }: UmapGroupsEditorProps): JSX.Element {
@@ -95,7 +106,14 @@ export function UmapGroupsEditor({
         <span className="text-xs font-medium uppercase tracking-wide text-text-muted">
           {t("groupsTitle")}
         </span>
-        {score && <span data-testid="umap-groups-score">{score}</span>}
+        {score && (
+          <span
+            data-testid="umap-groups-score"
+            className="inline-flex flex-wrap items-center gap-2"
+          >
+            {score}
+          </span>
+        )}
         <span className="text-xs text-text-muted">{t("groupsHint")}</span>
       </div>
 
@@ -134,6 +152,7 @@ export function UmapGroupsEditor({
                     {t("groupPointCount", { count: counts.perGroup[index] ?? 0 })}
                   </span>
                 )}
+                <ClassBundleness cls={means.get(index)} stale={meansStale} t={t} />
                 <button
                   type="button"
                   aria-pressed={isArmed}
