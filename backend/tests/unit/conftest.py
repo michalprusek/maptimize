@@ -80,18 +80,18 @@ def mock_db():
 def _reset_umap_refresh_state():
     """Clear umap_service's module-level refresh state between tests.
 
-    The in-flight/failed sets live for the process. A test that leaves a key
-    behind (e.g. one that fails before releasing it) would silently make later
-    tests skip their refresh or report a stale failure, turning one red test into
-    a cascade with a misleading cause.
+    The in-flight flag and the recorded failure live for the process. A test
+    that leaves either behind (e.g. one that fails before releasing the guard)
+    would silently make later tests skip their refresh or report a stale
+    failure, turning one red test into a cascade with a misleading cause.
     """
     yield
     try:
         import services.umap_service as umap_service
     except ImportError:  # pragma: no cover - service not imported by this test
         return
-    umap_service._inflight_refreshes.clear()
-    umap_service._failed_refreshes.clear()
+    umap_service._refresh_inflight = False
+    umap_service._refresh_error = None
 
 
 def backfill_sql(name: str) -> Path:

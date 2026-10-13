@@ -3,22 +3,20 @@
 /**
  * Fetching the dashboard's UMAP.
  *
- * One endpoint, two corpora. The cropped and FOV responses are near-identical —
- * `points`, `facets`, `is_stale`, `refresh_error` and `separability` are
- * named the same — and differ in exactly one field: `total_crops` vs
- * `total_images`. That single difference is collapsed here into `totalCount`
- * plus an `isFov` flag, so nothing downstream repeats the `in`-check to find out
- * which corpus it is looking at.
+ * One endpoint, one corpus: every point is a cell crop. The response is reduced
+ * here to what the shared UI reads, with the two things the wire cannot carry —
+ * whether this is the previous filter's result held on screen, and which
+ * arrangement of group slots its `point.group` indices were assigned against.
  */
 import { useQuery } from "@tanstack/react-query";
 
 import {
   api,
+  type Bundleness,
   type LabelAxis,
   type Separability,
   type SeparabilityUnscored,
   type UmapFacetRow,
-  type UmapType,
 } from "@/lib/api";
 import { UMAP_STALE_POLL_MS } from "./chartConfig";
 import { selectionKey, type FacetSelection } from "./umapFacets";
@@ -30,7 +28,6 @@ export interface ProjectionView {
   /** Buckets covering the scope BEFORE facet filters — the filter panel's input. */
   facets: UmapFacetRow[];
   totalCount: number;
-  isFov: boolean;
   /** A fit is running in the background; the caller polls until this clears. */
   isComputing: boolean;
   /** The fit failed, so nothing is coming on its own. */
@@ -39,6 +36,8 @@ export interface ProjectionView {
   separability: Separability | null;
   /** Why there is no score. Set whenever points came back without one. */
   separabilityUnscored: SeparabilityUnscored | null;
+  /** Mean predicted bundleness; null when no returned point has a score. */
+  bundleness: Bundleness | null;
   /**
    * These are the previous filter's results, kept on screen while the new ones
    * load. Anything that states a number about "the current filter" must say so.
@@ -57,14 +56,12 @@ export interface ProjectionDataResult {
 }
 
 export function useProjectionData({
-  viewMode,
   selection,
   experimentId,
   labelBy,
   groups,
   groupEpoch,
 }: {
-  viewMode: UmapType;
   selection: FacetSelection;
   experimentId: number | undefined;
   /** Axis the separability score groups by — the caller passes its colour-by. */
@@ -86,9 +83,9 @@ export function useProjectionData({
   const umap = useQuery({
     // labelBy is part of the key because it changes the response, not just the
     // rendering: leaving it out serves a cached score for the previous axis.
-    queryKey: ["umap", experimentId, viewMode, key, labelBy, groupsKey],
+    queryKey: ["umap", experimentId, key, labelBy, groupsKey],
     queryFn: async () => ({
-      ...(await api.getUmapData({ umapType: viewMode, selection, labelBy, groups })),
+      ...(await api.getUmapData({ selection, labelBy, groups })),
       // Which arrangement of group slots this response's `point.group` indexes
       // into. The previous response stays on screen while the next one loads,
       // and after a group is deleted its indices point one slot off.
@@ -112,14 +109,15 @@ export function useProjectionData({
     view: data && {
       points: data.points,
       facets: data.facets,
-      totalCount: "total_images" in data ? data.total_images : data.total_crops,
-      isFov: "total_images" in data,
+      totalCount: data.total_crops,
       isComputing: data.is_stale,
       computeError: data.refresh_error,
       separability: data.separability,
       // `?? null`: a backend older than this field omits it, and `undefined`
       // would slip past a `!== null` check into a render that reads `.reason`.
       separabilityUnscored: data.separability_unscored ?? null,
+      // Same reason: `undefined` would read as "scored" to a `!== null` check.
+      bundleness: data.bundleness ?? null,
       isPrevious: umap.isPlaceholderData,
       groupEpoch: data.groupEpoch,
     },

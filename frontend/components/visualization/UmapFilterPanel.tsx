@@ -33,7 +33,7 @@ import {
   type LabelGroup,
 } from "./labelGroups";
 import { UmapGroupsEditor } from "./UmapGroupsEditor";
-import type { LabelAxis, UmapFacetRow } from "@/lib/api";
+import type { BundlenessClass, LabelAxis, UmapFacetRow } from "@/lib/api";
 
 /** A facet, or the reader's own groups. */
 export type ColorBy = LabelAxis;
@@ -49,7 +49,10 @@ interface UmapFilterPanelProps {
   onGroupsChange: (groups: LabelGroup[]) => void;
   /** Points per group on the current plot; null unless coloured by groups. */
   groupCounts: GroupCounts | null;
-  /** The separability badge, when the score on screen is about the groups. */
+  /** Mean bundleness per group index; empty unless it is about these groups. */
+  groupMeans: Map<number, BundlenessClass>;
+  groupMeansStale: boolean;
+  /** The score badges, when the scores on screen are about the groups. */
   groupsScore: React.ReactNode;
   microscopes: Named[] | undefined;
   proteins: Named[] | undefined;
@@ -193,6 +196,8 @@ export function UmapFilterPanel({
   groups,
   onGroupsChange,
   groupCounts,
+  groupMeans,
+  groupMeansStale,
   groupsScore,
   microscopes,
   proteins,
@@ -378,6 +383,8 @@ export function UmapFilterPanel({
             armed={armed}
             onArm={setArmedGroup}
             counts={groupCounts}
+            means={groupMeans}
+            meansStale={groupMeansStale}
             score={groupsScore}
             t={t}
           />

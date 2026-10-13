@@ -324,13 +324,14 @@ test.describe("appendFacetParams", () => {
   });
 
   test("leaves parameters already on the query string alone", () => {
-    // `getUmapData` passes `umap_type` IN. Losing it is not a 422 — the server
-    // defaults to `cropped`, so the FOV view would silently render crops.
+    // `getUmapData` passes `label_by` IN. Losing it is not a 422 — the server
+    // defaults to `protein`, so the score would silently be for another axis
+    // than the one the plot is coloured by.
     const params = appendFacetParams(
-      new URLSearchParams({ umap_type: "fov" }),
+      new URLSearchParams({ label_by: "ptm" }),
       selection
     );
-    expect(params.get("umap_type")).toBe("fov");
+    expect(params.get("label_by")).toBe("ptm");
   });
 
   test("adds nothing when no filter is set", () => {

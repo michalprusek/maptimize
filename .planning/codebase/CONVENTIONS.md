@@ -25,7 +25,7 @@
 
 **Types:**
 - TypeScript interfaces: `PascalCase` with optional prefix/suffix (e.g., `AuthState`, `ChatMessage`, `ApiError`)
-- TypeScript types: `PascalCase` (e.g., `DisplayMode`, `UmapType`, `ImageStatus`)
+- TypeScript types: `PascalCase` (e.g., `DisplayMode`, `LabelAxis`, `ImageStatus`)
 - Python type hints: Use full type paths from `typing` module (e.g., `Optional[str]`, `List[dict]`)
 - Pydantic models: `PascalCase` (canonical source for request/response schemas)
 

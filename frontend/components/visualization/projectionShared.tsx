@@ -1,22 +1,22 @@
 "use client";
 
 /**
- * Pieces shared by the dashboard's scatter projections.
+ * Pieces of the dashboard's crop projection.
  *
- * The cropped and FOV views differ in what a point identifies — a cell crop or
- * a whole field — so each has its own tooltip. Everything else is the same
- * work: the legend, the marker channel, the acquisition-context rows. Those
- * live here so the two views cannot drift into disagreeing about what a point
- * means or how it is drawn.
+ * Every point is a cell crop. The tooltip, the legend, the marker channel and
+ * the acquisition-context rows live here, apart from the component that owns
+ * the state, so what a point means and how it is drawn is decided in one place.
  */
 import {
   api,
   API_URL,
-  type UmapFovPoint,
+  type BundlenessClass,
   type UmapPoint,
 } from "@/lib/api";
 import { MicroscopyImage } from "@/components/ui";
 import type { TooltipProps } from "recharts";
+import { ClassBundleness } from "./BundlenessBadge";
+import { formatSigned, type LegendEntry } from "./bundleness";
 import { DEFAULT_POINT_COLOR } from "./chartConfig";
 import {
   MARKER_CLASSES,
@@ -27,8 +27,8 @@ import {
   type SampleClass,
 } from "./pointMarker";
 
-/** Any point one of the projections can draw. */
-export type ProjectionPoint = UmapPoint | UmapFovPoint;
+/** A point of the projection: one cell crop. */
+export type ProjectionPoint = UmapPoint;
 
 /** next-intl's `t`, narrowed to what these components use. */
 export type Translate = (
@@ -59,7 +59,7 @@ export interface PointContext {
 /** Resolves a point to the experiment metadata the facet summary carries. */
 export type ContextResolver = (point: ProjectionPoint) => PointContext;
 
-/** The rows shared by both tooltips: where this point came from. */
+/** Where a point came from. */
 export function ContextRows({
   context,
   t,
@@ -89,8 +89,7 @@ export function ContextRows({
   );
 }
 
-// Tooltip for the cropped-cell view. Unlike the FOV one it leads with the
-// protein rather than a filename, because a crop has no name of its own.
+// Leads with the protein, because a crop has no name of its own.
 interface CroppedTooltipProps extends TooltipProps<number, string> {
   t: Translate;
   contextOf: ContextResolver;
@@ -105,6 +104,9 @@ export function CroppedTooltip({
   if (!active || !payload || !payload.length) return null;
 
   const point = payload[0].payload as UmapPoint;
+  // Signed like the badge, so a crop's value and the mean beside the plot read
+  // on the same scale. Null for a crop the active model has not scored.
+  const bundleness = formatSigned(point.bundleness_score);
 
   return (
     <div className="bg-bg-elevated border border-white/10 rounded-lg shadow-xl p-3 max-w-[220px]">
@@ -126,57 +128,12 @@ export function CroppedTooltip({
           {point.protein_name || t("unassigned")}
         </div>
         <ContextRows context={contextOf(point)} t={t} />
-        {point.bundleness_score !== null && (
+        {bundleness !== null && (
           <div className="text-xs text-text-secondary">
-            {t("bundleness")}: {point.bundleness_score.toFixed(2)}
+            {t("bundleness")}: <span className="font-mono">{bundleness}</span>
           </div>
         )}
         <div className="text-xs text-text-muted">{t("cropId", { id: point.crop_id })}</div>
-      </div>
-    </div>
-  );
-}
-
-// Tooltip for FOV view
-interface FovTooltipProps extends TooltipProps<number, string> {
-  t: Translate;
-  contextOf: ContextResolver;
-}
-
-export function FovTooltip({
-  active,
-  payload,
-  t,
-  contextOf,
-}: FovTooltipProps): JSX.Element | null {
-  if (!active || !payload || !payload.length) return null;
-
-  const point = payload[0].payload as UmapFovPoint;
-
-  return (
-    <div className="bg-bg-elevated border border-white/10 rounded-lg shadow-xl p-3 max-w-[250px]">
-      <MicroscopyImage
-        src={buildAuthenticatedUrl(point.thumbnail_url)}
-        alt="FOV thumbnail"
-        className="w-full h-40 object-contain rounded mb-2 bg-black/50"
-        onError={hideOnError}
-      />
-      <div className="space-y-1">
-        <div className="font-medium text-text-primary truncate text-sm">
-          {point.original_filename}
-        </div>
-        <div
-          className="text-sm flex items-center gap-2"
-          style={{ color: point.protein_color }}
-        >
-          <span
-            className="w-2.5 h-2.5 rounded-full flex-shrink-0"
-            style={{ backgroundColor: point.protein_color }}
-          />
-          {point.protein_name || t("unassigned")}
-        </div>
-        <ContextRows context={contextOf(point)} t={t} />
-        <div className="text-xs text-text-muted">{t("imageId", { id: point.image_id })}</div>
       </div>
     </div>
   );
@@ -187,11 +144,23 @@ export function FovTooltip({
  *
  * Fed from the same styleOf as the points themselves, so a swatch can never
  * disagree with what is drawn.
+ *
+ * `means` holds each class' mean bundleness BY CLASS ID. The caller passes an
+ * empty map whenever the response on screen does not break the mean down by the
+ * axis these swatches show (see `classMeansById`), and an entry with no id —
+ * "Unassigned", "in several groups" — has no class and so no number.
  */
 export function ProjectionLegend({
   groups,
+  means,
+  meansStale,
+  t,
 }: {
-  groups: Array<{ name: string; color: string; count: number }>;
+  groups: LegendEntry[];
+  means: Map<number, BundlenessClass>;
+  /** The means describe the previous request; draw them dimmed. */
+  meansStale: boolean;
+  t: Translate;
 }): JSX.Element {
   return (
     <div className="flex flex-wrap gap-3 mt-4 pt-4 border-t border-white/5">
@@ -207,6 +176,11 @@ export function ProjectionLegend({
           <span className="text-xs text-text-secondary">
             {group.name} <span className="text-text-muted">({group.count})</span>
           </span>
+          <ClassBundleness
+            cls={group.id === null ? undefined : means.get(group.id)}
+            stale={meansStale}
+            t={t}
+          />
         </div>
       ))}
     </div>

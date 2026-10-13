@@ -143,9 +143,12 @@ class Image(Base):
     error_message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     image_metadata: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
 
-    # DINOv3 embedding for FOV MIP projection (1024-dim for large variant)
-    embedding: Mapped[Optional[list]] = mapped_column(Vector(1024), nullable=True)
-    embedding_model: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    # ⚠️ The production `images` table also has embedding / embedding_model /
+    # umap_x / umap_y / umap_computed_at: a DINOv3 embedding of the whole FOV and
+    # its projection. Nothing computes or reads them since 2026-10-13 (the
+    # dashboard is crop-only), so they are deliberately NOT mapped — an unmapped
+    # column cannot be read by accident, and every Image SELECT stops hauling a
+    # 1024-float vector. The data is left in place, not dropped.
 
     # SAM embedding status for interactive segmentation
     # None = not started, "pending" = queued, "computing" = in progress,
@@ -157,13 +160,6 @@ class Image(Base):
     # Qwen3 VL embedding for RAG/chat search (2048-dim)
     rag_embedding: Mapped[Optional[list]] = mapped_column(Vector(2048), nullable=True)
     rag_indexed_at: Mapped[Optional[datetime]] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
-
-    # Pre-computed UMAP coordinates for FOV visualization
-    umap_x: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
-    umap_y: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
-    umap_computed_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
 

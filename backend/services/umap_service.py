@@ -1,7 +1,7 @@
 """UMAP computation service for pre-computing 2D projections.
 
 This service handles deterministic UMAP computation and storage of
-coordinates for cell crops, FOV images, and proteins.
+coordinates for cell crops and proteins.
 
 SSOT for UMAP-related constants and computation functions.
 """
@@ -20,7 +20,7 @@ from sqlalchemy.orm import selectinload
 from models.cell_crop import CellCrop
 from models.experiment import Experiment
 from models.image import Image, MapProtein
-from schemas.embeddings import UmapType, UnscoredReason
+from schemas.embeddings import UnscoredReason
 
 logger = logging.getLogger(__name__)
 
@@ -148,9 +148,10 @@ MIN_LABELED_FOR_SEPARABILITY = 10
 def protein_labels(items: list) -> list[Optional[int]]:
     """Label each item by its MAP protein, ``None`` where none is assigned.
 
-    Runs inside asyncio.to_thread (see _compute_and_store_umap), so it must touch
-    only eagerly-loaded attributes. Reading a lazy relationship here fires a DB
-    load off the event loop and raises MissingGreenlet.
+    Must touch only eagerly-loaded attributes: every caller is async code, where
+    reading a lazy relationship fires a DB load outside a greenlet and raises
+    MissingGreenlet. It also runs BEFORE compute_crop_umap hands the fit to a
+    worker thread, so that only plain numbers cross over.
     """
     return [
         protein.id if (protein := getattr(item, "map_protein", None)) else None
@@ -272,7 +273,7 @@ def compute_umap_online(
     Fit a UMAP projection over the given embeddings.
 
     CPU-bound and takes seconds — callers must not run this on the read path.
-    _compute_and_store_umap offloads it to a thread and persists the result.
+    compute_crop_umap offloads it to a thread and persists the result.
 
     Args:
         embeddings: Array of embedding vectors (N x D)
@@ -303,66 +304,6 @@ def compute_umap_online(
 # =============================================================================
 
 
-async def _compute_and_store_umap(
-    items: list,
-    umap_type: UmapType,
-    db: AsyncSession,
-) -> dict:
-    """
-    Common helper for computing UMAP and storing coordinates.
-
-    DRY: Consolidates shared logic between compute_crop_umap and compute_fov_umap.
-
-    Args:
-        items: List of CellCrop or Image objects with embeddings
-        umap_type: Which corpus these items are
-        db: AsyncSession database connection
-
-    Returns:
-        dict with success count, separability, and computed_at
-    """
-    word = umap_type.item_word
-
-    if len(items) < MIN_POINTS_FOR_UMAP:
-        return {
-            "error": f"Need at least {MIN_POINTS_FOR_UMAP} {word} with embeddings",
-            "count": len(items),
-        }
-
-    embeddings = np.array([item.embedding for item in items])
-    # Labelled by protein because that is the axis worth logging after a fit; the
-    # read path scores whichever axis the caller asked for, over its own subset.
-    labels = protein_labels(items)
-
-    # Fitting is CPU-bound and takes seconds, and blocking the event loop stalls
-    # every other request this worker is serving (the API runs a single uvicorn
-    # process, so that is all of them). protein_labels ran on this thread, so the
-    # only things crossing into the worker are plain numbers — no lazy IO can
-    # escape the loop.
-    projection, separability = await asyncio.to_thread(
-        compute_umap_online, embeddings, labels
-    )
-
-    now = datetime.now(timezone.utc)
-    for i, item in enumerate(items):
-        item.umap_x = float(projection[i, 0])
-        item.umap_y = float(projection[i, 1])
-        item.umap_computed_at = now
-
-    await db.commit()
-
-    score_str = f"{separability.score:.3f}" if separability else "N/A"
-    logger.info(
-        f"Computed {word} UMAP: {len(items)} {word}, separability={score_str}"
-    )
-
-    return {
-        "success": len(items),
-        "separability": separability,
-        "computed_at": now.isoformat(),
-    }
-
-
 async def compute_crop_umap(db: AsyncSession) -> dict:
     """
     Compute UMAP for every cell crop and store the coordinates in the database.
@@ -373,11 +314,8 @@ async def compute_crop_umap(db: AsyncSession) -> dict:
     being true when a user could belong to several groups. Access control applies
     to what a request RETURNS, never to what is fitted.
 
-    Args:
-        db: AsyncSession database connection
-
     Returns:
-        dict with success count, silhouette score, and computed_at
+        dict with success count, separability, and computed_at
     """
     query = (
         select(CellCrop)
@@ -391,124 +329,123 @@ async def compute_crop_umap(db: AsyncSession) -> dict:
     result = await db.execute(query)
     crops = result.scalars().all()
 
-    return await _compute_and_store_umap(crops, UmapType.CROPPED, db)
+    if len(crops) < MIN_POINTS_FOR_UMAP:
+        return {
+            "error": f"Need at least {MIN_POINTS_FOR_UMAP} crops with embeddings",
+            "count": len(crops),
+        }
 
+    embeddings = np.array([crop.embedding for crop in crops])
+    # Labelled by protein because that is the axis worth logging after a fit; the
+    # read path scores whichever axis the caller asked for, over its own subset.
+    labels = protein_labels(crops)
 
-async def compute_fov_umap(db: AsyncSession) -> dict:
-    """
-    Compute UMAP for every FOV image and store the coordinates in the database.
-
-    Fits over ALL images with an embedding -- see compute_crop_umap for why the
-    corpus must not depend on the caller.
-
-    Args:
-        db: AsyncSession database connection
-
-    Returns:
-        dict with success count, silhouette score, and computed_at
-    """
-    query = (
-        select(Image)
-        .join(Experiment, Image.experiment_id == Experiment.id)
-        .options(selectinload(Image.map_protein))
-        .where(Image.embedding.isnot(None))
-        .order_by(Image.id)
+    # Fitting is CPU-bound and takes seconds, and blocking the event loop stalls
+    # every other request this worker is serving (the API runs a single uvicorn
+    # process, so that is all of them). protein_labels ran on this thread, so the
+    # only things crossing into the worker are plain numbers — no lazy IO can
+    # escape the loop.
+    projection, separability = await asyncio.to_thread(
+        compute_umap_online, embeddings, labels
     )
 
-    result = await db.execute(query)
-    images = result.scalars().all()
+    now = datetime.now(timezone.utc)
+    for i, crop in enumerate(crops):
+        crop.umap_x = float(projection[i, 0])
+        crop.umap_y = float(projection[i, 1])
+        crop.umap_computed_at = now
 
-    return await _compute_and_store_umap(images, UmapType.FOV, db)
+    await db.commit()
+
+    score_str = f"{separability.score:.3f}" if separability else "N/A"
+    logger.info(f"Computed crop UMAP: {len(crops)} crops, separability={score_str}")
+
+    return {
+        "success": len(crops),
+        "separability": separability,
+        "computed_at": now.isoformat(),
+    }
 
 
 # =============================================================================
 # Automatic UMAP Refresh (self-healing)
 # =============================================================================
 
-# Projections with a refresh already running. Each is one global fit, so
-# concurrent refreshes would duplicate seconds of CPU work and race writing the
-# same rows.
+# There is exactly one projection — every crop, fitted together — so the refresh
+# state is two module-level values rather than a map keyed by projection. (It
+# was a map while a second, FOV-level projection existed; that was removed on
+# 2026-10-13 and the key went with it.)
+#
+# Whether a refresh is running right now. Concurrent refreshes would duplicate
+# seconds of CPU work and race writing the same rows.
 #
 # Process-local state is sufficient ONLY because the API runs a single uvicorn
 # process — see the CMD in backend/Dockerfile{,.gpu,.dev}. Adding `--workers N`
 # would silently reduce this to per-worker dedupe, letting N workers fit the same
 # rows concurrently and race their writes.
-_inflight_refreshes: set[str] = set()
+_refresh_inflight: bool = False
 
-# Projections whose last refresh raised, with the reason. A read that sees one in
-# here stops rescheduling it: without this the client's poll loop would trigger a
-# fresh multi-second fit every few seconds forever, and the failure would stay
+# Why the last refresh failed, or None. A read that sees a reason stops
+# rescheduling: without this the client's poll loop would trigger a fresh
+# multi-second fit every few seconds forever, and the failure would stay
 # invisible — the exact silence that hid this bug for months. Cleared on the next
 # success or by an explicit /umap/recompute.
-_failed_refreshes: dict[str, str] = {}
+_refresh_error: Optional[str] = None
 
 
-def refresh_scope_key(umap_type: UmapType) -> str:
-    """Dedupe key for a refresh: the projection type, and nothing else.
-
-    There is one projection per type and it covers every row, so every caller's
-    dashboard shares a key -- otherwise each visitor would kick off a redundant
-    multi-second fit of the same rows. It used to carry a user/group token as
-    well, back when the fit was scoped to the reader.
-    """
-    return umap_type.value
+def get_refresh_error() -> Optional[str]:
+    """Return why the last refresh failed, or None if it didn't."""
+    return _refresh_error
 
 
-def get_refresh_error(umap_type: UmapType) -> Optional[str]:
-    """Return why this projection's last refresh failed, or None if it didn't."""
-    return _failed_refreshes.get(refresh_scope_key(umap_type))
-
-
-def clear_refresh_error(umap_type: UmapType) -> None:
+def clear_refresh_error() -> None:
     """Forget a recorded failure so the projection will be retried."""
-    _failed_refreshes.pop(refresh_scope_key(umap_type), None)
+    global _refresh_error
+    _refresh_error = None
 
 
-async def refresh_umap_scope(umap_type: UmapType) -> None:
+async def refresh_umap() -> None:
     """
-    Recompute and store UMAP coordinates for every row, at most once at a time.
+    Recompute and store UMAP coordinates for every crop, at most once at a time.
 
     Always covers the whole corpus rather than a single experiment or a single
     caller's scope: coordinates are one shared projection, so fitting a subset
     would write coordinates from a different space into the same columns and
     corrupt the combined plot.
 
-    Records failures in _failed_refreshes so a permanently broken projection is
-    reported to the client instead of being retried forever.
+    Records failures so a permanently broken projection is reported to the
+    client instead of being retried forever.
 
     Never raises: Starlette awaits this after the response is sent, where an
     escaping exception has nobody to catch it.
     """
-    key = refresh_scope_key(umap_type)
-    if key in _inflight_refreshes:
-        logger.info(f"UMAP refresh {key} already running - skipping duplicate")
+    global _refresh_inflight, _refresh_error
+    if _refresh_inflight:
+        logger.info("UMAP refresh already running - skipping duplicate")
         return
 
-    _inflight_refreshes.add(key)
+    _refresh_inflight = True
     try:
         from database import get_db_context
 
         async with get_db_context() as db:
-            compute = (
-                compute_fov_umap if umap_type is UmapType.FOV else compute_crop_umap
-            )
-            result = await compute(db)
+            result = await compute_crop_umap(db)
 
         if "error" in result:
             # "Too few points" is a standing condition, not a transient one, so it
             # has to be RECORDED -- clearing it here let the read path reschedule
             # a doomed fit on every poll, which is the exact silent loop the
-            # failure map was added to close.
-            logger.warning(f"UMAP refresh {key} skipped: {result['error']}")
-            _failed_refreshes[key] = result["error"]
+            # failure record was added to close.
+            logger.warning(f"UMAP refresh skipped: {result['error']}")
+            _refresh_error = result["error"]
         else:
-            logger.info(f"UMAP refresh {key} complete: {result}")
-            _failed_refreshes.pop(key, None)
+            logger.info(f"UMAP refresh complete: {result}")
+            _refresh_error = None
     except Exception as exc:
-        logger.exception(f"UMAP refresh {key} failed")
-        _failed_refreshes[key] = f"{type(exc).__name__}: {exc}"
+        logger.exception("UMAP refresh failed")
+        _refresh_error = f"{type(exc).__name__}: {exc}"
     finally:
-        _inflight_refreshes.discard(key)
+        _refresh_inflight = False
 
 
 # =============================================================================
@@ -526,7 +463,7 @@ async def invalidate_crop_umap(
 
     Call this after new embeddings are extracted or existing ones change.
     Clears umap_x, umap_y, and umap_computed_at; the next read of the UMAP
-    endpoint sees the missing coordinates and schedules refresh_umap_scope.
+    endpoint sees the missing coordinates and schedules refresh_umap.
 
     Args:
         db: AsyncSession database connection
@@ -550,40 +487,6 @@ async def invalidate_crop_umap(
                 select(Image.id).where(Image.experiment_id == experiment_id)
             )
         )
-
-    result = await db.execute(stmt)
-    return result.rowcount
-
-
-async def invalidate_fov_umap(
-    db: AsyncSession,
-    experiment_id: Optional[int] = None,
-    image_id: Optional[int] = None,
-) -> int:
-    """
-    Invalidate pre-computed UMAP coordinates for FOV images.
-
-    Clears umap_x, umap_y, and umap_computed_at; the next read of the UMAP
-    endpoint sees the missing coordinates and schedules refresh_umap_scope.
-
-    Args:
-        db: AsyncSession database connection
-        experiment_id: Invalidate images in this experiment
-        image_id: Invalidate specific image
-
-    Returns:
-        Number of images invalidated
-    """
-    stmt = update(Image).values(
-        umap_x=None,
-        umap_y=None,
-        umap_computed_at=None,
-    )
-
-    if image_id:
-        stmt = stmt.where(Image.id == image_id)
-    elif experiment_id:
-        stmt = stmt.where(Image.experiment_id == experiment_id)
 
     result = await db.execute(stmt)
     return result.rowcount

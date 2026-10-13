@@ -12,7 +12,6 @@ from .esmc_encoder import (
 from .feature_extractor import (
     FeatureExtractor,
     extract_features_for_crops,
-    extract_features_for_images,
     get_encoder,
     reset_encoder,
 )
@@ -23,7 +22,6 @@ __all__ = [
     "DINOv3Encoder",
     "FeatureExtractor",
     "extract_features_for_crops",
-    "extract_features_for_images",
     "get_encoder",
     "reset_encoder",
     # Protein encoder

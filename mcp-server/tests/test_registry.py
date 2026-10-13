@@ -47,7 +47,7 @@ def test_list_tools_builds_schema_from_yaml(make_registry):
         "upload_image", "list_fov_images", "get_image", "process_images",
         "reprocess_image", "redetect_cells", "delete_image", "list_cell_crops",
         # analysis
-        "measure_separability",
+        "measure_separability", "measure_bundleness",
         # application control: experiment folders
         "list_experiment_folders", "create_experiment_folder",
         "update_experiment_folder", "delete_experiment_folder", "file_experiment",

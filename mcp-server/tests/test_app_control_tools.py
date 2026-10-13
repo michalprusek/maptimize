@@ -316,6 +316,53 @@ async def test_measure_separability_offers_the_filters_as_integer_arrays(make_re
     assert schema["properties"]["group"]["items"]["type"] == "string"
 
 
+async def test_measure_separability_has_no_corpus_switch(make_registry):
+    # The FOV projection is gone. An argument the tool still advertised would be
+    # one the model keeps sending, and the backend answers umap_type=fov with 410.
+    reg = make_registry(_with_login(lambda r: httpx.Response(404)))
+    tools = {t.name: t for t in reg.list_tools()}
+    for name in ["measure_separability", "measure_bundleness"]:
+        assert "umap_type" not in tools[name].inputSchema["properties"], name
+
+
+async def test_measure_bundleness_slices_exactly_like_separability(make_registry):
+    # "Is the group that separates also the more bundled one?" is only a fair
+    # question if both tools can be handed the same slice. A filter one of them
+    # lacked would make the two numbers describe different crops.
+    reg = make_registry(_with_login(lambda r: httpx.Response(404)))
+    tools = {t.name: t for t in reg.list_tools()}
+    separability = tools["measure_separability"].inputSchema["properties"]
+    bundleness = tools["measure_bundleness"].inputSchema["properties"]
+    assert bundleness == separability
+    assert "ptm_id" in bundleness and "group" in bundleness
+
+
+async def test_measure_bundleness_sends_the_slice_and_returns_the_counts(make_registry):
+    def routes(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/embeddings/bundleness":
+            params = request.url.params
+            assert params["label_by"] == "ptm"
+            assert params.get_list("protein_id") == ["5"]
+            assert params.get_list("ptm_id") == ["1", "2"]
+            return httpx.Response(200, json={
+                "mean": 0.41, "sd": 0.7, "n_scored": 120, "n_points": 130,
+                "model_version": "v1", "label_by": "ptm",
+                "classes": [
+                    {"label": 1, "mean": 0.2, "sd": 0.6, "n_scored": 70},
+                    {"label": 2, "mean": 0.7, "sd": 0.7, "n_scored": 50},
+                ],
+            })
+        return httpx.Response(404)
+
+    reg = make_registry(_with_login(routes))
+    blocks = _blocks(await reg.dispatch(
+        "measure_bundleness",
+        {"label_by": "ptm", "protein_id": [5], "ptm_id": [1, 2]}))
+    # A mean without what it rests on cannot be compared with another slice.
+    for field in ["n_scored", "n_points", "model_version", "classes"]:
+        assert field in blocks[0].text, field
+
+
 async def test_measure_separability_repeats_each_group_as_its_own_param(make_registry):
     # One `group=` per class. Joined into a single value the backend would read
     # two classes as one, and answer "single class" to a two-class question.

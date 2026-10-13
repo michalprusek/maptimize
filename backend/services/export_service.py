@@ -199,7 +199,6 @@ class ExportService(BaseJobManager[ExportJobData]):
         # Embeddings: 1024 floats * 4 bytes = ~4KB per crop
         if options.include_embeddings:
             size += crop_count * 4 * 1024
-            size += image_count * 4 * 1024  # FOV embeddings
 
         # Masks: ~50KB each
         if options.include_masks:
@@ -391,7 +390,7 @@ class ExportService(BaseJobManager[ExportJobData]):
                 # Write embeddings
                 if job.options.include_embeddings:
                     await self._update_job_progress(job_id, 90, "Writing embeddings")
-                    await self._write_embeddings(zf, all_images, all_crops)
+                    await self._write_embeddings(zf, all_crops)
 
             # ZIP file is now properly closed (Central Directory written)
             # Yield the complete ZIP content
@@ -469,7 +468,6 @@ class ExportService(BaseJobManager[ExportJobData]):
             "height": img.height,
             "z_slices": img.z_slices,
             "status": img.status.value if img.status else None,
-            "embedding_model": img.embedding_model,
             "created_at": img.created_at.isoformat() if img.created_at else None,
         }
 
@@ -689,13 +687,14 @@ class ExportService(BaseJobManager[ExportJobData]):
     async def _write_embeddings(
         self,
         zf: zipfile.ZipFile,
-        images: List[Image],
         crops: List[CellCrop]
     ) -> None:
-        """Write embeddings as NPY files."""
-        write_embeddings_to_zip(
-            zf, images, "embeddings/fov_embeddings.npy", "embeddings/fov_ids.json"
-        )
+        """Write crop embeddings as NPY files.
+
+        Crops only. FOV embeddings stopped being computed on 2026-10-13 (nothing
+        reads them since the dashboard became crop-only), so exporting the ones
+        still in the database would ship a column that new uploads never fill.
+        """
         write_embeddings_to_zip(
             zf, crops, "embeddings/crop_embeddings.npy", "embeddings/crop_ids.json"
         )

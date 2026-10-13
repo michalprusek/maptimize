@@ -15,7 +15,6 @@ from sqlalchemy import select
 
 from models.cell_crop import CellCrop
 from models.experiment import Experiment
-from models.image import Image
 from routers import embeddings as mod
 from tests.unit.conftest import make_result
 from utils.facets import UNASSIGNED_FACET_ID, facet_clause, real_ids
@@ -93,7 +92,6 @@ def test_facets_are_anded_across_dimensions():
     out = mod._apply_facets(
         query,
         mod.FacetSelection(microscope_ids=[1], ptm_ids=[2]),
-        Experiment.map_protein_id,
     )
     sql = str(out)
     assert "microscope_id IN" in sql
@@ -103,27 +101,17 @@ def test_facets_are_anded_across_dimensions():
 
 def test_inactive_facets_add_no_clauses():
     query = select(Experiment)
-    unchanged = mod._apply_facets(query, mod.FacetSelection(), Experiment.map_protein_id)
+    unchanged = mod._apply_facets(query, mod.FacetSelection())
     assert str(unchanged) == str(query)
 
 
-def test_protein_facet_uses_the_column_it_is_given():
-    # Cropped mode filters on the crop's protein and FOV mode on the image's, so
-    # filtering by protein always agrees with the colour the point is drawn in.
-    cropped = str(
-        mod._apply_facets(
-            select(CellCrop),
-            mod.FacetSelection(protein_ids=[7]),
-            CellCrop.map_protein_id,
-        )
-    )
-    fov = str(
-        mod._apply_facets(
-            select(Image), mod.FacetSelection(protein_ids=[7]), Image.map_protein_id
-        )
-    )
-    assert "cell_crops.map_protein_id" in cropped
-    assert "images.map_protein_id" in fov
+def test_protein_facet_filters_on_the_crop_protein():
+    # Filtering on the crop's own protein (not the image's or the experiment's)
+    # is what keeps the filter in agreement with the colour the point is drawn in.
+    sql = str(mod._apply_facets(select(CellCrop), mod.FacetSelection(protein_ids=[7])))
+    assert "cell_crops.map_protein_id IN" in sql
+    assert "images.map_protein_id" not in sql
+    assert "experiments.map_protein_id" not in sql
 
 
 # =============================================================================
@@ -155,7 +143,7 @@ def test_any_ticked_facet_makes_the_selection_active(kwargs):
 def test_unfiltered_view_below_the_threshold_still_errors():
     with patch.object(mod, "MIN_POINTS_FOR_UMAP", 10):
         with pytest.raises(HTTPException) as ei:
-            mod._guard_enough_points(2, mod.FacetSelection(), mod.UmapType.CROPPED)
+            mod._guard_enough_points(2, mod.FacetSelection())
     assert ei.value.status_code == 400
 
 
@@ -164,12 +152,12 @@ def test_filtered_view_below_the_threshold_is_allowed():
     # filtered points are a correct answer. Raising 400 here is what made the old
     # single-microscope filter report "not enough crops" for narrow selections.
     with patch.object(mod, "MIN_POINTS_FOR_UMAP", 10):
-        mod._guard_enough_points(2, mod.FacetSelection(ptm_ids=[3]), mod.UmapType.CROPPED)
+        mod._guard_enough_points(2, mod.FacetSelection(ptm_ids=[3]))
 
 
 def test_filtered_view_with_zero_matches_is_allowed():
     with patch.object(mod, "MIN_POINTS_FOR_UMAP", 10):
-        mod._guard_enough_points(0, mod.FacetSelection(microscope_ids=[3]), mod.UmapType.FOV)
+        mod._guard_enough_points(0, mod.FacetSelection(microscope_ids=[3]))
 
 
 # =============================================================================
@@ -180,8 +168,7 @@ def _compiled(stmt) -> str:
     return str(stmt.compile(compile_kwargs={"literal_binds": True}))
 
 
-@pytest.mark.parametrize("umap_type", [mod.UmapType.CROPPED, mod.UmapType.FOV])
-async def test_facet_summary_is_scoped_to_what_the_user_may_read(mock_db, umap_type):
+async def test_facet_summary_is_scoped_to_what_the_user_may_read(mock_db):
     """The facet payload carries experiment NAMES and point counts.
 
     It is a separate query from the points, so the ACL has to be right twice.
@@ -191,19 +178,18 @@ async def test_facet_summary_is_scoped_to_what_the_user_may_read(mock_db, umap_t
     other groups' experiment names.
     """
     mock_db.execute.return_value = make_result(fetchall=[])
-    await mod._load_facets(umap_type, user_id=7, group_ids=[], db=mock_db)
+    await mod._load_facets(user_id=7, group_ids=[], db=mock_db)
 
     sql = _compiled(mock_db.execute.await_args.args[0])
     assert "experiments.user_id = 7" in sql
-    assert "cell_crops.embedding IS NOT NULL" in sql or "images.embedding IS NOT NULL" in sql
+    assert "cell_crops.embedding IS NOT NULL" in sql
 
 
-@pytest.mark.parametrize("umap_type", [mod.UmapType.CROPPED, mod.UmapType.FOV])
-async def test_facet_summary_widens_to_the_group_but_no_further(mock_db, umap_type):
+async def test_facet_summary_widens_to_the_group_but_no_further(mock_db):
     # Group sharing is an OR on top of ownership, never a replacement for it —
     # swapping the two would hand every group's data to anyone in any group.
     mock_db.execute.return_value = make_result(fetchall=[])
-    await mod._load_facets(umap_type, user_id=7, group_ids=[3], db=mock_db)
+    await mod._load_facets(user_id=7, group_ids=[3], db=mock_db)
 
     sql = _compiled(mock_db.execute.await_args.args[0])
     assert "experiments.user_id = 7" in sql
@@ -216,7 +202,7 @@ async def test_facet_summary_ignores_the_active_selection(mock_db):
     # many points each *other* value would bring back. Filtering the summary by
     # the current selection would make both impossible.
     mock_db.execute.return_value = make_result(fetchall=[])
-    await mod._load_facets(mod.UmapType.CROPPED, user_id=7, group_ids=[], db=mock_db)
+    await mod._load_facets(user_id=7, group_ids=[], db=mock_db)
 
     sql = _compiled(mock_db.execute.await_args.args[0])
     assert "ptm_id IN" not in sql
@@ -242,7 +228,7 @@ async def test_facet_summary_unpacks_the_rows_it_selects(mock_db):
             (2, "SIM Tau", None, None, None, 30, 4),
         ]
     )
-    rows = await mod._load_facets(mod.UmapType.CROPPED, 7, None, mock_db)
+    rows = await mod._load_facets(7, None, mock_db)
 
     assert [r.experiment_id for r in rows] == [1, 1, 2]
     assert rows[0].experiment_name == "AeryScan MAP7"
@@ -279,22 +265,17 @@ async def test_selected_experiments_are_checked_against_the_acl(mock_db):
 # suite green while the plot silently ignored every filter the user ticked.
 # =============================================================================
 
-async def _point_query(umap_type, selection, mock_db):
-    """Run one corpus and hand back the compiled SQL of its point query."""
+async def _point_query(selection, mock_db):
+    """Run the crop corpus and hand back the compiled SQL of its point query."""
     mock_db.execute.return_value = make_result(scalars_all=[], fetchall=[])
-    runner = (
-        mod._get_fov_umap if umap_type is mod.UmapType.FOV else mod._get_cropped_umap
-    )
-    await runner(
+    await mod._get_cropped_umap(
         selection, mod.LabelAxis.PROTEIN, mod.NO_GROUPS, user(), None, MagicMock(), mock_db
     )
     return _compiled(mock_db.execute.await_args_list[0].args[0])
 
 
-@pytest.mark.parametrize("umap_type", [mod.UmapType.CROPPED, mod.UmapType.FOV])
-async def test_every_facet_reaches_the_point_query(mock_db, no_group, umap_type):
+async def test_every_facet_reaches_the_point_query(mock_db, no_group):
     sql = await _point_query(
-        umap_type,
         mod.FacetSelection(
             experiment_ids=[1], microscope_ids=[2], protein_ids=[3], ptm_ids=[4],
             cell_line_ids=[5],
@@ -313,26 +294,16 @@ async def test_every_facet_reaches_the_point_query(mock_db, no_group, umap_type)
 async def test_cropped_filters_on_the_crop_protein(mock_db, no_group):
     # The point is coloured by the crop's protein, so filtering on the image's
     # would silently disagree with what the user sees.
-    sql = await _point_query(
-        mod.UmapType.CROPPED, mod.FacetSelection(protein_ids=[3]), mock_db
-    )
+    sql = await _point_query(mod.FacetSelection(protein_ids=[3]), mock_db)
     assert "cell_crops.map_protein_id IN" in sql
 
 
-async def test_fov_filters_on_the_image_protein(mock_db, no_group):
-    sql = await _point_query(
-        mod.UmapType.FOV, mod.FacetSelection(protein_ids=[3]), mock_db
-    )
-    assert "images.map_protein_id IN" in sql
-
-
-@pytest.mark.parametrize("umap_type", [mod.UmapType.CROPPED, mod.UmapType.FOV])
-async def test_unfiltered_query_carries_no_facet_clause(mock_db, no_group, umap_type):
+async def test_unfiltered_query_carries_no_facet_clause(mock_db, no_group):
     # `facet_clause` returns None for an untouched facet, and SQLAlchemy renders
     # a bare `.where(None)` as `WHERE NULL` — which matches nothing. An empty
     # selection must therefore add no clause at all, not a null one.
     with patch.object(mod, "MIN_POINTS_FOR_UMAP", 0):
-        sql = await _point_query(umap_type, mod.FacetSelection(), mock_db)
+        sql = await _point_query(mod.FacetSelection(), mock_db)
     assert "NULL" not in sql.replace("IS NOT NULL", "")
 
 
@@ -340,18 +311,18 @@ async def test_facet_summary_only_counts_rows_that_can_be_plotted(mock_db):
     # Counting unembedded rows would make the panel promise points the plot
     # cannot draw, and the mismatch has no error to explain it.
     mock_db.execute.return_value = make_result(fetchall=[])
-    await mod._load_facets(mod.UmapType.CROPPED, 7, None, mock_db)
+    await mod._load_facets(7, None, mock_db)
     assert "cell_crops.embedding IS NOT NULL" in _compiled(
         mock_db.execute.await_args.args[0]
     )
 
 
-async def test_facet_summary_counts_the_corpus_it_was_asked_for(mock_db):
+async def test_facet_summary_counts_crops(mock_db):
     mock_db.execute.return_value = make_result(fetchall=[])
-    await mod._load_facets(mod.UmapType.FOV, 7, None, mock_db)
+    await mod._load_facets(7, None, mock_db)
     sql = _compiled(mock_db.execute.await_args.args[0])
-    assert "count(images.id)" in sql
-    assert "cell_crops" not in sql
+    assert "count(cell_crops.id)" in sql
+    assert "cell_crops.map_protein_id" in sql
 
 
 # =============================================================================
@@ -418,7 +389,6 @@ async def test_stale_cell_line_id_returns_404(mock_db):
     mock_db.execute.return_value = make_result(scalars_all=[])
     with pytest.raises(HTTPException) as ei:
         await mod.get_umap_visualization(
-            umap_type=mod.UmapType.CROPPED,
             selection=mod.FacetSelection(cell_line_ids=[404]),
             label_by=mod.LabelAxis.PROTEIN,
             background_tasks=MagicMock(),
