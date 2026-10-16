@@ -398,6 +398,7 @@
     "groupEmpty": "Deposez des valeurs ici",
     "groupRemove": "Supprimer {name}",
     "groupColorLabel": "Changer la couleur de {name}",
+    "groupColorReset": "Rétablir la couleur par défaut de {name}",
     "groupRemoveValue": "Retirer {name} du groupe",
     "groupPointCount": "{count} points",
     "groupAmbiguous": "Dans plusieurs groupes",
