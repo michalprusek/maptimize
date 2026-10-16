@@ -397,6 +397,7 @@
     "groupArmedHint": "Cliquez sur des valeurs ci-dessous pour les ajouter",
     "groupEmpty": "Deposez des valeurs ici",
     "groupRemove": "Supprimer {name}",
+    "groupColorLabel": "Changer la couleur de {name}",
     "groupRemoveValue": "Retirer {name} du groupe",
     "groupPointCount": "{count} points",
     "groupAmbiguous": "Dans plusieurs groupes",

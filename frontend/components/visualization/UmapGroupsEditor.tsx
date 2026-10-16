@@ -24,6 +24,7 @@ import {
   decodeMember,
   groupColor,
   groupConditions,
+  recolorGroup,
   removeGroup,
   removeMember,
   renameGroup,
@@ -119,8 +120,9 @@ export function UmapGroupsEditor({
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
         {groups.map((group, index) => {
-          const color = groupColor(index);
+          const color = groupColor(groups, index);
           const isArmed = armed === index;
+          const colorLabel = t("groupColorLabel", { name: group.name });
           return (
             <div
               key={index}
@@ -134,10 +136,25 @@ export function UmapGroupsEditor({
               style={{ borderColor: over === index || isArmed ? color : `${color}50` }}
             >
               <div className="flex items-center gap-2">
-                <span
-                  className="w-3 h-3 rounded-full flex-shrink-0"
+                {/* The dot IS the picker: the native input sits on top of it,
+                    invisible, so a click lands on the input and the browser
+                    opens its own colour dialog anchored there. */}
+                <label
+                  className="relative w-4 h-4 rounded-full flex-shrink-0 cursor-pointer ring-1 ring-white/20 hover:ring-white/60 transition-shadow"
                   style={{ backgroundColor: color }}
-                />
+                  title={colorLabel}
+                >
+                  <input
+                    type="color"
+                    value={color}
+                    onChange={(event) =>
+                      onChange(recolorGroup(groups, index, event.target.value))
+                    }
+                    aria-label={colorLabel}
+                    data-testid={`umap-group-color-${index}`}
+                    className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+                  />
+                </label>
                 <input
                   value={group.name}
                   maxLength={MAX_GROUP_NAME_LENGTH}
