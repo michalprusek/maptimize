@@ -359,7 +359,7 @@ export function UmapVisualization({
             // A blanked name falls back to the slot, so the legend never shows
             // an empty label.
             name: group.name.trim() || t("groupDefaultName", { n: index! + 1 }),
-            color: groupColor(index!),
+            color: groupColor(groups, index!),
             classId: index!,
           };
         }

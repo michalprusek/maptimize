@@ -17,6 +17,7 @@ import {
   groupsFromQuery,
   groupsToQuery,
   groupsToWire,
+  recolorGroup,
   removeGroup,
   removeMember,
   renameGroup,
@@ -104,7 +105,7 @@ test.describe("editing groups", () => {
     // group as far as the reader can tell.
     expect(new Set(GROUP_COLORS).size).toBe(GROUP_COLORS.length);
     expect(GROUP_COLORS.length).toBeGreaterThanOrEqual(MAX_GROUPS);
-    expect(groupColor(1)).toBe(GROUP_COLORS[1]);
+    expect(groupColor(groups, 1)).toBe(GROUP_COLORS[1]);
   });
 
   test("remove and rename touch only their target", () => {
@@ -115,6 +116,53 @@ test.describe("editing groups", () => {
     expect(removeGroup(two, 0)).toEqual([two[1]]);
     expect(renameGroup(two, 1, "x".repeat(100))[1].name).toHaveLength(40);
     expect(renameGroup(two, 1, "C")[0]).toBe(two[0]);
+  });
+});
+
+test.describe("a group's colour", () => {
+  const three: LabelGroup[] = [
+    { name: "A", members: [exp(180)] },
+    { name: "B", members: [exp(308)] },
+    { name: "C", members: [exp(315)] },
+  ];
+
+  test("a picked colour replaces the slot's, and null gives it back", () => {
+    const picked = recolorGroup(three, 1, "#ABCDEF");
+    expect(groupColor(picked, 1)).toBe("#abcdef");
+    expect(groupColor(picked, 0)).toBe(GROUP_COLORS[0]);
+    const reset = recolorGroup(picked, 1, null);
+    expect(reset[1]).toEqual(three[1]);
+    expect(groupColor(reset, 1)).toBe(GROUP_COLORS[1]);
+  });
+
+  test("only #rrggbb is accepted, and a missing group changes nothing", () => {
+    for (const bad of ["red", "#abc", "#abcdeg", "abcdef", "#abcdef;x", ""]) {
+      expect(recolorGroup(three, 0, bad)).toBe(three);
+    }
+    expect(recolorGroup(three, 9, "#123456")).toBe(three);
+  });
+
+  test("a picked colour travels with its group when an earlier one is deleted", () => {
+    const picked = recolorGroup(three, 2, "#123456");
+    const after = removeGroup(picked, 0);
+    expect(groupColor(after, 1)).toBe("#123456");
+    // An unpicked group still takes its new slot's colour.
+    expect(groupColor(after, 0)).toBe(GROUP_COLORS[0]);
+  });
+
+  test("a colour never reaches the request, so recolouring does not refetch", () => {
+    expect(groupsToWire(recolorGroup(three, 0, "#123456"))).toEqual(groupsToWire(three));
+  });
+
+  test("round-trips through the URL, empty groups included", () => {
+    let groups = recolorGroup(three, 1, "#123456");
+    groups = recolorGroup(addGroup(groups, "Empty"), 3, "#00ff00");
+    expect(groupsFromQuery(groupsToQuery(groups))).toEqual(groups);
+  });
+
+  test("a mangled colour in a link falls back to the slot's, members intact", () => {
+    const parsed = groupsFromQuery("g=A|color:zzzzzz,experiment:180&g=B|color:12,experiment:308");
+    expect(parsed).toEqual([three[0], three[1]]);
   });
 });
 

@@ -76,7 +76,7 @@ function FacetPill({
   member: GroupMember;
   selected: boolean;
   /** Every group this value is a condition of. */
-  heldBy: Array<{ index: number; name: string }>;
+  heldBy: Array<{ index: number; name: string; color: string }>;
   onToggle: () => void;
 }): JSX.Element {
   const color = option.color || DEFAULT_POINT_COLOR;
@@ -120,7 +120,7 @@ function FacetPill({
           aria-label={group.name}
           title={group.name}
           className="w-2 h-2 rounded-sm flex-shrink-0"
-          style={{ backgroundColor: groupColor(group.index) }}
+          style={{ backgroundColor: group.color }}
         />
       ))}
     </button>
@@ -176,6 +176,7 @@ function FacetSection({
               heldBy={groupsOfMember(groups, member).map((index) => ({
                 index,
                 name: groups[index].name,
+                color: groupColor(groups, index),
               }))}
               selected={selected.includes(option.id)}
               onToggle={() => onToggle(option.id)}

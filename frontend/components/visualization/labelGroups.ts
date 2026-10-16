@@ -22,6 +22,8 @@ export interface GroupMember {
 export interface LabelGroup {
   name: string;
   members: GroupMember[];
+  /** `#rrggbb` the reader picked; absent = the slot's palette colour. */
+  color?: string;
 }
 
 /** `point.group` for a point that falls in more than one group. */
@@ -33,7 +35,7 @@ export const MAX_MEMBERS_PER_GROUP = 60;
 export const MAX_GROUP_NAME_LENGTH = 40;
 
 /**
- * One colour per group slot: the Okabe–Ito colour-blind-safe set without its
+ * Default colour per group slot: the Okabe–Ito colour-blind-safe set without its
  * black (invisible on this background), plus an olive from Paul Tol's muted
  * scheme to reach eight. Grey is deliberately absent — it means "in no group".
  *
@@ -51,8 +53,31 @@ export const GROUP_COLORS: readonly string[] = [
   "#999933",
 ];
 
-export function groupColor(index: number): string {
-  return GROUP_COLORS[index % GROUP_COLORS.length];
+/** The colour group `index` is drawn in: the reader's pick, else its slot's. */
+export function groupColor(groups: LabelGroup[], index: number): string {
+  return groups[index]?.color ?? GROUP_COLORS[index % GROUP_COLORS.length];
+}
+
+const HEX_COLOR = /^#[0-9a-f]{6}$/i;
+
+/**
+ * Give a group its own colour, or `null` to return it to its slot's.
+ *
+ * A picked colour travels WITH the group, so deleting an earlier group no
+ * longer repaints it — only slot-coloured groups shift. Anything that is not
+ * `#rrggbb` is refused: the colour goes into the URL and into an SVG fill.
+ */
+export function recolorGroup(
+  groups: LabelGroup[],
+  index: number,
+  color: string | null
+): LabelGroup[] {
+  if (!groups[index] || (color !== null && !HEX_COLOR.test(color))) return groups;
+  return groups.map((group, at) => {
+    if (at !== index) return group;
+    const { color: _previous, ...rest } = group;
+    return color === null ? rest : { ...rest, color: color.toLowerCase() };
+  });
 }
 
 function sameMember(a: GroupMember, b: GroupMember): boolean {
@@ -183,6 +208,13 @@ function parseMember(token: string): GroupMember | null {
 const GROUP_PARAM = "g";
 
 /**
+ * A picked colour rides in the member list as `color:rrggbb` (no `#`, which a
+ * URL would have to escape). An older page reads it as a member of an unknown
+ * facet and drops it, so links stay readable in both directions.
+ */
+const COLOR_TOKEN = "color:";
+
+/**
  * Read groups out of a URL query string, ignoring anything malformed.
  *
  * The name is everything before the LAST `|`, so a name may itself contain one;
@@ -196,8 +228,14 @@ export function groupsFromQuery(search: string): LabelGroup[] {
     if (cut === -1) continue;
 
     groups = addGroup(groups, raw.slice(0, cut));
-    for (const token of raw.slice(cut + 1).split(",")) {
-      const member = parseMember(token.trim());
+    for (const token of raw.slice(cut + 1).split(",").map((part) => part.trim())) {
+      if (token.startsWith(COLOR_TOKEN)) {
+        // recolorGroup validates, so a mangled colour leaves the slot's own.
+        const color = `#${token.slice(COLOR_TOKEN.length)}`;
+        groups = recolorGroup(groups, groups.length - 1, color);
+        continue;
+      }
+      const member = parseMember(token);
       // Through addMember, so a hand-edited link cannot repeat a value inside
       // a group or overfill one.
       if (member) groups = addMember(groups, groups.length - 1, member);
@@ -212,7 +250,12 @@ export function groupsToQuery(groups: LabelGroup[], search = ""): string {
   params.delete(GROUP_PARAM);
   const wire = groupsToWire(groups);
   groups.forEach((group, index) => {
-    params.append(GROUP_PARAM, `${group.name}|${wire[index]}`);
+    // filter(Boolean) drops an absent colour and an empty group's blank wire.
+    const tokens = [
+      group.color && `${COLOR_TOKEN}${group.color.slice(1)}`,
+      wire[index],
+    ].filter(Boolean);
+    params.append(GROUP_PARAM, `${group.name}|${tokens.join(",")}`);
   });
   return params.toString();
 }
