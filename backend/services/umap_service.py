@@ -263,6 +263,111 @@ def compute_separability(
     )
 
 
+@dataclass(frozen=True)
+class KnnSeparability:
+    """Leave-experiment-out kNN classification of the labelled points.
+
+    Reported BESIDE the silhouette, not instead of it. Measured on production
+    (2026-10-17, 2773 crops): the silhouette sat within ±0.06 on every axis,
+    reading "no separation" for protein (−0.016) while this vote recovered the
+    protein 39 % of the time against 7 % chance (61 % if a crop's own
+    experiment may vote — see compute_knn_separability for why it may not). Silhouette rewards compact,
+    convex classes; a protein imaged on two microscopes is neither, yet is
+    locally pure. Outliers were NOT the cause — dropping the 5 % most isolated
+    crops, or taking median instead of mean distances, moved it by ≤ 0.01.
+
+    ``chance`` travels with the accuracy because the two are only readable
+    together: 0.40 is strong over 14 classes and nothing over 2.
+    """
+
+    balanced_accuracy: float
+    chance: float
+    k: int
+    n_classes: int
+    n_points: int
+
+
+# DINO's kNN evaluation (facebookresearch/dino eval_knn.py): votes weighted by
+# exp(cosine / T), with the k and T its paper reports. Measured on production
+# (2026-10-17), k ∈ {5..50} and T ∈ {0.03, 0.07, 0.2, unweighted} move the
+# accuracy by ≤ 0.02 on protein / microscope and ≤ 0.05 on the imbalanced PTM
+# axis (larger k drifts toward the majority class), never changing the order
+# of the axes — so there is no measured reason to deviate from the standard.
+# Random embeddings with the real labels score 0.064 / 0.334 / 0.250 / 0.500
+# against chance 0.071 / 0.333 / 0.250 / 0.500. One call over 2773 crops: 0.1 s.
+KNN_K = 20
+KNN_TEMPERATURE = 0.07
+# Rows of the similarity matrix held at once: memory is block × N, not N².
+_KNN_BLOCK = 1024
+
+
+def compute_knn_separability(
+    embeddings: np.ndarray,
+    labels: list[Optional[int]],
+    experiment_ids: list[int],
+) -> Optional[KnnSeparability]:
+    """Balanced accuracy of a kNN vote whose neighbours come from OTHER experiments.
+
+    Excluding a point's own experiment is the whole point. Crops from one slide
+    share staining, transfection and acquisition, so with them in the pool the
+    vote measures "do crops of one experiment look alike" — on production,
+    protein within microscope 1 scored 0.54 with them and 0.01 without.
+
+    Only classes present in at least two experiments are scored: a class from a
+    single experiment has no admissible neighbour of its own, so its recall
+    would be 0 by construction — an unmeasurable class reported as a measured
+    failure. Those points still vote as distractors for everyone else. None
+    when fewer than two classes are measurable, which is the experiment axis
+    always and, often, a filter that pairs each class with one experiment.
+
+    ``chance`` is 1 / scored classes, an upper bound on what a vote that ignores
+    the embedding achieves in balanced accuracy. Removing the own experiment
+    thins the own class in the pool, so an uninformative embedding scores at or
+    below it, never above.
+    """
+    keep = [i for i, label in enumerate(labels) if label is not None]
+    if not keep:
+        return None
+    y_raw = np.array([labels[i] for i in keep])
+    groups = np.array([experiment_ids[i] for i in keep])
+
+    measurable = [
+        c for c in np.unique(y_raw) if len(np.unique(groups[y_raw == c])) >= 2
+    ]
+    if len(measurable) < 2:
+        return None
+
+    classes, y = np.unique(y_raw, return_inverse=True)
+    x = _normalize_embeddings(np.asarray(embeddings, dtype=np.float32)[keep])
+    scored = np.flatnonzero(np.isin(y_raw, measurable))
+
+    predicted = np.empty(len(scored), dtype=np.int64)
+    for start in range(0, len(scored), _KNN_BLOCK):
+        rows = scored[start:start + _KNN_BLOCK]
+        sim = x[rows] @ x.T
+        sim[groups[rows][:, None] == groups[None, :]] = -np.inf
+        k = min(KNN_K, int(np.isfinite(sim).sum(axis=1).min()))
+        top = np.argpartition(-sim, k - 1, axis=1)[:, :k]
+        top_sim = np.take_along_axis(sim, top, axis=1)
+        votes = np.zeros((len(rows), len(classes)))
+        np.add.at(
+            votes,
+            (np.repeat(np.arange(len(rows)), k), y[top].ravel()),
+            np.exp(top_sim / KNN_TEMPERATURE).ravel(),
+        )
+        predicted[start:start + len(rows)] = votes.argmax(axis=1)
+
+    truth = y[scored]
+    recalls = [np.mean(predicted[truth == c] == c) for c in np.unique(truth)]
+    return KnnSeparability(
+        balanced_accuracy=float(np.mean(recalls)),
+        chance=1.0 / len(measurable),
+        k=KNN_K,
+        n_classes=len(measurable),
+        n_points=len(scored),
+    )
+
+
 def compute_umap_online(
     embeddings: np.ndarray,
     labels: list[Optional[int]],

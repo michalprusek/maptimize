@@ -1,7 +1,8 @@
 """Embeddings and UMAP visualization endpoints."""
 
+import asyncio
 import logging
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from typing import List, Optional, Sequence, Tuple, Type
 
 import numpy as np
@@ -23,6 +24,7 @@ from schemas.embeddings import (
     BundlenessResponse,
     FeatureExtractionStatus,
     FeatureExtractionTriggerResponse,
+    KnnSeparabilityResponse,
     LabelAxis,
     SeparabilityResponse,
     SeparabilityUnscoredResponse,
@@ -43,6 +45,7 @@ from services.umap_service import (
     MIN_POINTS_FOR_UMAP,
     Separability,
     clear_refresh_error,
+    compute_knn_separability,
     compute_separability,
     get_refresh_error,
     protein_labels,
@@ -680,6 +683,7 @@ def _labels_and_groups(
 def _separability(
     embeddings: np.ndarray,
     labels: List[Optional[int]],
+    experiment_ids: List[int],
     axis: LabelAxis,
 ) -> Tuple[Optional[SeparabilityResponse], Optional[SeparabilityUnscoredResponse]]:
     """Score ``labels``, or say why they cannot be scored.
@@ -688,15 +692,19 @@ def _separability(
     score used to be reported as nothing at all, and on the dashboard that reads
     as "still loading" or "broken" — while in practice it always meant the
     filter had left a single class on the axis being scored.
+
+    Pure numpy over plain ints, so the caller runs it off the event loop.
     """
     scored = compute_separability(embeddings, labels)
     if scored is not None:
+        knn = compute_knn_separability(embeddings, labels, experiment_ids)
         return (
             SeparabilityResponse(
                 score=scored.score,
                 label_by=axis,
                 n_classes=scored.n_classes,
                 n_points=scored.n_points,
+                knn=KnnSeparabilityResponse(**asdict(knn)) if knn else None,
             ),
             None,
         )
@@ -807,14 +815,15 @@ async def _get_cropped_umap(
 
     logger.info(f"Using pre-computed UMAP for {len(crops_with_umap)}/{total_crops} crops")
     embeddings = np.array([c.embedding for c in crops_with_umap])
+    experiment_ids = [crop.image.experiment_id for crop in crops_with_umap]
     labels, point_groups = _labels_and_groups(
-        axis,
-        groups,
-        crops_with_umap,
-        [crop.image.experiment_id for crop in crops_with_umap],
-        facets,
+        axis, groups, crops_with_umap, experiment_ids, facets
     )
-    separability, unscored = _separability(embeddings, labels, axis)
+    # Two O(N²) passes over 1024-D vectors; on the event loop they would stall
+    # every other request this single-process API is serving.
+    separability, unscored = await asyncio.to_thread(
+        _separability, embeddings, labels, experiment_ids, axis
+    )
     # Over the SAME points and the SAME labels as the score above, so the
     # classes whose separation is reported are the classes whose bundleness is.
     bundleness = _bundleness(crops_with_umap, labels, axis)

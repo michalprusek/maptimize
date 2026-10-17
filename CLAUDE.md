@@ -977,6 +977,31 @@ Parametry chodí do handleru jako jedna FastAPI dependency (`facet_selection` �
 s defaultem `Query(...)`, který test nepředá, doteče do těla jako objekt `Query` — ne
 `None`. Se čtyřmi filtry by to byla čtyřnásobná mina.
 
+##### Druhé číslo: leave-experiment-out kNN (od 2026-10-17)
+
+`separability.knn` (`compute_knn_separability` v `services/umap_service.py`) = balanced
+accuracy hlasování 20 nejbližších cropů (DINO `eval_knn.py`: váhy `exp(cos/0,07)`),
+**sousedé jen z JINÝCH experimentů**, vedle `chance = 1/n_classes`. Badge ho kreslí
+**vedle** silhouety, ne místo ní (volba uživatele), obarvený podle `knnSkill()` = posun
+od náhody k dokonalosti — surová přesnost na jedné škále nejde (0,40 je silné nad 14
+třídami a nic nad 2).
+
+Proč (naměřeno na produkci, 2773 cropů): silhouette sedí na každé ose v ±0,06 — protein
+−0,016, zatímco tenhle kNN trefí protein v 39 % (náhoda 7 %; 61 %, kdyby směl hlasovat vlastní experiment). Silhouette chce kompaktní
+konvexní třídy; protein nafocený na dvou mikroskopech takový není, lokálně je ale čistý.
+⚠️ **Outliery to NEBYLY** — medián místo průměru ani vyhození 5 % nejizolovanějších
+cropů silhouettu nepohnulo o víc než 0,01. Nepiš „robustní silhouettu".
+
+⚠️ **Vyloučení vlastního experimentu je celá pointa.** S ním v poolu měří hlasování
+„cropy z jednoho sklíčka vypadají stejně": protein uvnitř mikroskopu 1 dá 0,54 s ním a
+0,01 bez něj. ⚠️ **Třída z jediného experimentu se neskóruje** (recall 0 z konstrukce =
+neměřitelné hlášené jako neúspěch), ale v poolu **hlasuje dál** jako distraktor.
+`knn = null` ⇒ „třída splývá s experimentem" — vždy na ose experiment; nikdy ho
+nehlas jako 0. Šum se skutečnými labely dává přesně náhodu (0,064/0,334/0,250/0,500).
+
+Oba O(N²) průchody běží v `asyncio.to_thread` (dřív silhouette blokovala event loop).
+MCP `SERVER_VERSION` **5.1.0**.
+
 ### Bundleness skóre a konec FOV projekce (od 2026-10-13)
 
 Každý crop nese **předpočítané** skóre bundleness: `cell_crops.bundleness_score` +
