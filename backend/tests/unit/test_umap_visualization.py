@@ -835,3 +835,103 @@ async def test_create_visualization_exception_path(mock_db):
     mock_db.execute.side_effect = RuntimeError("db exploded")
     result = await viz.create_visualization(chart_type="histogram", user_id=1, db=mock_db)
     assert result == {"error": "db exploded"}
+
+
+# =============================================================================
+# compute_knn_separability — leave-experiment-out kNN
+# =============================================================================
+def _cluster(centre, n, seed):
+    rng = np.random.default_rng(seed)
+    return np.asarray(centre, dtype=float) + 0.01 * rng.standard_normal((n, len(centre)))
+
+
+def _knn(blocks):
+    """``blocks`` = [(centre, class, experiment, n)] → (embeddings, labels, exps)."""
+    emb, labels, exps = [], [], []
+    for seed, (centre, label, experiment, n) in enumerate(blocks):
+        emb.append(_cluster(centre, n, seed))
+        labels += [label] * n
+        exps += [experiment] * n
+    return np.vstack(emb), labels, exps
+
+
+def test_knn_recovers_classes_that_separate_across_experiments():
+    emb, labels, exps = _knn([
+        ([1, 0], "A", 1, 10), ([1, 0], "A", 2, 10),
+        ([0, 1], "B", 3, 10), ([0, 1], "B", 4, 10),
+    ])
+    result = umap_service.compute_knn_separability(emb, labels, exps)
+    assert result.balanced_accuracy == pytest.approx(1.0)
+    assert result.chance == pytest.approx(0.5)
+    assert (result.n_classes, result.n_points, result.k) == (2, 40, umap_service.KNN_K)
+
+
+def test_knn_never_lets_a_point_be_voted_for_by_its_own_experiment():
+    # Each slide looks like a slide of the OTHER class: experiment 1 (A) sits on
+    # experiment 3 (B), 2 (A) on 4 (B). With the own experiment in the pool,
+    # every point's nearest crops are its slide-mates and the vote is perfect —
+    # which is the batch effect, not the class. Without it, the vote is wrong.
+    emb, labels, exps = _knn([
+        ([1, 0, 0], "A", 1, 10), ([1, 0.05, 0], "B", 3, 10),
+        ([0, 0, 1], "A", 2, 10), ([0, 0.05, 1], "B", 4, 10),
+    ])
+    result = umap_service.compute_knn_separability(emb, labels, exps)
+    assert result.balanced_accuracy == pytest.approx(0.0)
+
+
+def test_knn_does_not_score_a_class_seen_in_one_experiment_but_lets_it_vote():
+    # C exists only in experiment 5, so it has no admissible neighbour of its
+    # own: scoring it would report 0 recall for something unmeasurable. It is
+    # still a real competitor in the pool — here it sits on top of A and steals
+    # A's votes, which a pool without it would hide.
+    emb, labels, exps = _knn([
+        ([1, 0], "A", 1, 10), ([1, 0], "A", 2, 10),
+        ([0, 1], "B", 3, 10), ([0, 1], "B", 4, 10),
+        ([1, 0], "C", 5, 40),
+    ])
+    result = umap_service.compute_knn_separability(emb, labels, exps)
+    assert (result.n_classes, result.n_points) == (2, 40)
+    assert result.chance == pytest.approx(0.5)
+    assert result.balanced_accuracy == pytest.approx(0.5)  # B perfect, A lost to C
+
+
+def test_knn_is_none_when_every_class_is_one_experiment():
+    # The experiment axis, always: a class can never be told from its batch.
+    emb, labels, exps = _knn([([1, 0], 1, 1, 10), ([0, 1], 2, 2, 10)])
+    assert umap_service.compute_knn_separability(emb, labels, exps) is None
+    assert umap_service.compute_knn_separability(emb, [None] * 20, exps) is None
+
+
+def test_knn_drops_unlabelled_rows_positionally():
+    # Unlabelled rows sit on top of class B; if they leaked into the pool under
+    # some label, or misaligned the remaining rows, A would stop being perfect.
+    emb, labels, exps = _knn([
+        ([1, 0], "A", 1, 10), ([1, 0], "A", 2, 10),
+        ([0, 1], "B", 3, 10), ([0, 1], "B", 4, 10),
+        ([1, 0], None, 6, 40),
+    ])
+    result = umap_service.compute_knn_separability(emb, labels, exps)
+    assert result.balanced_accuracy == pytest.approx(1.0)
+    assert result.n_points == 40
+
+
+def test_knn_is_at_chance_on_an_uninformative_embedding():
+    # The claim the chance line rests on: noise must not score above it.
+    rng = np.random.default_rng(0)
+    labels = [i % 4 for i in range(400)]
+    exps = [i % 20 for i in range(400)]
+    result = umap_service.compute_knn_separability(
+        rng.standard_normal((400, 32)), labels, exps
+    )
+    assert result.balanced_accuracy < result.chance + 0.06
+
+
+def test_knn_blocking_does_not_change_the_answer():
+    rng = np.random.default_rng(1)
+    emb = rng.standard_normal((90, 8))
+    labels = [i % 3 for i in range(90)]
+    exps = [i % 9 for i in range(90)]
+    whole = umap_service.compute_knn_separability(emb, labels, exps)
+    with patch.object(umap_service, "_KNN_BLOCK", 7):
+        blocked = umap_service.compute_knn_separability(emb, labels, exps)
+    assert blocked == whole

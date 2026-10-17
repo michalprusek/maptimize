@@ -1251,6 +1251,18 @@ tools:
       score, never the score on its own. Nothing here is hand-crafted: the
       embedding is unsupervised and the labels are applied only afterwards, so a
       separation is the images doing it, not the annotation.
+      SECOND NUMBER — `knn`: balanced accuracy of a 20-nearest-neighbour vote in
+      which a crop's neighbours come only from OTHER experiments, with `chance`
+      (1/n_classes) beside it. Read it together with the silhouette, not instead:
+      the silhouette rewards compact, globally separated classes and on this
+      corpus sits near 0 even where classes are locally distinct (protein:
+      silhouette -0.02 while kNN recovers the protein 39% of the time vs 7%
+      chance). Always report knn against its chance level. Its n_classes /
+      n_points can be smaller than the silhouette's: classes found in only one
+      experiment are not scored, because their separation cannot be told apart
+      from that slide's batch effect. `knn` is null when fewer than 2 classes
+      span 2+ experiments (always for label_by=experiment) — say that the
+      class is confounded with the experiment, never report it as 0.
     handler: http_json
     method: GET
     path: /api/embeddings/separability

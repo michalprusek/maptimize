@@ -2354,6 +2354,25 @@ export interface Separability {
   label_by: LabelAxis;
   n_classes: number;
   n_points: number;
+  /**
+   * The silhouette's companion; null when fewer than 2 classes span more than
+   * one experiment (always on the experiment axis).
+   */
+  knn: KnnSeparability | null;
+}
+
+/**
+ * Balanced accuracy of a kNN vote whose neighbours come only from OTHER
+ * experiments. Only readable against `chance` (1 / n_classes), and its counts
+ * can be smaller than the silhouette's: classes seen in one experiment are not
+ * scored.
+ */
+export interface KnnSeparability {
+  balanced_accuracy: number;
+  chance: number;
+  k: number;
+  n_classes: number;
+  n_points: number;
 }
 
 /** Why a set of points has no separability score. Mirrors the backend enum. */

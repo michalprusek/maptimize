@@ -61,3 +61,12 @@ export function getSeparabilityScoreStyle(score: number): string {
   }
   return "bg-accent-red/20 text-accent-red";
 }
+
+/**
+ * How far a kNN accuracy got from chance toward perfect, 0..1 (negative below
+ * chance). Raw accuracy cannot be coloured on one scale: 0.40 is strong over
+ * 14 classes and worthless over 2.
+ */
+export function knnSkill(knn: { balanced_accuracy: number; chance: number }): number {
+  return (knn.balanced_accuracy - knn.chance) / (1 - knn.chance);
+}
