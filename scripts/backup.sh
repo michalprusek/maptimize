@@ -11,10 +11,9 @@
 #                        dead links (this already happened once in miniature when
 #                        data/rag_documents/ was left unmounted — see CLAUDE.md,
 #                        "Perzistence obrázků v chatu").
-#   3. weights/        — best.pt is custom-trained: not in the repo, and
-#                        download_weights.py cannot fetch it (it only handles
-#                        mobile_sam.pt, a public re-downloadable asset). This
-#                        backup is its only copy. It is lazily loaded, so the
+#   3. weights/        — best.pt is custom-trained: not in the repo and not
+#                        downloadable from anywhere. This backup is its only
+#                        copy. It is lazily loaded, so the
 #                        backend still STARTS without it — cell detection fails
 #                        at first use instead.
 #

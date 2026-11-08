@@ -12,8 +12,6 @@ import {
   Image,
   Grid,
   Database,
-  Layers,
-  Box,
   Check,
 } from "lucide-react";
 import { useTranslations } from "next-intl";
@@ -24,7 +22,6 @@ import {
   type Experiment,
   type ExportOptions,
   type BBoxFormat,
-  type MaskFormat,
   type ExportPrepareResponse,
 } from "@/lib/api";
 
@@ -142,8 +139,6 @@ export function ExportModal({
   const [includeSumProjections, setIncludeSumProjections] = useState(true);
   const [includeCropImages, setIncludeCropImages] = useState(true);
   const [includeEmbeddings, setIncludeEmbeddings] = useState(true);
-  const [includeMasks, setIncludeMasks] = useState(true);
-  const [maskFormat, setMaskFormat] = useState<MaskFormat>("png");
   const [bboxFormat, setBboxFormat] = useState<BBoxFormat>("coco");
 
   // Auto-uncheck FOV images when both projections are unchecked
@@ -238,7 +233,7 @@ export function ExportModal({
     if (selectedIds.size === 0) return;
 
     // Validate at least one export option is selected
-    const hasAnyOption = includeFovImages || includeCropImages || includeEmbeddings || includeMasks;
+    const hasAnyOption = includeFovImages || includeCropImages || includeEmbeddings;
     if (!hasAnyOption) {
       setErrorMessage(t("selectAtLeastOneOption"));
       return;
@@ -252,9 +247,7 @@ export function ExportModal({
         include_fov_images: includeFovImages,
         include_crop_images: includeCropImages,
         include_embeddings: includeEmbeddings,
-        include_masks: includeMasks,
         bbox_format: bboxFormat,
-        mask_format: maskFormat,
       };
 
       const response = await api.prepareExport(Array.from(selectedIds), options);
@@ -281,9 +274,7 @@ export function ExportModal({
           includeFovImages,
           includeCropImages,
           includeEmbeddings,
-          includeMasks,
           bboxFormat,
-          maskFormat,
         },
         experimentCount: selectedIds.size,
       };
@@ -293,11 +284,7 @@ export function ExportModal({
       // logError("export_failed", { error, ...exportContext });
 
       setStatus("error");
-      setErrorMessage(
-        error instanceof Error
-          ? error.message
-          : "Export failed. Please try again or contact support if the problem persists."
-      );
+      setErrorMessage(error instanceof Error ? error.message : t("errorRetry"));
     }
   };
 
@@ -408,45 +395,32 @@ export function ExportModal({
                 {t("includeInExport")}
               </h3>
               <div className="space-y-3">
-                {/* FOV Images and Masks - side by side with nested options */}
-                <div className="grid grid-cols-2 gap-3">
-                  {/* FOV Images with nested MIP/SUM options */}
-                  <div className="rounded-lg bg-bg-secondary/50 hover:bg-bg-secondary/70 transition-colors">
-                    <StyledCheckbox
-                      checked={includeFovImages}
-                      onChange={handleFovImagesChange}
-                      label={t("fovImages")}
-                      icon={Image}
-                    />
-                    {includeFovImages && (
-                      <div className="pl-11 pb-3 pr-3 space-y-1">
-                        <StyledCheckbox
-                          checked={includeMipProjections}
-                          onChange={handleMipChange}
-                          label={t("mipProjections")}
-                          small
-                        />
-                        <StyledCheckbox
-                          checked={includeSumProjections}
-                          onChange={handleSumChange}
-                          label={t("sumProjections")}
-                          small
-                          disabled={!hasSumProjections}
-                          disabledTooltip={t("noSumProjectionsAvailable")}
-                        />
-                      </div>
-                    )}
-                  </div>
-
-                  {/* Masks checkbox */}
-                  <div className="rounded-lg bg-bg-secondary/50 hover:bg-bg-secondary/70 transition-colors">
-                    <StyledCheckbox
-                      checked={includeMasks}
-                      onChange={setIncludeMasks}
-                      label={t("masks")}
-                      icon={Layers}
-                    />
-                  </div>
+                {/* FOV Images with nested MIP/SUM options */}
+                <div className="rounded-lg bg-bg-secondary/50 hover:bg-bg-secondary/70 transition-colors">
+                  <StyledCheckbox
+                    checked={includeFovImages}
+                    onChange={handleFovImagesChange}
+                    label={t("fovImages")}
+                    icon={Image}
+                  />
+                  {includeFovImages && (
+                    <div className="pl-11 pb-3 pr-3 space-y-1">
+                      <StyledCheckbox
+                        checked={includeMipProjections}
+                        onChange={handleMipChange}
+                        label={t("mipProjections")}
+                        small
+                      />
+                      <StyledCheckbox
+                        checked={includeSumProjections}
+                        onChange={handleSumChange}
+                        label={t("sumProjections")}
+                        small
+                        disabled={!hasSumProjections}
+                        disabledTooltip={t("noSumProjectionsAvailable")}
+                      />
+                    </div>
+                  )}
                 </div>
 
                 {/* Crop Images and Embeddings */}
@@ -471,47 +445,20 @@ export function ExportModal({
               </div>
             </div>
 
-            {/* Format Selection - Segmentation and Detection side by side */}
+            {/* Bounding box format */}
             <div className="mb-6">
               <h3 className="text-sm font-medium text-text-secondary mb-3">
-                {t("annotationFormats")}
+                {t("bboxFormat")}
               </h3>
-              <div className="grid grid-cols-2 gap-4">
-                {/* Segmentation Format */}
-                <div className="rounded-lg bg-bg-secondary/50 p-4">
-                  <div className="flex items-center gap-2 mb-3 pb-2 border-b border-white/10">
-                    <Layers className="w-4 h-4 text-primary-400" />
-                    <span className="text-sm font-medium text-text-primary">{t("maskFormat")}</span>
-                  </div>
-                  <div className="space-y-1">
-                    {(["png", "coco", "coco_rle", "polygon"] as MaskFormat[]).map((format) => (
-                      <StyledRadio
-                        key={format}
-                        checked={maskFormat === format}
-                        onChange={() => setMaskFormat(format)}
-                        label={t(`maskFormat${format.charAt(0).toUpperCase() + format.slice(1).replace(/_([a-z])/g, (_, c) => c.toUpperCase())}`)}
-                      />
-                    ))}
-                  </div>
-                </div>
-
-                {/* Detection Format */}
-                <div className="rounded-lg bg-bg-secondary/50 p-4">
-                  <div className="flex items-center gap-2 mb-3 pb-2 border-b border-white/10">
-                    <Box className="w-4 h-4 text-primary-400" />
-                    <span className="text-sm font-medium text-text-primary">{t("bboxFormat")}</span>
-                  </div>
-                  <div className="space-y-1">
-                    {(["coco", "yolo", "voc", "csv"] as BBoxFormat[]).map((format) => (
-                      <StyledRadio
-                        key={format}
-                        checked={bboxFormat === format}
-                        onChange={() => setBboxFormat(format)}
-                        label={t(`bboxFormat${format.charAt(0).toUpperCase() + format.slice(1)}`)}
-                      />
-                    ))}
-                  </div>
-                </div>
+              <div className="rounded-lg bg-bg-secondary/50 p-4 space-y-1">
+                {(["coco", "yolo", "voc", "csv"] as BBoxFormat[]).map((format) => (
+                  <StyledRadio
+                    key={format}
+                    checked={bboxFormat === format}
+                    onChange={() => setBboxFormat(format)}
+                    label={t(`bboxFormat${format.charAt(0).toUpperCase() + format.slice(1)}`)}
+                  />
+                ))}
               </div>
             </div>
 

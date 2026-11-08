@@ -9,9 +9,6 @@
  * that should NOT fall back to localhost.
  */
 
-// Import types from editor module (canonical source for segmentation types)
-import type { SAMEmbeddingStatus, SegmentClickPoint } from "@/lib/editor/types";
-
 export const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
 /** One entry of FastAPI's 422 body: which field, and what is wrong with it. */
@@ -1000,208 +997,6 @@ class ApiClient {
   async deleteAvatar() {
     return this.request<{ message: string }>("/api/settings/avatar", {
       method: "DELETE",
-    });
-  }
-
-  // ============================================================================
-  // Segmentation (SAM)
-  // ============================================================================
-
-  /**
-   * Trigger SAM embedding computation for an image.
-   * This is GPU-intensive and runs in background.
-   */
-  async computeSAMEmbedding(imageId: number) {
-    return this.request<{ message: string; image_id: number }>(
-      `/api/segmentation/compute-embedding/${imageId}`,
-      { method: "POST" }
-    );
-  }
-
-  /**
-   * Check SAM embedding status for an image.
-   */
-  async getSAMEmbeddingStatus(imageId: number) {
-    return this.request<SAMEmbeddingStatusResponse>(
-      `/api/segmentation/embedding-status/${imageId}`
-    );
-  }
-
-  /**
-   * Run interactive segmentation from click prompts.
-   * Requires pre-computed embedding (status = "ready").
-   */
-  async segmentInteractive(imageId: number, points: SegmentClickPoint[]) {
-    return this.request<SegmentResponse>("/api/segmentation/segment", {
-      method: "POST",
-      body: JSON.stringify({ image_id: imageId, points }),
-    });
-  }
-
-  /**
-   * Save finalized segmentation mask for a crop.
-   */
-  async saveSegmentationMask(data: {
-    crop_id: number;
-    polygon: [number, number][];
-    iou_score: number;
-    prompt_count: number;
-  }) {
-    return this.request<{ success: boolean; crop_id: number; area_pixels: number }>(
-      "/api/segmentation/save-mask",
-      {
-        method: "POST",
-        body: JSON.stringify(data),
-      }
-    );
-  }
-
-  /**
-   * Get segmentation mask for a crop.
-   */
-  async getSegmentationMask(cropId: number) {
-    return this.request<SegmentationMaskResponse>(
-      `/api/segmentation/mask/${cropId}`
-    );
-  }
-
-  /**
-   * Get segmentation masks for multiple crops at once.
-   */
-  async getSegmentationMasksBatch(cropIds: number[]) {
-    return this.request<SegmentationMasksBatchResponse>(
-      `/api/segmentation/masks/batch?crop_ids=${cropIds.join(",")}`
-    );
-  }
-
-  /**
-   * Delete segmentation mask for a crop.
-   */
-  async deleteSegmentationMask(cropId: number) {
-    return this.request<{ success: boolean; crop_id: number }>(
-      `/api/segmentation/mask/${cropId}`,
-      { method: "DELETE" }
-    );
-  }
-
-  // ============================================================================
-  // FOV-Level Segmentation API
-  // ============================================================================
-
-  /**
-   * Save FOV-level segmentation mask.
-   * The mask covers the entire field of view. Individual cell masks
-   * are then extracted as clips based on bounding boxes.
-   */
-  async saveFOVSegmentationMask(data: {
-    image_id: number;
-    polygon: [number, number][];
-    iou_score: number;
-    prompt_count: number;
-  }) {
-    return this.request<{ success: boolean; image_id: number; area_pixels: number }>(
-      "/api/segmentation/save-fov-mask",
-      {
-        method: "POST",
-        body: JSON.stringify(data),
-      }
-    );
-  }
-
-  /**
-   * Save FOV-level segmentation mask with union support.
-   * Accepts multiple polygons and merges them with existing mask.
-   * Returns all saved polygons (preserves separate instances).
-   */
-  async saveFOVSegmentationMaskWithUnion(data: {
-    image_id: number;
-    polygons: [number, number][][];
-    iou_score: number;
-    prompt_count: number;
-  }) {
-    return this.request<{
-      success: boolean;
-      image_id: number;
-      area_pixels: number;
-      polygons: [number, number][][];
-      polygon_count: number;
-    }>(
-      "/api/segmentation/save-fov-mask-union",
-      {
-        method: "POST",
-        body: JSON.stringify(data),
-      }
-    );
-  }
-
-  /**
-   * Get FOV-level segmentation mask for an image.
-   */
-  async getFOVSegmentationMask(imageId: number) {
-    return this.request<{
-      has_mask: boolean;
-      polygon?: [number, number][] | [number, number][][]; // Single or multi-polygon format
-      iou_score?: number;
-      area_pixels?: number;
-      creation_method?: string;
-      prompt_count?: number;
-    }>(`/api/segmentation/fov-mask/${imageId}`);
-  }
-
-  /**
-   * Delete FOV-level segmentation mask.
-   */
-  async deleteFOVSegmentationMask(imageId: number) {
-    return this.request<{ success: boolean; image_id: number }>(
-      `/api/segmentation/fov-mask/${imageId}`,
-      { method: "DELETE" }
-    );
-  }
-
-  /**
-   * Get segmentation capabilities (device, model variant, text support).
-   * Used to determine if text prompting UI should be shown.
-   */
-  async getSegmentationCapabilities() {
-    return this.request<SegmentationCapabilitiesResponse>(
-      "/api/segmentation/capabilities"
-    );
-  }
-
-  /**
-   * Run text-based segmentation using SAM 3.
-   * Returns all instances matching the text description.
-   * Requires CUDA GPU (SAM 3).
-   */
-  async segmentWithText(imageId: number, textPrompt: string, confidenceThreshold: number = 0.5) {
-    return this.request<TextSegmentResponse>("/api/segmentation/segment-text", {
-      method: "POST",
-      body: JSON.stringify({
-        image_id: imageId,
-        text_prompt: textPrompt,
-        confidence_threshold: confidenceThreshold,
-      }),
-    });
-  }
-
-  /**
-   * Refine a text-detected instance using point prompts.
-   * Combines initial text detection with click refinement.
-   */
-  async refineTextSegment(
-    imageId: number,
-    textPrompt: string,
-    instanceIndex: number,
-    points: SegmentClickPoint[]
-  ) {
-    return this.request<SegmentResponse>("/api/segmentation/segment-text-refine", {
-      method: "POST",
-      body: JSON.stringify({
-        image_id: imageId,
-        text_prompt: textPrompt,
-        instance_index: instanceIndex,
-        points,
-      }),
     });
   }
 
@@ -2575,95 +2370,16 @@ export interface CropBatchUpdateResponse {
 }
 
 // ============================================================================
-// Segmentation types
-// ============================================================================
-
-// Re-export from canonical location (editor/types.ts) to avoid DRY violation
-export type { SAMEmbeddingStatus, SegmentClickPoint } from "@/lib/editor/types";
-
-export interface SAMEmbeddingStatusResponse {
-  image_id: number;
-  status: SAMEmbeddingStatus;
-  has_embedding: boolean;
-  embedding_shape?: string;
-  model_variant?: string;
-}
-
-export interface SegmentResponse {
-  success: boolean;
-  polygon?: [number, number][];
-  iou_score?: number;
-  area_pixels?: number;
-  error?: string;
-}
-
-export interface SegmentationMaskResponse {
-  has_mask: boolean;
-  polygon?: [number, number][];
-  iou_score?: number;
-  area_pixels?: number;
-  creation_method?: string;
-  prompt_count?: number;
-}
-
-export interface SegmentationMasksBatchResponse {
-  masks: Record<number, {
-    polygon: [number, number][];
-    iou_score: number;
-    area_pixels: number;
-    creation_method: string;
-  }>;
-}
-
-// ============================================================================
-// SAM 3 Text Segmentation types
-// ============================================================================
-
-/**
- * Segmentation capabilities response.
- */
-export interface SegmentationCapabilitiesResponse {
-  device: "cuda" | "mps" | "cpu";
-  variant: "mobilesam" | "sam3";
-  supports_text_prompts: boolean;
-  model_name: string;
-}
-
-/**
- * A single detected instance from text segmentation.
- */
-export interface TextSegmentInstance {
-  index: number;
-  polygon: [number, number][];
-  bbox: [number, number, number, number]; // [x1, y1, x2, y2]
-  score: number;
-  area_pixels: number;
-}
-
-/**
- * Response from text-based segmentation.
- */
-export interface TextSegmentResponse {
-  success: boolean;
-  instances?: TextSegmentInstance[];
-  prompt?: string;
-  error?: string;
-}
-
-// ============================================================================
 // Export/Import types
 // ============================================================================
 
 export type BBoxFormat = "coco" | "yolo" | "voc" | "csv";
-export type MaskFormat = "png" | "coco_rle" | "coco" | "polygon";
 
 export interface ExportOptions {
   include_fov_images?: boolean;
   include_crop_images?: boolean;
   include_embeddings?: boolean;
-  include_masks?: boolean;
   bbox_format?: BBoxFormat;
-  mask_format?: MaskFormat;
 }
 
 export interface ExportPrepareResponse {
@@ -2672,7 +2388,6 @@ export interface ExportPrepareResponse {
   experiment_count: number;
   image_count: number;
   crop_count: number;
-  mask_count: number;
 }
 
 export interface ExportStatusResponse {
@@ -2694,7 +2409,6 @@ export interface ImportValidationResult {
   image_count: number;
   annotation_count: number;
   has_embeddings: boolean;
-  has_masks: boolean;
   errors: string[];
   warnings: string[];
 }

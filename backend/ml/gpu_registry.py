@@ -13,9 +13,7 @@ logger = logging.getLogger(__name__)
 
 # Each entry: (name, module_path, get_fn_name, reset_fn_name, estimated_vram_mb)
 _MODEL_DEFINITIONS: List[Tuple[str, str, str, str, int]] = [
-    ("yolov8",   "ml.detection.detector",          "_get_detector_raw",           "reset_detector",           100),
-    ("mobilesam", "ml.segmentation.sam_encoder",    "_get_mobilesam_encoder_raw",  "reset_mobilesam_encoder",  200),
-    ("sam3",     "ml.segmentation.sam3_encoder",    "_get_sam3_encoder_raw",       "reset_sam3_encoder",       3000),
+    ("detector", "ml.detection.detector",          "_get_detector_raw",           "reset_detector",           100),
     ("qwen_vl",  "ml.rag.qwen_vl_encoder",         "_get_qwen_vl_encoder_raw",    "reset_qwen_vl_encoder",    4000),
     ("dinov3",   "ml.features.feature_extractor",   "_get_encoder_raw",            "reset_encoder",            1500),
     ("esmc",     "ml.features.esmc_encoder",        "_get_esmc_encoder_raw",       "reset_esmc_encoder",       2500),

@@ -1,9 +1,8 @@
 """Auto-provision template data for newly registered users.
 
-Copies user 1's (template admin) experiments, images, cell crops,
-SAM embeddings, metrics, and metric images to new users so they
-start with the full dataset. Uses INSERT...SELECT for efficiency
-to avoid loading large binary data (SAM embeddings) into Python.
+Copies user 1's (template admin) experiments, images and cell crops to
+new users so they start with the full dataset. Uses INSERT...SELECT so the
+embedding vectors never round-trip through Python.
 """
 
 import logging
@@ -51,9 +50,8 @@ async def _build_id_mapping(
 async def provision_new_user_data(new_user_id: int, db: AsyncSession) -> None:
     """Copy template user's data to a newly registered user.
 
-    Copies experiments, images, cell crops, SAM embeddings, all
-    metrics, and metric images. All operations use INSERT...SELECT
-    to keep large data (embeddings) in PostgreSQL.
+    Copies experiments, images and cell crops. All operations use
+    INSERT...SELECT to keep large data (embeddings) in PostgreSQL.
 
     Runs within the caller's transaction -- rolls back automatically
     on failure.
@@ -74,7 +72,7 @@ async def provision_new_user_data(new_user_id: int, db: AsyncSession) -> None:
     )
     template_experiments = result.fetchall()
 
-    # Accumulated old->new crop ID mapping across all experiments (needed for metric_images)
+    # Accumulated old->new crop ID mapping across all experiments (counted in the summary log)
     crop_id_map: dict[int, int] = {}
 
     for exp in template_experiments:
@@ -106,7 +104,7 @@ async def provision_new_user_data(new_user_id: int, db: AsyncSession) -> None:
                     mip_path, sum_path, thumbnail_path, detect_cells, source_discarded,
                     width, height, z_slices, file_size, image_metadata,
                     status, error_message,
-                    sam_embedding_status, rag_embedding, rag_indexed_at,
+                    rag_embedding, rag_indexed_at,
                     created_at, processed_at
                 )
                 SELECT
@@ -114,7 +112,7 @@ async def provision_new_user_data(new_user_id: int, db: AsyncSession) -> None:
                     mip_path, sum_path, thumbnail_path, detect_cells, source_discarded,
                     width, height, z_slices, file_size, image_metadata,
                     status, error_message,
-                    sam_embedding_status, rag_embedding, rag_indexed_at,
+                    rag_embedding, rag_indexed_at,
                     NOW(), processed_at
                 FROM images
                 WHERE experiment_id = :old_exp_id
@@ -129,7 +127,7 @@ async def provision_new_user_data(new_user_id: int, db: AsyncSession) -> None:
         if not image_map:
             continue
 
-        # 4. Copy cell crops and SAM embeddings for each image pair
+        # 4. Copy cell crops for each image pair
         for old_img_id, new_img_id in image_map.items():
             await db.execute(
                 text("""
@@ -160,83 +158,9 @@ async def provision_new_user_data(new_user_id: int, db: AsyncSession) -> None:
             crop_map = await _build_id_mapping(db, "cell_crops", "image_id", old_img_id, new_img_id)
             crop_id_map.update(crop_map)
 
-            # 5. Copy SAM embeddings (INSERT...SELECT keeps binary data in DB)
-            await db.execute(
-                text("""
-                    INSERT INTO sam_embeddings (
-                        image_id, model_variant, embedding_data, embedding_shape,
-                        original_width, original_height, created_at
-                    )
-                    SELECT
-                        :new_img_id, model_variant, embedding_data, embedding_shape,
-                        original_width, original_height, NOW()
-                    FROM sam_embeddings
-                    WHERE image_id = :old_img_id
-                """),
-                {"new_img_id": new_img_id, "old_img_id": old_img_id},
-            )
-
     # Metrics are shared via groups — not copied per user
 
     logger.info(
         "Provisioned user %d: %d experiments, %d crop mappings",
         new_user_id, len(template_experiments), len(crop_id_map),
     )
-
-
-async def _copy_metrics(
-    db: AsyncSession,
-    new_user_id: int,
-    crop_id_map: dict[int, int],
-) -> None:
-    """Copy all metrics and their images from the template user."""
-    result = await db.execute(
-        text("SELECT id, name, description FROM metrics WHERE user_id = :uid ORDER BY id"),
-        {"uid": TEMPLATE_USER_ID},
-    )
-    template_metrics = result.fetchall()
-
-    if not template_metrics or not crop_id_map:
-        return
-
-    for template_metric in template_metrics:
-        new_metric = await db.execute(
-            text("""
-                INSERT INTO metrics (user_id, name, description, created_at, updated_at)
-                VALUES (:user_id, :name, :description, NOW(), NOW())
-                RETURNING id
-            """),
-            {
-                "user_id": new_user_id,
-                "name": template_metric.name,
-                "description": template_metric.description,
-            },
-        )
-        new_metric_id = new_metric.scalar()
-
-        # Copy metric_images, remapping cell_crop_id via the accumulated crop mapping
-        result = await db.execute(
-            text("""
-                SELECT cell_crop_id, file_path, original_filename
-                FROM metric_images
-                WHERE metric_id = :metric_id
-                ORDER BY id
-            """),
-            {"metric_id": template_metric.id},
-        )
-        template_images = result.fetchall()
-
-        for mi in template_images:
-            new_crop_id = crop_id_map.get(mi.cell_crop_id) if mi.cell_crop_id else None
-            await db.execute(
-                text("""
-                    INSERT INTO metric_images (metric_id, cell_crop_id, file_path, original_filename, created_at)
-                    VALUES (:metric_id, :cell_crop_id, :file_path, :original_filename, NOW())
-                """),
-                {
-                    "metric_id": new_metric_id,
-                    "cell_crop_id": new_crop_id,
-                    "file_path": mi.file_path,
-                    "original_filename": mi.original_filename,
-                },
-            )

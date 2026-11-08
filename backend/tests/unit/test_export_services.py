@@ -4,8 +4,7 @@ Covers:
   * ``services.data_export_service`` — CSV/Excel exports of experiments,
     cell crops, ranking comparisons and arbitrary analysis results.
   * ``services.export_service`` — streaming ZIP generation, size estimation,
-    Redis job state, manifest/metadata serialization, mask encoding and
-    embeddings.
+    Redis job state, manifest/metadata serialization and embeddings.
 
 The DB is an ``AsyncMock`` (see conftest ``mock_db``/``make_result``), Redis is a
 plain ``AsyncMock``, and all file output is redirected to ``tmp_path`` so nothing
@@ -13,11 +12,10 @@ touches the real upload directory.
 """
 import io
 import json
-import os
 import zipfile
 from datetime import datetime, timezone
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import numpy as np
 import pytest
@@ -27,7 +25,6 @@ from schemas.export_import import (
     BBoxFormat,
     ExportJobData,
     ExportOptions,
-    MaskFormat,
 )
 from services.export_service import (
     ExportService,
@@ -80,7 +77,6 @@ def make_image(
     width=100,
     height=80,
     cell_crops=None,
-    fov_mask=None,
     embedding=None,
     mip_path=None,
     sum_path=None,
@@ -98,7 +94,6 @@ def make_image(
         embedding=embedding,
         created_at=datetime(2024, 1, 1, 12, 0, 0),
         cell_crops=cell_crops if cell_crops is not None else [],
-        fov_segmentation_mask=fov_mask,
         mip_path=mip_path,
         sum_path=sum_path,
         thumbnail_path=thumbnail_path,
@@ -137,13 +132,6 @@ def make_crop(
         mip_path=mip_path,
         sum_crop_path=sum_crop_path,
         created_at=datetime(2024, 1, 1, 12, 0, 0),
-    )
-
-
-def make_fov_mask(polygon=None, area=1000):
-    return SimpleNamespace(
-        polygon_points=polygon if polygon is not None else [[0, 0], [50, 0], [50, 40], [0, 40]],
-        area_pixels=area,
     )
 
 
@@ -375,37 +363,39 @@ def test_write_embeddings_to_zip_no_values():
 # ============================================================================
 
 
-async def test_prepare_export_success_with_masks(service, mock_db, fake_redis):
+async def test_prepare_export_success(service, mock_db, fake_redis):
     exps = [make_experiment(id=1), make_experiment(id=2)]
     mock_db.execute.side_effect = [
         make_result(scalars_all=exps),   # ownership check
         make_result(scalar=4),           # image count
         make_result(scalar=10),          # crop count
-        make_result(scalar=2),           # fov masks
-        make_result(scalar=3),           # crop masks
     ]
-    opts = ExportOptions(include_masks=True)
-    resp = await service.prepare_export([1, 2], opts, user_id=7, db=mock_db)
+    resp = await service.prepare_export([1, 2], ExportOptions(), user_id=7, db=mock_db)
     assert resp.experiment_count == 2
     assert resp.image_count == 4
     assert resp.crop_count == 10
-    assert resp.mask_count == 5
     assert resp.estimated_size_bytes > 0
+    assert mock_db.execute.await_count == 3  # no mask-count queries any more
     fake_redis.setex.assert_awaited()  # job saved
 
 
-async def test_prepare_export_no_masks(service, mock_db):
+async def test_prepare_export_empty_counts(service, mock_db):
     exps = [make_experiment(id=1)]
     mock_db.execute.side_effect = [
         make_result(scalars_all=exps),
         make_result(scalar=None),  # image count → 0 via `or 0`
         make_result(scalar=None),  # crop count → 0
     ]
-    opts = ExportOptions(include_masks=False)
-    resp = await service.prepare_export([1], opts, user_id=7, db=mock_db)
-    assert resp.mask_count == 0
+    resp = await service.prepare_export([1], ExportOptions(), user_id=7, db=mock_db)
     assert resp.image_count == 0
     assert resp.crop_count == 0
+
+
+def test_export_options_ignore_mask_fields_from_a_stale_client():
+    """A tab opened before SAM was removed still posts include_masks /
+    mask_format. Ignoring them keeps its export working; there are no masks."""
+    opts = ExportOptions(include_masks=True, mask_format="png")
+    assert not hasattr(opts, "include_masks") and not hasattr(opts, "mask_format")
 
 
 async def test_prepare_export_ownership_mismatch(service, mock_db):
@@ -424,14 +414,12 @@ def test_estimate_size_all_options(service):
         include_fov_images=True,
         include_crop_images=True,
         include_embeddings=True,
-        include_masks=True,
     )
-    size = service._estimate_export_size(2, 5, 3, opts)
+    size = service._estimate_export_size(2, 5, opts)
     expected = (
         2 * 2 * 1024 * 1024      # fov images
         + 5 * 100 * 1024         # crop images
         + 5 * 4 * 1024           # embeddings (crops only)
-        + 3 * 50 * 1024          # masks
         + 5 * 200                # annotations
         + 2 * 500                # metadata
     )
@@ -443,10 +431,9 @@ def test_estimate_size_minimal(service):
     opts = ExportOptions(
         include_fov_images=False,
         include_crop_images=False,
-        include_embeddings=False,
-        include_masks=True,
+        include_embeddings=True,
     )
-    size = service._estimate_export_size(0, 0, 0, opts)
+    size = service._estimate_export_size(0, 0, opts)
     assert size == 0
 
 
@@ -482,7 +469,7 @@ async def test_create_manifest(service, mock_db):
     job = ExportJobData(
         job_id="j1", user_id=7, experiment_ids=[1, 2], options=ExportOptions(),
         status="streaming", created_at=datetime.now(timezone.utc),
-        experiment_count=2, image_count=4, crop_count=6, mask_count=1,
+        experiment_count=2, image_count=4, crop_count=6,
     )
     manifest = await service._create_manifest(job, mock_db)
     assert manifest["format_version"] == "1.0"
@@ -563,132 +550,6 @@ async def test_write_crop_files(service, tmp_path):
 
 
 # ============================================================================
-# ExportService._write_fov_mask
-# ============================================================================
-
-
-def _read_zip_json(buf, name):
-    with zipfile.ZipFile(io.BytesIO(buf.getvalue())) as zf:
-        return json.loads(zf.read(name))
-
-
-async def test_write_fov_mask_no_mask(service):
-    img = make_image(fov_mask=None)
-    buf = io.BytesIO()
-    with zipfile.ZipFile(buf, "w") as zf:
-        await service._write_fov_mask(zf, 1, img, MaskFormat.PNG)
-    with zipfile.ZipFile(io.BytesIO(buf.getvalue())) as zf:
-        assert zf.namelist() == []
-
-
-async def test_write_fov_mask_no_polygon(service):
-    img = make_image(fov_mask=make_fov_mask(polygon=[]))
-    buf = io.BytesIO()
-    with zipfile.ZipFile(buf, "w") as zf:
-        await service._write_fov_mask(zf, 1, img, MaskFormat.PNG)
-    with zipfile.ZipFile(io.BytesIO(buf.getvalue())) as zf:
-        assert zf.namelist() == []
-
-
-async def test_write_fov_mask_too_few_points(service):
-    img = make_image(fov_mask=make_fov_mask(polygon=[[0, 0], [1, 1]]))
-    buf = io.BytesIO()
-    with zipfile.ZipFile(buf, "w") as zf:
-        await service._write_fov_mask(zf, 1, img, MaskFormat.PNG)
-    with zipfile.ZipFile(io.BytesIO(buf.getvalue())) as zf:
-        assert zf.namelist() == []
-
-
-async def test_write_fov_mask_png(service):
-    img = make_image(fov_mask=make_fov_mask())
-    buf = io.BytesIO()
-    with zipfile.ZipFile(buf, "w") as zf:
-        await service._write_fov_mask(zf, 1, img, MaskFormat.PNG)
-    with zipfile.ZipFile(io.BytesIO(buf.getvalue())) as zf:
-        assert "experiments/1/masks/fov_10.png" in zf.namelist()
-
-
-async def test_write_fov_mask_coco_rle(service):
-    img = make_image(fov_mask=make_fov_mask())
-    buf = io.BytesIO()
-    with zipfile.ZipFile(buf, "w") as zf:
-        await service._write_fov_mask(zf, 1, img, MaskFormat.COCO_RLE)
-    data = _read_zip_json(buf, "experiments/1/masks/fov_10.json")
-    assert "counts" in data["segmentation"]
-    assert data["image_id"] == 10
-
-
-async def test_write_fov_mask_coco_string(service):
-    img = make_image(fov_mask=make_fov_mask())
-    buf = io.BytesIO()
-    with zipfile.ZipFile(buf, "w") as zf:
-        await service._write_fov_mask(zf, 1, img, MaskFormat.COCO)
-    data = _read_zip_json(buf, "experiments/1/masks/fov_10.json")
-    assert data["iscrowd"] == 1
-    assert isinstance(data["segmentation"]["counts"], str)
-
-
-async def test_write_fov_mask_polygon(service):
-    img = make_image(fov_mask=make_fov_mask(area=None))
-    buf = io.BytesIO()
-    with zipfile.ZipFile(buf, "w") as zf:
-        await service._write_fov_mask(zf, 1, img, MaskFormat.POLYGON)
-    data = _read_zip_json(buf, "experiments/1/masks/fov_10.json")
-    assert data["area"] == 0  # None → 0
-    assert data["polygon"]
-    assert data["width"] == 100
-
-
-async def test_write_fov_mask_exception_logged(service):
-    """Exception inside the mask branch is caught and logged, not raised."""
-    img = make_image(fov_mask=make_fov_mask())
-    buf = io.BytesIO()
-    with zipfile.ZipFile(buf, "w") as zf:
-        with patch.object(
-            service, "_polygon_to_coco_rle", side_effect=RuntimeError("boom")
-        ):
-            # must not raise
-            await service._write_fov_mask(zf, 1, img, MaskFormat.COCO_RLE)
-    with zipfile.ZipFile(io.BytesIO(buf.getvalue())) as zf:
-        assert zf.namelist() == []
-
-
-# ============================================================================
-# ExportService RLE encoding internals
-# ============================================================================
-
-
-def test_polygon_to_rle_counts_and_formats(service):
-    polygon = [(0, 0), (5, 0), (5, 5), (0, 5)]
-    counts, h, w = service._polygon_to_rle_counts(polygon, 10, 10)
-    assert h == 10 and w == 10
-    assert sum(counts) == 100  # full mask area
-    assert all(isinstance(c, int) for c in counts)
-
-    rle = service._polygon_to_coco_rle(polygon, 10, 10)
-    assert rle["size"] == [10, 10]
-
-    srle = service._polygon_to_coco_string_rle(polygon, 10, 10)
-    assert isinstance(srle["counts"], str)
-
-
-def test_polygon_rle_starts_with_foreground(service):
-    """A polygon covering pixel (0,0) inserts a leading 0 count."""
-    # Cover the whole image so the first flattened pixel is foreground.
-    polygon = [(0, 0), (4, 0), (4, 4), (0, 4)]
-    counts, _, _ = service._polygon_to_rle_counts(polygon, 4, 4)
-    assert counts[0] == 0
-
-
-def test_encode_rle_counts_zero_and_multibyte(service):
-    # zero count → '0' char
-    assert service._encode_rle_counts([0]) == "0"
-    # large value triggers the continuation-bit loop
-    encoded = service._encode_rle_counts([1000])
-    assert isinstance(encoded, str) and len(encoded) >= 2
-
-
-# ============================================================================
 # ExportService._write_embeddings / _get_class_names
 # ============================================================================
 
@@ -756,12 +617,10 @@ async def _collect_stream(service, job_id, db):
 
 
 async def test_generate_export_stream_coco_full(service, mock_db, fake_redis):
-    """Happy path: COCO annotations, fov + crop images, masks, embeddings."""
+    """Happy path: COCO annotations, fov + crop images, embeddings."""
     protein = make_protein()
     crop = make_crop(id=100, image_id=10, map_protein=protein, embedding=[0.1, 0.2])
-    img = make_image(
-        id=10, cell_crops=[crop], fov_mask=make_fov_mask(), embedding=[0.3, 0.4]
-    )
+    img = make_image(id=10, cell_crops=[crop], embedding=[0.3, 0.4])
     exp = make_experiment(id=1, map_protein=protein, images=[img])
 
     job = _make_job([1], ExportOptions(), image_count=1, crop_count=1)
@@ -792,8 +651,7 @@ async def test_generate_export_stream_yolo(service, mock_db, fake_redis):
 
     opts = ExportOptions(
         bbox_format=BBoxFormat.YOLO,
-        include_embeddings=False,
-        include_masks=True,  # kept on to satisfy the "at least one" validator
+        include_embeddings=True,  # the validator needs at least one option
         include_fov_images=False,
         include_crop_images=False,
     )
@@ -817,8 +675,7 @@ async def test_generate_export_stream_voc(service, mock_db, fake_redis):
 
     opts = ExportOptions(
         bbox_format=BBoxFormat.VOC,
-        include_embeddings=False,
-        include_masks=True,  # kept on to satisfy the "at least one" validator
+        include_embeddings=True,  # the validator needs at least one option
         include_fov_images=False,
         include_crop_images=False,
     )
@@ -840,8 +697,7 @@ async def test_generate_export_stream_csv(service, mock_db, fake_redis):
 
     opts = ExportOptions(
         bbox_format=BBoxFormat.CSV,
-        include_embeddings=False,
-        include_masks=True,  # kept on to satisfy the "at least one" validator
+        include_embeddings=True,  # the validator needs at least one option
         include_fov_images=False,
         include_crop_images=False,
     )
@@ -861,8 +717,7 @@ async def test_generate_export_stream_missing_experiment_skipped(
 ):
     """An experiment that is None is logged and skipped, stream still completes."""
     opts = ExportOptions(
-        include_embeddings=False,
-        include_masks=True,  # kept on to satisfy the "at least one" validator
+        include_embeddings=True,  # the validator needs at least one option
         include_fov_images=False,
         include_crop_images=False,
     )

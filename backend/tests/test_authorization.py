@@ -39,7 +39,6 @@ class TestAuthRequired:
         ("GET", "/api/rag/documents"),
         ("GET", "/api/groups/my"),
         ("GET", "/api/embeddings/status"),
-        ("GET", "/api/segmentation/capabilities"),
         ("GET", "/api/bug-reports"),
         ("GET", "/api/admin/stats"),
     ]

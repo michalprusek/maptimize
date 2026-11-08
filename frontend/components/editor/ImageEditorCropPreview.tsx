@@ -11,60 +11,17 @@
 import { useMemo, useState, useEffect, type RefObject } from "react";
 import { useTranslations } from "next-intl";
 import { motion } from "framer-motion";
-import { Sparkles, Edit2, Hexagon } from "lucide-react";
-import type { EditorBbox, Rect, CellPolygon } from "@/lib/editor/types";
+import { Sparkles, Edit2 } from "lucide-react";
+import type { EditorBbox, Rect } from "@/lib/editor/types";
 import { getDisplayModeFilter } from "@/lib/editor/display";
-import {
-  calculateObjectCoverTransform,
-  buildPolygonSvgPath,
-  rotateVec,
-} from "@/lib/editor/geometry";
 import { api, cropImageVersion, type DisplayMode } from "@/lib/api";
 import { extractCropFromImage } from "@/lib/editor/canvasUtils";
-import { CropPolygonOverlay } from "./SegmentationOverlay";
-
-/**
- * Overlay for clipped FOV mask on crop thumbnails.
- * Takes pre-clipped polygon in crop-relative coordinates.
- */
-function ClippedFOVPolygonOverlay({
-  polygon,
-  bboxSize,
-  thumbnailSize,
-}: {
-  polygon: [number, number][];
-  bboxSize: { width: number; height: number };
-  thumbnailSize: number;
-}): React.ReactElement | null {
-  if (polygon.length < 3) return null;
-
-  const transform = calculateObjectCoverTransform(bboxSize.width, bboxSize.height, thumbnailSize);
-  const pathD = buildPolygonSvgPath(polygon, transform, thumbnailSize);
-
-  return (
-    <svg
-      className="absolute inset-0 w-full h-full pointer-events-none overflow-hidden"
-      viewBox="0 0 100 100"
-      preserveAspectRatio="none"
-    >
-      <path
-        d={pathD}
-        fill="rgba(251, 191, 36, 0.2)"
-        stroke="rgba(251, 191, 36, 0.7)"
-        strokeWidth={0.5}
-        strokeDasharray="3 1.5"
-        vectorEffect="non-scaling-stroke"
-      />
-    </svg>
-  );
-}
 
 interface ImageEditorCropPreviewProps {
   bboxes: EditorBbox[];
   selectedBboxId: string | number | null;
   hoveredBboxId: string | number | null;
   onBboxSelect: (id: string | number) => void;
-  imageUrl: string;
   /** Reference to the source image for live preview extraction */
   sourceImageRef: RefObject<HTMLImageElement | null>;
   /** ID of bbox being modified (dragged/resized), null if idle */
@@ -75,124 +32,6 @@ interface ImageEditorCropPreviewProps {
   onBboxHover?: (id: string | number | null) => void;
   /** Current display mode for preview rendering */
   displayMode: DisplayMode;
-  /** Saved segmentation polygons for crops */
-  savedPolygons?: CellPolygon[];
-  /** FOV-level segmentation mask polygons (multiple, in FOV coordinates) */
-  fovMaskPolygons?: [number, number][][] | null;
-}
-
-// Thumbnail size for polygon overlay calculation
-const THUMBNAIL_SIZE = 256; // w-64 = 16rem = 256px
-
-/**
- * Clip a polygon to a bounding box using Sutherland-Hodgman algorithm.
- * Returns polygon points relative to the bbox origin (for thumbnail display).
- *
- * ⚠️ Honours `bbox.angle`. The thumbnail under this overlay is the DE-ROTATED crop,
- * so the polygon has to be carried into the box's local frame before clipping.
- * Clipping a rotated crop against its axis-aligned rect keeps the wrong region and
- * then draws the mask un-rotated over rotated pixels, so it visibly slides off the
- * cell -- which reads as "segmentation broke" rather than "the overlay is missing a
- * transform". Uses the same rotation as the image: local = R(-angle)(p - centre).
- */
-function clipPolygonToBbox(
-  polygon: [number, number][],
-  bbox: { x: number; y: number; width: number; height: number; angle?: number }
-): [number, number][] {
-  if (!polygon || polygon.length < 3) return [];
-
-  const angle = bbox.angle ?? 0;
-  let pts: [number, number][] = polygon;
-  let { x, y } = bbox;
-  const { width, height } = bbox;
-
-  if (angle) {
-    const cx = bbox.x + width / 2;
-    const cy = bbox.y + height / 2;
-    pts = polygon.map(([px, py]) => {
-      const v = rotateVec(px - cx, py - cy, -angle);
-      return [v.x + width / 2, v.y + height / 2] as [number, number];
-    });
-    x = 0;
-    y = 0;  // clip against the local rect the de-rotated crop actually covers
-  }
-
-  const minX = x, maxX = x + width;
-  const minY = y, maxY = y + height;
-
-  // Sutherland-Hodgman clipping against each edge
-  let output = [...pts];
-
-  // Clip against left edge
-  output = clipAgainstEdge(output, minX, null, true);
-  if (output.length === 0) return [];
-
-  // Clip against right edge
-  output = clipAgainstEdge(output, maxX, null, false);
-  if (output.length === 0) return [];
-
-  // Clip against top edge
-  output = clipAgainstEdge(output, null, minY, true);
-  if (output.length === 0) return [];
-
-  // Clip against bottom edge
-  output = clipAgainstEdge(output, null, maxY, false);
-  if (output.length === 0) return [];
-
-  // Convert to bbox-relative coordinates
-  return output.map(([px, py]) => [px - x, py - y] as [number, number]);
-}
-
-/**
- * Clip polygon against a single edge (Sutherland-Hodgman helper).
- */
-function clipAgainstEdge(
-  polygon: [number, number][],
-  xEdge: number | null,
-  yEdge: number | null,
-  keepGreater: boolean
-): [number, number][] {
-  if (polygon.length === 0) return [];
-
-  const result: [number, number][] = [];
-  const isVertical = xEdge !== null;
-  const edge = isVertical ? xEdge! : yEdge!;
-
-  const isInside = (p: [number, number]): boolean => {
-    const val = isVertical ? p[0] : p[1];
-    return keepGreater ? val >= edge : val <= edge;
-  };
-
-  const getIntersection = (p1: [number, number], p2: [number, number]): [number, number] => {
-    const [x1, y1] = p1;
-    const [x2, y2] = p2;
-
-    if (isVertical) {
-      const t = (edge - x1) / (x2 - x1);
-      return [edge, y1 + t * (y2 - y1)];
-    } else {
-      const t = (edge - y1) / (y2 - y1);
-      return [x1 + t * (x2 - x1), edge];
-    }
-  };
-
-  for (let i = 0; i < polygon.length; i++) {
-    const current = polygon[i];
-    const next = polygon[(i + 1) % polygon.length];
-    const currentInside = isInside(current);
-    const nextInside = isInside(next);
-
-    if (currentInside) {
-      result.push(current);
-      if (!nextInside) {
-        result.push(getIntersection(current, next));
-      }
-    } else if (nextInside) {
-      result.push(getIntersection(current, next));
-    }
-  }
-
-  return result;
 }
 
 export function ImageEditorCropPreview({
@@ -200,14 +39,11 @@ export function ImageEditorCropPreview({
   selectedBboxId,
   hoveredBboxId,
   onBboxSelect,
-  imageUrl,
   sourceImageRef,
   modifyingBboxId,
   liveBboxRect,
   onBboxHover,
   displayMode,
-  savedPolygons = [],
-  fovMaskPolygons,
 }: ImageEditorCropPreviewProps) {
   const t = useTranslations("editor");
 
@@ -331,7 +167,7 @@ export function ImageEditorCropPreview({
               } ${isBeingModified ? "ring-2 ring-accent-amber animate-pulse" : ""}`}
             >
               {/* Preview thumbnail */}
-              <div className="w-full aspect-square overflow-hidden bg-bg-tertiary relative">
+              <div className="w-full aspect-square overflow-hidden bg-bg-tertiary">
                 {previewUrl ? (
                   <img
                     src={previewUrl}
@@ -350,75 +186,6 @@ export function ImageEditorCropPreview({
                     )}
                   </div>
                 )}
-                {/* Polygon overlay for crops with segmentation */}
-                {(() => {
-                  // First check for crop-specific segmentation mask
-                  const cropPolygon = savedPolygons.find(p => p.cropId === bbox.cropId);
-                  if (cropPolygon && cropPolygon.points.length >= 3) {
-                    // CropPolygonOverlay only TRANSLATES by the bbox origin, so a
-                    // rotated crop needs its polygon carried into the box's local
-                    // frame first -- reusing the same transform as the FOV path
-                    // rather than writing a second rotation. Axis-aligned crops keep
-                    // the original image-space path untouched.
-                    const local = bbox.angle
-                      ? clipPolygonToBbox(cropPolygon.points, {
-                          x: bbox.x,
-                          y: bbox.y,
-                          width: bbox.width,
-                          height: bbox.height,
-                          angle: bbox.angle,
-                        })
-                      : cropPolygon.points;
-                    if (local.length < 3) return null;
-                    return (
-                      <CropPolygonOverlay
-                        polygon={local}
-                        bbox={
-                          bbox.angle
-                            ? { x: 0, y: 0, width: bbox.width, height: bbox.height }
-                            : { x: bbox.x, y: bbox.y, width: bbox.width, height: bbox.height }
-                        }
-                        thumbnailSize={THUMBNAIL_SIZE}
-                      />
-                    );
-                  }
-
-                  // Fall back to FOV masks clipped to this crop's bbox (multiple polygons)
-                  if (fovMaskPolygons && fovMaskPolygons.length > 0) {
-                    const clippedPolygons: [number, number][][] = [];
-                    for (const fovPoly of fovMaskPolygons) {
-                      if (fovPoly && fovPoly.length >= 3) {
-                        const clipped = clipPolygonToBbox(fovPoly, {
-                          x: bbox.x,
-                          y: bbox.y,
-                          width: bbox.width,
-                          height: bbox.height,
-                          angle: bbox.angle,
-                        });
-                        if (clipped.length >= 3) {
-                          clippedPolygons.push(clipped);
-                        }
-                      }
-                    }
-                    if (clippedPolygons.length > 0) {
-                      // Render all clipped polygons
-                      return (
-                        <>
-                          {clippedPolygons.map((clippedPolygon, idx) => (
-                            <ClippedFOVPolygonOverlay
-                              key={idx}
-                              polygon={clippedPolygon}
-                              bboxSize={{ width: bbox.width, height: bbox.height }}
-                              thumbnailSize={THUMBNAIL_SIZE}
-                            />
-                          ))}
-                        </>
-                      );
-                    }
-                  }
-
-                  return null;
-                })()}
               </div>
 
               {/* Info below thumbnail */}
@@ -439,31 +206,6 @@ export function ImageEditorCropPreview({
                       {bbox.width}×{bbox.height} px
                     </span>
                   )}
-                  {/* Segmentation indicator */}
-                  {(() => {
-                    const hasCropMask = savedPolygons.some(p => p.cropId === bbox.cropId);
-                    // Check if any FOV mask polygon clips to this bbox
-                    const hasFOVMask = fovMaskPolygons && fovMaskPolygons.some(fovPoly =>
-                      fovPoly && fovPoly.length >= 3 &&
-                      clipPolygonToBbox(fovPoly, { x: bbox.x, y: bbox.y, width: bbox.width, height: bbox.height, angle: bbox.angle }).length >= 3
-                    );
-
-                    if (hasCropMask) {
-                      return (
-                        <span className="flex items-center gap-0.5 px-1.5 py-0.5 text-[10px] bg-emerald-500/20 text-emerald-400 rounded-md font-medium" title="Has crop segmentation mask">
-                          <Hexagon className="w-2.5 h-2.5" />
-                        </span>
-                      );
-                    }
-                    if (hasFOVMask) {
-                      return (
-                        <span className="flex items-center gap-0.5 px-1.5 py-0.5 text-[10px] bg-amber-500/20 text-amber-400 rounded-md font-medium" title="Has FOV segmentation mask">
-                          <Hexagon className="w-2.5 h-2.5" />
-                        </span>
-                      );
-                    }
-                    return null;
-                  })()}
                 </div>
               </div>
             </motion.button>

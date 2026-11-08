@@ -7,8 +7,8 @@ harness) so the rotation math is genuinely exercised.
 """
 import numpy as np
 
+from ml.detection.geometry import rotated_corners
 from services.crop_editor_service import (
-    _rotated_corners,
     extract_crop_from_projection,
     validate_bbox_within_image,
 )
@@ -111,7 +111,7 @@ def test_validate_rotated_min_size():
 
 
 def test_rotated_corners_at_zero_angle_are_the_axis_corners():
-    corners = _rotated_corners(10, 20, 30, 40, 0.0)
+    corners = rotated_corners(10, 20, 30, 40, 0.0)
     assert (10.0, 20.0) in corners and (40.0, 60.0) in corners
 
 
@@ -119,7 +119,7 @@ def test_rotated_corners_at_zero_angle_are_the_axis_corners():
 # ⚠️ The existing edge test uses a mirror-symmetric feature, so it holds for +90
 # and -90 alike: negating theta in extract_crop_from_projection leaves it green.
 # The sign is the contract with the canvas preview (ctx.rotate(+angleRad)) and with
-# _rotated_corners, which are three INDEPENDENT copies of the same rotation.
+# rotated_corners, which are three INDEPENDENT copies of the same rotation.
 
 
 def test_derotation_maps_the_rotated_top_left_corner_to_output_origin():
@@ -132,7 +132,7 @@ def test_derotation_maps_the_rotated_top_left_corner_to_output_origin():
     for angle in (30.0, 90.0, -45.0):
         p = np.zeros((200, 200), dtype=np.float32)
         # The analytic top-left corner of the rotated box, from the shared helper.
-        corners = _rotated_corners(60, 60, 40, 30, angle)
+        corners = rotated_corners(60, 60, 40, 30, angle)
         cx, cy = corners[0]  # (u, v) = (-w/2, -h/2) -> the box's own top-left
         p[int(round(cy)), int(round(cx))] = 255.0
 
@@ -248,7 +248,7 @@ def test_derotation_does_not_invent_intensities_outside_the_source():
 def test_ninety_degrees_is_an_exact_pixel_permutation():
     """No resampling is mathematically needed at 90 deg, and none happens: the output
     is the input permuted, offset one row by the w/2 centre convention that
-    _rotated_corners and the canvas mirror also use."""
+    rotated_corners and the canvas mirror also use."""
     p = _texture(n=100)
     side = 40
     x = y = 30

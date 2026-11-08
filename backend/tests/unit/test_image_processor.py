@@ -111,20 +111,14 @@ def stub_ml_modules():
         return_value={"success": 1, "failed": 0}
     )
 
-    seg = MagicMock(name="services.segmentation_service")
-    seg.compute_sam_embedding = AsyncMock(
-        return_value={"success": True, "embedding_size": 2 * 1024 * 1024}
-    )
-
     rag = MagicMock(name="services.rag_service")
     rag.index_fov_image = AsyncMock(return_value=True)
 
     with patch.dict(sys.modules, {
         "ml.features": features,
-        "services.segmentation_service": seg,
         "services.rag_service": rag,
     }):
-        yield SimpleNamespace(features=features, seg=seg, rag=rag)
+        yield SimpleNamespace(features=features, rag=rag)
 
 
 def _detection_result(*dets):
@@ -327,41 +321,6 @@ async def test_extract_features_for_crops_unexpected_error(mock_db, stub_ml_modu
     proc = ip.ImageProcessor(1)
     crops = [FakeCellCrop(id=1, image_id=5)]
     await proc._extract_features_for_crops(crops, mock_db)
-
-
-# --------------------------------------------------------------------------- #
-# _compute_sam_embedding
-# --------------------------------------------------------------------------- #
-async def test_compute_sam_embedding_success(mock_db, stub_ml_modules):
-    proc = ip.ImageProcessor(1)
-    await proc._compute_sam_embedding(mock_db, make_image("/tmp/x.tif"))
-    stub_ml_modules.seg.compute_sam_embedding.assert_awaited_once()
-
-
-async def test_compute_sam_embedding_failed(mock_db, stub_ml_modules):
-    stub_ml_modules.seg.compute_sam_embedding.return_value = {
-        "success": False, "error": "no model",
-    }
-    proc = ip.ImageProcessor(1)
-    await proc._compute_sam_embedding(mock_db, make_image("/tmp/x.tif"))
-
-
-async def test_compute_sam_embedding_import_error(mock_db):
-    proc = ip.ImageProcessor(1)
-    with patch.dict(sys.modules, {"services.segmentation_service": None}):
-        await proc._compute_sam_embedding(mock_db, make_image("/tmp/x.tif"))
-
-
-async def test_compute_sam_embedding_runtime_error(mock_db, stub_ml_modules):
-    stub_ml_modules.seg.compute_sam_embedding.side_effect = RuntimeError("gpu")
-    proc = ip.ImageProcessor(1)
-    await proc._compute_sam_embedding(mock_db, make_image("/tmp/x.tif"))
-
-
-async def test_compute_sam_embedding_unexpected_error(mock_db, stub_ml_modules):
-    stub_ml_modules.seg.compute_sam_embedding.side_effect = ValueError("boom")
-    proc = ip.ImageProcessor(1)
-    await proc._compute_sam_embedding(mock_db, make_image("/tmp/x.tif"))
 
 
 # --------------------------------------------------------------------------- #
@@ -592,7 +551,6 @@ async def test_process_batch_detect_cells_with_mip(patch_db, tmp_path):
 
     proc = ip.ImageProcessor(20)
     with patch.object(proc, "_run_detection", AsyncMock()) as rd, \
-         patch.object(proc, "_compute_sam_embedding", AsyncMock()), \
          patch.object(proc, "_extract_rag_embedding", AsyncMock()):
         ok = await proc.process_batch(detect_cells=True, map_protein_id=7)
 
@@ -613,8 +571,7 @@ async def test_process_batch_no_detect(patch_db, tmp_path):
     patch_db.execute.return_value = make_result(scalar=img)
 
     proc = ip.ImageProcessor(21)
-    with patch.object(proc, "_compute_sam_embedding", AsyncMock()), \
-         patch.object(proc, "_extract_rag_embedding", AsyncMock()):
+    with patch.object(proc, "_extract_rag_embedding", AsyncMock()):
         ok = await proc.process_batch(detect_cells=False)
 
     assert ok is True
@@ -635,7 +592,6 @@ async def test_process_batch_2d_no_mip_uses_original(patch_db, tmp_path):
 
     proc = ip.ImageProcessor(22)
     with patch.object(proc, "_run_detection", AsyncMock()), \
-         patch.object(proc, "_compute_sam_embedding", AsyncMock()), \
          patch.object(proc, "_extract_rag_embedding", AsyncMock()):
         ok = await proc.process_batch(detect_cells=True)
 
@@ -656,7 +612,6 @@ async def test_process_batch_mip_fallback(patch_db, tmp_path):
 
     proc = ip.ImageProcessor(23)
     with patch.object(proc, "_run_detection", AsyncMock()), \
-         patch.object(proc, "_compute_sam_embedding", AsyncMock()), \
          patch.object(proc, "_extract_rag_embedding", AsyncMock()):
         ok = await proc.process_batch(detect_cells=False)
 
@@ -679,7 +634,6 @@ async def test_process_batch_mip_fallback_existing_warning(patch_db, tmp_path):
 
     proc = ip.ImageProcessor(24)
     with patch.object(proc, "_run_detection", AsyncMock()), \
-         patch.object(proc, "_compute_sam_embedding", AsyncMock()), \
          patch.object(proc, "_extract_rag_embedding", AsyncMock()):
         ok = await proc.process_batch(detect_cells=False)
 
@@ -697,8 +651,7 @@ async def test_process_batch_mip_cannot_load_raises(patch_db, tmp_path):
     patch_db.execute.return_value = make_result(scalar=img)
 
     proc = ip.ImageProcessor(25)
-    with patch.object(proc, "_compute_sam_embedding", AsyncMock()), \
-         patch.object(proc, "_extract_rag_embedding", AsyncMock()):
+    with patch.object(proc, "_extract_rag_embedding", AsyncMock()):
         ok = await proc.process_batch(detect_cells=False)
 
     assert ok is False
@@ -721,7 +674,6 @@ async def test_process_batch_with_sum_proj(patch_db, tmp_path):
 
     proc = ip.ImageProcessor(26)
     with patch.object(proc, "_run_detection", AsyncMock()) as rd, \
-         patch.object(proc, "_compute_sam_embedding", AsyncMock()), \
          patch.object(proc, "_extract_rag_embedding", AsyncMock()):
         ok = await proc.process_batch(detect_cells=True)
 
@@ -744,8 +696,7 @@ async def test_process_batch_wrong_status_warns(patch_db, tmp_path):
     patch_db.execute.return_value = make_result(scalar=img)
 
     proc = ip.ImageProcessor(27)
-    with patch.object(proc, "_compute_sam_embedding", AsyncMock()), \
-         patch.object(proc, "_extract_rag_embedding", AsyncMock()):
+    with patch.object(proc, "_extract_rag_embedding", AsyncMock()):
         ok = await proc.process_batch(detect_cells=False)
 
     assert ok is True

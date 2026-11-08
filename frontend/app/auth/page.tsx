@@ -93,7 +93,7 @@ export default function AuthPage() {
 
             <p className="text-text-secondary text-lg max-w-md">
               Advanced platform for analyzing microtubule microscopy images.
-              Detect, segment, and evaluate MAPs with AI-powered precision.
+              Detect and evaluate MAPs with AI-powered precision.
             </p>
 
           </motion.div>

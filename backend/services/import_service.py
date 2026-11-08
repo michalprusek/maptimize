@@ -28,7 +28,6 @@ from config import get_settings
 from models import CellCrop, Experiment, Image, MapProtein
 from models.experiment import ExperimentStatus
 from models.image import UploadStatus
-from models.segmentation import FOVSegmentationMask
 from schemas.export_import import (
     CropImportData,
     ImportFormat,
@@ -289,7 +288,6 @@ class ImportService(BaseJobManager[ImportJobData]):
                 # Parse annotations based on format
                 annotation_count = 0
                 has_embeddings = False
-                has_masks = False
                 crops: List[CropImportData] = []
 
                 if detected_format == ImportFormat.MAPTIMIZE:
@@ -301,7 +299,6 @@ class ImportService(BaseJobManager[ImportJobData]):
                     if manifest_key:
                         manifest = json.loads(zip_contents[manifest_key])
                         has_embeddings = any("embeddings" in f for f in file_list)
-                        has_masks = any("masks" in f for f in file_list)
                         annotation_count = manifest.get("statistics", {}).get("crop_count", 0)
                 else:
                     # Use unified parser for COCO, YOLO, VOC, CSV formats
@@ -312,11 +309,9 @@ class ImportService(BaseJobManager[ImportJobData]):
                     warnings.extend(parse_warnings)
                     annotation_count = len(crops)
 
-                # Check for embeddings and masks (if not already set by MAPtimize format)
+                # Check for embeddings (if not already set by MAPtimize format)
                 if not has_embeddings:
                     has_embeddings = any(".npy" in f for f in file_list)
-                if not has_masks:
-                    has_masks = any("mask" in f.lower() and f.endswith(".png") for f in file_list)
 
             # Validate
             is_valid = len(errors) == 0 and image_count > 0
@@ -329,7 +324,6 @@ class ImportService(BaseJobManager[ImportJobData]):
                 image_count=image_count,
                 annotation_count=annotation_count,
                 has_embeddings=has_embeddings,
-                has_masks=has_masks,
                 errors=errors,
                 warnings=warnings,
             )
@@ -551,16 +545,11 @@ class ImportService(BaseJobManager[ImportJobData]):
         Import native MAPtimize format with full data restoration.
 
         Handles multiple experiments, images with MIP/SUM projections,
-        crops, embeddings, and segmentation masks.
+        crops and embeddings. Segmentation masks in archives exported before
+        SAM was removed are ignored.
         """
         file_list = zf.namelist()
         created_experiments: List[Experiment] = []
-
-        # Read manifest
-        manifest_data = {}
-        manifest_key = next((k for k in file_list if k.endswith("manifest.json")), None)
-        if manifest_key:
-            manifest_data = json.loads(zf.read(manifest_key).decode('utf-8'))
 
         # Find all experiment directories
         exp_dirs = set()
@@ -696,15 +685,6 @@ class ImportService(BaseJobManager[ImportJobData]):
                     old_to_new_crop_ids[old_id] = new_crop.id
                     job.crops_created += 1
 
-            # Import masks for this experiment
-            await self._import_maptimize_masks(
-                zf=zf,
-                exp_base_path=exp_base_path,
-                old_to_new_image_ids=old_to_new_image_ids,
-                file_list=file_list,
-                db=db
-            )
-
             await self._save_job(job)
 
         # Import embeddings (global, after all experiments)
@@ -762,8 +742,8 @@ class ImportService(BaseJobManager[ImportJobData]):
 
             return image
 
-        except Exception as e:
-            logger.exception(f"Failed to import MAPtimize image")
+        except Exception:
+            logger.exception("Failed to import MAPtimize image")
             return None
 
     async def _import_maptimize_crop(
@@ -812,84 +792,8 @@ class ImportService(BaseJobManager[ImportJobData]):
 
             return crop
 
-        except Exception as e:
-            logger.exception(f"Failed to import MAPtimize crop")
-            return None
-
-    async def _import_maptimize_masks(
-        self,
-        zf: zipfile.ZipFile,
-        exp_base_path: str,
-        old_to_new_image_ids: Dict[int, int],
-        file_list: List[str],
-        db: AsyncSession
-    ) -> None:
-        """Import FOV segmentation masks from MAPtimize format."""
-        masks_path = f"{exp_base_path}/masks/"
-
-        for f in file_list:
-            if not f.startswith(masks_path) or not f.endswith(".png"):
-                continue
-
-            # Extract image ID from filename like "fov_123.png"
-            filename = os.path.basename(f)
-            if not filename.startswith("fov_"):
-                continue
-
-            try:
-                old_image_id = int(filename[4:-4])  # Remove "fov_" and ".png"
-                new_image_id = old_to_new_image_ids.get(old_image_id)
-                if not new_image_id:
-                    continue
-
-                # Read mask PNG and convert to polygon
-                mask_data = zf.read(f)
-                polygon_points = self._png_mask_to_polygon(mask_data)
-
-                if polygon_points and len(polygon_points) >= 3:
-                    mask = FOVSegmentationMask(
-                        image_id=new_image_id,
-                        polygon_points=polygon_points,
-                    )
-                    db.add(mask)
-
-            except Exception as e:
-                logger.exception(f"Failed to import mask {f}")
-
-    def _png_mask_to_polygon(self, png_data: bytes) -> Optional[List[List[int]]]:
-        """Convert PNG binary mask to polygon points."""
-        try:
-            img = PILImage.open(io.BytesIO(png_data)).convert('L')
-            img_array = np.array(img)
-
-            # Find contours using simple edge detection
-            # This is a simplified approach - for production, consider using cv2.findContours
-            from scipy import ndimage
-
-            # Find edges
-            edges = ndimage.binary_erosion(img_array > 127) ^ (img_array > 127)
-
-            # Get edge points
-            points = np.argwhere(edges)
-            if len(points) < 3:
-                return None
-
-            # Convert to [x, y] format and simplify
-            # Sort points by angle from centroid to create ordered polygon
-            centroid = points.mean(axis=0)
-            angles = np.arctan2(points[:, 0] - centroid[0], points[:, 1] - centroid[1])
-            sorted_indices = np.argsort(angles)
-            sorted_points = points[sorted_indices]
-
-            # Simplify by taking every Nth point
-            step = max(1, len(sorted_points) // 100)
-            simplified = sorted_points[::step]
-
-            # Convert to [x, y] (swap row/col to x/y)
-            return [[int(p[1]), int(p[0])] for p in simplified]
-
-        except Exception as e:
-            logger.warning(f"Failed to convert PNG mask to polygon: {e}")
+        except Exception:
+            logger.exception("Failed to import MAPtimize crop")
             return None
 
     async def _import_maptimize_embeddings(
@@ -974,7 +878,7 @@ class ImportService(BaseJobManager[ImportJobData]):
 
             return image
 
-        except Exception as e:
+        except Exception:
             logger.exception(f"Failed to import image {original_filename}")
             return None
 
@@ -1005,7 +909,7 @@ class ImportService(BaseJobManager[ImportJobData]):
 
             return crop
 
-        except Exception as e:
+        except Exception:
             logger.exception(f"Failed to create crop for image {image.id}")
             return None
 

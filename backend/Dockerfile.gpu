@@ -1,5 +1,5 @@
 # GPU-enabled Backend Dockerfile for Maptimize
-# Uses python:3.12-slim base with PyTorch CUDA 12.6 (for SAM 3 support)
+# Uses python:3.12-slim base with PyTorch CUDA 12.6
 # Requires nvidia runtime at container start: docker run --runtime=nvidia
 
 # Stage 1: Build wheels
@@ -17,7 +17,7 @@ WORKDIR /wheels
 
 COPY pyproject.toml ./
 
-# Build PyTorch with CUDA 12.6 support (required for SAM 3). torch is pinned
+# Build PyTorch with CUDA 12.6 support. torch is pinned
 # explicitly (not via the constraints file): the +cu126 build's CUDA deps differ
 # from the PyPI default, so constraining the whole wheel resolution conflicts.
 # Versions are pinned for reproducibility; the production stage pins the rest.
@@ -83,12 +83,6 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     ultralytics transformers timm pgvector umap-learn numba scikit-learn && \
     rm -rf /wheels
 
-# Install SAM 3 dependencies first (required: numpy<2, einops, decord, pycocotools)
-RUN pip install --no-cache-dir "numpy>=1.26,<2" einops decord pycocotools supervision
-
-# Install SAM 3 from Facebook Research (pinned commit — git URLs ignore constraints)
-RUN pip install --no-cache-dir "git+https://github.com/facebookresearch/sam3.git@bfbed072a07a6a52c8d5fdc75a7a186251a835b1"
-
 # Install ESM-C for protein embeddings (with --no-deps to avoid transformers downgrade)
 # ESM-C requires transformers<4.48.2 but we need >=4.56 for DINOv3
 # Install ESM-C dependencies manually, then ESM-C without deps
@@ -146,16 +140,6 @@ else:
     echo "WARNING: Continuing with potentially degraded performance"
 }
 echo "$GPU_STATUS"
-
-# Check SAM 3 availability
-SAM3_STATUS=$(python -c "
-try:
-    import sam3
-    print('✓ SAM 3 installed')
-except ImportError:
-    print('⚠ SAM 3 not available')
-" 2>&1) || true
-echo "$SAM3_STATUS"
 
 # Check ESM-C availability
 ESM_STATUS=$(python -c "

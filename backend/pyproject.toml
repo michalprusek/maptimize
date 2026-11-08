@@ -38,12 +38,11 @@ dependencies = [
     "httpx>=0.26.0",  # Async HTTP client for external APIs
     "beautifulsoup4>=4.12.0",  # Web page content extraction
     "lxml>=5.0.0",  # HTML/XML parsing
-    # Lightweight (non-ML) deps needed just to import/run the backend: pgvector
-    # provides the SQLAlchemy column type used by the models, and opencv-headless
-    # backs the polygon utilities. Kept in base so the app imports without the
-    # heavy `ml` extra (torch/transformers/esm/SAM) — see ml lazy-loading.
+    # Lightweight (non-ML) dep needed just to import/run the backend: pgvector
+    # provides the SQLAlchemy column type used by the models. Kept in base so the
+    # app imports without the heavy `ml` extra (torch/transformers/esm) — see ml
+    # lazy-loading.
     "pgvector>=0.3.0",
-    "opencv-python-headless>=4.9.0",
 ]
 
 [project.optional-dependencies]
@@ -57,11 +56,6 @@ ml = [
     "numba>=0.59.0",
     "scikit-learn>=1.4.0",
     "esm>=3.0.0",  # EvolutionaryScale ESM-C for protein embeddings
-    # SAM 3 dependencies
-    "decord>=0.6.0",  # Video decoding
-    "pycocotools>=2.0.7",  # COCO annotations format
-    "hydra-core>=1.3.0",  # Configuration management
-    "iopath>=0.1.10",  # File I/O abstraction
 ]
 dev = [
     "pytest>=7.4.0",

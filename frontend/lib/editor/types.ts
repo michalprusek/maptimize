@@ -4,7 +4,7 @@
  * Type definitions for the bbox editor component and related functionality.
  */
 
-import type { CellCropGallery, FOVImage } from "@/lib/api";
+import type { CellCropGallery } from "@/lib/api";
 
 /**
  * Bounding box representation in the editor.
@@ -53,224 +53,17 @@ export type HandlePosition =
   | "se";
 
 /**
- * Editor interaction modes.
+ * Editor interaction modes. The type is derived from this list so the two cannot
+ * drift: a mode persisted to localStorage is validated against it (isEditorMode),
+ * and a value from a mode that no longer exists falls back instead of reaching state.
+ * There is no separate edit mode: "view" selects, moves, resizes and rotates boxes,
+ * and "draw" adds new ones.
  */
-export type EditorMode = "view" | "draw" | "edit" | "segment";
+export const EDITOR_MODES = ["view", "draw"] as const;
+export type EditorMode = (typeof EDITOR_MODES)[number];
 
-// ============================================================================
-// Segmentation Types
-// ============================================================================
-
-/**
- * Polygon with internal holes.
- *
- * Used for ring-shaped structures (e.g., cell membranes with hollow centers).
- * The outer boundary defines the external edge, and holes define internal
- * regions to be excluded from the mask.
- */
-export interface PolygonWithHoles {
-  /** Outer boundary points [[x, y], ...] - external edge */
-  outer: [number, number][];
-  /** List of hole boundaries - each hole is a list of [[x, y], ...] points */
-  holes: [number, number][][];
-}
-
-/**
- * Type guard to check if polygon data is in the new holes format.
- */
-export function isPolygonWithHoles(data: unknown): data is PolygonWithHoles {
-  return (
-    typeof data === "object" &&
-    data !== null &&
-    "outer" in data &&
-    Array.isArray((data as PolygonWithHoles).outer)
-  );
-}
-
-/**
- * Normalize any polygon format to the new holes format.
- *
- * Handles:
- * - New format: {outer: [...], holes: [...]} - returned as-is
- * - Legacy format: [[x,y], ...] - converted to {outer: [...], holes: []}
- */
-export function normalizePolygonFormat(
-  data: [number, number][] | PolygonWithHoles | null | undefined
-): PolygonWithHoles {
-  if (!data) {
-    return { outer: [], holes: [] };
-  }
-
-  if (isPolygonWithHoles(data)) {
-    return data;
-  }
-
-  // Legacy format - simple array of points
-  return { outer: data, holes: [] };
-}
-
-/**
- * Click point for SAM segmentation.
- * Left click = positive (foreground), Right click = negative (background)
- *
- * CANONICAL SOURCE: This type is the source of truth.
- * Re-exported in @/lib/api for API compatibility.
- */
-export interface SegmentClickPoint {
-  /** X coordinate in image pixels */
-  x: number;
-  /** Y coordinate in image pixels */
-  y: number;
-  /** 1 = foreground (include), 0 = background (exclude) */
-  label: 1 | 0;
-}
-
-/**
- * A pending polygon waiting to be saved.
- * Accumulated from point or text segmentation before committing.
- */
-export interface PendingPolygon {
-  /** Unique ID for this pending polygon */
-  id: string;
-  /** Polygon points [[x, y], ...] - outer boundary (legacy format) */
-  points: [number, number][];
-  /** Full polygon with holes support (new format) */
-  polygonWithHoles?: PolygonWithHoles;
-  /** Confidence/IoU score */
-  score: number;
-  /** Source of this polygon */
-  source: "point" | "text";
-  /** Color index for rendering */
-  colorIndex: number;
-}
-
-/**
- * Segmentation state for the editor.
- */
-export interface SegmentationState {
-  /** Current click points for active segmentation */
-  clickPoints: SegmentClickPoint[];
-  /** Preview polygon from SAM inference (live update) - outer boundary only */
-  previewPolygon: [number, number][] | null;
-  /** Preview polygon with holes support (new format) */
-  previewPolygonWithHoles: PolygonWithHoles | null;
-  /** IoU score of current preview (confidence) */
-  previewIoU: number | null;
-  /** Whether segmentation API is loading */
-  isLoading: boolean;
-  /** Error message if segmentation failed */
-  error: string | null;
-  /** Target crop ID for saving the mask */
-  targetCropId: number | null;
-  /** Accumulated pending polygons before save */
-  pendingPolygons: PendingPolygon[];
-}
-
-/**
- * Saved polygon for a cell crop.
- */
-export interface CellPolygon {
-  /** Cell crop database ID */
-  cropId: number;
-  /** Polygon points [[x, y], ...] - outer boundary (legacy format) */
-  points: [number, number][];
-  /** Full polygon with holes support (new format) */
-  polygonWithHoles?: PolygonWithHoles;
-  /** SAM IoU prediction score */
-  iouScore: number;
-}
-
-/**
- * SAM embedding status for an image.
- */
-export type SAMEmbeddingStatus =
-  | "not_started"
-  | "pending"
-  | "computing"
-  | "ready"
-  | "error";
-
-/**
- * Initial segmentation state.
- */
-export const INITIAL_SEGMENTATION_STATE: SegmentationState = {
-  clickPoints: [],
-  previewPolygon: null,
-  previewPolygonWithHoles: null,
-  previewIoU: null,
-  isLoading: false,
-  error: null,
-  targetCropId: null,
-  pendingPolygons: [],
-};
-
-// ============================================================================
-// SAM 3 Text Segmentation Types
-// ============================================================================
-
-/**
- * Segmentation prompt mode - Point or Text.
- * Text mode requires SAM 3 (CUDA GPU).
- */
-export type SegmentPromptMode = "point" | "text";
-
-/**
- * A single detected instance from text-based segmentation.
- */
-export interface DetectedInstance {
-  /** Instance index (0-based) */
-  index: number;
-  /** Polygon points [[x, y], ...] */
-  polygon: [number, number][];
-  /** Bounding box [x1, y1, x2, y2] */
-  bbox: [number, number, number, number];
-  /** Confidence score (0-1) */
-  score: number;
-  /** Area in pixels */
-  areaPixels: number;
-}
-
-/**
- * Text segmentation state for SAM 3.
- */
-export interface TextSegmentationState {
-  /** Current text prompt */
-  textPrompt: string;
-  /** Detected instances from text query */
-  detectedInstances: DetectedInstance[];
-  /** Selected instance index for refinement */
-  selectedInstanceIndex: number | null;
-  /** Whether text query is loading */
-  isQuerying: boolean;
-  /** Error message from text query */
-  error: string | null;
-}
-
-/**
- * Initial text segmentation state.
- */
-export const INITIAL_TEXT_SEGMENTATION_STATE: TextSegmentationState = {
-  textPrompt: "",
-  detectedInstances: [],
-  selectedInstanceIndex: null,
-  isQuerying: false,
-  error: null,
-};
-
-/**
- * SAM capabilities returned by the backend.
- */
-export interface SegmentationCapabilities {
-  /** Current compute device */
-  device: "cuda" | "mps" | "cpu" | "unknown";
-  /** SAM variant in use */
-  variant: "mobilesam" | "sam3" | "unknown";
-  /** Whether text prompting is available */
-  supportsTextPrompts: boolean;
-  /** Human-readable model name */
-  modelName: string;
-  /** Error message if capabilities check failed */
-  loadError?: string;
+export function isEditorMode(value: unknown): value is EditorMode {
+  return typeof value === "string" && (EDITOR_MODES as readonly string[]).includes(value);
 }
 
 /**
@@ -291,23 +84,10 @@ export interface EditorState {
   dragStart: { x: number; y: number } | null;
   /** Whether Space key is pressed (for panning) */
   isSpacePressed: boolean;
-  /** Whether Shift key is pressed (for pan/undo in segment mode) */
-  isShiftPressed: boolean;
   /** Current zoom level (1 = 100%) */
   zoom: number;
   /** Pan offset */
   panOffset: { x: number; y: number };
-  /** Whether in "add mask" mode within segment mode (clicking adds points) */
-  isSegmentAddMode: boolean;
-}
-
-/**
- * Context menu state for mask operations.
- */
-export interface MaskContextMenuState {
-  isOpen: boolean;
-  position: { x: number; y: number } | null;
-  targetMaskIndex: number | null;
 }
 
 /**
@@ -333,53 +113,6 @@ export type UndoAction =
   | { type: "create"; bboxId: string | number; newState: EditorBbox }
   | { type: "update"; bboxId: string | number; previousState: EditorBbox; newState: EditorBbox }
   | { type: "delete"; bboxId: string | number; previousState: EditorBbox };
-
-// ============================================================================
-// Mask Undo Types
-// ============================================================================
-
-/**
- * State of a FOV mask at a point in time.
- */
-export interface FOVMaskState {
-  /** Whether mask exists */
-  hasMask: boolean;
-  /** Polygon data (can be single or multi-polygon) */
-  polygon?: [number, number][] | [number, number][][];
-  /** IoU score */
-  iouScore?: number;
-  /** Area in pixels */
-  areaPixels?: number;
-}
-
-/**
- * Mask undo action types.
- */
-export type MaskUndoAction =
-  | { type: "save"; imageId: number; previousState: FOVMaskState }
-  | { type: "delete"; imageId: number; previousState: FOVMaskState };
-
-/**
- * Props for the main ImageEditor component.
- */
-export interface ImageEditorProps {
-  /** FOV image being edited */
-  fovImage: FOVImage;
-  /** Existing crops for this FOV */
-  crops: CellCropGallery[];
-  /** Close callback */
-  onClose: () => void;
-  /** Optional: Focus on specific crop (when opened from crop view) */
-  focusCropId?: number;
-  /** Callback when bbox is created */
-  onBboxCreate?: (bbox: Omit<EditorBbox, "id">) => Promise<number>;
-  /** Callback when bbox is updated */
-  onBboxUpdate?: (id: number, bbox: Partial<EditorBbox>) => Promise<void>;
-  /** Callback when bbox is deleted */
-  onBboxDelete?: (id: number) => Promise<void>;
-  /** Callback when features should be regenerated */
-  onRegenerateFeatures?: (cropId: number) => Promise<void>;
-}
 
 /**
  * Point in 2D space.
