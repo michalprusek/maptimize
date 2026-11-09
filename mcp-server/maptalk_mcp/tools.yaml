@@ -1251,8 +1251,10 @@ tools:
       score, never the score on its own. Nothing here is hand-crafted: the
       embedding is unsupervised and the labels are applied only afterwards, so a
       separation is the images doing it, not the annotation.
-      SECOND NUMBER — `knn`: balanced accuracy of a 20-nearest-neighbour vote in
-      which a crop's neighbours come only from OTHER experiments, with `chance`
+      SECOND NUMBER — `knn`: balanced accuracy of a nearest-neighbour vote (up to
+      20 neighbours, fewer only when the slice holds fewer crops from other
+      experiments) in which a crop's neighbours come only from OTHER experiments,
+      with `chance`
       (1/n_classes) beside it. Read it together with the silhouette, not instead:
       the silhouette rewards compact, globally separated classes and on this
       corpus sits near 0 even where classes are locally distinct (protein:
