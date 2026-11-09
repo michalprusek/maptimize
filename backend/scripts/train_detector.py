@@ -59,6 +59,7 @@ from ml.detection.training import (  # noqa: E402
     paired_bootstrap,
     provenance,
     split_experiments,
+    weights_fingerprint,
     yolo_label,
 )
 from models.cell_crop import CellCrop  # noqa: E402
@@ -249,9 +250,15 @@ def train(data: Path, pool: str, init: str, imgsz: int, epochs: int, batch: int,
     )
 
 
+def prediction_cache_path(data: Path, name: str, split: str, weights: str) -> Path:
+    """Where one model's predictions on one split are cached — keyed on the
+    weights' content, never on the name alone (see ``weights_fingerprint``)."""
+    return data / "preds" / f"{name}_{split}_{weights_fingerprint(weights)}.json"
+
+
 async def predict(data: Path, split: str, name: str, weights: str) -> list[FovResult]:
     """Run one model over one split through the production call; cached."""
-    cache = data / "preds" / f"{name}_{split}.json"
+    cache = prediction_cache_path(data, name, split, weights)
     manifest = [f for f in json.loads((data / "manifest.json").read_text())["fovs"]
                 if f["split"] == split and f["provenance"] == HUMAN]
     if cache.exists():
@@ -313,6 +320,7 @@ async def evaluate(data: Path, models: list[tuple[str, str]], out: Path) -> None
         corrected = [i for i, f in enumerate(test.fovs) if manifest[f.image_id]["detect_cells"]]
         report["models"][name] = {
             "weights": weights,
+            "weights_sha256": weights_fingerprint(weights),
             "conf_chosen_on_val": conf,
             "val": summarise(val, list(range(len(val.fovs))), conf),
             "test": summarise(test, everything, conf),

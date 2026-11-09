@@ -317,3 +317,43 @@ def test_training_never_rotates_or_shears_box_labels():
     assert augment["degrees"] == 0 and augment["shear"] == 0
     assert augment.get("perspective", 0) == 0
     assert augment["flipud"] > 0 and augment["fliplr"] > 0
+
+
+async def test_cached_predictions_are_never_reused_for_different_weights(tmp_path, monkeypatch):
+    """After a deploy ``weights/best.pt`` is a different model under the same
+    name. Predictions cached for the old file must not answer for the new one:
+    they would decide the production threshold without any sign of it."""
+    script = _training_script()
+    old_w, new_w = tmp_path / "old.pt", tmp_path / "new.pt"
+    old_w.write_bytes(b"january model")
+    new_w.write_bytes(b"november model")
+    (tmp_path / "manifest.json").write_text(
+        '{"fovs": [{"image_id": 7, "experiment_id": 1, "split": "test", '
+        '"provenance": "human", "gt": [[0, 0, 10, 10]]}]}'
+    )
+    cache = script.prediction_cache_path(tmp_path, "best", "test", str(old_w))
+    cache.parent.mkdir()
+    cache.write_text('{"7": [[0, 0, 10, 10, 0.9]]}')
+
+    hit = await script.predict(tmp_path, "test", "best", str(old_w))
+    assert hit[0].pred_scores == [0.9]
+
+    class Recomputed(Exception):
+        pass
+
+    def must_not_reuse(*args, **kwargs):
+        raise Recomputed
+
+    monkeypatch.setattr(script, "CellDetector", must_not_reuse)
+    with pytest.raises(Recomputed):
+        await script.predict(tmp_path, "test", "best", str(new_w))
+
+
+def test_weights_fingerprint_follows_content_not_path(tmp_path):
+    from ml.detection.training import weights_fingerprint
+
+    a, b, c = tmp_path / "a.pt", tmp_path / "b.pt", tmp_path / "c.pt"
+    a.write_bytes(b"x" * 10)
+    b.write_bytes(b"x" * 10)
+    c.write_bytes(b"y" * 10)
+    assert weights_fingerprint(a) == weights_fingerprint(b) != weights_fingerprint(c)

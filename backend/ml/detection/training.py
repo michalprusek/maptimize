@@ -27,7 +27,9 @@ testing; the others can only ever enter the training pool.
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Iterable, Optional, Sequence
 
 import numpy as np
@@ -120,6 +122,23 @@ def provenance(
     if same_boxes([box for box, _ in crops], predicted):
         return UNREVIEWED
     return REVIEWED
+
+
+def weights_fingerprint(path: str | Path) -> str:
+    """Short content hash of a weights file.
+
+    Cached predictions are keyed on it: the same name can point at different
+    weights (a retrained run, or ``weights/best.pt`` after a deploy), and a
+    cache keyed on the name alone would silently score the new model with the
+    old model's predictions — and pick the production threshold from them.
+    Content, not mtime or size: a copy changes the mtime, two checkpoints can
+    share a size.
+    """
+    digest = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            digest.update(chunk)
+    return digest.hexdigest()[:16]
 
 
 def split_experiments(

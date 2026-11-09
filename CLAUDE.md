@@ -221,8 +221,8 @@ Hlavní nginx-main na portech 80/443 routuje traffic podle domény:
 ## Model weights
 
 ⚠️ **YOLO váhy (`weights/best.pt`)** nejsou součástí repozitáře (záloha je jediná
-kopie, `scripts/backup.sh` synchronizuje celé `weights/`). Bez nich backend
-nastartuje, ale detekce spadne při prvním použití.
+kopie, `scripts/backup.sh` synchronizuje celé `weights/`). Bez nich produkční backend
+**nenastartuje** — entrypoint v `Dockerfile.gpu` skončí `exit 1`.
 
 ## 🔬 Detektor buněk a jeho přetrénování (od 2026-11-08)
 
