@@ -22,16 +22,10 @@ import {
   Maximize2,
   GripVertical,
   GripHorizontal,
-  Wand2,
-  Save,
-  Trash2,
-  RotateCcw,
   Loader2,
-  AlertCircle,
-  CheckCircle2,
   RefreshCw,
 } from "lucide-react";
-import type { ImageFilters, EditorMode, SAMEmbeddingStatus } from "@/lib/editor/types";
+import type { ImageFilters, EditorMode } from "@/lib/editor/types";
 import type { DisplayMode } from "@/lib/api";
 import { DEFAULT_FILTERS, FILTER_LIMITS, MIN_ZOOM, MAX_ZOOM } from "@/lib/editor/constants";
 
@@ -57,50 +51,10 @@ interface ImageEditorToolbarProps {
   onPositionChange: (position: ToolbarPosition) => void;
   /** Whether the sidebar is open (affects left edge positioning) */
   sidebarOpen?: boolean;
-  // Segmentation props
-  /** SAM embedding status for current image */
-  samEmbeddingStatus?: SAMEmbeddingStatus;
-  /** Trigger SAM embedding computation */
-  onComputeEmbedding?: () => void;
-  /** Whether there are click points in segmentation */
-  hasClickPoints?: boolean;
-  /** Whether there's a preview polygon ready to save */
-  hasPreviewPolygon?: boolean;
-  /** Clear all segmentation click points */
-  onClearSegmentation?: () => void;
-  /** Save the current segmentation mask */
-  onSaveMask?: () => void;
-  /** Undo the last click point */
-  onUndoClick?: () => void;
-  /** Whether mask is currently being saved */
-  isSavingMask?: boolean;
-  /** Number of click points */
-  clickPointCount?: number;
-  /** Number of pending polygons accumulated */
-  pendingPolygonCount?: number;
-  /** Add current preview to pending polygons */
-  onAddToPending?: () => void;
-  /** Whether we can add current preview to pending */
-  canAddToPending?: boolean;
   /** Trigger re-detection of cells on current image */
   onRedetect?: () => void;
   /** Whether re-detection is currently running */
   isRedetecting?: boolean;
-  /** FOV mask opacity (0-1) */
-  maskOpacity?: number;
-  /** Callback when mask opacity changes */
-  onMaskOpacityChange?: (opacity: number) => void;
-  /** Whether in "add mask" mode within segment mode */
-  isSegmentAddMode?: boolean;
-  /** Toggle add mask mode */
-  onToggleSegmentAddMode?: () => void;
-  // Mask undo props (segmentation mode)
-  /** Whether mask undo is available */
-  canUndoMask?: boolean;
-  /** Undo last mask operation */
-  onUndoMask?: () => void;
-  /** Whether mask undo is in progress */
-  isUndoingMask?: boolean;
 }
 
 const displayModes: { value: DisplayMode; label: string }[] = [
@@ -202,84 +156,13 @@ function DraggableSlider({
   );
 }
 
-// Helper function to get SAM status badge styling
-function getSAMStatusStyle(status: SAMEmbeddingStatus): string {
-  switch (status) {
-    case "ready":
-      return "bg-emerald-500/20 text-emerald-400";
-    case "computing":
-    case "pending":
-      return "bg-amber-500/20 text-amber-400";
-    case "error":
-      return "bg-red-500/20 text-red-400";
-    default:
-      return "bg-gray-500/20 text-gray-400";
-  }
-}
-
-// SAM status badge component
-interface SAMStatusBadgeProps {
-  status: SAMEmbeddingStatus;
-  t: ReturnType<typeof useTranslations>;
-  onComputeEmbedding?: () => void;
-}
-
-function SAMStatusBadge({ status, t, onComputeEmbedding }: SAMStatusBadgeProps) {
-  const baseClasses = "flex items-center gap-1.5 px-2 py-1 rounded-lg text-xs font-medium";
-
-  switch (status) {
-    case "ready":
-      return (
-        <div className={`${baseClasses} ${getSAMStatusStyle(status)}`}>
-          <CheckCircle2 className="w-3 h-3" />
-          <span>{t("samReady")}</span>
-        </div>
-      );
-    case "computing":
-    case "pending":
-      return (
-        <div className={`${baseClasses} ${getSAMStatusStyle(status)}`}>
-          <Loader2 className="w-3 h-3 animate-spin" />
-          <span>{t("samComputing")}</span>
-        </div>
-      );
-    case "error":
-      return (
-        <div className={`${baseClasses} ${getSAMStatusStyle(status)}`}>
-          <AlertCircle className="w-3 h-3" />
-          <span>{t("samError")}</span>
-        </div>
-      );
-    case "not_started":
-      if (!onComputeEmbedding) {
-        return (
-          <div className={`${baseClasses} ${getSAMStatusStyle(status)}`}>
-            <Wand2 className="w-3 h-3" />
-            <span>{t("computeSam")}</span>
-          </div>
-        );
-      }
-      return (
-        <button
-          onClick={onComputeEmbedding}
-          className={`${baseClasses} ${getSAMStatusStyle(status)} hover:text-emerald-300 transition-colors`}
-        >
-          <Wand2 className="w-3 h-3" />
-          <span>{t("computeSam")}</span>
-        </button>
-      );
-    default:
-      return null;
-  }
-}
-
 // Toolbar icon button with consistent styling
 interface ToolbarIconButtonProps {
   onClick?: () => void;
   disabled?: boolean;
   title: string;
   icon: React.ComponentType<{ className?: string }>;
-  variant?: "default" | "danger" | "primary" | "active";
+  variant?: "default" | "active";
   isLoading?: boolean;
 }
 
@@ -295,16 +178,9 @@ function ToolbarIconButton({
     if (disabled) {
       return "bg-bg-tertiary/50 text-text-muted cursor-not-allowed";
     }
-    switch (variant) {
-      case "danger":
-        return "bg-bg-tertiary text-red-400 hover:bg-red-500/20";
-      case "primary":
-        return "bg-emerald-500 text-white hover:bg-emerald-600";
-      case "active":
-        return "bg-primary-500 text-white";
-      default:
-        return "bg-bg-tertiary text-text-secondary hover:bg-white/10";
-    }
+    return variant === "active"
+      ? "bg-primary-500 text-white"
+      : "bg-bg-tertiary text-text-secondary hover:bg-white/10";
   }
 
   return (
@@ -339,32 +215,8 @@ export function ImageEditorToolbar({
   position,
   onPositionChange,
   sidebarOpen = false,
-  // Segmentation props
-  samEmbeddingStatus = "not_started",
-  onComputeEmbedding,
-  hasClickPoints = false,
-  hasPreviewPolygon = false,
-  onClearSegmentation,
-  onSaveMask,
-  onUndoClick,
-  isSavingMask = false,
-  clickPointCount = 0,
-  pendingPolygonCount = 0,
-  onAddToPending,
-  canAddToPending = false,
-  // Re-detect props
   onRedetect,
   isRedetecting = false,
-  // Mask opacity props
-  maskOpacity = 0.3,
-  onMaskOpacityChange,
-  // Segment add mode props
-  isSegmentAddMode = true,
-  onToggleSegmentAddMode,
-  // Mask undo props
-  canUndoMask = false,
-  onUndoMask,
-  isUndoingMask = false,
 }: ImageEditorToolbarProps) {
   const t = useTranslations("editor");
   const toolbarRef = useRef<HTMLDivElement>(null);
@@ -701,139 +553,30 @@ export function ImageEditorToolbar({
 
       {divider}
 
-      {/* Draw mode - only show when not in segment mode */}
-      {editorMode !== "segment" && (
-        <>
-          <ToolbarIconButton
-            onClick={() => onEditorModeChange(editorMode === "draw" ? "view" : "draw")}
-            icon={Plus}
-            variant={editorMode === "draw" ? "active" : "default"}
-            title={t("addBbox")}
-          />
+      <ToolbarIconButton
+        onClick={() => onEditorModeChange(editorMode === "draw" ? "view" : "draw")}
+        icon={Plus}
+        variant={editorMode === "draw" ? "active" : "default"}
+        title={t("addBbox")}
+      />
 
-          {/* Re-detect button */}
-          {onRedetect && (
-            <ToolbarIconButton
-              onClick={onRedetect}
-              disabled={isRedetecting}
-              icon={RefreshCw}
-              title={t("redetect")}
-              isLoading={isRedetecting}
-            />
-          )}
-        </>
-      )}
-
-      {/* Segment mode controls - only show when in segment mode */}
-      {editorMode === "segment" && (
-        <>
-          {/* Add Mask mode toggle */}
-          <ToolbarIconButton
-            onClick={onToggleSegmentAddMode}
-            icon={Plus}
-            variant={isSegmentAddMode ? "active" : "default"}
-            title={t("addMask")}
-          />
-
-          {divider}
-
-          {/* Mask opacity slider */}
-          {onMaskOpacityChange && (
-            <div className={`flex ${isVertical ? "flex-col" : "flex-row"} items-center gap-1.5`} title={`${t("maskOpacity")}: ${Math.round(maskOpacity * 100)}%`}>
-              <span className="text-[10px] text-text-muted whitespace-nowrap">{t("maskOpacity")}</span>
-              <input
-                type="range"
-                min={0}
-                max={100}
-                value={maskOpacity * 100}
-                onChange={(e) => onMaskOpacityChange(Number(e.target.value) / 100)}
-                className="w-16 h-1.5 accent-blue-500 cursor-pointer"
-              />
-              <span className="text-[10px] text-text-muted w-7">{Math.round(maskOpacity * 100)}%</span>
-            </div>
-          )}
-
-          {/* Only show undo/trash/save buttons when add mode is active */}
-          {isSegmentAddMode && (
-            <>
-              {divider}
-
-              {/* Click point count */}
-              {clickPointCount > 0 && (
-                <span className="text-xs text-text-muted">
-                  {t("clickPoints", { count: clickPointCount })}
-                </span>
-              )}
-
-              {/* Undo last click */}
-              <ToolbarIconButton
-                onClick={onUndoClick}
-                disabled={!hasClickPoints}
-                icon={RotateCcw}
-                title={t("undoClick")}
-              />
-
-              {/* Clear segmentation */}
-              <ToolbarIconButton
-                onClick={onClearSegmentation}
-                disabled={!hasClickPoints}
-                icon={Trash2}
-                variant="danger"
-                title={t("clearSegmentation")}
-              />
-
-              {/* Add to pending (accumulate multiple before save) */}
-              {canAddToPending && (
-                <ToolbarIconButton
-                  onClick={onAddToPending}
-                  icon={Plus}
-                  variant="default"
-                  title={t("addToPending")}
-                />
-              )}
-
-              {/* Pending count badge */}
-              {pendingPolygonCount > 0 && (
-                <div className="flex items-center justify-center min-w-[24px] h-6 px-1.5 bg-primary-500/20 text-primary-400 text-xs font-medium rounded-md">
-                  {pendingPolygonCount}
-                </div>
-              )}
-
-              {/* Save mask */}
-              <ToolbarIconButton
-                onClick={onSaveMask}
-                disabled={!hasPreviewPolygon || isSavingMask}
-                icon={Save}
-                variant="primary"
-                isLoading={isSavingMask}
-                title={pendingPolygonCount > 0 ? t("saveAllMasks", { count: pendingPolygonCount }) : t("saveMask")}
-              />
-            </>
-          )}
-
-          {divider}
-
-          {/* Mask undo (for saved mask operations) */}
-          <ToolbarIconButton
-            onClick={onUndoMask}
-            disabled={!canUndoMask || isUndoingMask}
-            icon={Undo2}
-            isLoading={isUndoingMask}
-            title={t("shortcuts.undo")}
-          />
-        </>
-      )}
-
-      {/* Undo (for bbox operations, hidden in segment mode) */}
-      {editorMode !== "segment" && (
+      {onRedetect && (
         <ToolbarIconButton
-          onClick={onUndo}
-          disabled={!canUndo || isUndoing}
-          icon={Undo2}
-          isLoading={isUndoing}
-          title={t("shortcuts.undo")}
+          onClick={onRedetect}
+          disabled={isRedetecting}
+          icon={RefreshCw}
+          title={t("redetect")}
+          isLoading={isRedetecting}
         />
       )}
+
+      <ToolbarIconButton
+        onClick={onUndo}
+        disabled={!canUndo || isUndoing}
+        icon={Undo2}
+        isLoading={isUndoing}
+        title={t("shortcuts.undo")}
+      />
     </motion.div>
   );
 }

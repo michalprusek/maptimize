@@ -10,8 +10,6 @@ from .cell_crop import CellCrop
 from .ranking import UserRating, Comparison, RankingSource
 from .metric import Metric, MetricImage, MetricRating, MetricComparison
 from .bug_report import BugReport, BugReportStatus, BugReportCategory
-from .sam_embedding import SAMEmbedding
-from .segmentation import SegmentationMask, UserSegmentationPrompt, FOVSegmentationMask
 from .rag_document import RAGDocument, RAGDocumentPage, DocumentStatus, DocumentType
 from .group import Group, GroupMember
 from .group_join_request import GroupJoinRequest, JoinRequestStatus
@@ -42,10 +40,6 @@ __all__ = [
     "BugReport",
     "BugReportStatus",
     "BugReportCategory",
-    "SAMEmbedding",
-    "SegmentationMask",
-    "UserSegmentationPrompt",
-    "FOVSegmentationMask",
     "RAGDocument",
     "RAGDocumentPage",
     "DocumentStatus",

@@ -9,6 +9,7 @@
  */
 
 import { useRef, useEffect, useCallback, useState, type MouseEvent } from "react";
+import { useTranslations } from "next-intl";
 import type { EditorBbox, EditorState, ImageFilters, Rect } from "@/lib/editor/types";
 import { getHandlePositions } from "@/lib/editor/geometry";
 import {
@@ -37,16 +38,8 @@ interface ImageEditorCanvasProps {
   onContextMenu: (e: React.MouseEvent<HTMLCanvasElement>) => void;
   cursor: string;
   containerRef: React.RefObject<HTMLDivElement>;
-  /** Callback when image canvas is ready for crop extraction */
-  onImageCanvasReady?: (canvas: HTMLCanvasElement) => void;
   /** Callback when image is loaded (for direct crop extraction) */
   onImageLoaded?: (image: HTMLImageElement) => void;
-  /** Callback when image fails to load */
-  onImageError?: (error: string) => void;
-  /** Hide bboxes when in segment mode */
-  isSegmentMode?: boolean;
-  /** Optional background color override */
-  backgroundColor?: string;
 }
 
 /**
@@ -90,12 +83,9 @@ export function ImageEditorCanvas({
   onContextMenu,
   cursor,
   containerRef,
-  onImageCanvasReady,
   onImageLoaded,
-  onImageError,
-  isSegmentMode = false,
-  backgroundColor,
 }: ImageEditorCanvasProps) {
+  const t = useTranslations("editor");
   const imageCanvasRef = useRef<HTMLCanvasElement>(null);
   const overlayCanvasRef = useRef<HTMLCanvasElement>(null);
   const imageRef = useRef<HTMLImageElement | null>(null);
@@ -103,40 +93,34 @@ export function ImageEditorCanvas({
 
   const { zoom, panOffset, selectedBboxId, hoveredBboxId } = editorState;
 
-  // Track if image is loaded or has error
+  // Track if image is loaded or failed to load
   const [imageLoaded, setImageLoaded] = useState(false);
-  const [imageError, setImageError] = useState<string | null>(null);
+  const [imageFailed, setImageFailed] = useState(false);
 
-  // Store callbacks in refs to avoid re-triggering image load
+  // Store the callback in a ref to avoid re-triggering image load
   const onImageLoadedRef = useRef(onImageLoaded);
-  const onImageCanvasReadyRef = useRef(onImageCanvasReady);
-  const onImageErrorRef = useRef(onImageError);
 
   useEffect(() => {
     onImageLoadedRef.current = onImageLoaded;
-    onImageCanvasReadyRef.current = onImageCanvasReady;
-    onImageErrorRef.current = onImageError;
-  }, [onImageLoaded, onImageCanvasReady, onImageError]);
+  }, [onImageLoaded]);
 
   // Load image
   useEffect(() => {
     setImageLoaded(false);
-    setImageError(null);
+    setImageFailed(false);
     const img = new Image();
     // Enable CORS to allow canvas extraction for live preview
     img.crossOrigin = "anonymous";
     img.onload = () => {
       imageRef.current = img;
       setImageLoaded(true);
-      setImageError(null);
+      setImageFailed(false);
       // Notify parent that image is ready for crop extraction
       onImageLoadedRef.current?.(img);
     };
     img.onerror = () => {
       console.error("[ImageEditor] Failed to load image:", imageUrl);
-      const errorMessage = "Failed to load image";
-      setImageError(errorMessage);
-      onImageErrorRef.current?.(errorMessage);
+      setImageFailed(true);
     };
     img.src = imageUrl;
   }, [imageUrl]);
@@ -196,12 +180,6 @@ export function ImageEditorCanvas({
     ctx.strokeStyle = "rgba(255, 255, 255, 0.15)";
     ctx.lineWidth = 2 / zoom;
     ctx.stroke();
-
-    // Skip bboxes in segment mode - only show image frame
-    if (isSegmentMode) {
-      ctx.restore();
-      return;
-    }
 
     const bboxRadius = CANVAS_SETTINGS.bboxBorderRadius;
 
@@ -286,7 +264,7 @@ export function ImageEditorCanvas({
     }
 
     ctx.restore();
-  }, [bboxes, zoom, panOffset, selectedBboxId, hoveredBboxId, drawingBbox, imageWidth, imageHeight, isSegmentMode]);
+  }, [bboxes, zoom, panOffset, selectedBboxId, hoveredBboxId, drawingBbox, imageWidth, imageHeight]);
 
   // Draw circular resize handles (corners only)
   function drawHandles(ctx: CanvasRenderingContext2D, bbox: EditorBbox, scale: number): void {
@@ -411,13 +389,6 @@ export function ImageEditorCanvas({
     renderBboxes();
   }, [renderBboxes]);
 
-  // Notify parent when image canvas is ready for crop extraction
-  useEffect(() => {
-    if (imageLoaded && imageCanvasRef.current && onImageCanvasReadyRef.current) {
-      onImageCanvasReadyRef.current(imageCanvasRef.current);
-    }
-  }, [imageLoaded]);
-
   // Handle wheel event for zoom
   useEffect(() => {
     const canvas = overlayCanvasRef.current;
@@ -434,8 +405,8 @@ export function ImageEditorCanvas({
   return (
     <div
       ref={containerRef}
-      className="relative w-full h-full overflow-hidden transition-colors duration-300"
-      style={{ cursor, backgroundColor: backgroundColor || "#000" }}
+      className="relative w-full h-full overflow-hidden"
+      style={{ cursor, backgroundColor: "#0a1a0a" }}
     >
       {/* Image layer */}
       <canvas
@@ -456,7 +427,7 @@ export function ImageEditorCanvas({
       />
 
       {/* Error overlay */}
-      {imageError && (
+      {imageFailed && (
         <div className="absolute inset-0 flex items-center justify-center bg-black/80">
           <div className="text-center p-6">
             <div className="w-12 h-12 mx-auto mb-4 text-red-400">
@@ -464,7 +435,7 @@ export function ImageEditorCanvas({
                 <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m9-.75a9 9 0 11-18 0 9 9 0 0118 0zm-9 3.75h.008v.008H12v-.008z" />
               </svg>
             </div>
-            <p className="text-red-400 font-medium">{imageError}</p>
+            <p className="text-red-400 font-medium">{t("loadError")}</p>
             <p className="text-gray-500 text-sm mt-2 max-w-xs">{imageUrl}</p>
           </div>
         </div>

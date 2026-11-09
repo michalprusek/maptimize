@@ -21,6 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from models.cell_crop import CellCrop
 from models.image import Image
 from ml.detection import normalize_image
+from ml.detection.geometry import rotated_corners
 
 logger = logging.getLogger(__name__)
 
@@ -28,23 +29,6 @@ logger = logging.getLogger(__name__)
 # =============================================================================
 # Validation Functions
 # =============================================================================
-
-
-def _rotated_corners(
-    bbox_x: int, bbox_y: int, bbox_w: int, bbox_h: int, bbox_angle: float
-) -> list[Tuple[float, float]]:
-    """Corners of the axis-aligned box rotated by ``bbox_angle`` degrees about its
-    centre, as (x, y) pixel coordinates. Shared by validation and (conceptually) the
-    de-rotated extraction so the two agree on what the rotated box covers."""
-    cx = bbox_x + bbox_w / 2.0
-    cy = bbox_y + bbox_h / 2.0
-    theta = np.deg2rad(bbox_angle)
-    cos_t, sin_t = np.cos(theta), np.sin(theta)
-    corners = []
-    for u in (-bbox_w / 2.0, bbox_w / 2.0):
-        for v in (-bbox_h / 2.0, bbox_h / 2.0):
-            corners.append((cx + u * cos_t - v * sin_t, cy + u * sin_t + v * cos_t))
-    return corners
 
 
 def validate_bbox_within_image(
@@ -82,7 +66,7 @@ def validate_bbox_within_image(
         # discarded even that, showing a bare "Failed to update cell".
         names = ("top-left", "bottom-left", "top-right", "bottom-right")
         for name, (px, py) in zip(
-            names, _rotated_corners(bbox_x, bbox_y, bbox_w, bbox_h, bbox_angle)
+            names, rotated_corners(bbox_x, bbox_y, bbox_w, bbox_h, bbox_angle)
         ):
             if px < 0 or py < 0 or px > image_width or py > image_height:
                 return False, (
@@ -166,7 +150,7 @@ def extract_crop_from_projection(
     Also measured: at 90 deg the sampling is an exact pixel permutation for every
     order (verified against ``np.rot90``), offset by one row because the centre
     convention here is ``w/2`` rather than ``(w-1)/2``. That convention is shared with
-    ``_rotated_corners`` and the canvas mirror, so it is deliberate -- changing it
+    ``rotated_corners`` and the canvas mirror, so it is deliberate -- changing it
     would move every rotated crop by a pixel and desynchronise the three.
 
     Returns:

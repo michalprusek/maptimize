@@ -220,8 +220,60 @@ Hlavní nginx-main na portech 80/443 routuje traffic podle domény:
 
 ## Model weights
 
-⚠️ **YOLOv8 váhy (`weights/best.pt`)** nejsou součástí repozitáře.
-Backend NEPŮJDE spustit bez těchto vah - detekce buněk vyžaduje natrénovaný model.
+⚠️ **YOLO váhy (`weights/best.pt`)** nejsou součástí repozitáře (záloha je jediná
+kopie, `scripts/backup.sh` synchronizuje celé `weights/`). Bez nich produkční backend
+**nenastartuje** — entrypoint v `Dockerfile.gpu` skončí `exit 1`.
+
+## 🔬 Detektor buněk a jeho přetrénování (od 2026-11-08)
+
+Upload dělá **jen** projekce (fáze 1) a pak YOLO detekci → DINOv3 embeddingy cropů →
+Qwen VL embedding FOV (fáze 2, `services/image_processor.py`). **SAM i segmentační
+část editoru jsou smazané** (backend, frontend, závislosti, `sam3` z Dockerfile);
+editor umí jen bboxy (kreslit, posouvat, měnit velikost, rotovat). DB po SAM uklízí
+jednorázový ruční `scripts/drop_sam.sql` (pořadí je v jeho hlavičce: záloha → nasazení
+kódu → skript; v produkci proběhl 2026-11-09, DB 3081 MB → 74 MB). Staré archivy exportu s `masks/` se dál naimportují, masky se ignorují.
+
+**Přetrénování:** `backend/scripts/train_detector.py build|train|evaluate`
+(návod na spuštění v docstringu; read-only proti DB). Čistá logika je
+`ml/detection/training.py` a je mutačně otestovaná (`tests/unit/test_detector_training.py`).
+
+⚠️ **Řádek v `cell_crops` NENÍ ground truth.** Upload s detekcí uloží, co model
+predikoval. Proto má každé FOV provenienci: `human` (aspoň jeden ručně kreslený box,
+nebo detekce vypnutá), `reviewed`, `unreviewed`, `negative`. Val/test jsou **jen**
+`human` FOV z odložených experimentů (split po experimentech, stratifikovaný podle
+vlastníka) — testovat na `unreviewed` znamená měřit starý model proti jeho vlastnímu
+výstupu.
+
+⚠️ **Editace bboxu zachovává `detection_confidence`.** Díky tomu jde poznat
+zkontrolované FOV: model je deterministický (uložené confidence sedí na dnešní
+predikce na 3 desetinná místa), takže shodná confidence + jiná geometrie = člověk box
+posunul, chybějící predikce = smazal. Naměřeno: z 517 čistě detekovaných FOV jich 362
+někdo upravil (282 geometrie, 80 mazání), jen 155 je k nerozeznání od výstupu modelu.
+
+⚠️ **Trénovací PNG musí být pixely, které vidí produkce.** `model_input()` v
+`ml/detection/detector.py` je SSOT pro inferenci i zápis trénovacích snímků
+(`cv2.imwrite`, protože ultralytics bere numpy jako BGR). Ověřeno 40/40 bit-identických.
+
+⚠️ **Žádná rotace ani shear v augmentaci** (`AUGMENT` v `train_detector.py`, test to
+zamyká). Ultralytics z otočeného boxu udělá obálku otočených rohů → label je v průměru
+o 27 % větší než buňka. Lednový model (`degrees=180`) měl proto volné boxy a anotátoři
+je zmenšovali. Bez rotace: plocha boxu 1,03–1,08× anotace místo 1,09–1,19×.
+
+⚠️ **Číslo z ultralytics `val` / `results.csv` NENÍ produkční číslo.** Val v `rect`
+režimu přidává šedý okraj (`pad=0.5` stride) a model natrénovaný s rotací ho čte jako
+kontext → val hlásil AP50-95 0,53 na boxech, které `predict()` v produkci kreslí na 0,36.
+Rozhoduje jen `train_detector.py evaluate`, který jde přes `CellDetector.detect`.
+
+**Nasazený model (od 2026-11-09):** YOLO26s, 640 px, bez rotace, práh `CONF_THRESHOLD = 0.45`
+(F1-optimum na val; **mění se spolu s váhami**). Test (177 FOV / 316 buněk z odložených
+experimentů), starý → nový: AP50 0,738 → 0,960, AP50-95 0,315 → 0,559, F1 0,701 → 0,894
+(bootstrap po experimentech, všechny CI nad nulou). Na FOV, kde anotátor predikce nikdy
+neviděl (nestranná podmnožina), recall 0,786 → 0,901. Starý model leží jako
+`weights/best_v1_yolov8s_2026-01.pt` (rollback = přejmenovat zpět + vrátit práh 0,5).
+Inference na CPU (výchozí `device`) dává identické detekce jako GPU, ~100 ms/snímek.
+
+Existující cropy se **nepřegenerovávají** — jsou kurátorované. Nový model se týká jen
+nových uploadů a explicitního re-detect.
 
 ## 🚀 Development Setup (Docker - podobné produkci)
 

@@ -18,13 +18,13 @@ import logging
 import os
 import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
-import math
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from xml.dom import minidom
 
 from pydantic import ValidationError
 
+from ml.detection.geometry import rotated_corners
 from schemas.export_import import CropImportData, ImportFormat
 
 logger = logging.getLogger(__name__)
@@ -51,15 +51,10 @@ def export_bbox(crop) -> Tuple[int, int, int, int]:
     if not angle:
         return crop.bbox_x, crop.bbox_y, crop.bbox_w, crop.bbox_h
 
-    t = math.radians(angle)
-    c, sn = abs(math.cos(t)), abs(math.sin(t))
-    ex = (crop.bbox_w / 2) * c + (crop.bbox_h / 2) * sn
-    ey = (crop.bbox_w / 2) * sn + (crop.bbox_h / 2) * c
-    cx = crop.bbox_x + crop.bbox_w / 2
-    cy = crop.bbox_y + crop.bbox_h / 2
+    xs, ys = zip(*rotated_corners(crop.bbox_x, crop.bbox_y, crop.bbox_w, crop.bbox_h, angle))
     return (
-        int(round(cx - ex)), int(round(cy - ey)),
-        int(round(2 * ex)), int(round(2 * ey)),
+        int(round(min(xs))), int(round(min(ys))),
+        int(round(max(xs) - min(xs))), int(round(max(ys) - min(ys))),
     )
 
 

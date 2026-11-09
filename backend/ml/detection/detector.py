@@ -1,11 +1,13 @@
-"""
-YOLOv8-based cell detector for confocal microscopy images.
-Adapted from /Users/michalprusek/Desktop/microtubules/detection/
+"""YOLO cell detector for confocal microscopy MIPs.
+
+The weights (``weights/best.pt``) are trained on the lab's own curated crops by
+``scripts/train_detector.py``; ultralytics reads the architecture from the
+checkpoint, so nothing here is specific to one YOLO generation.
 """
 
 import asyncio
 from pathlib import Path
-from typing import List, Dict, Optional, Tuple
+from typing import List, Optional
 from dataclasses import dataclass
 import logging
 
@@ -15,10 +17,35 @@ from config import get_settings
 
 logger = logging.getLogger(__name__)
 
+# Confidence a detection needs to become a crop. Chosen per model, on the
+# validation experiments, as the F1-maximising threshold
+# (``scripts/train_detector.py evaluate``) — change it together with the weights.
+# Current weights: YOLO26s, 2026-11-08, chosen 0.45 (test F1 0.894 at it).
+CONF_THRESHOLD = 0.45
+
 
 def get_weights_path() -> Path:
     """Get YOLO weights path from configuration."""
     return get_settings().yolo_model_path
+
+
+def model_input(image: np.ndarray) -> np.ndarray:
+    """The exact uint8 3-channel array the network sees for ``image``.
+
+    One function for inference AND for writing training images
+    (``scripts/train_detector.py``): a detector trained on pixels prepared one
+    way and run on pixels prepared another degrades without any error. The
+    array is handed to ultralytics as-is, which reads numpy input as BGR — the
+    same order ``cv2.imread`` returns, so a PNG written with ``cv2.imwrite``
+    round-trips to these exact pixels during training.
+    """
+    if image.ndim == 2:
+        image = np.stack([image, image, image], axis=-1)
+    if image.dtype == np.uint16:
+        image = (image / 256).astype(np.uint8)
+    elif image.dtype in (np.float32, np.float64):
+        image = (image * 255).astype(np.uint8)
+    return image
 
 
 @dataclass
@@ -33,20 +60,13 @@ class Detection:
 
 
 class CellDetector:
-    """
-    YOLOv8 cell detector for microscopy images.
-
-    Configured for overlapping cells with:
-    - IOU threshold: 0.7 (high overlap tolerance)
-    - Max detections: 100 per image
-    - Confidence threshold: 0.5 (default)
-    """
+    """YOLO cell detector: NMS IoU 0.7 (cells overlap), at most 100 per image."""
 
     def __init__(
         self,
         weights_path: Optional[Path] = None,
         device: str = "cpu",
-        conf_threshold: float = 0.5,
+        conf_threshold: float = CONF_THRESHOLD,
         iou_threshold: float = 0.7,
         max_det: int = 100,
     ):
@@ -78,15 +98,7 @@ class CellDetector:
                 logger.info(f"Loading YOLO weights from {self.weights_path}")
                 self._model = YOLO(str(self.weights_path))
 
-                # Move to device
                 self._model.to(self.device)
-
-                # Mark model as already fused to skip fusion during inference
-                # Our trained weights may have Conv layers without bn (version mismatch)
-                # This prevents ultralytics from trying to fuse and failing
-                if hasattr(self._model, 'model'):
-                    self._model.model.fused = True
-                    logger.info("Model marked as fused (skipping fusion)")
 
             except ImportError:
                 raise ImportError(
@@ -124,20 +136,9 @@ class CellDetector:
         conf = conf or self.conf_threshold
         iou = iou or self.iou_threshold
 
-        # Ensure image is in correct format
-        if len(image.shape) == 2:
-            # Grayscale -> RGB
-            image = np.stack([image, image, image], axis=-1)
-
-        # Normalize if 16-bit
-        if image.dtype == np.uint16:
-            image = (image / 256).astype(np.uint8)
-        elif image.dtype == np.float32 or image.dtype == np.float64:
-            image = (image * 255).astype(np.uint8)
-
         # Run inference
         results = self.model(
-            image,
+            model_input(image),
             conf=conf,
             iou=iou,
             max_det=self.max_det,
@@ -206,7 +207,7 @@ def _get_detector_raw() -> CellDetector:
 def get_detector() -> CellDetector:
     """Get the detector via GPU model manager (tracks usage, enables auto-unload)."""
     from ml.gpu_manager import get_gpu_manager
-    return get_gpu_manager().acquire("yolov8")
+    return get_gpu_manager().acquire("detector")
 
 
 def reset_detector() -> None:

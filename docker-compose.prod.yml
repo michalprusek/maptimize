@@ -58,8 +58,6 @@ services:
       - GPU_MODEL_CLEANUP_INTERVAL_SECONDS=${GPU_MODEL_CLEANUP_INTERVAL_SECONDS:-60}
       # YOLOv8 Configuration
       - YOLO_MODEL_PATH=/app/weights/best.pt
-      - YOLO_CONFIDENCE_THRESHOLD=${YOLO_CONFIDENCE_THRESHOLD:-0.25}
-      - YOLO_IOU_THRESHOLD=${YOLO_IOU_THRESHOLD:-0.7}
       # HuggingFace
       - HF_TOKEN=${HF_TOKEN:-}
       - HF_HOME=/app/.cache/huggingface

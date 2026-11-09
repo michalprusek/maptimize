@@ -14,7 +14,6 @@ import {
   Image,
   Grid,
   Database,
-  Layers,
 } from "lucide-react";
 import { useTranslations } from "next-intl";
 import { modalOverlayAnimation, modalContentAnimation } from "@/lib/animations";
@@ -317,12 +316,6 @@ export function ImportModal({
                       <Database className="w-4 h-4 text-text-muted" />
                       <span className={validationResult.has_embeddings ? "text-text-primary" : "text-text-muted"}>
                         {validationResult.has_embeddings ? t("embeddings") : t("noEmbeddings")}
-                      </span>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <Layers className="w-4 h-4 text-text-muted" />
-                      <span className={validationResult.has_masks ? "text-text-primary" : "text-text-muted"}>
-                        {validationResult.has_masks ? t("masks") : t("noMasks")}
                       </span>
                     </div>
                   </div>

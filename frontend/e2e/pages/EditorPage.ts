@@ -3,7 +3,7 @@ import { Page, Locator, expect } from "@playwright/test";
 /**
  * Page Object Model for the Image Editor page.
  *
- * Handles cell crop editing, navigation, zoom, and segmentation interactions.
+ * Handles cell crop editing, navigation and zoom.
  */
 export class EditorPage {
   readonly page: Page;
@@ -29,7 +29,6 @@ export class EditorPage {
   readonly panTool: Locator;
   readonly selectTool: Locator;
   readonly drawTool: Locator;
-  readonly segmentTool: Locator;
 
   // Cell crop panel
   readonly cropPanel: Locator;
@@ -37,11 +36,6 @@ export class EditorPage {
   readonly addCropButton: Locator;
   readonly deleteCropButton: Locator;
   readonly saveCropsButton: Locator;
-
-  // Segmentation controls
-  readonly segmentButton: Locator;
-  readonly clearSegmentButton: Locator;
-  readonly saveSegmentButton: Locator;
 
   // Display mode controls
   readonly displayModeSelect: Locator;
@@ -89,9 +83,6 @@ export class EditorPage {
     this.drawTool = page.locator('[data-testid="tool-draw"]').or(
       page.locator('button[title*="draw" i]')
     );
-    this.segmentTool = page.locator('[data-testid="tool-segment"]').or(
-      page.locator('button[title*="segment" i]')
-    );
 
     // Crop panel
     this.cropPanel = page.locator('[data-testid="crop-panel"]').or(
@@ -103,11 +94,6 @@ export class EditorPage {
     this.addCropButton = page.locator('button').filter({ hasText: /add.*crop/i });
     this.deleteCropButton = page.locator('button').filter({ hasText: /delete.*crop/i });
     this.saveCropsButton = page.locator('button').filter({ hasText: /save/i });
-
-    // Segmentation
-    this.segmentButton = page.locator('button').filter({ hasText: /segment/i });
-    this.clearSegmentButton = page.locator('button').filter({ hasText: /clear/i });
-    this.saveSegmentButton = page.locator('button').filter({ hasText: /save.*mask/i });
 
     // Display mode
     this.displayModeSelect = page.locator('[data-testid="display-mode"]').or(

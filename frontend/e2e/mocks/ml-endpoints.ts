@@ -8,57 +8,6 @@ import { Page, Route } from "@playwright/test";
  */
 
 // ============================================================================
-// SAM Segmentation Mocks
-// ============================================================================
-
-/**
- * Mock SAM embedding status response.
- */
-export const mockSAMEmbeddingReady = {
-  image_id: 1,
-  status: "ready",
-  has_embedding: true,
-  embedding_shape: "[1, 256, 64, 64]",
-  model_variant: "mobilesam",
-};
-
-/**
- * Mock SAM embedding computing status.
- */
-export const mockSAMEmbeddingComputing = {
-  image_id: 1,
-  status: "computing",
-  has_embedding: false,
-  embedding_shape: null,
-  model_variant: null,
-};
-
-/**
- * Mock SAM segmentation response - returns a simple polygon.
- */
-export const mockSegmentationSuccess = {
-  success: true,
-  polygon: [
-    [100, 100],
-    [200, 100],
-    [200, 200],
-    [100, 200],
-  ] as [number, number][],
-  iou_score: 0.95,
-  area_pixels: 10000,
-};
-
-/**
- * Mock segmentation capabilities response.
- */
-export const mockSegmentationCapabilities = {
-  device: "cuda",
-  variant: "mobilesam",
-  supports_text_prompts: false,
-  model_name: "MobileSAM",
-};
-
-// ============================================================================
 // Feature Extraction / Embedding Mocks
 // ============================================================================
 
@@ -166,71 +115,10 @@ export const mockImageReady = {
 export async function mockMLEndpoints(
   page: Page,
   options: {
-    segmentationReady?: boolean;
     embeddingsComplete?: boolean;
-    failSegmentation?: boolean;
   } = {}
 ): Promise<void> {
-  const {
-    segmentationReady = true,
-    embeddingsComplete = true,
-    failSegmentation = false,
-  } = options;
-
-  // SAM Embedding Status
-  await page.route("**/api/segmentation/embedding-status/*", async (route: Route) => {
-    await route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify(
-        segmentationReady ? mockSAMEmbeddingReady : mockSAMEmbeddingComputing
-      ),
-    });
-  });
-
-  // SAM Compute Embedding
-  await page.route("**/api/segmentation/compute-embedding/*", async (route: Route) => {
-    await route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify({ message: "Embedding computation started", image_id: 1 }),
-    });
-  });
-
-  // SAM Interactive Segmentation
-  await page.route("**/api/segmentation/segment", async (route: Route) => {
-    if (failSegmentation) {
-      await route.fulfill({
-        status: 500,
-        contentType: "application/json",
-        body: JSON.stringify({ success: false, error: "Segmentation failed" }),
-      });
-    } else {
-      await route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: JSON.stringify(mockSegmentationSuccess),
-      });
-    }
-  });
-
-  // Segmentation Capabilities
-  await page.route("**/api/segmentation/capabilities", async (route: Route) => {
-    await route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify(mockSegmentationCapabilities),
-    });
-  });
-
-  // Save Segmentation Mask
-  await page.route("**/api/segmentation/save-mask", async (route: Route) => {
-    await route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify({ success: true, crop_id: 1, area_pixels: 10000 }),
-    });
-  });
+  const { embeddingsComplete = true } = options;
 
   // Embedding Status
   await page.route("**/api/embeddings/status*", async (route: Route) => {

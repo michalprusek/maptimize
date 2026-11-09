@@ -46,14 +46,6 @@ class BBoxFormat(str, PyEnum):
     CSV = "csv"        # Flat CSV format
 
 
-class MaskFormat(str, PyEnum):
-    """Supported segmentation mask export formats."""
-    PNG = "png"              # Binary mask as PNG image (default)
-    COCO_RLE = "coco_rle"    # COCO RLE encoding with integer counts
-    COCO = "coco"            # COCO 1.0 format with compressed string RLE
-    POLYGON = "polygon"      # Polygon coordinates in JSON
-
-
 class ExportOptions(BaseModel):
     """Options for what to include in the export."""
     include_fov_images: bool = Field(
@@ -68,17 +60,9 @@ class ExportOptions(BaseModel):
         default=True,
         description="Include DINO embeddings as NPY files"
     )
-    include_masks: bool = Field(
-        default=True,
-        description="Include segmentation masks"
-    )
     bbox_format: BBoxFormat = Field(
         default=BBoxFormat.COCO,
         description="Bounding box annotation format"
-    )
-    mask_format: MaskFormat = Field(
-        default=MaskFormat.PNG,
-        description="Segmentation mask export format"
     )
 
     @model_validator(mode="after")
@@ -88,7 +72,6 @@ class ExportOptions(BaseModel):
             self.include_fov_images,
             self.include_crop_images,
             self.include_embeddings,
-            self.include_masks
         ]):
             raise ValueError("At least one export option must be enabled")
         return self
@@ -120,7 +103,6 @@ class ExportPrepareResponse(BaseModel):
     experiment_count: int = Field(ge=0, description="Number of experiments to export")
     image_count: int = Field(ge=0, description="Total number of FOV images")
     crop_count: int = Field(ge=0, description="Total number of cell crops")
-    mask_count: int = Field(ge=0, description="Number of segmentation masks")
 
 
 class ExportStatusResponse(JobStatusBase):
@@ -150,7 +132,6 @@ class ImportValidationResult(BaseModel):
     image_count: int = Field(ge=0, description="Number of images found")
     annotation_count: int = Field(ge=0, description="Number of annotations found")
     has_embeddings: bool = Field(default=False, description="Whether embeddings were found")
-    has_masks: bool = Field(default=False, description="Whether masks were found")
     errors: List[str] = Field(default_factory=list)
     warnings: List[str] = Field(default_factory=list)
 
@@ -233,7 +214,6 @@ class ExportJobData(JobDataBase):
     experiment_count: int = 0
     image_count: int = 0
     crop_count: int = 0
-    mask_count: int = 0
     estimated_size_bytes: int = 0
 
 

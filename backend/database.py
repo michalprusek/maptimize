@@ -151,8 +151,6 @@ async def ensure_schema_updates():
             ("cell_crops", "bundleness_model", "VARCHAR(50)"),
             # User avatar support
             ("users", "avatar_url", "VARCHAR(500)"),
-            # SAM embedding status for interactive segmentation
-            ("images", "sam_embedding_status", "VARCHAR(20)"),
             # MAP protein assignment at experiment level
             ("experiments", "map_protein_id", "INTEGER REFERENCES map_proteins(id)"),
             # FASTA sequence storage for protein reference

@@ -232,14 +232,12 @@ class ImageProcessor:
 
                 # Load MIP projection (should already exist from Phase 1)
                 t0 = time.monotonic()
-                mip_fallback_used = False
                 if image.mip_path and Path(image.mip_path).exists():
                     mip = await self._load_image(image.mip_path)
                 elif not image.mip_path and Path(image.file_path).exists():
                     logger.info(f"2D image {image.id}: using original file as MIP")
                     mip = await self._load_image(image.file_path)
                 else:
-                    mip_fallback_used = True
                     logger.warning(
                         f"MIP projection missing for image {image.id} (mip_path={image.mip_path}), "
                         f"falling back to original file: {image.file_path}."
@@ -267,11 +265,6 @@ class ImageProcessor:
                     logger.info("Detection disabled - FOV will be shown without crops")
                     image.status = UploadStatus.READY
                     image.processed_at = datetime.now(timezone.utc)
-
-                # Compute SAM embedding for segmentation
-                t0 = time.monotonic()
-                await self._compute_sam_embedding(db, image)
-                logger.info("⏱ Phase2 [%d] sam_embedding: %.2fs", image.id, time.monotonic() - t0)
 
                 # Extract RAG embedding for chat search
                 t0 = time.monotonic()
@@ -502,42 +495,6 @@ class ImageProcessor:
             logger.error(f"DINOv3 model error during feature extraction: {e}")
         except Exception as e:
             logger.exception(f"Unexpected feature extraction error: {e}")
-
-    async def _compute_sam_embedding(
-        self,
-        db: AsyncSession,
-        image: Image
-    ) -> None:
-        """
-        Compute SAM embedding for segmentation (inline during Phase 2, not queued as background task).
-
-        This enables interactive segmentation in the editor. Computed during
-        'Process Images' to ensure embeddings are ready when user opens editor.
-        """
-        try:
-            from services.segmentation_service import compute_sam_embedding
-
-            logger.info(f"Computing SAM embedding for image {image.id}...")
-            result = await compute_sam_embedding(image.id, db)
-
-            if result.get('success'):
-                logger.info(
-                    f"SAM embedding computed for image {image.id}: "
-                    f"{result.get('embedding_size', 0) / 1024 / 1024:.1f}MB"
-                )
-            else:
-                logger.warning(
-                    f"SAM embedding failed for image {image.id}: {result.get('error')}"
-                )
-        except ImportError as e:
-            logger.warning(f"SAM segmentation service not available: {e}")
-            # Not fatal - segmentation is optional
-        except RuntimeError as e:
-            logger.warning(f"SAM model error during embedding computation: {e}")
-            # Not fatal - user can still use other features
-        except Exception as e:
-            logger.exception(f"Unexpected SAM embedding error for image {image.id}: {e}")
-            # Not fatal - segmentation is optional feature
 
     async def _extract_rag_embedding(
         self,

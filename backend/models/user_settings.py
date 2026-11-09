@@ -1,8 +1,8 @@
 """User settings model for display preferences."""
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING
 from enum import Enum as PyEnum
 
-from sqlalchemy import String, Enum, Integer, ForeignKey
+from sqlalchemy import String, Integer, ForeignKey
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from database import Base

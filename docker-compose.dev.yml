@@ -1,5 +1,5 @@
 # Maptimize Development - Full Docker Stack
-# GPU-enabled for SAM 3 testing with hot-reload
+# GPU-enabled, with hot-reload
 # Uses PRODUCTION DATABASE for testing on real data
 #
 # Použití:
@@ -36,7 +36,7 @@ services:
       - maptimize-dev-network
     restart: unless-stopped
 
-  # Backend (FastAPI s hot-reload + GPU pro SAM 3)
+  # Backend (FastAPI s hot-reload + GPU)
   backend:
     build:
       context: ./backend
@@ -58,8 +58,6 @@ services:
       - WEIGHTS_DIR=/app/weights
       # YOLOv8 Configuration
       - YOLO_MODEL_PATH=/app/weights/best.pt
-      - YOLO_CONFIDENCE_THRESHOLD=0.25
-      - YOLO_IOU_THRESHOLD=0.7
       # HuggingFace
       - HF_HOME=/app/.cache/huggingface
       - HF_TOKEN=${HF_TOKEN:-}
@@ -85,7 +83,7 @@ services:
     networks:
       - maptimize-dev-network
       - maptimize-network  # Connect to production network for DB access
-    # GPU support for SAM 3
+    # GPU support
     deploy:
       resources:
         reservations:

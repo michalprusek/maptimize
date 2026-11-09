@@ -12,8 +12,6 @@ from database import Base
 if TYPE_CHECKING:
     from .experiment import Experiment
     from .cell_crop import CellCrop
-    from .sam_embedding import SAMEmbedding
-    from .segmentation import FOVSegmentationMask
 
 
 class UploadStatus(str, PyEnum):
@@ -150,13 +148,6 @@ class Image(Base):
     # column cannot be read by accident, and every Image SELECT stops hauling a
     # 1024-float vector. The data is left in place, not dropped.
 
-    # SAM embedding status for interactive segmentation
-    # None = not started, "pending" = queued, "computing" = in progress,
-    # "ready" = embedding available, "error" = failed
-    sam_embedding_status: Mapped[Optional[str]] = mapped_column(
-        String(20), nullable=True, default=None
-    )
-
     # Qwen3 VL embedding for RAG/chat search (2048-dim)
     rag_embedding: Mapped[Optional[list]] = mapped_column(Vector(2048), nullable=True)
     rag_indexed_at: Mapped[Optional[datetime]] = mapped_column(
@@ -178,16 +169,6 @@ class Image(Base):
     map_protein: Mapped[Optional["MapProtein"]] = relationship(back_populates="images")
     cell_crops: Mapped[List["CellCrop"]] = relationship(
         back_populates="image",
-        cascade="all, delete-orphan"
-    )
-    sam_embedding: Mapped[Optional["SAMEmbedding"]] = relationship(
-        back_populates="image",
-        uselist=False,
-        cascade="all, delete-orphan"
-    )
-    fov_segmentation_mask: Mapped[Optional["FOVSegmentationMask"]] = relationship(
-        back_populates="image",
-        uselist=False,
         cascade="all, delete-orphan"
     )
 

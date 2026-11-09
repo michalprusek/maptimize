@@ -11,12 +11,11 @@
 #                        dead links (this already happened once in miniature when
 #                        data/rag_documents/ was left unmounted — see CLAUDE.md,
 #                        "Perzistence obrázků v chatu").
-#   3. weights/        — best.pt is custom-trained: not in the repo, and
-#                        download_weights.py cannot fetch it (it only handles
-#                        mobile_sam.pt, a public re-downloadable asset). This
-#                        backup is its only copy. It is lazily loaded, so the
-#                        backend still STARTS without it — cell detection fails
-#                        at first use instead.
+#   3. weights/        — best.pt is custom-trained: not in the repo and not
+#                        downloadable from anywhere. This backup is its only
+#                        copy, and the production entrypoint
+#                        (Dockerfile.gpu) exits 1 without it, so losing it
+#                        takes the whole backend down, not just detection.
 #
 # Plus .env, which is gitignored and therefore exists nowhere else. The rest of
 # the config (compose files, source) is on GitHub and needs no second copy here.

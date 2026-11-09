@@ -4,7 +4,7 @@
  * KeyboardShortcutsModal Component
  *
  * Displays all available keyboard shortcuts for the image editor.
- * Organized by category: Navigation, View, Editing, Segmentation.
+ * Organized by category: Navigation, View, Editing.
  */
 
 import { useTranslations } from "next-intl";
@@ -17,21 +17,6 @@ function KeyCap({ children, className = "" }: { children: React.ReactNode; class
     <kbd className={`inline-flex items-center justify-center min-w-[24px] h-6 px-1.5 text-xs font-mono font-medium bg-white/10 border border-white/20 rounded text-text-primary shadow-sm ${className}`}>
       {children}
     </kbd>
-  );
-}
-
-/** Mouse icon with highlighted button (left or right) */
-function MouseIcon({ button, className = "" }: { button: "left" | "right"; className?: string }) {
-  const path = button === "left"
-    ? "M1.5 6 Q1.5 1.5 7 1.5 L7 7.5 L1.5 7.5 Z"
-    : "M12.5 6 Q12.5 1.5 7 1.5 L7 7.5 L12.5 7.5 Z";
-
-  return (
-    <svg width="14" height="18" viewBox="0 0 14 18" fill="none" className={className}>
-      <rect x="1" y="1" width="12" height="16" rx="6" stroke="currentColor" strokeWidth="1.5" fill="none" />
-      <line x1="7" y1="1" x2="7" y2="8" stroke="currentColor" strokeWidth="1" />
-      <path d={path} fill="currentColor" />
-    </svg>
   );
 }
 
@@ -88,7 +73,7 @@ export function KeyboardShortcutsModal({ isOpen, onClose }: KeyboardShortcutsMod
           />
           <ShortcutRow
             keys={<KeyCap>Esc</KeyCap>}
-            action={t("closeOrClear")}
+            action={t("close")}
           />
         </ShortcutSection>
 
@@ -129,38 +114,6 @@ export function KeyboardShortcutsModal({ isOpen, onClose }: KeyboardShortcutsMod
           <ShortcutRow
             keys={<><KeyCap>Z</KeyCap><span className="text-text-muted text-xs mx-1">/</span><KeyCap>Ctrl</KeyCap><span className="text-text-muted text-xs mx-0.5">+</span><KeyCap>Z</KeyCap></>}
             action={t("undo")}
-          />
-        </ShortcutSection>
-
-        {/* Segmentation */}
-        <ShortcutSection title={t("segmentation")}>
-          <ShortcutRow
-            keys={<KeyCap>S</KeyCap>}
-            action={t("toggleSegmentMode")}
-          />
-          <ShortcutRow
-            keys={<KeyCap>A</KeyCap>}
-            action={t("toggleAddPoints")}
-          />
-          <ShortcutRow
-            keys={<MouseIcon button="left" className="text-emerald-400" />}
-            action={t("addForeground")}
-          />
-          <ShortcutRow
-            keys={<MouseIcon button="right" className="text-red-400" />}
-            action={t("addBackground")}
-          />
-          <ShortcutRow
-            keys={<KeyCap>Enter</KeyCap>}
-            action={t("saveMask")}
-          />
-          <ShortcutRow
-            keys={<><KeyCap className="text-[10px]">Shift</KeyCap><span className="text-text-muted text-xs mx-0.5">+</span><MouseIcon button="left" className="text-yellow-400" /></>}
-            action={t("panImage")}
-          />
-          <ShortcutRow
-            keys={<><KeyCap className="text-[10px]">Shift</KeyCap><span className="text-text-muted text-xs mx-0.5">+</span><MouseIcon button="right" className="text-yellow-400" /></>}
-            action={t("undoPoint")}
           />
         </ShortcutSection>
       </div>

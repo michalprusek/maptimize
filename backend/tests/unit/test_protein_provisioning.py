@@ -453,7 +453,7 @@ async def test_provision_with_experiments_no_images(mock_db):
         make_result(fetchall=[]),            # _build_id_mapping -> empty image_map
     ]
     await prov.provision_new_user_data(new_user_id=5, db=mock_db)
-    # 5 execute calls; the per-image crop/SAM copies were skipped via continue.
+    # 5 execute calls; the per-image crop copies were skipped via continue.
     assert mock_db.execute.await_count == 5
 
 
@@ -470,10 +470,26 @@ async def test_provision_full_path_with_images_and_crops(mock_db):
         make_result(fetchall=[img_map_row]),         # image id mapping (1 pair)
         make_result(),                               # INSERT cell_crops
         make_result(fetchall=[crop_map_row]),        # crop id mapping
-        make_result(),                               # INSERT sam_embeddings
     ]
     await prov.provision_new_user_data(new_user_id=5, db=mock_db)
-    assert mock_db.execute.await_count == 8
+    assert mock_db.execute.await_count == 7
+
+
+async def test_provisioning_sql_names_no_dropped_sam_schema(mock_db):
+    """The SAM tables and ``images.sam_embedding_status`` were dropped from the
+    production DB (scripts/drop_sam.sql). Raw SQL is the one place a dropped
+    column survives the ORM cleanup — and a mocked DB can't notice, so the
+    first real registration would 500. Pin it on the statements themselves."""
+    exp = _row(id=10, name="Exp", description="d", map_protein_id=7,
+               fasta_sequence="MKT", status="ready")
+    mock_db.execute.side_effect = [
+        make_result(scalar=1), make_result(fetchall=[exp]), make_result(scalar=100),
+        make_result(), make_result(fetchall=[_row(old_id=200, new_id=300)]),
+        make_result(), make_result(fetchall=[_row(old_id=400, new_id=500)]),
+    ]
+    await prov.provision_new_user_data(new_user_id=5, db=mock_db)
+    statements = [str(call.args[0]).lower() for call in mock_db.execute.await_args_list]
+    assert statements and not [sql for sql in statements if "sam_" in sql or "segmentation" in sql]
 
 
 # === _build_id_mapping ========================================================
@@ -483,46 +499,3 @@ async def test_build_id_mapping_pairs_rows(mock_db):
     mock_db.execute.return_value = make_result(fetchall=rows)
     mapping = await prov._build_id_mapping(mock_db, "images", "experiment_id", 1, 2)
     assert mapping == {1: 11, 2: 22}
-
-
-# === _copy_metrics ============================================================
-
-async def test_copy_metrics_no_metrics_returns(mock_db):
-    mock_db.execute.return_value = make_result(fetchall=[])
-    await prov._copy_metrics(mock_db, new_user_id=5, crop_id_map={1: 11})
-    assert mock_db.execute.await_count == 1  # only the metrics SELECT ran
-
-
-async def test_copy_metrics_empty_crop_map_returns(mock_db):
-    metric = _row(id=1, name="M", description="d")
-    mock_db.execute.return_value = make_result(fetchall=[metric])
-    await prov._copy_metrics(mock_db, new_user_id=5, crop_id_map={})
-    assert mock_db.execute.await_count == 1  # returns before inserting
-
-
-async def test_copy_metrics_full_path_remaps_crop_ids(mock_db):
-    metric = _row(id=1, name="M", description="d")
-    # Two metric images: one mapped crop, one with NULL crop, one unmapped crop.
-    mi_mapped = _row(cell_crop_id=400, file_path="a.png", original_filename="a")
-    mi_null = _row(cell_crop_id=None, file_path="b.png", original_filename="b")
-    mi_unmapped = _row(cell_crop_id=999, file_path="c.png", original_filename="c")
-    mock_db.execute.side_effect = [
-        make_result(fetchall=[metric]),                       # metrics SELECT
-        make_result(scalar=900),                              # INSERT metric RETURNING id
-        make_result(fetchall=[mi_mapped, mi_null, mi_unmapped]),  # metric_images SELECT
-        make_result(),                                        # INSERT mi_mapped
-        make_result(),                                        # INSERT mi_null
-        make_result(),                                        # INSERT mi_unmapped
-    ]
-    await prov._copy_metrics(mock_db, new_user_id=5, crop_id_map={400: 500})
-
-    # Inspect the params passed for each metric_images INSERT.
-    insert_calls = [
-        c for c in mock_db.execute.await_args_list
-        if "INSERT INTO metric_images" in str(c.args[0])
-    ]
-    assert len(insert_calls) == 3
-    params = [c.args[1] for c in insert_calls]
-    assert params[0]["cell_crop_id"] == 500   # remapped
-    assert params[1]["cell_crop_id"] is None  # NULL stays None
-    assert params[2]["cell_crop_id"] is None  # unmapped -> None

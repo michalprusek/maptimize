@@ -34,7 +34,6 @@ from services.import_service import (
     write_file_from_zip,
 )
 from models import CellCrop, Experiment, Image, MapProtein
-from models.segmentation import FOVSegmentationMask
 
 
 # ---------------------------------------------------------------------------
@@ -322,16 +321,13 @@ async def test_validate_import_coco_valid(tmp_path):
         "annotations.json": coco_annotations("a.png"),
         "images/a.png": make_png(),
         "embeddings/fov.npy": b"\x00",  # triggers has_embeddings
-        "masks/fov_1.png": make_mask_png(),  # triggers has_masks
     }))
     res = await svc.validate_import(str(p), user_id=1)
     assert res.is_valid is True
     assert res.detected_format == ImportFormat.COCO
-    # both images/a.png and masks/fov_1.png count as image files
-    assert res.image_count == 2
+    assert res.image_count == 1
     assert res.annotation_count == 1
     assert res.has_embeddings is True
-    assert res.has_masks is True
     # job persisted as validated
     job = ImportJobData.model_validate_json(svc._store[res.job_id])
     assert job.status == "validated"
@@ -375,13 +371,14 @@ async def test_validate_import_maptimize_manifest(tmp_path):
         "manifest.json": manifest,
         "experiments/1/images/1/mip.tiff": make_tiff(),
         "embeddings/crop_embeddings.npy": b"\x00",
+        # Archives exported before SAM was removed carry masks; they still validate.
         "experiments/1/masks/fov_1.png": make_mask_png(),
     }))
     res = await svc.validate_import(str(p), user_id=1)
     assert res.detected_format == ImportFormat.MAPTIMIZE
     assert res.annotation_count == 7
     assert res.has_embeddings is True
-    assert res.has_masks is True
+    assert "has_masks" not in res.model_dump()
 
 
 async def test_validate_import_zip_too_large(tmp_path, monkeypatch):
@@ -663,6 +660,7 @@ def build_maptimize_zip() -> bytes:
             "excluded": False,
         }).encode(),
         "experiments/10/crops/200/mip.tiff": make_tiff(),
+        # A pre-SAM-removal archive: the mask must be ignored, not break the import.
         "experiments/10/masks/fov_100.png": make_mask_png(),
         "embeddings/fov_embeddings.npy": fov_buf.getvalue(),
         "embeddings/fov_ids.json": json.dumps([100]).encode(),
@@ -824,85 +822,6 @@ async def test_import_maptimize_crop_exception_returns_none(mock_db, monkeypatch
         experiment=exp, file_list=[], db=mock_db,
     )
     assert crop is None
-
-
-# ===========================================================================
-# _import_maptimize_masks
-# ===========================================================================
-
-
-async def test_import_masks_happy_and_skips(mock_db):
-    svc = fresh_service()
-    mask = make_mask_png()
-    data = make_zip({
-        "experiments/1/masks/fov_100.png": mask,   # valid, mapped
-        "experiments/1/masks/fov_999.png": mask,   # no mapping -> skip
-        "experiments/1/masks/notfov.png": mask,    # wrong prefix -> skip
-        "experiments/1/masks/readme.txt": b"x",    # not png -> skip
-        "experiments/1/other/fov_100.png": mask,   # wrong dir -> skip
-    })
-    with zipfile.ZipFile(io.BytesIO(data)) as zf:
-        await svc._import_maptimize_masks(
-            zf=zf, exp_base_path="experiments/1",
-            old_to_new_image_ids={100: 555}, file_list=zf.namelist(), db=mock_db,
-        )
-    # exactly one mask added
-    added = [c.args[0] for c in mock_db.add.call_args_list]
-    masks = [a for a in added if isinstance(a, FOVSegmentationMask)]
-    assert len(masks) == 1
-    assert masks[0].image_id == 555
-
-
-async def test_import_masks_bad_filename_handled(mock_db):
-    svc = fresh_service()
-    # "fov_abc.png" -> int() raises -> caught, no mask added
-    data = make_zip({"experiments/1/masks/fov_abc.png": make_mask_png()})
-    with zipfile.ZipFile(io.BytesIO(data)) as zf:
-        await svc._import_maptimize_masks(
-            zf=zf, exp_base_path="experiments/1",
-            old_to_new_image_ids={1: 2}, file_list=zf.namelist(), db=mock_db,
-        )
-    added = [c.args[0] for c in mock_db.add.call_args_list]
-    assert not [a for a in added if isinstance(a, FOVSegmentationMask)]
-
-
-async def test_import_masks_too_few_points_skipped(mock_db, monkeypatch):
-    svc = fresh_service()
-    monkeypatch.setattr(svc, "_png_mask_to_polygon", lambda d: [[0, 0]])  # < 3 points
-    data = make_zip({"experiments/1/masks/fov_1.png": make_mask_png()})
-    with zipfile.ZipFile(io.BytesIO(data)) as zf:
-        await svc._import_maptimize_masks(
-            zf=zf, exp_base_path="experiments/1",
-            old_to_new_image_ids={1: 2}, file_list=zf.namelist(), db=mock_db,
-        )
-    added = [c.args[0] for c in mock_db.add.call_args_list]
-    assert not [a for a in added if isinstance(a, FOVSegmentationMask)]
-
-
-# ===========================================================================
-# _png_mask_to_polygon
-# ===========================================================================
-
-
-def test_png_mask_to_polygon_ok():
-    svc = ImportService()
-    pts = svc._png_mask_to_polygon(make_mask_png())
-    assert pts is not None
-    assert len(pts) >= 3
-    assert all(len(p) == 2 for p in pts)
-
-
-def test_png_mask_to_polygon_empty_mask():
-    svc = ImportService()
-    # all-zero mask -> no edges -> None
-    a = np.zeros((20, 20), dtype=np.uint8)
-    buf = io.BytesIO(); PILImage.fromarray(a).save(buf, format="PNG")
-    assert svc._png_mask_to_polygon(buf.getvalue()) is None
-
-
-def test_png_mask_to_polygon_bad_bytes():
-    svc = ImportService()
-    assert svc._png_mask_to_polygon(b"not a png") is None
 
 
 # ===========================================================================
