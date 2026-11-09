@@ -926,6 +926,55 @@ def test_knn_is_at_chance_on_an_uninformative_embedding():
     assert result.balanced_accuracy < result.chance + 0.06
 
 
+def _reference_knn_accuracy(emb, labels, exps):
+    """Row-by-row kNN, each row with its OWN admissible neighbours (up to KNN_K)."""
+    x = umap_service._normalize_embeddings(np.asarray(emb, dtype=np.float32))
+    labels, exps = np.asarray(labels), np.asarray(exps)
+    measurable = [c for c in np.unique(labels) if len(np.unique(exps[labels == c])) >= 2]
+    hits = {c: [] for c in measurable}
+    for i in np.flatnonzero(np.isin(labels, measurable)):
+        others = np.flatnonzero(exps != exps[i])
+        sims = x[others] @ x[i]
+        top = np.argsort(-sims)[:umap_service.KNN_K]
+        votes = {}
+        for j, s in zip(others[top], sims[top]):
+            votes[labels[j]] = votes.get(labels[j], 0.0) + np.exp(s / umap_service.KNN_TEMPERATURE)
+        hits[labels[i]].append(max(votes, key=votes.get) == labels[i])
+    return float(np.mean([np.mean(h) for h in hits.values()]))
+
+
+def test_knn_gives_each_row_its_own_neighbours_when_experiments_differ_in_size():
+    """A 40-crop experiment A leaves its rows only 8 admissible neighbours. A
+    k shared by the block (its minimum) then cut the vote of experiment B's
+    rows to 8 as well, although they have 46. B's nearest are 6 class-1 crops a
+    hair closer than A's 40 class-0 crops: with 8 voters B loses 6:2, with its
+    own 20 it wins 14:6. With random embeddings the softmax-sharp weights hide
+    this — the 11th-20th neighbours rarely matter — so the geometry is built.
+    """
+    rng = np.random.default_rng(0)
+
+    def around(direction, n):
+        d = np.asarray(direction, dtype=float)
+        return d / np.linalg.norm(d) + rng.normal(0, 1e-4, (n, 3))
+
+    emb = np.vstack([
+        around([0.98, 0.0, 0.199], 40),   # A: class 0, 40 crops
+        around([1.0, 0.0, 0.0], 2),       # B: class 0, the rows that suffered
+        around([0.99, 0.141, 0.0], 3),    # C: class 1
+        around([0.99, 0.141, 0.0], 3),    # D: class 1
+    ])
+    labels = [0] * 42 + [1] * 6
+    exps = [0] * 40 + [1] * 2 + [2] * 3 + [3] * 3
+
+    expected = _reference_knn_accuracy(emb, labels, exps)
+    whole = umap_service.compute_knn_separability(emb, labels, exps)
+    with patch.object(umap_service, "_KNN_BLOCK", 7):
+        blocked = umap_service.compute_knn_separability(emb, labels, exps)
+    assert whole.balanced_accuracy == pytest.approx(expected)
+    assert blocked.balanced_accuracy == pytest.approx(expected)
+    assert whole.k == umap_service.KNN_K
+
+
 def test_knn_blocking_does_not_change_the_answer():
     rng = np.random.default_rng(1)
     emb = rng.standard_normal((90, 8))

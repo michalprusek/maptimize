@@ -1032,7 +1032,7 @@ s defaultem `Query(...)`, který test nepředá, doteče do těla jako objekt `Q
 ##### Druhé číslo: leave-experiment-out kNN (od 2026-10-17)
 
 `separability.knn` (`compute_knn_separability` v `services/umap_service.py`) = balanced
-accuracy hlasování 20 nejbližších cropů (DINO `eval_knn.py`: váhy `exp(cos/0,07)`),
+accuracy hlasování **až** 20 nejbližších cropů (DINO `eval_knn.py`: váhy `exp(cos/0,07)`),
 **sousedé jen z JINÝCH experimentů**, vedle `chance = 1/n_classes`. Badge ho kreslí
 **vedle** silhouety, ne místo ní (volba uživatele), obarvený podle `knnSkill()` = posun
 od náhody k dokonalosti — surová přesnost na jedné škále nejde (0,40 je silné nad 14
@@ -1050,6 +1050,13 @@ cropů silhouettu nepohnulo o víc než 0,01. Nepiš „robustní silhouettu".
 neměřitelné hlášené jako neúspěch), ale v poolu **hlasuje dál** jako distraktor.
 `knn = null` ⇒ „třída splývá s experimentem" — vždy na ose experiment; nikdy ho
 nehlas jako 0. Šum se skutečnými labely dává přesně náhodu (0,064/0,334/0,250/0,500).
+
+⚠️ **`k` je jedno pro všechny řádky, ne minimum bloku.** Řádek, kterému vlastní
+experiment nechá méně než `k` přípustných sousedů, vybere i vlastní (`-inf`), ale ty mají
+váhu `exp(-inf) = 0`. Původní `min` přes blok 1024 řádků nechal jeden velký experiment
+zkrátit hlasování všem řádkům v bloku — výsledek pak závisel na velikosti bloku a pořadí
+cropů a API přitom hlásilo `k=20`. Náhodné embeddingy to neodhalí (strmé váhy → rozhodují
+první sousedé), proto test staví geometrii ručně (našel CodeRabbit v PR #70).
 
 Oba O(N²) průchody běží v `asyncio.to_thread` (dřív silhouette blokovala event loop).
 MCP `SERVER_VERSION` **5.1.0**.

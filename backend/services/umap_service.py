@@ -341,12 +341,18 @@ def compute_knn_separability(
     x = _normalize_embeddings(np.asarray(embeddings, dtype=np.float32)[keep])
     scored = np.flatnonzero(np.isin(y_raw, measurable))
 
+    # One k for every row, bounded only by the pool. A row whose own experiment
+    # leaves it fewer than k admissible neighbours picks some own-experiment
+    # entries too, but those are -inf and exp(-inf) is exactly 0, so they cast
+    # no vote; every scored row has at least one finite neighbour because its
+    # class spans two experiments. Taking the block's minimum instead made a
+    # large experiment shrink the vote of every row it shared a block with.
+    k = min(KNN_K, len(keep))
     predicted = np.empty(len(scored), dtype=np.int64)
     for start in range(0, len(scored), _KNN_BLOCK):
         rows = scored[start:start + _KNN_BLOCK]
         sim = x[rows] @ x.T
         sim[groups[rows][:, None] == groups[None, :]] = -np.inf
-        k = min(KNN_K, int(np.isfinite(sim).sum(axis=1).min()))
         top = np.argpartition(-sim, k - 1, axis=1)[:, :k]
         top_sim = np.take_along_axis(sim, top, axis=1)
         votes = np.zeros((len(rows), len(classes)))
@@ -362,7 +368,7 @@ def compute_knn_separability(
     return KnnSeparability(
         balanced_accuracy=float(np.mean(recalls)),
         chance=1.0 / len(measurable),
-        k=KNN_K,
+        k=k,
         n_classes=len(measurable),
         n_points=len(scored),
     )
