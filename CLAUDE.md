@@ -231,7 +231,7 @@ Qwen VL embedding FOV (fáze 2, `services/image_processor.py`). **SAM i segmenta
 část editoru jsou smazané** (backend, frontend, závislosti, `sam3` z Dockerfile);
 editor umí jen bboxy (kreslit, posouvat, měnit velikost, rotovat). DB po SAM uklízí
 jednorázový ruční `scripts/drop_sam.sql` (pořadí je v jeho hlavičce: záloha → nasazení
-kódu → skript). Staré archivy exportu s `masks/` se dál naimportují, masky se ignorují.
+kódu → skript; v produkci proběhl 2026-11-09, DB 3081 MB → 74 MB). Staré archivy exportu s `masks/` se dál naimportují, masky se ignorují.
 
 **Přetrénování:** `backend/scripts/train_detector.py build|train|evaluate`
 (návod na spuštění v docstringu; read-only proti DB). Čistá logika je
@@ -264,7 +264,7 @@ režimu přidává šedý okraj (`pad=0.5` stride) a model natrénovaný s rotac
 kontext → val hlásil AP50-95 0,53 na boxech, které `predict()` v produkci kreslí na 0,36.
 Rozhoduje jen `train_detector.py evaluate`, který jde přes `CellDetector.detect`.
 
-**Nasazený model (2026-11-08):** YOLO26s, 640 px, bez rotace, práh `CONF_THRESHOLD = 0.45`
+**Nasazený model (od 2026-11-09):** YOLO26s, 640 px, bez rotace, práh `CONF_THRESHOLD = 0.45`
 (F1-optimum na val; **mění se spolu s váhami**). Test (177 FOV / 316 buněk z odložených
 experimentů), starý → nový: AP50 0,738 → 0,960, AP50-95 0,315 → 0,559, F1 0,701 → 0,894
 (bootstrap po experimentech, všechny CI nad nulou). Na FOV, kde anotátor predikce nikdy

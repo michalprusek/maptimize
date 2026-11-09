@@ -151,14 +151,14 @@ except ImportError:
 " 2>&1) || true
 echo "$ESM_STATUS"
 
-# Check YOLOv8 weights - these are REQUIRED for cell detection
+# Check YOLO weights - these are REQUIRED for cell detection
 YOLO_PATH="${YOLO_MODEL_PATH:-/app/weights/best.pt}"
 if [ -f "$YOLO_PATH" ]; then
     SIZE=$(du -h "$YOLO_PATH" | cut -f1)
-    echo "✓ YOLOv8 weights found: $YOLO_PATH ($SIZE)"
+    echo "✓ YOLO weights found: $YOLO_PATH ($SIZE)"
 else
     echo ""
-    echo "❌ ERROR: YOLOv8 custom weights not found at $YOLO_PATH"
+    echo "❌ ERROR: YOLO custom weights not found at $YOLO_PATH"
     echo "   Cell detection will FAIL without trained weights."
     echo "   Mount weights directory: -v ./weights:/app/weights:ro"
     echo ""
