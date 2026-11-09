@@ -21,6 +21,7 @@ from fastapi import HTTPException
 
 from routers import metrics as m
 from routers import embeddings as e
+from services.umap_service import KnnSeparability
 from tests.unit.conftest import make_result
 
 
@@ -1240,6 +1241,61 @@ async def test_cropped_umap_reports_the_axis_alongside_the_score(mock_db, no_gro
     assert out.separability.label_by is e.LabelAxis.MICROSCOPE
     assert out.separability.n_classes == 2
     assert out.separability.n_points == 4
+
+
+async def test_cropped_umap_scores_knn_against_each_point_s_experiment(mock_db, no_group):
+    # The helper is only as good as the experiment ids that reach it: a list
+    # misaligned with the labels would exclude the wrong neighbours silently.
+    crops = [
+        crop_obj(cid=i, umap_x=0.1, umap_y=0.2, experiment_id=9 if i < 2 else 8)
+        for i in range(4)
+    ]
+    mock_db.execute.side_effect = [
+        make_result(scalars_all=crops),
+        make_result(fetchall=[_facet_row(9), _facet_row(8)]),
+    ]
+    knn = KnnSeparability(
+        balanced_accuracy=0.61, chance=0.07, k=20, n_classes=14, n_points=3
+    )
+    with patch.object(e, "MIN_POINTS_FOR_UMAP", 3), \
+         patch.object(
+             e, "compute_separability",
+             return_value=e.Separability(score=-0.02, n_classes=2, n_points=4),
+         ), \
+         patch.object(e, "compute_knn_separability", return_value=knn) as scorer:
+        out = await e.get_umap_visualization(
+            selection=e.FacetSelection(),
+            label_by=e.LabelAxis.EXPERIMENT,
+            background_tasks=MagicMock(), current_user=user(), db=mock_db,
+        )
+    _, labels, experiment_ids = scorer.call_args.args
+    assert experiment_ids == [9, 9, 8, 8]
+    assert labels == [9, 9, 8, 8]
+    assert out.separability.score == pytest.approx(-0.02)
+    assert out.separability.knn.balanced_accuracy == pytest.approx(0.61)
+    assert out.separability.knn.chance == pytest.approx(0.07)
+    assert out.separability.knn.n_classes == 14
+
+
+async def test_cropped_umap_keeps_the_silhouette_when_knn_cannot_score(mock_db, no_group):
+    crops = [crop_obj(cid=i, umap_x=0.1, umap_y=0.2) for i in range(4)]
+    mock_db.execute.side_effect = [
+        make_result(scalars_all=crops),
+        make_result(fetchall=[_facet_row()]),
+    ]
+    with patch.object(e, "MIN_POINTS_FOR_UMAP", 3), \
+         patch.object(
+             e, "compute_separability",
+             return_value=e.Separability(score=0.3, n_classes=2, n_points=4),
+         ), \
+         patch.object(e, "compute_knn_separability", return_value=None):
+        out = await e.get_umap_visualization(
+            selection=e.FacetSelection(),
+            label_by=e.LabelAxis.PROTEIN,
+            background_tasks=MagicMock(), current_user=user(), db=mock_db,
+        )
+    assert out.separability.score == pytest.approx(0.3)
+    assert out.separability.knn is None
 
 
 async def test_separability_endpoint_returns_the_score_without_the_points(mock_db, no_group):

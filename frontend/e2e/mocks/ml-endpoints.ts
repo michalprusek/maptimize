@@ -104,7 +104,13 @@ export const mockUmapData = {
   ],
   total_crops: 100,
   facets: [],
-  separability: { score: 0.65, label_by: "protein", n_classes: 2, n_points: 100 },
+  separability: {
+    score: 0.65,
+    label_by: "protein",
+    n_classes: 2,
+    n_points: 100,
+    knn: { balanced_accuracy: 0.9, chance: 0.5, k: 20, n_classes: 2, n_points: 100 },
+  },
   separability_unscored: null,
   // z-scores against the annotated crops, as the bundleness model reports them.
   bundleness: {

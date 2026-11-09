@@ -25,6 +25,22 @@ class LabelAxis(str, Enum):
     GROUP = "group"
 
 
+class KnnSeparabilityResponse(BaseModel):
+    """Can a point's class be recovered from its nearest crops in OTHER experiments?
+
+    The silhouette's companion: local and class-balanced where the silhouette is
+    global and point-weighted, and blind to a point's own experiment so it
+    measures the class rather than the slide. Its counts can be smaller than the
+    silhouette's — classes seen in a single experiment are not scored.
+    """
+
+    balanced_accuracy: float = Field(..., description="Mean per-class recall (0 to 1)")
+    chance: float = Field(..., description="1 / n_classes — what ignoring the embedding scores")
+    k: int = Field(..., description="Neighbours voting")
+    n_classes: int = Field(..., description="Classes present in at least 2 experiments")
+    n_points: int = Field(..., description="Points of those classes")
+
+
 class SeparabilityResponse(BaseModel):
     """How cleanly the plotted points separate along one labelled axis.
 
@@ -38,6 +54,15 @@ class SeparabilityResponse(BaseModel):
     label_by: LabelAxis = Field(..., description="Dimension the points were grouped by")
     n_classes: int = Field(..., description="Distinct values scored")
     n_points: int = Field(..., description="Points carrying a value on this axis")
+    knn: Optional[KnnSeparabilityResponse] = Field(
+        None,
+        description=(
+            "kNN classification with neighbours from other experiments only; "
+            "null when fewer than 2 classes appear in more than one experiment "
+            "(always on the experiment axis) — the class cannot then be told "
+            "apart from its experiment's batch."
+        ),
+    )
 
 
 class UnscoredReason(str, Enum):

@@ -1,7 +1,7 @@
 "use client";
 
 import type { Separability, SeparabilityUnscored } from "@/lib/api";
-import { getSeparabilityScoreStyle } from "./chartConfig";
+import { getSeparabilityScoreStyle, knnSkill } from "./chartConfig";
 import type { Translate } from "./projectionShared";
 import { LABEL_AXIS_KEY, unscoredMessageKey } from "./umapFacets";
 
@@ -33,19 +33,45 @@ export function SeparabilityBadge({
   const badgeClass = `px-2 py-0.5 rounded text-xs font-mono ${stale ? "opacity-50" : ""}`;
 
   if (separability !== null) {
+    const { knn } = separability;
     return (
-      <span
-        className={`${badgeClass} ${getSeparabilityScoreStyle(separability.score)}`}
-        title={t("separabilityTooltip")}
-      >
-        {t("separability", { axis: t(LABEL_AXIS_KEY[separability.label_by]) })}
-        : {separability.score.toFixed(3)}
-        {" · "}
-        {t("separabilityCounts", {
-          classes: separability.n_classes,
-          points: separability.n_points,
-        })}
-      </span>
+      <>
+        <span
+          className={`${badgeClass} ${getSeparabilityScoreStyle(separability.score)}`}
+          title={t("separabilityTooltip")}
+        >
+          {t("separability", { axis: t(LABEL_AXIS_KEY[separability.label_by]) })}
+          : {separability.score.toFixed(3)}
+          {" · "}
+          {t("separabilityCounts", {
+            classes: separability.n_classes,
+            points: separability.n_points,
+          })}
+        </span>
+        {/* Never alone and never instead: the silhouette reads ≈ 0 on classes
+            that are locally distinct, so the second number is what says so. A
+            missing kNN is "confounded with the experiment", not zero. */}
+        {knn ? (
+          <span
+            className={`${badgeClass} ${getSeparabilityScoreStyle(knnSkill(knn))}`}
+            title={t("separabilityKnnTooltip")}
+          >
+            {t("separabilityKnn", {
+              accuracy: Math.round(knn.balanced_accuracy * 100),
+              chance: Math.round(knn.chance * 100),
+              classes: knn.n_classes,
+              points: knn.n_points,
+            })}
+          </span>
+        ) : (
+          <span
+            className={`${badgeClass} bg-bg-secondary text-text-muted`}
+            title={t("separabilityKnnConfoundedTooltip")}
+          >
+            {t("separabilityKnnConfounded")}
+          </span>
+        )}
+      </>
     );
   }
 
