@@ -5,7 +5,7 @@ import uuid
 import io
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Literal, Optional
 
 from pydantic import BaseModel
 
@@ -708,7 +708,7 @@ async def list_fov_crops(
 @router.get("/crops/{crop_id}/image")
 async def get_crop_image(
     crop_id: int,
-    type: str = Query("mip", enum=["mip", "sum"]),
+    type: Literal["mip", "sum"] = Query("mip"),
     token: Optional[str] = Query(None, description="JWT token for image requests"),
     if_none_match: Optional[str] = Header(None),
     db: AsyncSession = Depends(get_db)
@@ -1304,7 +1304,7 @@ async def get_image(
 @router.get("/{image_id}/file")
 async def get_image_file(
     image_id: int,
-    type: str = Query("original", enum=["original", "mip", "sum", "thumbnail"]),
+    type: Literal["original", "mip", "sum", "thumbnail"] = Query("original"),
     token: Optional[str] = Query(None, description="JWT token for image requests from <img> tags"),
     db: AsyncSession = Depends(get_db)
 ):
