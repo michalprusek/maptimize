@@ -13,7 +13,7 @@ services:
         - NEXT_PUBLIC_API_URL=
     container_name: maptimize-frontend
     ports:
-      - "7000:3000"
+      - "127.0.0.1:7000:3000"  # public access only via the shared proxy (Docker DNS)
     environment:
       - NODE_ENV=production
       # Empty string - paths already include /api/ prefix
@@ -38,7 +38,7 @@ services:
       dockerfile: Dockerfile.gpu
     container_name: maptimize-backend
     ports:
-      - "7001:8000"
+      - "127.0.0.1:7001:8000"  # public access only via the shared proxy (Docker DNS)
     environment:
       - DATABASE_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@maptimize-db:5432/${POSTGRES_DB}
       - REDIS_URL=redis://:${REDIS_PASSWORD}@maptimize-redis:6379/0
@@ -129,8 +129,8 @@ services:
     image: nginx:alpine
     container_name: maptimize-nginx
     ports:
-      - "7080:80"
-      - "7443:443"
+      - "127.0.0.1:7080:80"  # legacy proxy; from outside only scanners reached it
+      - "127.0.0.1:7443:443"
     volumes:
       - ./docker/nginx/nginx.maptimize.conf:/etc/nginx/conf.d/default.conf:ro
       - /etc/letsencrypt:/etc/letsencrypt:ro
