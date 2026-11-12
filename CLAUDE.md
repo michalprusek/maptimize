@@ -197,6 +197,11 @@ vědomě není.
 ## Povolené porty pro Maptimize
 
 Používám rozsah **7xxx**:
+
+> Od 2026-11-12 jsou všechny porty svázané jen na `127.0.0.1`. Veřejný přístup jde výhradně přes sdílenou proxy
+> `spheroseg-nginx` (80/443), která kontejnery najde přes Docker DNS (`maptimize-frontend:3000`, `maptimize-backend:8000`).
+> Na 7000/7001 byl Next.js a FastAPI přímo z internetu; na 7080/7443 chodily jen skenery.
+
 | Port | Služba | Popis |
 |------|--------|-------|
 | 7000 | maptimize-frontend | Next.js frontend |
